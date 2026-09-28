@@ -460,6 +460,28 @@ export class ProposalsController {
     return this.proposalsService.getFollowups(id);
   }
 
+  @Get(':id/versions')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
+  async getVersions(@Param('id') id: string) {
+    return this.proposalsService.getVersions(id);
+  }
+
+  @Patch(':id/follow-up')
+  @Roles('management', 'regional_manager', 'sales', 'admin')
+  async updateFollowup(
+    @Param('id') id: string,
+    @Body() dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.proposalsService.updateFollowup(id, dto, user);
+  }
+
+  @Get(':id/activity')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
+  async getActivity(@Param('id') id: string) {
+    return this.proposalsService.getActivity(id);
+  }
+
   @Get(':id/history')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
   async getHistory(@Param('id') id: string) {

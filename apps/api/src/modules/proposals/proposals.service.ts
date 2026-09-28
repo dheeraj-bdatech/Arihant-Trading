@@ -361,8 +361,11 @@ export class ProposalsService {
     const sortField = query.sortBy || query.sort_by;
     let sortBy: any = 'proposals.last_activity_at';
     if (sortField === 'createdAt' || sortField === 'created_at') sortBy = 'proposals.created_at';
+    else if (sortField === 'updatedAt' || sortField === 'updated_at') sortBy = 'proposals.updated_at';
     else if (sortField === 'request_date' || sortField === 'requestDate') sortBy = 'proposals.request_date';
     else if (sortField === 'required_date' || sortField === 'requiredDate') sortBy = 'proposals.required_date';
+    else if (sortField === 'proposalSentDate' || sortField === 'sent_date' || sortField === 'sentDate') sortBy = 'proposals.sent_date';
+    else if (sortField === 'nextFollowUp' || sortField === 'next_follow_up_date' || sortField === 'next_followup' || sortField === 'nextFollowup') sortBy = 'proposals.next_follow_up_date';
 
     const sortOrder = (query.sortOrder || query.sort_order || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
 
@@ -3058,5 +3061,57 @@ export class ProposalsService {
       ...h,
       action: !h.from_status || (h.from_status === 'REQUESTED' && h.to_status === 'REQUESTED') ? 'CREATED' : 'STATUS_CHANGE',
     }));
+  }
+
+  async getVersions(id: string): Promise<any> {
+    return this.db
+      .selectFrom('proposal_versions')
+      .selectAll()
+      .where('proposal_id', '=', id)
+      .orderBy('version_no', 'desc')
+      .execute();
+  }
+
+  async getActivity(id: string): Promise<any> {
+    return this.db
+      .selectFrom('proposal_timeline')
+      .leftJoin('users', 'proposal_timeline.actor_id', 'users.id')
+      .select([
+        'proposal_timeline.id',
+        'proposal_timeline.event_type',
+        'proposal_timeline.category',
+        'proposal_timeline.title',
+        'proposal_timeline.description',
+        'proposal_timeline.metadata',
+        'proposal_timeline.occurred_at',
+        'users.full_name as actor_name',
+      ])
+      .where('proposal_timeline.proposal_id', '=', id)
+      .orderBy('proposal_timeline.occurred_at', 'asc')
+      .execute();
+  }
+
+  async updateFollowup(id: string, dto: any, user: AuthUser): Promise<any> {
+    if (dto.contact_date && dto.summary) {
+      return this.addFollowup(id, dto, user);
+    }
+    if (dto.postpone_reason) {
+      return this.postponeFollowup(id, dto, user);
+    }
+    const nextDate = dto.next_follow_up_date || dto.nextFollowUp || dto.next_followup;
+    const ownerId = dto.follow_up_owner_id || dto.followUpOwner || dto.followup_owner_id;
+
+    await this.db
+      .updateTable('proposals')
+      .set({
+        ...(nextDate ? { next_follow_up_date: nextDate, next_followup: nextDate } : {}),
+        ...(ownerId ? { follow_up_owner_id: ownerId, followup_owner_id: ownerId } : {}),
+        last_activity_at: new Date(),
+        updated_at: new Date(),
+      })
+      .where('id', '=', id)
+      .execute();
+
+    return this.findOne(id, user);
   }
 }

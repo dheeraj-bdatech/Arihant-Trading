@@ -300,6 +300,41 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
       expect(patchRes.body.version).toBe('v1.1');
       expect(patchRes.body.remarks).toBe('Updated remarks for proposal');
     });
+
+    it('✓ Retrieves proposal versions list via GET /api/proposals/:id/versions', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/proposals/${createdId}/versions`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBeGreaterThanOrEqual(1);
+      expect(res.body[0].version_no).toBe(1);
+    });
+
+    it('✓ Retrieves proposal activity timeline via GET /api/proposals/:id/activity', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/proposals/${createdId}/activity`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBeGreaterThanOrEqual(1);
+      expect(res.body[0].event_type).toBeDefined();
+    });
+
+    it('✓ Updates follow-up schedule via PATCH /api/proposals/:id/follow-up', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/proposals/${createdId}/follow-up`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({
+          next_follow_up_date: '2026-10-15',
+          follow_up_owner_id: salesUserId,
+        });
+
+      expect(res.status).toBe(200);
+      expect(String(res.body.next_follow_up_date || res.body.next_followup)).toContain('2026-10-1');
+    });
   });
 
   // =========================================================================

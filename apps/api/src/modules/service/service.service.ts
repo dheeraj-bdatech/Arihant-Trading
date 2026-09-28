@@ -137,7 +137,7 @@ export class ServiceService {
   }
 
   async createTicket(dto: CreateTicketDto, user: AuthUser) {
-    const ticketNumber = `TCK-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`;
+    const ticketNumber = `TCK-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
 
     const ticket = await this.db
       .insertInto('service_tickets')

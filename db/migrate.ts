@@ -24,9 +24,16 @@ const connectionString =
 console.log('🚀 Starting Arihant BOS Database Migration to Supabase...');
 console.log(`Connecting to: ${connectionString.split('@')[1] || connectionString}`);
 
+const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
+const ssl =
+  process.env.DATABASE_SSL === 'true' ||
+  ((connectionString.includes('supabase') || process.env.NODE_ENV === 'production') && !isLocal)
+    ? { rejectUnauthorized: false }
+    : undefined;
+
 const client = new Client({
   connectionString,
-  ssl: { rejectUnauthorized: false },
+  ssl,
 });
 
 async function runMigration() {

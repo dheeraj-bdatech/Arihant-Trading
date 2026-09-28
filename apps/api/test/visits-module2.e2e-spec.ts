@@ -89,7 +89,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
   // SCENARIO A: Normal Visit Lifecycle (Plan -> Manager View -> Post-Visit -> History & Activity)
   // =========================================================================
   describe('Scenario A: Normal Visit Lifecycle', () => {
-    const plannedDate = '2026-09-27';
+    const plannedDate = new Date().toISOString().split('T')[0];
 
     it('sales executive plans a client field visit with full details', async () => {
       const res = await request(app.getHttpServer())
@@ -520,8 +520,8 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .post('/api/visits')
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          organisation_id: testOrg1Id,
-          planned_date: '2026-09-26',
+          organisation_id: testOrg2Id,
+          planned_date: '2026-10-05',
           purpose: 'Validation test meeting',
         });
       visitForValidationId = res.body.id;
