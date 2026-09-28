@@ -218,6 +218,7 @@ export default function LeadsPage() {
   // Form States
   const [actionLoading, setActionLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [createLeadError, setCreateLeadError] = useState<string | null>(null);
 
   // Create Lead Form (Complete 18 Parameters)
   const [leadForm, setLeadForm] = useState({
@@ -572,6 +573,15 @@ export default function LeadsPage() {
     return () => clearTimeout(timer);
   }, [leadForm.organisation_name, leadForm.contact_email, leadForm.contact_mobile, isCreateLeadOpen, leadForm.organisation_mode]);
 
+  // Automatically clear create lead errors and transient states whenever the modal is closed
+  useEffect(() => {
+    if (!isCreateLeadOpen) {
+      setCreateLeadError(null);
+      setFormError(null);
+      setIsCheckingDuplicate(false);
+    }
+  }, [isCreateLeadOpen]);
+
   // Open Lead Details Modal
   const handleOpenLead = async (leadId: string) => {
     try {
@@ -618,6 +628,7 @@ export default function LeadsPage() {
   const handleCreateLead = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    setCreateLeadError(null);
     setActionLoading(true);
 
     try {
@@ -667,13 +678,19 @@ export default function LeadsPage() {
       if (activeTab === 'customers') fetchCustomers();
       if (activeTab === 'followups') fetchFollowups();
     } catch (err: any) {
-      setFormError(err.message || 'Failed to register lead.');
+      const msg = err.message || 'Failed to register lead.';
+      setCreateLeadError(msg);
+      setFormError(msg);
     } finally {
       setActionLoading(false);
     }
   };
 
   const resetLeadForm = () => {
+    setFormError(null);
+    setCreateLeadError(null);
+    setActionLoading(false);
+    setIsCheckingDuplicate(false);
     setLeadForm({
       organisation_mode: 'new',
       organisation_id: '',
@@ -702,6 +719,20 @@ export default function LeadsPage() {
     });
     setDuplicateMatches([]);
     setDuplicateSuggestion(null);
+  };
+
+  const handleOpenCreateLead = () => {
+    resetLeadForm();
+    setFormError(null);
+    setCreateLeadError(null);
+    setIsCreateLeadOpen(true);
+  };
+
+  const handleCloseCreateLead = () => {
+    setIsCreateLeadOpen(false);
+    resetLeadForm();
+    setFormError(null);
+    setCreateLeadError(null);
   };
 
   // Status Change Submission
@@ -1014,10 +1045,7 @@ export default function LeadsPage() {
             <Button
               variant="primary"
               size="sm"
-              onClick={() => {
-                resetLeadForm();
-                setIsCreateLeadOpen(true);
-              }}
+              onClick={handleOpenCreateLead}
               leftIcon={<Plus className="h-4 w-4" />}
             >
               New Opportunity / Lead
@@ -1162,10 +1190,7 @@ export default function LeadsPage() {
                 <Button
                   size="sm"
                   variant="primary"
-                  onClick={() => {
-                    resetLeadForm();
-                    setIsCreateLeadOpen(true);
-                  }}
+                  onClick={handleOpenCreateLead}
                 >
                   Create Opportunity
                 </Button>
@@ -1886,16 +1911,16 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       <Modal
         isOpen={isCreateLeadOpen}
-        onClose={() => setIsCreateLeadOpen(false)}
+        onClose={handleCloseCreateLead}
         title="Register New Lead Opportunity"
         description="Capture comprehensive opportunity intelligence, contact person, jurisdiction, and initial interaction."
         maxWidth="4xl"
       >
         <form onSubmit={handleCreateLead} className="space-y-4 text-xs">
-          {formError && (
+          {(createLeadError || formError) && (
             <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 flex items-center gap-2">
               <AlertCircle className="h-4 w-4 shrink-0" />
-              <span className="font-medium">{formError}</span>
+              <span className="font-medium">{createLeadError || formError}</span>
             </div>
           )}
 
@@ -2294,7 +2319,7 @@ export default function LeadsPage() {
               * Required fields. All 18 parameters will be synced into the live pipeline.
             </span>
             <div className="flex items-center gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setIsCreateLeadOpen(false)}>
+              <Button type="button" variant="ghost" size="sm" onClick={handleCloseCreateLead}>
                 Cancel
               </Button>
               <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>

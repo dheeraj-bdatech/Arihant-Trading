@@ -27,8 +27,11 @@ export const KYSELY_DB = 'KYSELY_DB';
           keepAlive: true,
           keepAliveInitialDelayMillis: 10000,
           ssl:
-            connectionString.includes('supabase') ||
-            process.env.NODE_ENV === 'production'
+            process.env.DATABASE_SSL === 'true' ||
+            ((connectionString.includes('supabase') ||
+              process.env.NODE_ENV === 'production') &&
+              !connectionString.includes('localhost') &&
+              !connectionString.includes('127.0.0.1'))
               ? { rejectUnauthorized: false }
               : undefined,
         });

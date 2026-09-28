@@ -129,6 +129,7 @@ export const Modal: React.FC<ModalProps> = ({
             )}
           </div>
           <IconButton
+            type="button"
             icon={<X className="h-4 w-4" />}
             aria-label="Close modal"
             onClick={onClose}

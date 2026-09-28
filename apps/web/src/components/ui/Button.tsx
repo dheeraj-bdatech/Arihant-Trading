@@ -131,6 +131,7 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
       isLoading = false,
       className,
       disabled,
+      type = 'button',
       ...props
     },
     ref,

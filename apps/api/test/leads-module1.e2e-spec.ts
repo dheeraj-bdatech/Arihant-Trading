@@ -239,6 +239,43 @@ describe('Module 1: Lead & Customer Management E2E Test Suite', () => {
       freshLeadId = res.body.id;
     });
 
+    it('✓ Creates a lead with a new account (atomic organisation & contact registration)', async () => {
+      const uniqueName = `Direct Prospect ${Date.now()}`;
+      const res = await request(app.getHttpServer())
+        .post('/api/leads')
+        .set('Authorization', `Bearer ${salesToken}`)
+        .send({
+          organisation_name: uniqueName,
+          contact_name: 'Brigadier S. K. Singh',
+          contact_designation: 'Director Procurement',
+          contact_mobile: '9811223344',
+          contact_email: 'sk.singh@defence.gov.in',
+          city: 'New Delhi',
+          state: 'Delhi',
+          zone_id: testZoneId,
+          region_id: testRegionId,
+          sector: 'Defence / Aerospace',
+          department: 'Procurement Cell',
+          product_id: testProduct1Id,
+          product_ids: [testProduct1Id],
+          source: 'field_visit',
+          category: 'new_lead',
+          assigned_to: salesUserId,
+          lead_status: 'new',
+          status: 'new',
+          last_interaction_date: new Date().toISOString().split('T')[0],
+          last_interaction_type: 'call',
+          value_lakh: 50.0,
+          estimated_value_lakh: 50.0,
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.id).toBeDefined();
+      expect(res.body.organisation_name).toBe(uniqueName);
+      expect(res.body.contact_name).toBe('Brigadier S. K. Singh');
+      expect(res.body.lead_type).toBe('fresh');
+    });
+
     it('✓ Inspecting Fresh lead returns product interests, allowed transitions, and initial interaction', async () => {
       const res = await request(app.getHttpServer())
         .get(`/api/leads/${freshLeadId}`)
