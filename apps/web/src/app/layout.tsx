@@ -1,31 +1,9 @@
 import type { Metadata } from 'next';
-import { Source_Serif_4, IBM_Plex_Sans, IBM_Plex_Mono } from 'next/font/google';
 import { GeistSans } from 'geist/font/sans';
 import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth-context';
 import { PersonaSwitcherFab } from '@/components/layout/PersonaSwitcherFab';
-
-const sourceSerif = Source_Serif_4({
-  subsets: ['latin'],
-  variable: '--font-display',
-  weight: ['400', '600', '700'],
-  display: 'swap',
-});
-
-const ibmPlexSans = IBM_Plex_Sans({
-  subsets: ['latin'],
-  variable: '--font-body',
-  weight: ['400', '500', '600', '700'],
-  display: 'swap',
-});
-
-const ibmPlexMono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  variable: '--font-mono',
-  weight: ['400', '600'],
-  display: 'swap',
-});
 
 export const metadata: Metadata = {
   title: 'Arihant BOS | Defence & Security GeM ERP',
@@ -41,7 +19,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${sourceSerif.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} ${GeistSans.variable} ${GeistMono.variable}`}
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
       suppressHydrationWarning
     >
       <head>
@@ -49,7 +27,7 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
           rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap"
         />
       </head>
       <body
