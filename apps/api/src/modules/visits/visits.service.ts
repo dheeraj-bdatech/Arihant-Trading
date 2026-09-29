@@ -125,8 +125,12 @@ export class VisitsService {
     let query = this.db
       .selectFrom('visits')
       .innerJoin('organisations', 'visits.organisation_id', 'organisations.id')
+      .leftJoin('users as emp', 'visits.assigned_to', 'emp.id')
       .selectAll('visits')
-      .select('organisations.name as organisation_name')
+      .select([
+        'organisations.name as organisation_name',
+        'emp.full_name as employee_name',
+      ])
       .where('visits.assigned_to', '=', params.employeeId)
       .where('visits.planned_date', '=', params.plannedDate)
       .where('visits.status', 'not in', ['cancelled']);
@@ -143,15 +147,16 @@ export class VisitsService {
 
     for (const v of dayVisits) {
       const vHasTimes = Boolean(v.start_time && v.end_time);
+      const staffLabel = (v as any).employee_name ? `Officer ${(v as any).employee_name}` : 'Selected officer';
 
       // 1. Same organization: allow multiple appointments on same day if times don't overlap
       if (params.organisationId && v.organisation_id === params.organisationId) {
         if (!vHasTimes && !newHasTimes) {
-          conflicts.push(`Employee already has an all-day visit scheduled for ${v.organisation_name} on ${params.plannedDate}.`);
+          conflicts.push(`${staffLabel} already has an all-day visit scheduled for ${v.organisation_name} on ${params.plannedDate}. Please select another officer or specify time slots.`);
         }
       }
 
-      // 2. Direct Time Overlap Check
+      // 2. Direct Time Overlap Check for the same staff member
       if (newHasTimes && vHasTimes) {
         const vStart = this.timeToMinutes(v.start_time!);
         const vEnd = this.timeToMinutes(v.end_time!);
@@ -160,18 +165,18 @@ export class VisitsService {
           // Direct overlap
           if (newStart < vEnd && vStart < newEnd) {
             conflicts.push(
-              `Time conflict: Overlaps with visit to ${v.organisation_name} (${v.start_time} - ${v.end_time}).`,
+              `Time conflict: ${staffLabel} is already booked for ${v.organisation_name} (${v.start_time} - ${v.end_time}). Please assign another team member or choose an open time slot.`,
             );
           } else if (v.organisation_id !== params.organisationId) {
             // Travel buffer check: minimum 30 minutes buffer between appointments at different locations
             const buffer = 30;
             if (newEnd <= vStart && vStart - newEnd < buffer) {
               conflicts.push(
-                `Travel buffer warning: Only ${vStart - newEnd} minutes between end of this visit and start of ${v.organisation_name} (${v.start_time}). Minimum ${buffer} mins recommended.`,
+                `Travel buffer warning: ${staffLabel} has only ${vStart - newEnd} minutes between end of this visit and start of ${v.organisation_name} (${v.start_time}). Minimum ${buffer} mins recommended.`,
               );
             } else if (vEnd <= newStart && newStart - vEnd < buffer) {
               conflicts.push(
-                `Travel buffer warning: Only ${newStart - vEnd} minutes between end of ${v.organisation_name} (${v.end_time}) and this visit (${params.startTime}). Minimum ${buffer} mins recommended.`,
+                `Travel buffer warning: ${staffLabel} has only ${newStart - vEnd} minutes between end of ${v.organisation_name} (${v.end_time}) and this visit (${params.startTime}). Minimum ${buffer} mins recommended.`,
               );
             }
           }
