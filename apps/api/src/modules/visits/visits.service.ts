@@ -139,17 +139,22 @@ export class VisitsService {
 
     const newStart = this.timeToMinutes(params.startTime);
     const newEnd = this.timeToMinutes(params.endTime);
+    const newHasTimes = newStart != null && newEnd != null;
 
     for (const v of dayVisits) {
-      // 1. Duplicate organization on same date
+      const vHasTimes = Boolean(v.start_time && v.end_time);
+
+      // 1. Same organization: allow multiple appointments on same day if times don't overlap
       if (params.organisationId && v.organisation_id === params.organisationId) {
-        conflicts.push(`Employee already has a visit scheduled for ${v.organisation_name} on ${params.plannedDate}.`);
+        if (!vHasTimes && !newHasTimes) {
+          conflicts.push(`Employee already has an all-day visit scheduled for ${v.organisation_name} on ${params.plannedDate}.`);
+        }
       }
 
       // 2. Direct Time Overlap Check
-      if (newStart != null && newEnd != null && v.start_time && v.end_time) {
-        const vStart = this.timeToMinutes(v.start_time);
-        const vEnd = this.timeToMinutes(v.end_time);
+      if (newHasTimes && vHasTimes) {
+        const vStart = this.timeToMinutes(v.start_time!);
+        const vEnd = this.timeToMinutes(v.end_time!);
 
         if (vStart != null && vEnd != null) {
           // Direct overlap
@@ -157,8 +162,8 @@ export class VisitsService {
             conflicts.push(
               `Time conflict: Overlaps with visit to ${v.organisation_name} (${v.start_time} - ${v.end_time}).`,
             );
-          } else {
-            // Travel buffer check: minimum 30 minutes buffer between appointments
+          } else if (v.organisation_id !== params.organisationId) {
+            // Travel buffer check: minimum 30 minutes buffer between appointments at different locations
             const buffer = 30;
             if (newEnd <= vStart && vStart - newEnd < buffer) {
               conflicts.push(
@@ -416,7 +421,8 @@ export class VisitsService {
       });
     }
 
-    const assignedTo = dto.assigned_to || user.id;
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    const assignedTo = dto.assigned_to && UUID_REGEX.test(dto.assigned_to) ? dto.assigned_to : user.id;
 
     // 2. Conflict check
     const conflictResult = await this.checkConflicts({
@@ -498,6 +504,58 @@ export class VisitsService {
       action: 'CREATE_VISIT',
       newValue: visit,
     });
+
+    // Auto-create linked demo requisition in Demo Fleet Matrix (Module 3)
+    if (dto.demo_required) {
+      await this.db
+        .insertInto('demos')
+        .values({
+          organisation_id: dto.organisation_id,
+          product_id: dto.product_id || null,
+          visit_id: visit.id,
+          requested_by: user.id,
+          assigned_to: assignedTo,
+          location: dto.location || org.city || null,
+          requested_date: dto.planned_date,
+          purpose: dto.purpose ? `Live demo for: ${dto.purpose}` : 'Field visit live demonstration',
+          equipment_required: dto.remarks || null,
+          status: 'requested',
+          travel_required: dto.travel_required || false,
+          travel_to: dto.location || org.city || null,
+          travel_date: dto.planned_date,
+          version: 1,
+        })
+        .execute()
+        .catch((err: any) => {
+          this.logger.warn(`Could not auto-create linked demo for visit ${visit.id}: ${err.message}`);
+        });
+    }
+
+    // Auto-create linked outstation tour program in trips if none assigned
+    if (dto.travel_required && !tripId) {
+      const newTrip = await this.db
+        .insertInto('trips')
+        .values({
+          employee_id: assignedTo,
+          trip_date: dto.planned_date,
+          base_location: dto.location || org.city || 'Outstation',
+          notes: `Outstation field visit to ${org.name} (${dto.location || org.city || ''})`,
+          created_by: user.id,
+          status: 'planned',
+        })
+        .returning('id')
+        .executeTakeFirst()
+        .catch(() => null);
+
+      if (newTrip?.id) {
+        await this.db
+          .updateTable('visits')
+          .set({ trip_id: newTrip.id })
+          .where('id', '=', visit.id)
+          .execute();
+        visit.trip_id = newTrip.id;
+      }
+    }
 
     return visit;
   }
@@ -918,16 +976,28 @@ export class VisitsService {
     }
 
     // Update the base visit notes with the manager's directive
+    const directiveDetail = dto.contact_person
+      ? `Also Meet: ${dto.contact_person} — ${dto.instructions}`
+      : dto.instructions;
+
+    const directiveRemarks = `Manager Intervention / Directive: ${directiveDetail}`;
+
+    const updatePayload: any = {
+      assigned_by_manager: user.id,
+      manager_assigned: true,
+      remarks: existing.remarks
+        ? `${existing.remarks} | ${directiveRemarks}`
+        : directiveRemarks,
+      version: existing.version + 1,
+    };
+
+    if (dto.contact_person && !existing.contact_person) {
+      updatePayload.contact_person = dto.contact_person;
+    }
+
     const updated = await this.db
       .updateTable('visits')
-      .set({
-        assigned_by_manager: user.id,
-        manager_assigned: true,
-        remarks: existing.remarks
-          ? `${existing.remarks} | Manager Intervention: ${dto.instructions}`
-          : `Manager Intervention: ${dto.instructions}`,
-        version: existing.version + 1,
-      })
+      .set(updatePayload)
       .where('id', '=', id)
       .returningAll()
       .executeTakeFirstOrThrow();

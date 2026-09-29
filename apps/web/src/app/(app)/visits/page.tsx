@@ -32,7 +32,12 @@ import {
   AlertTriangle,
   Users,
   Compass,
+  FlaskConical,
+  Plane,
+  Hotel,
+  Zap,
 } from 'lucide-react';
+import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import {
@@ -67,6 +72,7 @@ export default function VisitsPage() {
   const [organisations, setOrganisations] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
+  const [demoEquipmentList, setDemoEquipmentList] = useState<any[]>([]);
   const [selectedOrgHistory, setSelectedOrgHistory] = useState<any[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   const [employeeActivities, setEmployeeActivities] = useState<any[]>([]);
@@ -103,7 +109,7 @@ export default function VisitsPage() {
   // 1. Plan Visit Form
   const [newVisit, setNewVisit] = useState({
     organisation_id: '',
-    organisation_name: '',
+    assigned_to: '', // Visiting officer who is going
     location: '',
     planned_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0], // 1 week in advance default
     start_time: '10:00',
@@ -117,6 +123,65 @@ export default function VisitsPage() {
     remarks: '',
     trip_id: '',
   });
+
+  // Demo and Travel requisition details for dynamic form expansion
+  const [demoDetails, setDemoDetails] = useState({
+    product_id: '',
+    equipment_required: '',
+    custom_accessories: '',
+    expected_audience: '',
+    special_requirements: '',
+    power_required: true,
+    night_trial: false,
+    gate_pass_required: true,
+  });
+
+  const [travelDetails, setTravelDetails] = useState({
+    travel_from: 'Delhi NCR (HQ Base)',
+    travel_to: '',
+    travel_mode: 'Express Train (Shatabdi/Rajdhani)',
+    lodging_required: false,
+    stay_nights: '1',
+  });
+
+  // Options for registered demo equipment models from fleet matrix
+  const registeredEquipmentOptions = useMemo(() => {
+    const list = demoEquipmentList || [];
+    const activeProductId = demoDetails.product_id || newVisit.product_id;
+
+    // Filter matching equipment vs others
+    const matched = activeProductId ? list.filter((e) => e.product_id === activeProductId) : [];
+    const others = activeProductId ? list.filter((e) => e.product_id !== activeProductId) : list;
+
+    const opts: { value: string; label: string }[] = [
+      { value: '', label: '-- Choose Registered Demo Model & Serial --' },
+    ];
+
+    if (matched.length > 0) {
+      opts.push(
+        ...matched.map((e) => ({
+          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
+          label: `★ [${e.model}] S/N: ${e.serial_no} — ${e.product_name || 'Equipment'} (${e.current_location} Depot • ${e.availability_status})`,
+        }))
+      );
+    }
+
+    if (others.length > 0) {
+      opts.push(
+        ...others.map((e) => ({
+          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
+          label: `[${e.model}] S/N: ${e.serial_no} — ${e.product_name || 'Equipment'} (${e.current_location} Depot • ${e.availability_status})`,
+        }))
+      );
+    }
+
+    opts.push({
+      value: 'custom',
+      label: '✎ Other / Custom Demo Model or Equipment Kit',
+    });
+
+    return opts;
+  }, [demoEquipmentList, demoDetails.product_id, newVisit.product_id]);
 
   // 2. Create Trip Form
   const [newTrip, setNewTrip] = useState({
@@ -140,7 +205,7 @@ export default function VisitsPage() {
   // 4. Also Meet Form
   const [alsoMeetData, setAlsoMeetData] = useState({
     instructions: '',
-    assign_additional: true,
+    assign_additional: false,
     organisation_id: '',
     location: '',
     contact_person: '',
@@ -188,7 +253,7 @@ export default function VisitsPage() {
     try {
       setIsLoading(true);
 
-      const [visitsRes, tripsRes, orgsRes, prodsRes] = await Promise.all([
+      const [visitsRes, tripsRes, orgsRes, prodsRes, usersRes, demoEquipRes] = await Promise.all([
         api.get('/visits', {
           limit: 100,
           search: filterSearch || undefined,
@@ -202,12 +267,16 @@ export default function VisitsPage() {
         api.get('/visits/trips'),
         api.get('/organisations', { limit: 100 }),
         api.get('/products', { limit: 100 }).catch(() => api.get('/masters/products')).catch(() => []),
+        api.get('/users', { limit: 100 }).catch(() => ({ data: [] })),
+        api.get('/demos/equipment').catch(() => []),
       ]);
 
       setVisits(visitsRes.data || []);
       setTrips(tripsRes || []);
       setOrganisations(orgsRes.data || []);
       setProducts(Array.isArray(prodsRes) ? prodsRes : (prodsRes?.data || []));
+      setUsersList(usersRes.data || []);
+      setDemoEquipmentList(Array.isArray(demoEquipRes) ? demoEquipRes : (demoEquipRes?.data || []));
 
       if (orgsRes.data && orgsRes.data.length > 0 && !selectedOrgId) {
         setSelectedOrgId(orgsRes.data[0].id);
@@ -222,9 +291,6 @@ export default function VisitsPage() {
           dateTo: filterDateTo || undefined,
         }).catch(() => null);
         setManagerData(mgrRes);
-
-        const usersRes = await api.get('/users', { limit: 100 }).catch(() => ({ data: [] }));
-        setUsersList(usersRes.data || []);
       }
 
       // Load employee activity
@@ -252,6 +318,28 @@ export default function VisitsPage() {
     }
   }, [selectedOrgId]);
 
+  // Sync visiting officer default when auth user loads
+  useEffect(() => {
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (user?.id && UUID_REGEX.test(user.id) && !newVisit.assigned_to) {
+      setNewVisit((prev) => ({ ...prev, assigned_to: prev.assigned_to || user.id }));
+    }
+  }, [user?.id, newVisit.assigned_to]);
+
+  // Sync demo product focus when selected in Section 3
+  useEffect(() => {
+    if (newVisit.product_id) {
+      setDemoDetails((prev) => ({ ...prev, product_id: newVisit.product_id }));
+    }
+  }, [newVisit.product_id]);
+
+  // Sync travel destination when location changes
+  useEffect(() => {
+    if (newVisit.location) {
+      setTravelDetails((prev) => ({ ...prev, travel_to: newVisit.location }));
+    }
+  }, [newVisit.location]);
+
   // -------------------------------------------------------------
   // Handlers
   // -------------------------------------------------------------
@@ -261,42 +349,80 @@ export default function VisitsPage() {
     setIsSubmitting(true);
 
     try {
-      let orgId = newVisit.organisation_id;
-
-      // Create organisation on the fly if not selected
-      if (!orgId && newVisit.organisation_name) {
-        const newOrg = await api.post('/organisations', {
-          name: newVisit.organisation_name,
-          city: newVisit.location || 'Delhi NCR',
-          state: 'North',
-        });
-        orgId = newOrg.id;
+      if (!newVisit.organisation_id) {
+        throw new Error('Please select a customer organisation.');
       }
 
-      if (!orgId) {
-        throw new Error('Please select or specify an organisation.');
+      const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      const chosenOfficer = [newVisit.assigned_to, user?.id].find(
+        (id) => typeof id === 'string' && UUID_REGEX.test(id.trim())
+      )?.trim() || (usersList.find((u) => u.id && UUID_REGEX.test(u.id))?.id);
+
+      if (!chosenOfficer) {
+        throw new Error('Please select a visiting officer who is going.');
       }
+
+      let enrichedRemarks = newVisit.remarks ? [newVisit.remarks] : [];
+      if (newVisit.demo_required) {
+        const demoParts = [];
+        const fullEquip = [
+          demoDetails.equipment_required && demoDetails.equipment_required !== 'custom'
+            ? demoDetails.equipment_required
+            : '',
+          demoDetails.custom_accessories,
+        ]
+          .filter(Boolean)
+          .join(' + ');
+
+        if (fullEquip) demoParts.push(`Demo Kit / Model: ${fullEquip}`);
+        if (demoDetails.expected_audience) demoParts.push(`Audience: ${demoDetails.expected_audience}`);
+        const facilities = [
+          demoDetails.power_required ? '230V AC Power Socket' : '',
+          demoDetails.night_trial ? 'Dark Room / Night Vision Setup' : '',
+          demoDetails.gate_pass_required ? 'Equipment Gate Pass' : '',
+        ].filter(Boolean);
+        if (facilities.length > 0) demoParts.push(`Facilities: ${facilities.join(', ')}`);
+        if (demoDetails.special_requirements) demoParts.push(`Note: ${demoDetails.special_requirements}`);
+        if (demoParts.length > 0) enrichedRemarks.push(`[LIVE DEMO REQUISITION] ${demoParts.join(' | ')}`);
+      }
+      if (newVisit.travel_required) {
+        const travelParts = [];
+        if (travelDetails.travel_from) travelParts.push(`From: ${travelDetails.travel_from}`);
+        if (travelDetails.travel_mode) travelParts.push(`Mode: ${travelDetails.travel_mode}`);
+        if (travelDetails.lodging_required) travelParts.push(`Hotel Required (${travelDetails.stay_nights} Night(s))`);
+        if (travelParts.length > 0) enrichedRemarks.push(`[OUTSTATION TRAVEL] ${travelParts.join(' | ')}`);
+      }
+
+      const payloadRemarks = enrichedRemarks.length > 0 ? enrichedRemarks.join('\n') : undefined;
+
+      const activeProductId = (newVisit.demo_required && demoDetails.product_id ? demoDetails.product_id : newVisit.product_id)?.trim();
+      const validProductId = activeProductId && UUID_REGEX.test(activeProductId) ? activeProductId : undefined;
+      const validTripId = newVisit.trip_id?.trim() && UUID_REGEX.test(newVisit.trip_id.trim()) ? newVisit.trip_id.trim() : undefined;
 
       await api.post('/visits', {
-        organisation_id: orgId,
-        location: newVisit.location,
+        organisation_id: newVisit.organisation_id,
+        assigned_to: chosenOfficer,
+        location: newVisit.location?.trim() || undefined,
         planned_date: newVisit.planned_date,
-        start_time: newVisit.start_time,
-        end_time: newVisit.end_time,
+        start_time: newVisit.start_time?.trim() || undefined,
+        end_time: newVisit.end_time?.trim() || undefined,
         purpose: newVisit.purpose,
-        contact_person: newVisit.contact_person || undefined,
-        product_id: newVisit.product_id || undefined,
+        contact_person: newVisit.contact_person?.trim() || undefined,
+        product_id: validProductId,
         demo_required: newVisit.demo_required,
         travel_required: newVisit.travel_required,
-        expected_outcome: newVisit.expected_outcome,
-        remarks: newVisit.remarks,
-        trip_id: newVisit.trip_id || undefined,
+        expected_outcome: newVisit.expected_outcome?.trim() || undefined,
+        remarks: payloadRemarks,
+        trip_id: validTripId,
       });
 
       setIsScheduleOpen(false);
+      const defaultOfficer = (user?.id && UUID_REGEX.test(user.id))
+        ? user.id
+        : (usersList.find((u) => u.id && UUID_REGEX.test(u.id))?.id || '');
       setNewVisit({
         organisation_id: '',
-        organisation_name: '',
+        assigned_to: defaultOfficer,
         location: '',
         planned_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
         start_time: '10:00',
@@ -309,6 +435,23 @@ export default function VisitsPage() {
         expected_outcome: '',
         remarks: '',
         trip_id: '',
+      });
+      setDemoDetails({
+        product_id: '',
+        equipment_required: '',
+        custom_accessories: '',
+        expected_audience: '',
+        special_requirements: '',
+        power_required: true,
+        night_trial: false,
+        gate_pass_required: true,
+      });
+      setTravelDetails({
+        travel_from: 'Delhi NCR (HQ Base)',
+        travel_to: '',
+        travel_mode: 'Express Train (Shatabdi/Rajdhani)',
+        lodging_required: false,
+        stay_nights: '1',
       });
       await fetchData();
     } catch (err: any) {
@@ -392,8 +535,8 @@ export default function VisitsPage() {
         instructions: alsoMeetData.instructions,
         organisation_id: alsoMeetData.assign_additional && alsoMeetData.organisation_id ? alsoMeetData.organisation_id : undefined,
         location: alsoMeetData.assign_additional && alsoMeetData.location ? alsoMeetData.location : undefined,
-        contact_person: alsoMeetData.assign_additional && alsoMeetData.contact_person ? alsoMeetData.contact_person : undefined,
-        purpose: alsoMeetData.assign_additional && alsoMeetData.purpose ? alsoMeetData.purpose : undefined,
+        contact_person: alsoMeetData.contact_person || undefined,
+        purpose: alsoMeetData.purpose || undefined,
         start_time: alsoMeetData.assign_additional && alsoMeetData.start_time ? alsoMeetData.start_time : undefined,
         end_time: alsoMeetData.assign_additional && alsoMeetData.end_time ? alsoMeetData.end_time : undefined,
       });
@@ -401,7 +544,7 @@ export default function VisitsPage() {
       setIsAlsoMeetOpen(false);
       setAlsoMeetData({
         instructions: '',
-        assign_additional: true,
+        assign_additional: false,
         organisation_id: '',
         location: '',
         contact_person: '',
@@ -561,7 +704,7 @@ export default function VisitsPage() {
     const total = visits.length;
     const today = new Date().toISOString().split('T')[0];
     const todayCount = visits.filter((v) => v.planned_date === today).length;
-    const directives = visits.filter((v) => v.manager_assigned || v.remarks?.includes('Manager Directive') || v.assigned_by_manager).length;
+    const directives = visits.filter((v) => v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention') || v.assigned_by_manager).length;
     const completed = visits.filter((v) => v.status === 'completed').length;
     return { total, todayCount, directives, completed };
   }, [visits]);
@@ -705,10 +848,16 @@ export default function VisitsPage() {
             variant="outline"
             onClick={() => {
               setSelectedVisit(v);
-              const directiveText = v.remarks?.includes('Manager Directive:') ? v.remarks.split('Manager Directive:')[1].trim() : '';
+              const directiveText = v.remarks?.includes('Manager Intervention / Directive:')
+                ? v.remarks.split('Manager Intervention / Directive:')[1].trim()
+                : v.remarks?.includes('Manager Directive:')
+                ? v.remarks.split('Manager Directive:')[1].trim()
+                : v.remarks?.includes('Manager Intervention:')
+                ? v.remarks.split('Manager Intervention:')[1].trim()
+                : '';
               setAlsoMeetData({
                 instructions: directiveText,
-                assign_additional: true,
+                assign_additional: false,
                 organisation_id: '',
                 location: v.location || '',
                 contact_person: '',
@@ -767,7 +916,14 @@ export default function VisitsPage() {
             </Button>
 
             <Button
-              onClick={() => setIsScheduleOpen(true)}
+              onClick={() => {
+                const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+                const defaultOfficer = (user?.id && UUID_REGEX.test(user.id))
+                  ? user.id
+                  : (usersList.find((u) => u.id && UUID_REGEX.test(u.id))?.id || '');
+                setNewVisit((prev) => ({ ...prev, assigned_to: prev.assigned_to || defaultOfficer }));
+                setIsScheduleOpen(true);
+              }}
               variant="primary"
               className="shadow-xs"
             >
@@ -1062,7 +1218,7 @@ export default function VisitsPage() {
                       </p>
                     )}
 
-                    {v.remarks && !v.remarks.startsWith('Manager Directive:') && (
+                    {v.remarks && !v.remarks.includes('Manager Directive:') && !v.remarks.includes('Manager Intervention') && (
                       <p className="text-xs text-[#4A5568] bg-[#FBFAF7] px-2.5 py-1.5 rounded-lg border border-[#DCD8CE] mt-1">
                         <span className="font-semibold text-gray-700">Remarks: </span>
                         {v.remarks}
@@ -1088,10 +1244,16 @@ export default function VisitsPage() {
                         variant="outline"
                         onClick={() => {
                           setSelectedVisit(v);
-                          const directiveText = v.remarks?.includes('Manager Directive:') ? v.remarks.split('Manager Directive:')[1].trim() : '';
+                          const directiveText = v.remarks?.includes('Manager Intervention / Directive:')
+                            ? v.remarks.split('Manager Intervention / Directive:')[1].trim()
+                            : v.remarks?.includes('Manager Directive:')
+                            ? v.remarks.split('Manager Directive:')[1].trim()
+                            : v.remarks?.includes('Manager Intervention:')
+                            ? v.remarks.split('Manager Intervention:')[1].trim()
+                            : '';
                           setAlsoMeetData({
                             instructions: directiveText,
-                            assign_additional: true,
+                            assign_additional: false,
                             organisation_id: '',
                             location: v.location || '',
                             contact_person: '',
@@ -1206,7 +1368,7 @@ export default function VisitsPage() {
                 </div>
 
                 {/* Manager "Also-Meet" Banner Callout */}
-                {(v.manager_assigned || v.remarks?.includes('Manager Directive')) && (
+                {(v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention')) && (
                   <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start space-x-3 shadow-xs">
                     <Sparkles className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
                     <div>
@@ -1655,14 +1817,29 @@ export default function VisitsPage() {
             <span>Standard operating procedure: Plan field visits approximately 1 week in advance.</span>
           </div>
 
-          {/* Section 1: Customer Agency & Location */}
+          {/* Section 1: Customer Agency & Assigned Visiting Officer */}
           <div className="space-y-3 p-3.5 bg-gray-50/70 rounded-xl border border-[#DCD8CE]">
             <span className="text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider block">
-              1. Customer Agency & Location
+              1. Visiting Officer & Target Agency
             </span>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <Select
+                label="Visiting Officer (Who is going)"
+                required
+                value={newVisit.assigned_to || ''}
+                onChange={(e) => setNewVisit({ ...newVisit, assigned_to: e.target.value })}
+                options={[
+                  { value: '', label: '-- Select Officer Who is Going --' },
+                  ...usersList.map((u) => ({
+                    value: u.id,
+                    label: `${u.full_name} (${u.role ? u.role.replace('_', ' ') : 'Officer'})`,
+                  })),
+                ]}
+              />
+
+              <Select
                 label="Organisation (Choose Agency)"
+                required
                 value={newVisit.organisation_id}
                 onChange={(e) => {
                   const orgId = e.target.value;
@@ -1678,16 +1855,9 @@ export default function VisitsPage() {
                   ...organisations.map((o) => ({ value: o.id, label: `${o.name} (${o.city || 'State'})` })),
                 ]}
               />
-
-              <Input
-                label="Or Enter New Agency Name"
-                value={newVisit.organisation_name}
-                onChange={(e) => setNewVisit({ ...newVisit, organisation_name: e.target.value })}
-                placeholder="e.g. ITBP Sector HQ / Punjab Police"
-              />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
               <Input
                 label="Location / Station"
                 required
@@ -1697,7 +1867,7 @@ export default function VisitsPage() {
               />
 
               <Input
-                label="Contact Person (Officer / Authority)"
+                label="Customer Contact Person"
                 value={newVisit.contact_person}
                 onChange={(e) => setNewVisit({ ...newVisit, contact_person: e.target.value })}
                 placeholder="e.g. Commandant Signals / DIG Procurement"
@@ -1711,9 +1881,11 @@ export default function VisitsPage() {
               2. Date, Time & Meeting Purpose
             </span>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-[#14213D]">Planned Date <span className="text-red-500">*</span></label>
+              <div className="w-full flex flex-col justify-end text-left">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-[#14213D]">
+                    Planned Date <span className="text-red-500">*</span>
+                  </label>
                   <button
                     type="button"
                     onClick={() => {
@@ -1723,7 +1895,7 @@ export default function VisitsPage() {
                     }}
                     className="text-[10px] text-[#0F5E63] hover:underline font-bold"
                   >
-                    +7 Days (1-Wk Cycle)
+                    +7 Days
                   </button>
                 </div>
                 <input
@@ -1731,7 +1903,7 @@ export default function VisitsPage() {
                   required
                   value={newVisit.planned_date}
                   onChange={(e) => setNewVisit({ ...newVisit, planned_date: e.target.value })}
-                  className="flex h-9 w-full rounded-lg border border-[#DCD8CE] bg-white px-3 py-1 text-xs text-[#14213D] transition-colors focus:border-[#3770E3] focus:outline-none focus:ring-2 focus:ring-[#3770E3]/15"
+                  className="flex h-10 w-full rounded-[8px] border border-[#C9C4B8] bg-white px-3.5 py-2 text-xs text-[#14213D] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                 />
               </div>
 
@@ -1785,24 +1957,262 @@ export default function VisitsPage() {
           </div>
 
           {/* Section 4: Travel, Demo Requirements & Remarks */}
-          <div className="space-y-3 p-3.5 bg-gray-50/70 rounded-xl border border-[#DCD8CE]">
+          <div className="space-y-3.5 p-3.5 bg-gray-50/70 rounded-xl border border-[#DCD8CE]">
             <span className="text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider block">
-              4. Travel, Demo & Remarks
+              4. Field Requisition & Special Requirements
             </span>
-            <div className="flex flex-wrap items-center gap-6 p-3 bg-white rounded-lg border border-[#DCD8CE] text-xs font-semibold text-gray-700">
-              <Checkbox
-                checked={newVisit.travel_required}
-                onChange={(e) => setNewVisit({ ...newVisit, travel_required: e.target.checked })}
-                label="Travel Requirement (Outstation)"
-              />
 
-              <Checkbox
-                checked={newVisit.demo_required}
-                onChange={(e) => setNewVisit({ ...newVisit, demo_required: e.target.checked })}
-                label="Demo Requirement (Live Trials)"
-              />
+            {/* Clean Requirement Checkboxes */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label
+                className={twMerge(
+                  "flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors bg-white",
+                  newVisit.demo_required ? "border-[#0F5E63] bg-[#FBFAF7]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={newVisit.demo_required}
+                  onChange={(e) => setNewVisit({ ...newVisit, demo_required: e.target.checked })}
+                  className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                />
+                <span className="text-xs font-semibold text-[#14213D]">
+                  Demo Requirement (Live Trials)
+                </span>
+              </label>
+
+              <label
+                className={twMerge(
+                  "flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors bg-white",
+                  newVisit.travel_required ? "border-[#0F5E63] bg-[#FBFAF7]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={newVisit.travel_required}
+                  onChange={(e) => setNewVisit({ ...newVisit, travel_required: e.target.checked })}
+                  className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                />
+                <span className="text-xs font-semibold text-[#14213D]">
+                  Travel Requirement (Outstation Tour)
+                </span>
+              </label>
             </div>
 
+            {/* 4A. Live Demonstration Setup Details */}
+            {newVisit.demo_required && (
+              <div className="p-3.5 bg-white rounded-xl border border-[#DCD8CE] space-y-3 animate-in fade-in duration-150">
+                <div className="pb-1.5 border-b border-[#ECE9E2]">
+                  <span className="text-xs font-bold text-[#14213D]">
+                    4A. Live Demonstration Setup Details
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <Select
+                    label="Equipment / Product Required for Demo"
+                    value={demoDetails.product_id || newVisit.product_id}
+                    onChange={(e) => {
+                      const pId = e.target.value;
+                      setDemoDetails({ ...demoDetails, product_id: pId });
+                      if (pId && !newVisit.product_id) {
+                        setNewVisit((prev) => ({ ...prev, product_id: pId }));
+                      }
+                    }}
+                    options={[
+                      { value: '', label: '-- Select Equipment Category / Product --' },
+                      ...products.map((p) => ({
+                        value: p.id,
+                        label: `${p.name} (${p.category || 'Security'})`,
+                      })),
+                    ]}
+                  />
+
+                  <Select
+                    label="Specific Demo Kit / Serial / Accessories Needed"
+                    value={
+                      registeredEquipmentOptions.some((o) => o.value === demoDetails.equipment_required)
+                        ? demoDetails.equipment_required
+                        : demoDetails.equipment_required
+                        ? 'custom'
+                        : ''
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === 'custom') {
+                        setDemoDetails({ ...demoDetails, equipment_required: 'custom' });
+                      } else {
+                        const matchedEquip = demoEquipmentList.find(
+                          (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === val
+                        );
+                        setDemoDetails({
+                          ...demoDetails,
+                          equipment_required: val,
+                          product_id: matchedEquip?.product_id || demoDetails.product_id,
+                        });
+                        if (matchedEquip?.product_id && !newVisit.product_id) {
+                          setNewVisit((prev) => ({ ...prev, product_id: matchedEquip.product_id }));
+                        }
+                      }
+                    }}
+                    options={registeredEquipmentOptions}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <Input
+                    label="Additional Accessories / Test Samples Needed (Optional)"
+                    value={demoDetails.custom_accessories}
+                    onChange={(e) =>
+                      setDemoDetails({ ...demoDetails, custom_accessories: e.target.value })
+                    }
+                    placeholder={
+                      demoDetails.equipment_required === 'custom'
+                        ? "Enter custom model name, serial number and accessories..."
+                        : "e.g. Test calibration pieces, knife sample, spare batteries, vehicle gate pass"
+                    }
+                  />
+
+                  <Input
+                    label="Expected Audience / Evaluation Committee"
+                    value={demoDetails.expected_audience}
+                    onChange={(e) => setDemoDetails({ ...demoDetails, expected_audience: e.target.value })}
+                    placeholder="e.g. DIG Store, Commandant & 4 Technical Officers"
+                  />
+                </div>
+
+                <Input
+                  label="Trial Specifics / Demonstration Objective"
+                  value={demoDetails.special_requirements}
+                  onChange={(e) => setDemoDetails({ ...demoDetails, special_requirements: e.target.value })}
+                  placeholder="e.g. Range testing at 50m / walkthrough sensitivity tests"
+                />
+
+                {/* Facility & Site Prerequisites */}
+                <div>
+                  <label className="block text-xs font-semibold text-[#14213D] mb-1.5">
+                    Site & Facility Readiness Checklist
+                  </label>
+                  <div className="flex flex-wrap items-center gap-4 text-xs text-[#4A5568]">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={demoDetails.power_required}
+                        onChange={(e) => setDemoDetails({ ...demoDetails, power_required: e.target.checked })}
+                        className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                      />
+                      <span>230V AC Power Socket Needed</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={demoDetails.night_trial}
+                        onChange={(e) => setDemoDetails({ ...demoDetails, night_trial: e.target.checked })}
+                        className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                      />
+                      <span>Indoor Dark Room / Night Vision Setup</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={demoDetails.gate_pass_required}
+                        onChange={(e) => setDemoDetails({ ...demoDetails, gate_pass_required: e.target.checked })}
+                        className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                      />
+                      <span>Vehicle Entry Gate Pass Required</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 4B. Outstation Travel Details */}
+            {newVisit.travel_required && (
+              <div className="p-3.5 bg-white rounded-xl border border-[#DCD8CE] space-y-3 animate-in fade-in duration-150">
+                <div className="pb-1.5 border-b border-[#ECE9E2]">
+                  <span className="text-xs font-bold text-[#14213D]">
+                    4B. Outstation Travel & Tour Details
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <Input
+                    label="Departure Station / Origin City"
+                    value={travelDetails.travel_from}
+                    onChange={(e) => setTravelDetails({ ...travelDetails, travel_from: e.target.value })}
+                    placeholder="e.g. Delhi NCR (HQ Depot)"
+                  />
+
+                  <Input
+                    label="Destination Station / Tour Base"
+                    value={travelDetails.travel_to || newVisit.location}
+                    onChange={(e) => setTravelDetails({ ...travelDetails, travel_to: e.target.value })}
+                    placeholder="e.g. Lucknow / Jalandhar / Chandigarh"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <Select
+                    label="Preferred Transit Mode"
+                    value={travelDetails.travel_mode}
+                    onChange={(e) => setTravelDetails({ ...travelDetails, travel_mode: e.target.value })}
+                    options={[
+                      { value: 'Express Train (Shatabdi/Rajdhani/Vande Bharat)', label: 'Express Train (Shatabdi / Rajdhani / Vande Bharat)' },
+                      { value: 'Commercial Flight', label: 'Commercial Flight' },
+                      { value: 'Intercity Road / Official Taxi', label: 'Intercity Road / Official Taxi' },
+                      { value: 'Company Utility Vehicle / Service Van', label: 'Company Utility Vehicle / Service Van' },
+                    ]}
+                  />
+
+                  <Select
+                    label="Attach to Existing Tour Program (Trip)"
+                    value={newVisit.trip_id}
+                    onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
+                    options={[
+                      { value: '', label: '-- Auto-Generate New Tour Program --' },
+                      ...trips.map((t) => ({
+                        value: t.id,
+                        label: `${t.base_location} Tour (${new Date(t.trip_date).toLocaleDateString('en-IN')})`,
+                      })),
+                    ]}
+                  />
+                </div>
+
+                <div className="flex items-center gap-6 pt-1 text-xs text-[#4A5568]">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={travelDetails.lodging_required}
+                      onChange={(e) => setTravelDetails({ ...travelDetails, lodging_required: e.target.checked })}
+                      className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                    />
+                    <span className="text-xs font-medium text-[#14213D]">
+                      Overnight Lodging / Hotel Stay Required
+                    </span>
+                  </label>
+
+                  {travelDetails.lodging_required && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-[#4A5568]">Nights:</span>
+                      <select
+                        value={travelDetails.stay_nights}
+                        onChange={(e) => setTravelDetails({ ...travelDetails, stay_nights: e.target.value })}
+                        className="text-xs p-1 rounded border border-[#C9C4B8] bg-white font-mono"
+                      >
+                        <option value="1">1 Night</option>
+                        <option value="2">2 Nights</option>
+                        <option value="3">3 Nights</option>
+                        <option value="4+">4+ Nights</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Remarks & Operational Notes */}
             <div>
               <label className="block text-xs font-semibold text-[#14213D] mb-1.5">
                 Remarks & Operational Notes
@@ -1816,7 +2226,7 @@ export default function VisitsPage() {
               />
             </div>
 
-            {trips.length > 0 && (
+            {trips.length > 0 && !newVisit.travel_required && (
               <Select
                 label="Attach to Existing Tour Program (Optional)"
                 value={newVisit.trip_id}
@@ -2001,8 +2411,8 @@ export default function VisitsPage() {
       <Modal
         isOpen={isAlsoMeetOpen}
         onClose={() => setIsAlsoMeetOpen(false)}
-        title="Manager Intervention & Trip Optimization ('Also-Meet')"
-        description="Optimize field travel by assigning additional customer or prospect meetings in the same operational area."
+        title="Manager Directive / 'Also-Meet' Strategic Guidance"
+        description="Attach executive instructions and specify additional officers or stakeholders to meet during this visit."
         maxWidth="lg"
       >
         <form onSubmit={handleAlsoMeetSubmit} className="space-y-4">
@@ -2012,62 +2422,112 @@ export default function VisitsPage() {
             </div>
           )}
 
-          {/* Current Target Context */}
+          {/* Current Target Context: Organisation is already selected by the salesperson */}
           {selectedVisit && (
-            <div className="p-3 rounded-lg bg-blue-50/70 border border-blue-200 text-xs space-y-1">
-              <div className="font-bold text-[#0F5E63] flex items-center justify-between">
-                <span>Active Field Visit Target</span>
-                <span className="font-mono text-gray-500">Visit #{selectedVisit.id.slice(0, 8)}</span>
+            <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs space-y-2">
+              <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-[#14213D] text-sm">
+                    {selectedVisit.organisation_name}
+                  </span>
+                  <Badge variant="outline" size="sm" className="bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/30">
+                    Target Agency Selected
+                  </Badge>
+                </div>
+                <span className="font-mono text-gray-500 text-[11px]">Visit #{selectedVisit.id.slice(0, 8)}</span>
               </div>
-              <div className="text-gray-700">
-                <span className="font-semibold">Agency:</span> {selectedVisit.organisation_name} |{' '}
-                <span className="font-semibold">Station:</span> {selectedVisit.location} |{' '}
-                <span className="font-semibold">Date:</span> {selectedVisit.planned_date ? new Date(selectedVisit.planned_date).toLocaleDateString('en-IN') : ''}
-              </div>
-              <div className="text-gray-600">
-                <span className="font-semibold">Assigned Staff:</span> {selectedVisit.assigned_to_name}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-[#4A5568]">
+                <div>
+                  <span className="text-gray-400 block">Visiting Officer:</span>
+                  <strong className="text-[#14213D]">{selectedVisit.assignee_name || selectedVisit.assigned_to_name || 'Assigned Officer'}</strong>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Station / City:</span>
+                  <strong className="text-[#14213D]">{selectedVisit.location || 'N/A'}</strong>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Planned Date:</span>
+                  <strong className="text-[#14213D]">{selectedVisit.planned_date ? new Date(selectedVisit.planned_date).toLocaleDateString('en-IN') : 'N/A'}</strong>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Customer Contact:</span>
+                  <strong className="text-[#14213D]">{selectedVisit.contact_person || selectedVisit.contact_name || 'General Office'}</strong>
+                </div>
               </div>
             </div>
           )}
 
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">
-              Manager Directive / Travel Utilization Guidance <span className="text-red-500">*</span>
-            </label>
-            <textarea
-              required
-              rows={2}
-              value={alsoMeetData.instructions}
-              onChange={(e) => setAlsoMeetData({ ...alsoMeetData, instructions: e.target.value })}
-              placeholder="e.g. While visiting Delhi Police HQ, also meet SP Provisioning in same complex regarding pending GeM tender."
-              className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
-            />
+          {/* Manager Directive Instructions for Current Visit */}
+          <div className="space-y-3 p-3.5 bg-amber-50/50 rounded-xl border border-amber-200">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-amber-700" />
+              <span className="text-xs font-bold text-amber-900 uppercase tracking-wider">
+                Manager Directive for {selectedVisit?.organisation_name || 'Customer Agency'}
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#14213D] mb-1">
+                Manager Directive Instructions <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                required
+                rows={3}
+                value={alsoMeetData.instructions}
+                onChange={(e) => setAlsoMeetData({ ...alsoMeetData, instructions: e.target.value })}
+                placeholder="e.g. While visiting Delhi Police HQ, also meet SP Provisioning in same complex regarding pending GeM tender and clarify demonstration schedule."
+                className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] bg-white text-[#14213D] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Input
+                label="Specific Officer to Also Meet (Optional)"
+                value={alsoMeetData.contact_person}
+                onChange={(e) => setAlsoMeetData({ ...alsoMeetData, contact_person: e.target.value })}
+                placeholder="e.g. SP Provisioning / Col. Bhatia / DIG Store"
+                helperText="Authority or stakeholder to meet at this organisation"
+              />
+
+              <Input
+                label="Strategic Agenda / Meeting Purpose (Optional)"
+                value={alsoMeetData.purpose}
+                onChange={(e) => setAlsoMeetData({ ...alsoMeetData, purpose: e.target.value })}
+                placeholder="e.g. Review upcoming GeM custom bid & verify demo compliance"
+              />
+            </div>
           </div>
 
-          {/* Piggyback Itinerary Addition */}
+          {/* Optional: Add Secondary Adjacent Organisation to Itinerary */}
           <div className="p-3.5 bg-gray-50/80 rounded-xl border border-[#DCD8CE] space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Route className="h-4 w-4 text-[#0F5E63]" />
-                <span className="text-xs font-bold text-[#14213D]">
-                  Piggyback Another Meeting in Same Area (Trip Plan Itinerary)
-                </span>
+                <div>
+                  <span className="text-xs font-bold text-[#14213D] block">
+                    Add a Second Organisation to this Trip (Multi-Stop Itinerary)
+                  </span>
+                  <span className="text-[11px] text-gray-500">
+                    Optional: Check only if you want the officer to visit a DIFFERENT client agency in the same city.
+                  </span>
+                </div>
               </div>
               <Checkbox
                 checked={alsoMeetData.assign_additional}
                 onChange={(e) => setAlsoMeetData({ ...alsoMeetData, assign_additional: e.target.checked })}
-                label="Create Itinerary Item"
+                label="Add 2nd Org"
               />
             </div>
-            <p className="text-[11px] text-gray-500">
-              Automatically attaches both visits to a unified Trip Itinerary to improve staff utilization, increase meetings per trip, and reduce redundant travel expenses.
-            </p>
 
             {alsoMeetData.assign_additional && (
-              <div className="space-y-3 pt-2 border-t border-gray-200">
+              <div className="space-y-3 pt-3 border-t border-[#ECE9E2]">
+                <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-200 text-[11px] text-blue-900">
+                  This will schedule an additional separate field visit for <strong>{selectedVisit?.assignee_name || 'the officer'}</strong> and group both meetings into a unified tour program.
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <Select
-                    label="Select Organisation to Meet"
+                    label="Select Secondary Organisation to Meet"
                     required={alsoMeetData.assign_additional}
                     value={alsoMeetData.organisation_id}
                     onChange={(e) => {
@@ -2081,51 +2541,39 @@ export default function VisitsPage() {
                     }}
                     options={[
                       { value: '', label: '-- Select Adjacent Organisation --' },
-                      ...organisations.map((o) => ({
-                        value: o.id,
-                        label: `${o.name} (${o.city || 'Office'})`,
-                      })),
+                      ...organisations
+                        .filter((o) => o.id !== selectedVisit?.organisation_id)
+                        .map((o) => ({
+                          value: o.id,
+                          label: `${o.name} (${o.city || 'Office'})`,
+                        })),
                     ]}
                   />
 
                   <Input
-                    label="Location / Office Detail"
+                    label="Second Location / Office Detail"
                     required={alsoMeetData.assign_additional}
                     value={alsoMeetData.location}
                     onChange={(e) => setAlsoMeetData({ ...alsoMeetData, location: e.target.value })}
-                    placeholder="e.g. Police HQ, ITO, New Delhi"
+                    placeholder="e.g. ITBP Camp, Tigri / CGO Complex"
                   />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   <Input
-                    label="Contact Person / Officer"
-                    value={alsoMeetData.contact_person}
-                    onChange={(e) => setAlsoMeetData({ ...alsoMeetData, contact_person: e.target.value })}
-                    placeholder="e.g. SP Provisioning / DCP Store"
-                  />
-
-                  <Input
-                    label="Start Time"
+                    label="Start Time for 2nd Visit"
                     type="time"
                     value={alsoMeetData.start_time}
                     onChange={(e) => setAlsoMeetData({ ...alsoMeetData, start_time: e.target.value })}
                   />
 
                   <Input
-                    label="End Time"
+                    label="End Time for 2nd Visit"
                     type="time"
                     value={alsoMeetData.end_time}
                     onChange={(e) => setAlsoMeetData({ ...alsoMeetData, end_time: e.target.value })}
                   />
                 </div>
-
-                <Input
-                  label="Meeting Purpose / Strategic Agenda"
-                  value={alsoMeetData.purpose}
-                  onChange={(e) => setAlsoMeetData({ ...alsoMeetData, purpose: e.target.value })}
-                  placeholder="e.g. Review upcoming GeM custom bid & verify demo compliance"
-                />
               </div>
             )}
           </div>
@@ -2135,7 +2583,7 @@ export default function VisitsPage() {
               Cancel
             </Button>
             <Button type="submit" size="sm" isLoading={isSubmitting}>
-              {alsoMeetData.assign_additional ? 'Add to Trip & Assign Directive' : 'Save Directive'}
+              {alsoMeetData.assign_additional ? 'Add 2nd Visit & Save Directive' : 'Save Directive'}
             </Button>
           </div>
         </form>

@@ -13,13 +13,14 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     const inputId = id || label?.toLowerCase().replace(/\s+/g, '-');
 
     return (
-      <div className="w-full space-y-1.5 text-left">
+      <div className="w-full flex flex-col justify-end text-left">
         {label && (
           <label
             htmlFor={inputId}
-            className="block text-xs font-semibold text-[#14213D]"
+            className="block text-xs font-semibold text-[#14213D] mb-1.5"
           >
             {label}
+            {props.required && <span className="text-red-500 ml-0.5">*</span>}
           </label>
         )}
         <input
@@ -32,9 +33,9 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           )}
           {...props}
         />
-        {error && <p className="text-xs text-[#881337] font-medium">{error}</p>}
+        {error && <p className="text-xs text-[#881337] font-medium mt-1">{error}</p>}
         {helperText && !error && (
-          <p className="text-xs text-[#4A5568] font-normal">{helperText}</p>
+          <p className="text-xs text-[#4A5568] font-normal mt-1">{helperText}</p>
         )}
       </div>
     );

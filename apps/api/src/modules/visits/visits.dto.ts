@@ -3,19 +3,33 @@ import {
   IsNotEmpty,
   IsOptional,
   IsBoolean,
-  IsUUID,
   IsDateString,
   IsEnum,
   IsNumber,
+  Matches,
+  ValidationOptions,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import type { VisitStatus, TripStatus } from '@arihant/shared';
 
+export const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+export const IsPostgresUUID = (validationOptions?: ValidationOptions) =>
+  Matches(UUID_REGEX, { message: '$property must be a UUID', ...validationOptions });
+
+export const sanitizeUuid = ({ value }: { value: any }) => {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return UUID_REGEX.test(trimmed) ? trimmed : undefined;
+};
+
 export class CreateVisitDto {
-  @IsUUID('all')
+  @IsPostgresUUID()
   @IsNotEmpty({ message: 'Organisation is required' })
   organisation_id!: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   contact_id?: string;
 
@@ -23,15 +37,18 @@ export class CreateVisitDto {
   @IsOptional()
   contact_person?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   product_id?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   assigned_to?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   trip_id?: string;
 
@@ -85,11 +102,13 @@ export class UpdateVisitDto {
   @IsOptional()
   version?: number;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   organisation_id?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   contact_id?: string;
 
@@ -97,7 +116,8 @@ export class UpdateVisitDto {
   @IsOptional()
   contact_person?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   product_id?: string;
 
@@ -241,11 +261,13 @@ export class ManagerInterventionDto {
   @IsNotEmpty({ message: 'Instructions for the employee are required' })
   instructions!: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   organisation_id?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   contact_id?: string;
 
@@ -253,7 +275,8 @@ export class ManagerInterventionDto {
   @IsOptional()
   contact_person?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   product_id?: string;
 
@@ -275,7 +298,8 @@ export class ManagerInterventionDto {
 }
 
 export class CreateTripDto {
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   employee_id?: string;
 
@@ -293,11 +317,12 @@ export class CreateTripDto {
 }
 
 export class AddVisitToTripDto {
-  @IsUUID('all')
+  @IsPostgresUUID()
   @IsNotEmpty({ message: 'Organisation is required' })
   organisation_id!: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   contact_id?: string;
 
@@ -305,7 +330,8 @@ export class AddVisitToTripDto {
   @IsOptional()
   contact_person?: string;
 
-  @IsUUID('all')
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
   @IsOptional()
   product_id?: string;
 
