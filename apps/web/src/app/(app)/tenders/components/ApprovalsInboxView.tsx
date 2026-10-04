@@ -104,10 +104,17 @@ export function ApprovalsInboxView({
     loadDelegates();
   }, [loadApprovals, loadDelegates]);
 
+  const canApprove =
+    currentUser?.role === 'management' || currentUser?.role === 'admin';
+
   const handleOpenDecision = (
     tender: any,
     type: 'approve' | 'reject' | 'return',
   ) => {
+    if (!canApprove) {
+      alert('Strict Governance: Only Management and Admin roles can record decisions during Internal Review.');
+      return;
+    }
     setSelectedTender(tender);
     setActionType(type);
     setDecisionReason('');
@@ -116,6 +123,10 @@ export function ApprovalsInboxView({
 
   const handleConfirmDecision = async () => {
     if (!selectedTender || !actionType) return;
+    if (!canApprove) {
+      alert('Strict Governance: Only Management and Admin roles are authorized to approve or reject tender participation.');
+      return;
+    }
 
     if (
       (actionType === 'reject' || actionType === 'return') &&
@@ -129,17 +140,21 @@ export function ApprovalsInboxView({
       setIsSubmitting(true);
       if (actionType === 'approve') {
         await api.post(`/tenders/${selectedTender.id}/approve`, {
-          conditions: approvalConditions.trim() || undefined,
+          decision: 'approved',
+          remarks: approvalConditions.trim() || undefined,
         });
       } else if (actionType === 'reject') {
-        await api.post(`/tenders/${selectedTender.id}/reject`, {
-          reason: decisionReason.trim(),
+        await api.post(`/tenders/${selectedTender.id}/approve`, {
+          decision: 'rejected',
+          rejection_reason: decisionReason.trim(),
+          remarks: decisionReason.trim(),
         });
       } else if (actionType === 'return') {
         // Return for clarification routes to Identified status with clarification question
         await api.post(`/tenders/${selectedTender.id}/transition`, {
+          to_status: 'IDENTIFIED',
           target_status: 'identified',
-          reason: `Returned for Clarification: ${decisionReason.trim()}`,
+          remarks: `Returned for Clarification: ${decisionReason.trim()}`,
         });
       }
 
@@ -212,14 +227,16 @@ export function ApprovalsInboxView({
         </div>
 
         <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setIsDelegationOpen(true)}
-            leftIcon={<UserX className="w-4 h-4" />}
-          >
-            Out-of-Office Delegate
-          </Button>
+          {canApprove && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsDelegationOpen(true)}
+              leftIcon={<UserX className="w-4 h-4" />}
+            >
+              Out-of-Office Delegate
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"
@@ -231,6 +248,17 @@ export function ApprovalsInboxView({
           </Button>
         </div>
       </div>
+
+      {/* Strict Governance Notice for non-management/admin roles */}
+      {!canApprove && (
+        <div className="p-3.5 rounded-[12px] bg-[#FBEBDD] border border-[#9A3412]/30 flex items-center gap-3 text-xs text-[#9A3412]">
+          <ShieldAlert className="w-5 h-5 shrink-0 text-[#9A3412]" />
+          <div>
+            <span className="font-semibold block text-[#7C2D12]">Strict Governance Enforcement</span>
+            Only Management and Admin roles are authorized to approve or reject tender participation during Internal Review. You have read-only audit visibility.
+          </div>
+        </div>
+      )}
 
       {/* Active Delegations Banner if any */}
       {delegatesList.length > 0 && (
@@ -392,35 +420,43 @@ export function ApprovalsInboxView({
 
                   {/* Right Column: Actions */}
                   <div className="flex flex-col sm:flex-row lg:flex-col gap-2 shrink-0 justify-center">
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={() => handleOpenDecision(tender, 'approve')}
-                        disabled={isCreatorOrAssignee}
-                        leftIcon={<CheckCircle2 className="w-4 h-4" />}
-                      >
-                        Approve
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => handleOpenDecision(tender, 'reject')}
-                        disabled={isCreatorOrAssignee}
-                        leftIcon={<XCircle className="w-4 h-4" />}
-                      >
-                        Reject
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => handleOpenDecision(tender, 'return')}
-                        disabled={isCreatorOrAssignee}
-                        leftIcon={<HelpCircle className="w-4 h-4" />}
-                      >
-                        Return
-                      </Button>
-                    </div>
+                    {canApprove ? (
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={() => handleOpenDecision(tender, 'approve')}
+                          disabled={isCreatorOrAssignee}
+                          leftIcon={<CheckCircle2 className="w-4 h-4" />}
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={() => handleOpenDecision(tender, 'reject')}
+                          disabled={isCreatorOrAssignee}
+                          leftIcon={<XCircle className="w-4 h-4" />}
+                        >
+                          Reject
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => handleOpenDecision(tender, 'return')}
+                          disabled={isCreatorOrAssignee}
+                          leftIcon={<HelpCircle className="w-4 h-4" />}
+                        >
+                          Return
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Badge variant="warning" size="sm">
+                          Mgmt Approval Required
+                        </Badge>
+                      </div>
+                    )}
 
                     <Button
                       size="xs"

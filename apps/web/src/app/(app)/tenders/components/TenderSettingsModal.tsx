@@ -73,7 +73,7 @@ export function TenderSettingsModal({
   const [newRuleCategory, setNewRuleCategory] = useState('');
   const [newRuleMinVal, setNewRuleMinVal] = useState('');
   const [newRuleMaxVal, setNewRuleMaxVal] = useState('');
-  const [newRuleApproverRole, setNewRuleApproverRole] = useState('tender_team');
+  const [newRuleApproverRole, setNewRuleApproverRole] = useState('management');
 
   // General settings state
   const [generalSettings, setGeneralSettings] = useState<any>({
@@ -561,8 +561,6 @@ export function TenderSettingsModal({
                   onChange={(e) => setNewRuleApproverRole(e.target.value)}
                   className="w-full text-xs rounded-lg border border-[#C9C4B8] bg-white px-2 py-1.5 text-[#14213D]"
                 >
-                  <option value="regional_manager">Regional Manager</option>
-                  <option value="tender_team">Tender Head</option>
                   <option value="management">Management / Director</option>
                   <option value="admin">Super Admin</option>
                 </select>

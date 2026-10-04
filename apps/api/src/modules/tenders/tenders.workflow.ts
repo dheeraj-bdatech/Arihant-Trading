@@ -333,20 +333,22 @@ export class TendersWorkflowService {
       );
     }
 
-    // Rule: UNDER_PREPARATION and REJECTED_INTERNALLY can only be reached through the approval action
-    if ((to === 'UNDER_PREPARATION' || to === 'REJECTED_INTERNALLY') && from === 'AWAITING_INTERNAL_APPROVAL') {
+    // Rule: UNDER_PREPARATION and REJECTED_INTERNALLY can only be reached through the approval action by Management or Admin
+    if (
+      (to === 'UNDER_PREPARATION' || to === 'REJECTED_INTERNALLY') &&
+      (from === 'AWAITING_INTERNAL_APPROVAL' || from === 'IDENTIFIED')
+    ) {
       if (!options?.isApprovalAction) {
         throw new BadRequestException(
-          `Transition to "${this.getStatusLabel(to)}" can only be performed through the official approval/rejection action.`,
+          `Transition to "${this.getStatusLabel(to)}" can only be performed through the official approval/rejection action by Management or Admin.`,
         );
       }
 
-      // Check approver authorization
-      const isAuthorizedRole = ['management', 'admin', 'regional_manager'].includes(user.role);
-      const isApprover = options?.isApproverUser || isAuthorizedRole;
-      if (!isApprover) {
+      // Check approver authorization: strictly Management and Admin only
+      const isAuthorizedRole = user.role === 'management' || user.role === 'admin';
+      if (!isAuthorizedRole) {
         throw new ForbiddenException(
-          'Only authorized persons in Tender Approvers list (or Regional Manager/Management) can approve or reject tender participation.',
+          'Strict Governance: Only Management and Admin roles are authorized to approve or reject tender participation during internal review.',
         );
       }
 

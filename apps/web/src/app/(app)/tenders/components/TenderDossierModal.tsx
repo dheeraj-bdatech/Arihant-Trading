@@ -38,6 +38,9 @@ import {
   ShoppingBag,
   Send,
   UserCheck,
+  Check,
+  X,
+  ShieldCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 
@@ -46,6 +49,7 @@ interface TenderDossierModalProps {
   onClose: () => void;
   tenderId: string | null;
   currentUser: any;
+  users?: any[];
   onTenderUpdated?: () => void;
 }
 
@@ -54,14 +58,67 @@ export function TenderDossierModal({
   onClose,
   tenderId,
   currentUser,
+  users,
   onTenderUpdated,
 }: TenderDossierModalProps) {
   const [tender, setTender] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
+  const [userList, setUserList] = useState<any[]>(users || []);
+  const [isReassignOpen, setIsReassignOpen] = useState(false);
+  const [reassignSalesperson, setReassignSalesperson] = useState('');
+  const [reassignOwner, setReassignOwner] = useState('');
+  const [isReassigning, setIsReassigning] = useState(false);
+
+  useEffect(() => {
+    if (users && users.length > 0) {
+      setUserList(users);
+    } else if (isOpen) {
+      api.get<any>('/users', { limit: 100 })
+        .then((res) => {
+          if (res?.data) setUserList(res.data);
+          else if (Array.isArray(res)) setUserList(res);
+        })
+        .catch(() => {});
+    }
+  }, [users, isOpen]);
+
+  const canReassign =
+    ['management', 'admin', 'tender_team', 'regional_manager'].includes(currentUser?.role) ||
+    tender?.tender_owner_id === currentUser?.id ||
+    tender?.owner === currentUser?.id;
+
+  const handleOpenReassign = () => {
+    setReassignSalesperson(tender?.assigned_to || tender?.assigned_person_id || '');
+    setReassignOwner(tender?.tender_owner_id || tender?.owner || '');
+    setIsReassignOpen(true);
+  };
+
+  const handleSaveReassign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tender?.id) return;
+    setIsReassigning(true);
+    try {
+      await api.patch(`/tenders/${tender.id}`, {
+        assigned_to: reassignSalesperson || null,
+        assigned_person_id: reassignSalesperson || null,
+        tender_owner_id: reassignOwner || null,
+        owner: reassignOwner || null,
+      });
+      setFeedbackMsg({ type: 'success', text: 'Tender team assignment updated successfully.' });
+      setIsReassignOpen(false);
+      await loadTender();
+      onTenderUpdated?.();
+    } catch (err: any) {
+      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to update team assignment.' });
+    } finally {
+      setIsReassigning(false);
+    }
+  };
   const [activeTab, setActiveTab] = useState<
     | 'overview'
     | 'line_items'
     | 'approvals'
+    | 'transitions'
     | 'documents'
     | 'corrigenda'
     | 'finance'
@@ -71,6 +128,223 @@ export function TenderDossierModal({
     | 'linked'
     | 'timeline'
   >('overview');
+
+  // Lifecycle Transitions state
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [selectedNextStatus, setSelectedNextStatus] = useState<string>('');
+  const [transitionNotes, setTransitionNotes] = useState<string>('');
+  const [portalSubmissionDate, setPortalSubmissionDate] = useState<string>(
+    new Date().toISOString().split('T')[0]
+  );
+
+  const handlePerformTransition = async (targetStatus: string, defaultRemarks?: string) => {
+    if (!tender?.id) return;
+    setIsTransitioning(true);
+    setFeedbackMsg(null);
+    try {
+      await api.post(`/tenders/${tender.id}/transitions`, {
+        target_status: targetStatus,
+        remarks: transitionNotes || defaultRemarks || `Transitioned to ${targetStatus.replace(/_/g, ' ')}`,
+        submission_date: targetStatus === 'submitted' ? portalSubmissionDate : undefined,
+      });
+      setFeedbackMsg({
+        type: 'success',
+        text: `Tender successfully advanced to ${targetStatus.replace(/_/g, ' ').toUpperCase()}.`,
+      });
+      setSelectedNextStatus('');
+      setTransitionNotes('');
+      await loadTender();
+      onTenderUpdated?.();
+    } catch (err: any) {
+      setFeedbackMsg({
+        type: 'error',
+        text: err?.message || 'Failed to transition tender stage.',
+      });
+    } finally {
+      setIsTransitioning(false);
+    }
+  };
+
+  const getAllowedDossierTransitions = (status: string, category: string) => {
+    const norm = (status || '').toLowerCase();
+    const isPq = (category || '').toLowerCase().includes('pq');
+
+    switch (norm) {
+      case 'identified':
+        return [
+          {
+            status: 'awaiting_approval',
+            label: 'Submit for Internal Approval',
+            variant: 'primary' as const,
+            description: 'Request executive review & participation clearance from Management.',
+            defaultRemarks: 'Submitted tender for executive management review.',
+          },
+        ];
+      case 'awaiting_approval':
+      case 'under_review':
+        return [];
+      case 'under_preparation':
+        if (isPq) {
+          return [
+            {
+              status: 'pq_submitted',
+              label: 'Submit Pre-Qualification (PQ)',
+              variant: 'primary' as const,
+              description: 'Record PQ eligibility dossier uploaded on GeM/CPPP portal.',
+              defaultRemarks: 'Pre-qualification dossier submitted on government portal.',
+            },
+            {
+              status: 'submitted',
+              label: 'Submit Bid Directly',
+              variant: 'secondary' as const,
+              description: 'Advance directly if PQ was bypassed or already cleared.',
+              defaultRemarks: 'Technical and commercial bids submitted.',
+            },
+            {
+              status: 'on_hold',
+              label: 'Put On Hold',
+              variant: 'warning' as const,
+              description: 'Temporarily freeze preparation pending departmental clarifications.',
+              defaultRemarks: 'Put on hold pending clarifications.',
+            },
+          ];
+        }
+        return [
+          {
+            status: 'submitted',
+            label: 'Submit Tender Bid',
+            variant: 'primary' as const,
+            description: 'Upload encrypted technical & financial envelopes on GeM.',
+            defaultRemarks: 'Tender bids uploaded to GeM with digital signature token.',
+          },
+          {
+            status: 'on_hold',
+            label: 'Put On Hold',
+            variant: 'warning' as const,
+            description: 'Temporarily freeze preparation.',
+            defaultRemarks: 'Put on hold pending clarifications.',
+          },
+        ];
+      case 'pq_submitted':
+        return [
+          {
+            status: 'pq_qualified',
+            label: 'Mark PQ Qualified',
+            variant: 'success' as const,
+            description: 'Buyer committee accepted credentials; eligible for commercial bidding.',
+            defaultRemarks: 'Buyer published PQ minutes; Arihant officially qualified.',
+          },
+          {
+            status: 'lost',
+            label: 'Mark PQ Disqualified / Lost',
+            variant: 'danger' as const,
+            description: 'Buyer rejected credentials during pre-qualification screening.',
+            defaultRemarks: 'Disqualified in PQ screening.',
+          },
+          {
+            status: 'on_hold',
+            label: 'Put On Hold',
+            variant: 'warning' as const,
+            description: 'Pre-qualification proceedings stayed or extended.',
+            defaultRemarks: 'PQ evaluation delayed by department.',
+          },
+        ];
+      case 'pq_qualified':
+        return [
+          {
+            status: 'submitted',
+            label: 'Submit Commercial & Technical Envelopes',
+            variant: 'primary' as const,
+            description: 'Submit main price envelopes on portal.',
+            defaultRemarks: 'Commercial envelope submitted on portal following PQ clearance.',
+          },
+          {
+            status: 'under_preparation',
+            label: 'Return to Preparation',
+            variant: 'secondary' as const,
+            description: 'Assemble additional compliance items.',
+            defaultRemarks: 'Returned to preparation.',
+          },
+        ];
+      case 'submitted':
+        return [
+          {
+            status: 'technical_eval',
+            label: 'Enter Technical Evaluation',
+            variant: 'primary' as const,
+            description: 'Buyer opened technical envelope; sample trials & tests active.',
+            defaultRemarks: 'Technical evaluation initiated by buyer.',
+          },
+          {
+            status: 'commercial_eval',
+            label: 'Enter Commercial Evaluation',
+            variant: 'secondary' as const,
+            description: 'Direct commercial opening.',
+            defaultRemarks: 'Commercial envelopes opened.',
+          },
+          {
+            status: 'lost',
+            label: 'Disqualified in Preliminary Screening',
+            variant: 'danger' as const,
+            description: 'Rejected before technical committee.',
+            defaultRemarks: 'Disqualified in preliminary evaluation.',
+          },
+        ];
+      case 'technical_eval':
+        return [
+          {
+            status: 'commercial_eval',
+            label: 'Advance to Commercial Evaluation',
+            variant: 'primary' as const,
+            description: 'Technical compliance and field trials successfully cleared.',
+            defaultRemarks: 'Technical evaluation and trial report cleared; commercial opened.',
+          },
+          {
+            status: 'lost',
+            label: 'Disqualified in Technical Evaluation',
+            variant: 'danger' as const,
+            description: 'Field trial or spec non-compliance rejection.',
+            defaultRemarks: 'Disqualified during technical evaluation.',
+          },
+        ];
+      case 'commercial_eval':
+        return [
+          {
+            status: 'won',
+            label: 'Declare L1 & Won',
+            variant: 'success' as const,
+            description: 'Arihant awarded lowest bidder; contract award confirmed.',
+            defaultRemarks: 'Declared L1 bidder and contract awarded.',
+          },
+          {
+            status: 'lost',
+            label: 'Declare L2 / Lost',
+            variant: 'danger' as const,
+            description: 'Competitor placed lower bid or won contract.',
+            defaultRemarks: 'Lost in commercial evaluation to competitor.',
+          },
+        ];
+      case 'on_hold':
+        return [
+          {
+            status: 'under_preparation',
+            label: 'Resume Preparation',
+            variant: 'primary' as const,
+            description: 'Remove hold and resume bid preparation.',
+            defaultRemarks: 'Hold lifted; resumed preparation.',
+          },
+          {
+            status: 'cancelled',
+            label: 'Cancel Tender',
+            variant: 'danger' as const,
+            description: 'Formally withdraw or cancel bid.',
+            defaultRemarks: 'Tender cancelled by department or withdrawn.',
+          },
+        ];
+      default:
+        return [];
+    }
+  };
 
   // Sub-action modal states
   const [isAddLineItemOpen, setIsAddLineItemOpen] = useState(false);
@@ -103,11 +377,83 @@ export function TenderDossierModal({
   const [isCommentSubmitting, setIsCommentSubmitting] = useState(false);
   const [commentText, setCommentText] = useState('');
 
+  // Document checklist enhancement state
+  const [attachingDocId, setAttachingDocId] = useState<string | null>(null);
+  const [attachedFileName, setAttachedFileName] = useState<string>('');
+  const [attachedDriveUrl, setAttachedDriveUrl] = useState<string>('');
+  const [driveFolderUrl, setDriveFolderUrl] = useState<string>('');
+  const [isEditingDriveFolder, setIsEditingDriveFolder] = useState<boolean>(false);
+  const [isSavingDriveFolder, setIsSavingDriveFolder] = useState<boolean>(false);
+  const [isAddCustomDocOpen, setIsAddCustomDocOpen] = useState(false);
+  const [newCustomDoc, setNewCustomDoc] = useState({
+    document_type: '',
+    is_mandatory: true,
+    owner_id: '',
+    status: 'In Progress',
+    file_url: '',
+  });
+
   const [actionLoading, setActionLoading] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Executive Decision state on Overview Tab
+  const [decisionType, setDecisionType] = useState<'approved' | 'rejected'>('approved');
+  const [directivesRemarks, setDirectivesRemarks] = useState('');
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [isSubmittingDecision, setIsSubmittingDecision] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+
+  const isMgmtOrAdmin = currentUser?.role === 'management' || currentUser?.role === 'admin';
+
+  const handleCommitExecutiveDecision = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!tenderId) return;
+    setDecisionError(null);
+
+    if (decisionType === 'rejected' && !rejectionReason.trim()) {
+      setDecisionError('A valid rejection reason is mandatory when declining participation.');
+      return;
+    }
+
+    if (!directivesRemarks.trim()) {
+      setDecisionError('Directives / Remarks are mandatory for management sign-off.');
+      return;
+    }
+
+    setIsSubmittingDecision(true);
+    try {
+      await api.post(`/tenders/${tenderId}/approve`, {
+        decision: decisionType,
+        remarks: directivesRemarks.trim(),
+        rejection_reason: decisionType === 'rejected' ? rejectionReason : undefined,
+      });
+
+      setFeedbackMsg({
+        type: 'success',
+        text:
+          decisionType === 'approved'
+            ? 'Participation approved & mobilized for preparation!'
+            : 'Participation declined & internally rejected.',
+      });
+      setDirectivesRemarks('');
+      setRejectionReason('');
+      await loadTender();
+      if (onTenderUpdated) onTenderUpdated();
+    } catch (err: any) {
+      setDecisionError(
+        err?.response?.data?.message || err?.message || 'Failed to submit decision.',
+      );
+    } finally {
+      setIsSubmittingDecision(false);
+    }
+  };
+
   useEffect(() => {
     if (isOpen && tenderId) {
+      setAttachingDocId(null);
+      setAttachedFileName('');
+      setAttachedDriveUrl('');
+      setIsEditingDriveFolder(false);
       loadTender();
     } else {
       setTender(null);
@@ -121,6 +467,7 @@ export function TenderDossierModal({
     try {
       const res = await api.get<any>(`/tenders/${tenderId}`);
       setTender(res);
+      setDriveFolderUrl(res?.tender_url || '');
     } catch (err: any) {
       setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to load tender specifications' });
     } finally {
@@ -177,8 +524,110 @@ export function TenderDossierModal({
       await api.patch(`/tenders/${tenderId}/documents/${docId}`, { status });
       await loadTender();
       onTenderUpdated?.();
+      setFeedbackMsg({ type: 'success', text: `Document status updated to "${status}".` });
     } catch (err: any) {
       setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to update document status' });
+    }
+  };
+
+  const handleUpdateDocOwner = async (docId: string, ownerId: string) => {
+    if (!tenderId) return;
+    try {
+      await api.patch(`/tenders/${tenderId}/documents/${docId}`, { owner_id: ownerId || null });
+      await loadTender();
+      onTenderUpdated?.();
+      setFeedbackMsg({ type: 'success', text: 'Document owner assigned successfully.' });
+    } catch (err: any) {
+      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to assign document owner' });
+    }
+  };
+
+  const handleSaveDriveFolder = async (overrideUrl?: string) => {
+    if (!tenderId) return;
+    const urlToSave = (overrideUrl !== undefined ? overrideUrl : driveFolderUrl).trim();
+    setIsSavingDriveFolder(true);
+    try {
+      await api.patch(`/tenders/${tenderId}`, {
+        tender_url: urlToSave || null,
+      });
+      await loadTender();
+      onTenderUpdated?.();
+      setIsEditingDriveFolder(false);
+      setFeedbackMsg({
+        type: 'success',
+        text: urlToSave
+          ? 'Tender Google Drive Workspace linked successfully.'
+          : 'Tender Google Drive Workspace link cleared.',
+      });
+    } catch (err: any) {
+      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to update Google Drive folder link' });
+    } finally {
+      setIsSavingDriveFolder(false);
+    }
+  };
+
+  const handleAttachFile = async (docId: string) => {
+    if (!tenderId) return;
+    const finalUrl = attachedDriveUrl.trim();
+    const finalName = attachedFileName.trim() || (finalUrl ? 'Google Drive Document' : '');
+    if (!finalName && !finalUrl) return;
+
+    try {
+      await api.patch(`/tenders/${tenderId}/documents/${docId}`, {
+        file_name: finalName || 'Drive Document.pdf',
+        file_url: finalUrl || undefined,
+        status: 'Ready',
+      });
+      setAttachingDocId(null);
+      setAttachedFileName('');
+      setAttachedDriveUrl('');
+      await loadTender();
+      onTenderUpdated?.();
+      setFeedbackMsg({
+        type: 'success',
+        text: `Document "${finalName}" linked successfully and marked Ready.`,
+      });
+    } catch (err: any) {
+      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to attach file' });
+    }
+  };
+
+  const handleRemoveFile = async (docId: string) => {
+    if (!tenderId) return;
+    try {
+      await api.patch(`/tenders/${tenderId}/documents/${docId}`, {
+        file_name: null as any,
+        file_url: null as any,
+        status: 'In Progress',
+      });
+      await loadTender();
+      onTenderUpdated?.();
+      setFeedbackMsg({ type: 'success', text: 'Document attachment removed.' });
+    } catch (err: any) {
+      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to remove attachment' });
+    }
+  };
+
+  const handleAddCustomDoc = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tenderId || !newCustomDoc.document_type.trim()) return;
+    try {
+      const hasUrl = Boolean(newCustomDoc.file_url?.trim());
+      await api.post(`/tenders/${tenderId}/documents`, {
+        document_type: newCustomDoc.document_type.trim(),
+        is_mandatory: newCustomDoc.is_mandatory,
+        owner_id: newCustomDoc.owner_id || currentUser?.id || undefined,
+        status: hasUrl ? 'Ready' : newCustomDoc.status,
+        file_url: hasUrl ? newCustomDoc.file_url.trim() : undefined,
+        file_name: hasUrl ? `${newCustomDoc.document_type.trim().replace(/[^a-zA-Z0-9]/g, '_')}.pdf` : undefined,
+      });
+      setIsAddCustomDocOpen(false);
+      setNewCustomDoc({ document_type: '', is_mandatory: true, owner_id: '', status: 'In Progress', file_url: '' });
+      await loadTender();
+      onTenderUpdated?.();
+      setFeedbackMsg({ type: 'success', text: 'Custom compliance document added to checklist.' });
+    } catch (err: any) {
+      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to add document' });
     }
   };
 
@@ -341,6 +790,18 @@ export function TenderDossierModal({
             </div>
 
             <div className="flex items-center space-x-3">
+              {tender.tender_url && (
+                <a
+                  href={tender.tender_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[#F2B872] border border-white/20 text-xs font-semibold transition-colors shadow-xs"
+                  title={`Open Google Drive Workspace: ${tender.tender_url}`}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  <span>Drive Workspace ↗</span>
+                </a>
+              )}
               <div className="text-right">
                 <span className="text-[10px] text-white/60 block uppercase font-bold tracking-wider">Current Stage</span>
                 <Badge
@@ -386,6 +847,11 @@ export function TenderDossierModal({
                 label: 'Approvals',
                 icon: <CheckCircle2 className="h-3.5 w-3.5" />,
                 badge: tender.approvals?.length || null,
+              },
+              {
+                id: 'transitions',
+                label: 'Lifecycle & Transitions',
+                icon: <ArrowRight className="h-3.5 w-3.5" />,
               },
               {
                 id: 'documents',
@@ -444,6 +910,20 @@ export function TenderDossierModal({
                     <p className="text-[11px] text-[#4A5568]">
                       {tender.city || 'Delhi'}, {tender.state || 'Delhi'} • Region: {tender.region_name || 'North'}
                     </p>
+                    {tender.tender_url && (
+                      <p className="text-[11px] text-[#4A5568] flex items-center gap-1">
+                        Drive Workspace:{' '}
+                        <a
+                          href={tender.tender_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-[#0F5E63] hover:underline inline-flex items-center gap-0.5"
+                        >
+                          <span>Open Folder</span>
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      </p>
+                    )}
                   </div>
                 </Card>
 
@@ -468,7 +948,19 @@ export function TenderDossierModal({
                 </Card>
 
                 <Card className="p-3.5 space-y-2 border-[#DCD8CE]">
-                  <span className="text-[10px] font-bold text-[#4A5568] uppercase block">Financials & Team</span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-[#4A5568] uppercase block">Financials & Team</span>
+                    {canReassign && (
+                      <button
+                        type="button"
+                        onClick={handleOpenReassign}
+                        className="text-[11px] font-semibold text-[#0F5E63] hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <UserCheck className="w-3.5 h-3.5" />
+                        Reassign Team
+                      </button>
+                    )}
+                  </div>
                   <div className="space-y-1">
                     <p className="text-[11px] text-[#4A5568]">
                       Est. Value:{' '}
@@ -483,7 +975,11 @@ export function TenderDossierModal({
                       </span>
                     </p>
                     <p className="text-[11px] text-[#4A5568]">
-                      Owner: <span className="font-semibold text-[#14213D]">{tender.tender_owner_name || 'Unassigned'}</span> • Preparer:{' '}
+                      Tender Owner:{' '}
+                      <span className="font-semibold text-[#14213D]">{tender.tender_owner_name || 'Unassigned'}</span>
+                    </p>
+                    <p className="text-[11px] text-[#4A5568]">
+                      Assigned Salesperson:{' '}
                       <span className="font-semibold text-[#14213D]">{tender.assigned_to_name || 'Unassigned'}</span>
                     </p>
                   </div>
@@ -496,6 +992,143 @@ export function TenderDossierModal({
                   <p className="text-xs text-[#14213D]">{tender.remarks}</p>
                 </div>
               )}
+
+              {/* Executive Decision & Management Review Card (§22, §23) */}
+              <Card className="p-4 sm:p-5 border-[#DCD8CE] bg-white rounded-[14px] shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-[#ECE9E2] pb-3">
+                  <div className="space-y-0.5">
+                    <h4 className="font-serif font-bold text-sm text-[#14213D] flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-[#0F5E63]" />
+                      Decision
+                    </h4>
+                    <p className="text-[11px] text-[#4A5568]">
+                      Executive management participation review and authorization for bid preparation.
+                    </p>
+                  </div>
+                  <Badge
+                    variant={
+                      ['under_preparation', 'submitted', 'won'].includes((tender.status || '').toLowerCase())
+                        ? 'success'
+                        : (tender.status || '').toLowerCase() === 'rejected_internally'
+                        ? 'danger'
+                        : 'warning'
+                    }
+                    size="sm"
+                  >
+                    {(tender.status || 'IDENTIFIED').replace(/_/g, ' ').toUpperCase()}
+                  </Badge>
+                </div>
+
+                {decisionError && (
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                    {decisionError}
+                  </div>
+                )}
+
+                {isMgmtOrAdmin ? (
+                  ['identified', 'awaiting_approval', 'awaiting_internal_approval'].includes((tender.status || '').toLowerCase()) ? (
+                    <form onSubmit={handleCommitExecutiveDecision} className="space-y-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-[#14213D] uppercase tracking-wider mb-1.5">
+                          Decision
+                        </label>
+                        <Select
+                          value={decisionType}
+                          onChange={(e) => setDecisionType(e.target.value as any)}
+                          options={[
+                            {
+                              value: 'approved',
+                              label: 'Approve Participation & Mobilize Preparation',
+                            },
+                            {
+                              value: 'rejected',
+                              label: 'Decline / Reject Opportunity Internally',
+                            },
+                          ]}
+                        />
+                      </div>
+
+                      {decisionType === 'rejected' && (
+                        <div>
+                          <label className="block text-[11px] font-bold text-[#14213D] uppercase tracking-wider mb-1.5">
+                            Rejection Justification *
+                          </label>
+                          <Select
+                            value={rejectionReason}
+                            onChange={(e) => setRejectionReason(e.target.value)}
+                            options={[
+                              { value: '', label: '-- Select Reason --' },
+                              { value: 'Insufficient eligibility', label: 'Insufficient eligibility (Turnover / Experience QR)' },
+                              { value: 'Commercial concern', label: 'Commercial concern (Unviable margin or high penalty)' },
+                              { value: 'Documentation unavailable', label: 'Documentation unavailable (OEM Authorization missing)' },
+                              { value: 'Management decision', label: 'Management decision' },
+                              { value: 'Other', label: 'Other operational reason' },
+                            ]}
+                          />
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-[#14213D] uppercase tracking-wider mb-1.5">
+                          Directives / Remarks*
+                        </label>
+                        <Input
+                          value={directivesRemarks}
+                          onChange={(e) => setDirectivesRemarks(e.target.value)}
+                          placeholder="e.g. Approved with Belgian OEM authorization. Ensure 2% margin."
+                          required
+                        />
+                      </div>
+
+                      <div className="pt-1 flex items-center justify-end">
+                        <Button
+                          type="submit"
+                          size="sm"
+                          variant={decisionType === 'approved' ? 'primary' : 'danger'}
+                          isLoading={isSubmittingDecision}
+                          className={decisionType === 'approved' ? 'bg-[#0F5E63] hover:bg-[#0B4A4E] text-white font-medium px-4' : ''}
+                          leftIcon={decisionType === 'approved' ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}
+                        >
+                          {decisionType === 'approved'
+                            ? 'Approve Participation & Mobilize Preparation'
+                            : 'Decline & Reject Opportunity'}
+                        </Button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-[#0F5E63]" />
+                          <span className="text-xs font-bold text-[#14213D]">
+                            Decision Recorded: {(tender.status || '').replace(/_/g, ' ').toUpperCase()}
+                          </span>
+                        </div>
+                        {tender.internal_approval_at && (
+                          <span className="text-[11px] font-mono text-[#4A5568]">
+                            {new Date(tender.internal_approval_at).toLocaleString('en-IN')}
+                          </span>
+                        )}
+                      </div>
+                      {(tender.approval_conditions || tender.remarks) && (
+                        <p className="text-xs text-[#4A5568] bg-white p-2.5 rounded-lg border border-[#DCD8CE]">
+                          <strong>Directives / Remarks:</strong> {tender.approval_conditions || tender.remarks}
+                        </p>
+                      )}
+                    </div>
+                  )
+                ) : (
+                  <div className="p-3.5 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#4A5568] flex items-center gap-3">
+                    <ShieldAlert className="w-5 h-5 text-[#9A3412] shrink-0" />
+                    <div>
+                      <span className="font-semibold text-[#14213D] block mb-0.5">
+                        Strict Governance: Management Review Required
+                      </span>
+                      Only Management and Admin roles are authorized to record tender participation decisions during Internal Review.
+                    </div>
+                  </div>
+                )}
+              </Card>
             </div>
           )}
 
@@ -650,24 +1283,302 @@ export function TenderDossierModal({
             </div>
           )}
 
-          {/* TAB 4: DOCUMENTS CHECKLIST */}
-          {activeTab === 'documents' && (
+          {/* TAB: LIFECYCLE & STAGE TRANSITIONS */}
+          {activeTab === 'transitions' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h4 className="font-serif font-bold text-sm text-[#14213D]">Document Compliance Checklist</h4>
-                  <p className="text-[11px] text-[#4A5568]">Mandatory submission criteria: all required files must be marked Ready or N/A.</p>
+                  <h4 className="font-serif font-bold text-sm text-[#14213D]">Tender Lifecycle & Stage Advancement</h4>
+                  <p className="text-[11px] text-[#4A5568]">Controlled stage transitions adhering to the Arihant BOS finite-state machine.</p>
                 </div>
-                <Button variant="outline" size="sm" onClick={handleInitChecklist} isLoading={actionLoading}>
-                  Initialize Checklist Templates
-                </Button>
+                <Badge
+                  variant={
+                    tender.status === 'won'
+                      ? 'success'
+                      : ['lost', 'cancelled', 'rejected_internally'].includes(tender.status)
+                      ? 'danger'
+                      : ['under_preparation', 'pq_submitted', 'pq_qualified'].includes(tender.status)
+                      ? 'cyber'
+                      : 'info'
+                  }
+                  size="md"
+                >
+                  Current: {tender.status?.replace(/_/g, ' ').toUpperCase()}
+                </Badge>
+              </div>
+
+              {/* Visual 6-Step Tracker */}
+              <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-1 text-center text-[10px] font-semibold">
+                  <div className={`p-2 rounded ${['identified', 'awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                    1. Identified
+                  </div>
+                  <div className={`p-2 rounded ${['awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                    2. Approval
+                  </div>
+                  <div className={`p-2 rounded ${['under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                    3. Preparation
+                  </div>
+                  <div className={`p-2 rounded ${['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                    4. PQ Phase
+                  </div>
+                  <div className={`p-2 rounded ${['submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                    5. Submitted
+                  </div>
+                  <div className={`p-2 rounded ${['won', 'lost'].includes(tender.status) ? (tender.status === 'won' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white') : 'bg-slate-200 text-slate-500'}`}>
+                    6. Result
+                  </div>
+                </div>
+              </div>
+
+              {/* Status Specific Helper / Actions */}
+              {['awaiting_approval', 'under_review'].includes(tender.status) ? (
+                <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert className="h-5 w-5 text-amber-700 shrink-0" />
+                    <span className="font-bold text-xs">Awaiting Executive Management Signoff</span>
+                  </div>
+                  <p className="text-xs text-amber-800 leading-relaxed">
+                    This tender is currently undergoing Internal Review. To authorize participation and advance to <strong>Under Preparation</strong>, please switch to the <strong>Approvals</strong> tab above.
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="primary"
+                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                    onClick={() => setActiveTab('approvals')}
+                  >
+                    Go to Approvals Tab
+                  </Button>
+                </div>
+              ) : getAllowedDossierTransitions(tender.status, tender.category).length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 text-xs">
+                  This tender is in a terminal state (<strong>{tender.status?.toUpperCase()}</strong>). No further stage advancements are permitted.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {['under_preparation', 'UNDER_PREPARATION'].includes(tender.status) && (
+                    <div className="p-3 rounded-xl bg-white border border-[#DCD8CE] flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <Paperclip className="h-4 w-4 text-[#0F5E63]" />
+                        <span className="text-[#4A5568]">Document Compliance Gate:</span>
+                        <span className="font-bold text-[#14213D]">
+                          {tender.document_completion_percentage || 0}% Ready
+                        </span>
+                      </div>
+                      {tender.document_completion_percentage === 100 ? (
+                        <span className="text-emerald-700 font-semibold text-[11px] flex items-center gap-1">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> All Mandatory Files Ready for Submission
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('documents')}
+                          className="text-[#9A3412] hover:underline font-semibold text-[11px] flex items-center gap-1 cursor-pointer"
+                        >
+                          Review Incomplete Documents <ArrowRight className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+                    <span className="text-xs text-[#14213D] font-bold block uppercase tracking-wide">
+                      Permitted Stage Advancements ({getAllowedDossierTransitions(tender.status, tender.category).length})
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {getAllowedDossierTransitions(tender.status, tender.category).map((tr) => (
+                        <div
+                          key={tr.status}
+                          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+                            selectedNextStatus === tr.status
+                              ? 'border-[#0F5E63] bg-[#E3EFEE]/40 ring-1 ring-[#0F5E63]'
+                              : 'border-[#DCD8CE] hover:border-[#0F5E63]/50 bg-white'
+                          }`}
+                          onClick={() => {
+                            setSelectedNextStatus(tr.status);
+                            setTransitionNotes(tr.defaultRemarks || '');
+                          }}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-bold text-xs text-[#14213D]">{tr.label}</span>
+                            <Badge variant={tr.variant as any} size="sm">
+                              {tr.status.replace(/_/g, ' ').toUpperCase()}
+                            </Badge>
+                          </div>
+                          <p className="text-[11px] text-[#4A5568] leading-relaxed">{tr.description}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {selectedNextStatus && (
+                    <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#0F5E63]/30 space-y-3 animate-in fade-in duration-200">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-[#0F5E63]">
+                          Advancement Confirmation: {selectedNextStatus.replace(/_/g, ' ').toUpperCase()}
+                        </span>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => setSelectedNextStatus('')}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+
+                      {selectedNextStatus === 'submitted' && (
+                        <Input
+                          label="Portal Submission Date"
+                          type="date"
+                          value={portalSubmissionDate}
+                          onChange={(e) => setPortalSubmissionDate(e.target.value)}
+                          required
+                        />
+                      )}
+
+                      <Input
+                        label="Transition Directives & Remarks"
+                        value={transitionNotes}
+                        onChange={(e) => setTransitionNotes(e.target.value)}
+                        placeholder="e.g. PQ eligibility dossier submitted on government portal."
+                        helperText="Mandatory audit log remarks recording this lifecycle transition."
+                        required
+                      />
+
+                      <div className="flex justify-end gap-2 pt-1">
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          isLoading={isTransitioning}
+                          onClick={() => handlePerformTransition(selectedNextStatus, transitionNotes)}
+                          leftIcon={<ArrowRight className="h-3.5 w-3.5" />}
+                        >
+                          Confirm & Advance Stage
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 4: DOCUMENTS CHECKLIST */}
+          {activeTab === 'documents' && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="font-serif font-bold text-sm text-[#14213D]">Document Compliance Checklist</h4>
+                  <p className="text-[11px] text-[#4A5568]">Mandatory submission criteria: each required item must be linked to a responsible member and marked Ready.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setIsAddCustomDocOpen(true)}
+                    leftIcon={<Plus className="h-3.5 w-3.5" />}
+                  >
+                    Add Document
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleInitChecklist}
+                    isLoading={actionLoading}
+                    leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                  >
+                    Re-initialize Templates
+                  </Button>
+                </div>
+              </div>
+
+              {/* Central Tender Google Drive Workspace */}
+              <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-start md:items-center gap-3">
+                  <div className="p-2.5 rounded-lg bg-[#E3EFEE] text-[#0F5E63] shrink-0 border border-[#0F5E63]/20 flex items-center justify-center">
+                    <svg className="w-5 h-5" viewBox="0 0 87.3 78" fill="none">
+                      <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/>
+                      <path d="M43.65 25 29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44C.4 49.9 0 51.45 0 53h27.5z" fill="#00AC47"/>
+                      <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.5l5.85 10.15z" fill="#EA4335"/>
+                      <path d="M43.65 25 57.4 1.2C56.05.4 54.5 0 52.95 0H34.35c-1.55 0-3.1.4-4.45 1.2z" fill="#00832D"/>
+                      <path d="M59.8 53H87.3c0-1.55-.4-3.1-1.2-4.5L72.35 24.7c-.8-1.4-1.95-2.5-3.3-3.3L55.3 45.2z" fill="#2684FC"/>
+                      <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l-13.75-23.8H27.5L41.25 73.5c.8 1.4 1.95 2.5 3.3 3.3z" fill="#FFBA00"/>
+                    </svg>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-serif font-bold text-xs text-[#14213D]">Central Tender Google Drive Workspace</span>
+                      <Badge variant="cyber" size="sm">Cloud Repository</Badge>
+                    </div>
+                    <p className="text-[11px] text-[#4A5568]">
+                      Shared Google Drive directory for tender notices, technical sheets, drawings, and scanned submissions.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {driveFolderUrl && !isEditingDriveFolder ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <a
+                        href={driveFolderUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0F5E63] text-white hover:bg-[#0B4A4E] text-xs font-semibold shadow-xs transition-colors"
+                        title={driveFolderUrl}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span>Open Drive Folder ↗</span>
+                      </a>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => setIsEditingDriveFolder(true)}
+                      >
+                        Edit Link
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 w-full md:w-auto">
+                      <input
+                        type="url"
+                        placeholder="https://drive.google.com/drive/folders/..."
+                        value={driveFolderUrl}
+                        onChange={(e) => setDriveFolderUrl(e.target.value)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-[#C9C4B8] focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]/20 bg-white min-w-[240px] outline-none"
+                      />
+                      <Button
+                        variant="primary"
+                        size="xs"
+                        onClick={() => handleSaveDriveFolder()}
+                        isLoading={isSavingDriveFolder}
+                        disabled={!driveFolderUrl.trim()}
+                      >
+                        Save Link
+                      </Button>
+                      {isEditingDriveFolder && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => {
+                            setDriveFolderUrl(tender.tender_url || '');
+                            setIsEditingDriveFolder(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Completion Progress Bar */}
               <div className="space-y-1">
                 <div className="flex justify-between text-[11px] font-semibold">
                   <span>Readiness Progress</span>
-                  <span className="font-mono text-[#0F5E63]">{tender.document_completion_percentage || 0}% Complete</span>
+                  <span className="font-mono text-[#0F5E63]">
+                    {tender.documents?.filter((d: any) => ['Ready', 'Not Applicable'].includes(d.status)).length || 0} of {tender.documents?.length || 0} Ready ({tender.document_completion_percentage || 0}%)
+                  </span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
                   <div
@@ -677,73 +1588,309 @@ export function TenderDossierModal({
                 </div>
               </div>
 
+              {/* Status Linkage Banner: Direct Stage Advancement when 100% Ready */}
+              {tender.document_completion_percentage === 100 && ['under_preparation', 'UNDER_PREPARATION'].includes(tender.status) && (
+                <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-emerald-900 animate-in fade-in duration-200">
+                  <div className="flex items-center gap-2.5">
+                    <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
+                    <div>
+                      <div className="font-bold text-xs">All Mandatory Documents Verified & Ready (100%)!</div>
+                      <div className="text-[11px] text-emerald-700">Document compliance is fully satisfied. Tender is ready for portal submission.</div>
+                    </div>
+                  </div>
+                  <Button
+                    size="xs"
+                    variant="success"
+                    onClick={() => {
+                      setActiveTab('transitions');
+                      const isPq = (tender.category || '').toLowerCase().includes('pq');
+                      setSelectedNextStatus(isPq ? 'pq_submitted' : 'submitted');
+                      setTransitionNotes(isPq ? 'Pre-qualification dossier submitted on government portal.' : 'Technical and financial bids submitted on GeM portal.');
+                    }}
+                    leftIcon={<ArrowRight className="h-3.5 w-3.5" />}
+                  >
+                    {(tender.category || '').toLowerCase().includes('pq') ? 'Advance to PQ Submitted' : 'Advance to Tender Submitted'}
+                  </Button>
+                </div>
+              )}
+
               {tender.documents && tender.documents.length > 0 ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Document Type</TableHead>
-                      <TableHead>Mandatory</TableHead>
-                      <TableHead>Current Status</TableHead>
-                      <TableHead>Attached File</TableHead>
-                      <TableHead>Action</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tender.documents.map((doc: any) => (
-                      <TableRow key={doc.id}>
-                        <TableCell className="font-semibold text-xs text-[#14213D]">{doc.document_type}</TableCell>
-                        <TableCell>
-                          {doc.is_mandatory ? (
-                            <Badge variant="danger" size="sm">Required</Badge>
-                          ) : (
-                            <Badge variant="default" size="sm">Optional</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={
-                              doc.status === 'Ready'
-                                ? 'success'
-                                : doc.status === 'In Progress'
-                                ? 'warning'
-                                : doc.status === 'Not Applicable'
-                                ? 'default'
-                                : 'outline'
-                            }
-                            size="sm"
-                          >
-                            {doc.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="font-mono text-[11px]">
-                          {doc.file_name ? (
-                            <span className="text-[#0F5E63] underline">{doc.file_name}</span>
-                          ) : (
-                            <span className="text-[#4A5568]">No attachment</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <select
-                            value={doc.status}
-                            onChange={(e) => handleUpdateDocStatus(doc.id, e.target.value)}
-                            className="text-[11px] p-1 rounded border border-[#DCD8CE] bg-white cursor-pointer"
-                          >
-                            <option value="Not Started">Not Started</option>
-                            <option value="In Progress">In Progress</option>
-                            <option value="Ready">Ready</option>
-                            <option value="Not Applicable">Not Applicable</option>
-                          </select>
-                        </TableCell>
+                <div className="border border-[#DCD8CE] rounded-xl overflow-hidden bg-white">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-[#FBFAF7]">
+                        <TableHead>Document Type</TableHead>
+                        <TableHead>Mandatory</TableHead>
+                        <TableHead className="min-w-[170px]">Assigned To (Linked)</TableHead>
+                        <TableHead>Current Status</TableHead>
+                        <TableHead className="min-w-[180px]">Attached File</TableHead>
+                        <TableHead>Action</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {tender.documents.map((doc: any) => (
+                        <TableRow key={doc.id} className="hover:bg-[#F8FAFC]">
+                          <TableCell className="font-semibold text-xs text-[#14213D] max-w-[200px]">
+                            <div className="truncate font-medium" title={doc.document_type}>
+                              {doc.document_type}
+                            </div>
+                            {doc.notes && (
+                              <div className="text-[10px] text-[#4A5568] truncate">{doc.notes}</div>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {doc.is_mandatory ? (
+                              <Badge variant="danger" size="sm">Required</Badge>
+                            ) : (
+                              <Badge variant="default" size="sm">Optional</Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <select
+                                value={doc.owner_id || ''}
+                                onChange={(e) => handleUpdateDocOwner(doc.id, e.target.value)}
+                                className="text-[11px] p-1 rounded border border-[#DCD8CE] bg-white cursor-pointer w-full"
+                              >
+                                <option value="">-- Unassigned (None) --</option>
+                                {users && users.map((u: any) => (
+                                  <option key={u.id} value={u.id}>
+                                    {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                                  </option>
+                                ))}
+                              </select>
+                              {doc.owner_id && doc.owner_id === currentUser?.id && (
+                                <span className="inline-block px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
+                                  🎯 Assigned to You
+                                </span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={
+                                doc.status === 'Ready'
+                                  ? 'success'
+                                  : doc.status === 'In Progress'
+                                  ? 'warning'
+                                  : doc.status === 'Not Applicable'
+                                  ? 'default'
+                                  : 'outline'
+                              }
+                              size="sm"
+                            >
+                              {doc.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {attachingDocId === doc.id ? (
+                              <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#0F5E63] space-y-2 min-w-[260px] shadow-sm animate-in fade-in duration-150">
+                                <div className="flex items-center justify-between text-[11px] font-bold text-[#0F5E63]">
+                                  <span>Link Google Drive / File</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setAttachingDocId(null);
+                                      setAttachedFileName('');
+                                      setAttachedDriveUrl('');
+                                    }}
+                                    className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5"
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                </div>
+                                <div>
+                                  <label className="text-[10px] text-[#4A5568] block mb-0.5 font-medium">Google Drive URL (or Document Link)</label>
+                                  <input
+                                    type="url"
+                                    value={attachedDriveUrl}
+                                    onChange={(e) => setAttachedDriveUrl(e.target.value)}
+                                    placeholder="https://drive.google.com/file/d/..."
+                                    className="w-full text-[11px] px-2 py-1 rounded border border-[#C9C4B8] focus:border-[#0F5E63] bg-white outline-none"
+                                    autoFocus
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] text-[#4A5568] block mb-0.5 font-medium">Document Label / File Name</label>
+                                  <input
+                                    type="text"
+                                    value={attachedFileName}
+                                    onChange={(e) => setAttachedFileName(e.target.value)}
+                                    placeholder="e.g. OEM_MAF_Letter.pdf"
+                                    className="w-full text-[11px] px-2 py-1 rounded border border-[#C9C4B8] focus:border-[#0F5E63] bg-white outline-none"
+                                  />
+                                </div>
+                                <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-[#ECE9E2]">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setAttachingDocId(null);
+                                      setAttachedFileName('');
+                                      setAttachedDriveUrl('');
+                                    }}
+                                    className="px-2 py-1 rounded text-[10px] text-gray-600 hover:bg-gray-100 cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAttachFile(doc.id)}
+                                    disabled={!attachedFileName.trim() && !attachedDriveUrl.trim()}
+                                    className="px-2.5 py-1 rounded bg-[#0F5E63] text-white text-[10px] font-bold hover:bg-[#0B4A4E] disabled:opacity-50 cursor-pointer transition-colors shadow-xs"
+                                  >
+                                    Save & Mark Ready
+                                  </button>
+                                </div>
+                              </div>
+                            ) : doc.file_url ? (
+                              <div className="flex items-center gap-1.5 max-w-[220px]">
+                                <a
+                                  href={doc.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#E3EFEE] hover:bg-[#d0e5e3] text-[#0F5E63] font-mono text-[11px] font-semibold border border-[#0F5E63]/25 truncate group transition-colors shadow-2xs"
+                                  title={`Open in Drive: ${doc.file_url}`}
+                                >
+                                  <ExternalLink className="h-3 w-3 shrink-0 text-[#0F5E63]" />
+                                  <span className="truncate max-w-[110px]">{doc.file_name || 'Drive Document'}</span>
+                                  <span className="text-[10px] text-[#0F5E63]/70 font-normal">↗</span>
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveFile(doc.id)}
+                                  className="text-red-500 hover:text-red-700 p-0.5 rounded hover:bg-red-50 shrink-0 cursor-pointer transition-colors"
+                                  title="Remove attachment"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </div>
+                            ) : doc.file_name ? (
+                              <div className="flex items-center gap-1.5 font-mono text-[11px]">
+                                <Paperclip className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
+                                <span className="text-[#0F5E63] font-semibold truncate max-w-[120px]" title={doc.file_name}>
+                                  {doc.file_name}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setAttachingDocId(doc.id);
+                                    setAttachedFileName(doc.file_name);
+                                    setAttachedDriveUrl('');
+                                  }}
+                                  className="text-[10px] text-[#0F5E63] hover:underline font-semibold cursor-pointer"
+                                  title="Add Drive URL"
+                                >
+                                  + Link URL
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveFile(doc.id)}
+                                  className="text-red-500 hover:text-red-700 p-0.5 rounded hover:bg-red-50 shrink-0 cursor-pointer"
+                                  title="Remove attachment"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAttachingDocId(doc.id);
+                                  setAttachedFileName(`${doc.document_type.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+                                  setAttachedDriveUrl('');
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[#0F5E63] hover:bg-[#E3EFEE] border border-dashed border-[#0F5E63]/30 font-medium cursor-pointer transition-colors"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                <span>Link Drive / File</span>
+                              </button>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <select
+                              value={doc.status}
+                              onChange={(e) => handleUpdateDocStatus(doc.id, e.target.value)}
+                              className="text-[11px] p-1 rounded border border-[#DCD8CE] bg-white cursor-pointer font-medium"
+                            >
+                              <option value="Not Started">Not Started</option>
+                              <option value="In Progress">In Progress</option>
+                              <option value="Ready">Ready</option>
+                              <option value="Not Applicable">Not Applicable</option>
+                            </select>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               ) : (
                 <EmptyState
                   title="Checklist not initialized"
                   description="Click 'Initialize Checklist Templates' to populate standard NIT and PQ verification forms."
                 />
               )}
+
+              {/* Add Custom Document Modal */}
+              <Modal
+                isOpen={isAddCustomDocOpen}
+                onClose={() => setIsAddCustomDocOpen(false)}
+                title="Add Required Compliance Document"
+                description="Include an additional tender compliance item to the mandatory checklist."
+                maxWidth="md"
+              >
+                <form onSubmit={handleAddCustomDoc} className="space-y-4 text-xs">
+                  <Input
+                    label="Document Name / Type"
+                    placeholder="e.g. OEM Factory Audit Certificate, Site Survey Signoff"
+                    value={newCustomDoc.document_type}
+                    onChange={(e) => setNewCustomDoc({ ...newCustomDoc, document_type: e.target.value })}
+                    required
+                  />
+
+                  <Select
+                    label="Assign to Responsible Person (Link)"
+                    value={newCustomDoc.owner_id}
+                    onChange={(e) => setNewCustomDoc({ ...newCustomDoc, owner_id: e.target.value })}
+                    options={[
+                      { value: '', label: '-- Unassigned --' },
+                      ...(users || []).map((u: any) => ({
+                        value: u.id,
+                        label: `${u.full_name} (${u.role?.replace(/_/g, ' ')})`,
+                      })),
+                    ]}
+                  />
+
+                  <Input
+                    label="Google Drive / File URL (Optional)"
+                    placeholder="https://drive.google.com/file/d/..."
+                    value={newCustomDoc.file_url || ''}
+                    onChange={(e) => setNewCustomDoc({ ...newCustomDoc, file_url: e.target.value })}
+                    helperText="Providing a link will automatically mark this requirement Ready."
+                  />
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="mandatory_chk"
+                      checked={newCustomDoc.is_mandatory}
+                      onChange={(e) => setNewCustomDoc({ ...newCustomDoc, is_mandatory: e.target.checked })}
+                      className="rounded border-[#DCD8CE] text-[#0F5E63] cursor-pointer"
+                    />
+                    <label htmlFor="mandatory_chk" className="cursor-pointer font-semibold text-[#14213D]">
+                      Mandatory Document (Required before submission)
+                    </label>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setIsAddCustomDocOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" variant="primary" size="sm">
+                      Add to Checklist
+                    </Button>
+                  </div>
+                </form>
+              </Modal>
             </div>
           )}
 
@@ -1228,6 +2375,70 @@ export function TenderDossierModal({
           </div>
         </div>
       </Modal>
+
+      {/* Sub-modal: Reassign Team */}
+      {isReassignOpen && (
+        <Modal
+          isOpen={isReassignOpen}
+          onClose={() => setIsReassignOpen(false)}
+          title="Reassign Tender Team"
+          description="Designate executive ownership and field sales responsibility for this tender."
+          maxWidth="md"
+        >
+          <form onSubmit={handleSaveReassign} className="space-y-4">
+            <div className="space-y-3 text-xs">
+              <div>
+                <Select
+                  label="Assigned Salesperson"
+                  placeholder="-- Select Assigned Salesperson --"
+                  helperText="Ground executive managing client meetings, QRs, trials & depot demos."
+                  value={reassignSalesperson}
+                  onChange={(e) => setReassignSalesperson(e.target.value)}
+                >
+                  <option value="">-- Unassigned (None) --</option>
+                  {userList.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div>
+                <Select
+                  label="Tender Owner (Responsible Executive)"
+                  placeholder="-- Select Tender Owner --"
+                  helperText="Accountable executive for bid review, approvals & GeM submission."
+                  value={reassignOwner}
+                  onChange={(e) => setReassignOwner(e.target.value)}
+                >
+                  <option value="">-- Unassigned (None) --</option>
+                  {userList.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="p-3 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] space-y-1.5 text-[11px] text-[#4A5568]">
+                <p className="font-semibold text-[#14213D]">Operational Roles Definition:</p>
+                <p>• <span className="font-medium text-[#14213D]">Assigned Salesperson</span>: In-person client meetings, pre-bid conferences, MHA QR clarifications, equipment demo requests, and competitor L1 rate collection.</p>
+                <p>• <span className="font-medium text-[#14213D]">Tender Owner</span>: Executive strategy, internal review submission, bank guarantees (EMD/PBG), and portal bid execution.</p>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={() => setIsReassignOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" size="sm" isLoading={isReassigning}>
+                Update Team Assignment
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </Modal>
   );
 }

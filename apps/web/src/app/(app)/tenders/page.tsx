@@ -43,6 +43,7 @@ import {
   Upload,
   Settings,
   UserCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import { TenderDossierModal } from './components/TenderDossierModal';
 import { ApprovalsInboxView } from './components/ApprovalsInboxView';
@@ -160,6 +161,7 @@ export default function TendersPage() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [zoneFilter, setZoneFilter] = useState('');
   const [deadlineFilter, setDeadlineFilter] = useState('');
+  const [assignedFilter, setAssignedFilter] = useState<string>('');
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [activeHudFilter, setActiveHudFilter] = useState<string | null>(null);
@@ -312,6 +314,17 @@ export default function TendersPage() {
     }
   };
 
+  // Sync searchParams with assignedFilter
+  useEffect(() => {
+    const scopeParam = searchParams.get('scope');
+    const assignedParam = searchParams.get('assigned_to');
+    if (scopeParam === 'my_tenders' && user?.id) {
+      setAssignedFilter(user.id);
+    } else if (assignedParam) {
+      setAssignedFilter(assignedParam);
+    }
+  }, [searchParams, user]);
+
   // 4. Fetch Tenders List (Server-side Search & Pagination)
   const fetchTenders = useCallback(async () => {
     try {
@@ -328,6 +341,7 @@ export default function TendersPage() {
       if (categoryFilter) params.category = categoryFilter;
       if (zoneFilter) params.zone = zoneFilter;
       if (deadlineFilter) params.deadline = deadlineFilter;
+      if (assignedFilter) params.assigned_to = assignedFilter;
 
       const res = await api.get('/tenders', params);
       setTenders(res.data || []);
@@ -345,7 +359,7 @@ export default function TendersPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [page, limit, search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, sortBy, sortOrder, highlightId]);
+  }, [page, limit, search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, assignedFilter, sortBy, sortOrder, highlightId]);
 
   // Initial load
   useEffect(() => {
@@ -1247,7 +1261,7 @@ export default function TendersPage() {
                   key: 'awaiting_approval',
                   stageNum: '2',
                   name: 'Submitted for Review',
-                  desc: 'Awaiting RM signoff',
+                  desc: 'Awaiting Mgmt signoff',
                   active: statusFilter === 'awaiting_approval',
                   count: dashboardStats.pending_approvals ?? dashboardStats.awaiting_approval ?? 0,
                 },
@@ -1255,7 +1269,7 @@ export default function TendersPage() {
                   key: 'rejected_internally',
                   stageNum: '3',
                   name: 'Authorised Decision',
-                  desc: 'Approved / rejected by RM',
+                  desc: 'Approved / rejected by Mgmt',
                   active: statusFilter === 'rejected_internally',
                   count: dashboardStats.rejected_internally ?? dashboardStats.stage_3_decision ?? 0,
                 },
@@ -1311,6 +1325,57 @@ export default function TendersPage() {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Quick Scope Toggle: All Tenders vs Assigned to Me */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5 p-1 rounded-lg bg-white border border-[#DCD8CE] shadow-2xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setAssignedFilter('');
+                  setPage(1);
+                }}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                  !assignedFilter
+                    ? 'bg-[#0F5E63] text-white shadow-xs'
+                    : 'text-[#4A5568] hover:text-[#14213D] hover:bg-[#FBFAF7]'
+                }`}
+              >
+                All Bids
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAssignedFilter(user?.id || '');
+                  setPage(1);
+                }}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  assignedFilter === user?.id
+                    ? 'bg-[#0F5E63] text-white shadow-xs'
+                    : 'text-[#4A5568] hover:text-[#14213D] hover:bg-[#FBFAF7]'
+                }`}
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>My Assigned Tenders</span>
+                {user?.id && (
+                  <span
+                    className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                      assignedFilter === user?.id ? 'bg-white/20 text-white' : 'bg-[#E3EFEE] text-[#0F5E63]'
+                    }`}
+                  >
+                    {tenders.filter((t) => t.assigned_to === user?.id || t.assigned_person_id === user?.id).length}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {assignedFilter === user?.id && (
+              <div className="flex items-center gap-1.5 text-xs text-[#0F5E63] font-medium bg-[#E3EFEE] px-3 py-1.5 rounded-lg border border-[#0F5E63]/20">
+                <UserCheck className="w-4 h-4" />
+                <span>Showing tenders assigned to you as field sales lead</span>
+              </div>
+            )}
           </div>
 
           {/* Filter Bar */}
@@ -1374,6 +1439,24 @@ export default function TendersPage() {
             />
 
             <Select
+              value={assignedFilter}
+              onChange={(e) => {
+                setAssignedFilter(e.target.value);
+                setActiveHudFilter(null);
+                setPage(1);
+              }}
+              options={[
+                { value: '', label: 'All Salespeople / Assignees' },
+                ...(user?.id ? [{ value: user.id, label: `★ Assigned to Me (${user.full_name})` }] : []),
+                ...users.map((u) => ({
+                  value: u.id,
+                  label: `${u.full_name} (${u.role?.replace(/_/g, ' ')})`,
+                })),
+              ]}
+              className="w-56"
+            />
+
+            <Select
               value={deadlineFilter}
               onChange={(e) => {
                 setDeadlineFilter(e.target.value);
@@ -1409,7 +1492,7 @@ export default function TendersPage() {
               className="w-52"
             />
 
-            {(search || statusFilter || categoryFilter || zoneFilter || deadlineFilter || activeHudFilter || sortBy !== 'created_at' || sortOrder !== 'desc') && (
+            {(search || statusFilter || categoryFilter || zoneFilter || deadlineFilter || assignedFilter || activeHudFilter || sortBy !== 'created_at' || sortOrder !== 'desc') && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -1419,6 +1502,7 @@ export default function TendersPage() {
                   setCategoryFilter('');
                   setZoneFilter('');
                   setDeadlineFilter('');
+                  setAssignedFilter('');
                   setActiveHudFilter(null);
                   setSortBy('created_at');
                   setSortOrder('desc');
@@ -1540,13 +1624,26 @@ export default function TendersPage() {
                           </td>
 
                           {/* Requirement Excerpt & Ownership */}
-                          <td className="p-3.5 max-w-[240px] truncate">
+                          <td className="p-3.5 max-w-[250px]">
                             <div className="truncate font-medium text-[#14213D]" title={tender.requirement_text}>
                               {tender.requirement_text || tender.product_name || 'Defence Procurement Item'}
                             </div>
-                            <div className="text-[10px] text-[#4A5568] truncate mt-0.5 flex items-center gap-1">
-                              <User className="h-2.5 w-2.5 shrink-0" />
-                              <span>Owner: {tender.owner_name || tender.assigned_person_name || 'Unassigned'}</span>
+                            <div className="mt-1 flex flex-col gap-0.5 text-[10px]">
+                              <div className="text-[#4A5568] truncate flex items-center gap-1">
+                                <span className="text-[#718096] font-semibold uppercase tracking-wider text-[9px]">Owner:</span>
+                                <span className="font-medium text-[#14213D] truncate">{tender.tender_owner_name || tender.owner_name || 'Unassigned'}</span>
+                              </div>
+                              <div className="truncate flex items-center gap-1">
+                                <span className="text-[#718096] font-semibold uppercase tracking-wider text-[9px]">Sales:</span>
+                                <span className="font-medium text-[#14213D] truncate">
+                                  {tender.assigned_to_name || tender.assigned_person_name || 'Unassigned'}
+                                </span>
+                                {(tender.assigned_to === user?.id || tender.assigned_person_id === user?.id) && (
+                                  <span className="inline-flex items-center px-1 py-0.2 rounded text-[9px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/30 shrink-0">
+                                    🎯 You
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </td>
 
@@ -1600,15 +1697,13 @@ export default function TendersPage() {
                             <div className="flex items-center justify-end gap-1.5">
                               {tender.status === 'identified' && (
                                 <div className="flex items-center gap-1">
-                                  {hasRole(['management', 'regional_manager', 'admin']) ? (
+                                  {hasRole(['management', 'admin']) ? (
                                     <Button
                                       size="xs"
                                       variant="primary"
                                       className="bg-[#0F5E63] hover:bg-[#0B4A4E] text-white"
                                       onClick={() => {
-                                        setSelectedTender(tender);
-                                        setApprovalDecision('approved');
-                                        setIsApproveOpen(true);
+                                        openTenderDetails(tender, 'overview');
                                       }}
                                       title="Review as Management & Authorise"
                                     >
@@ -1630,38 +1725,46 @@ export default function TendersPage() {
                               )}
 
                               {tender.status === 'awaiting_approval' && (
-                                <Button
-                                  size="xs"
-                                  variant="primary"
-                                  className="bg-amber-600 hover:bg-amber-700 text-white"
-                                  onClick={() => {
-                                    setSelectedTender(tender);
-                                    setApprovalDecision('approved');
-                                    setIsApproveOpen(true);
-                                  }}
-                                  title="Review Decision & Endorse as Management"
-                                >
-                                  <ShieldCheck className="h-3 w-3 mr-1" />
-                                  <span>Review as Management</span>
-                                </Button>
+                                hasRole(['management', 'admin']) ? (
+                                  <Button
+                                    size="xs"
+                                    variant="primary"
+                                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                                    onClick={() => {
+                                      openTenderDetails(tender, 'overview');
+                                    }}
+                                    title="Review Decision & Endorse as Management"
+                                  >
+                                    <ShieldCheck className="h-3 w-3 mr-1" />
+                                    <span>Review as Management</span>
+                                  </Button>
+                                ) : (
+                                  <Badge variant="warning" size="sm">
+                                    Awaiting Mgmt Review
+                                  </Badge>
+                                )
                               )}
 
-                              {tender.status === 'under_preparation' && (
-                                <Button
-                                  size="xs"
-                                  variant="primary"
-                                  onClick={() => {
-                                    setSelectedTender(tender);
-                                    setTargetTransitionStatus(tender.category === 'pq' ? 'pq_submitted' : 'submitted');
-                                    setTransitionRemarks(tender.category === 'pq' ? 'Submitting PQ Application' : 'Submitting Bid');
-                                    setIsTransitionOpen(true);
-                                  }}
-                                  title="Advance to Submission"
-                                >
-                                  <CheckCircle2 className="h-3 w-3 mr-1" />
-                                  <span>{tender.category === 'pq' ? 'Submit PQ' : 'Submit Bid'}</span>
-                                </Button>
-                              )}
+                              {tender.status === 'under_preparation' && (() => {
+                                const isPqTender = (tender.category || '').toLowerCase().includes('pq');
+                                return (
+                                  <Button
+                                    size="xs"
+                                    variant="primary"
+                                    onClick={() => {
+                                      setSelectedTender(tender);
+                                      setTargetTransitionStatus(isPqTender ? 'pq_submitted' : 'submitted');
+                                      setTransitionRemarks(isPqTender ? 'Pre-qualification dossier submitted on government portal.' : 'Technical and financial bids submitted on GeM portal.');
+                                      setActionError(null);
+                                      setIsTransitionOpen(true);
+                                    }}
+                                    title="Advance to Submission"
+                                  >
+                                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                                    <span>{isPqTender ? 'Submit PQ' : 'Submit Bid'}</span>
+                                  </Button>
+                                );
+                              })()}
 
                               {['submitted', 'technical_eval', 'commercial_eval'].includes(tender.status) && (
                                 <Button
@@ -2552,17 +2655,21 @@ export default function TendersPage() {
                       <p className="text-[11px] text-[#5E6A7C] mt-0.5">{t.department}</p>
                       <p className="text-[10px] text-[#A15C07] font-semibold mt-1">Status: Awaiting Management Decision</p>
                     </div>
-                    <Button
-                      size="xs"
-                      variant="cyber"
-                      onClick={() => {
-                        setSelectedTender(t);
-                        setApprovalDecision('approved');
-                        setIsApproveOpen(true);
-                      }}
-                    >
-                      Review as Management
-                    </Button>
+                    {hasRole(['management', 'admin']) ? (
+                      <Button
+                        size="xs"
+                        variant="cyber"
+                        onClick={() => {
+                          openTenderDetails(t, 'overview');
+                        }}
+                      >
+                        Review as Management
+                      </Button>
+                    ) : (
+                      <Badge variant="warning" size="sm">
+                        Awaiting Mgmt Review
+                      </Badge>
+                    )}
                   </div>
                 ))}
               </div>
@@ -3022,6 +3129,137 @@ export default function TendersPage() {
                       <strong>Remarks:</strong> {selectedTender.remarks}
                     </div>
                   )}
+
+                  {/* Executive Decision Card on Overview Tab */}
+                  <div className="p-4 sm:p-5 rounded-xl bg-white border border-[#DCD8CE] shadow-xs space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#ECE9E2] pb-3">
+                      <div>
+                        <h4 className="font-serif font-bold text-sm text-[#14213D] flex items-center gap-2">
+                          <ShieldCheck className="w-4 h-4 text-[#0F5E63]" />
+                          Decision
+                        </h4>
+                        <p className="text-[11px] text-[#4A5568] mt-0.5">
+                          Review tender parameters, establish margin directives, and authorize pre-bid mobilization.
+                        </p>
+                      </div>
+                      <Badge
+                        variant={
+                          ['under_preparation', 'submitted', 'won'].includes(selectedTender.status)
+                            ? 'success'
+                            : selectedTender.status === 'rejected_internally'
+                            ? 'danger'
+                            : 'warning'
+                        }
+                        size="sm"
+                      >
+                        {selectedTender.status?.replace(/_/g, ' ').toUpperCase() || 'IDENTIFIED'}
+                      </Badge>
+                    </div>
+
+                    {hasRole(['management', 'admin']) ? (
+                      ['identified', 'awaiting_approval', 'awaiting_internal_approval'].includes(selectedTender.status) ? (
+                        <form onSubmit={handleApproveSubmit} className="space-y-4">
+                          {actionError && (
+                            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                              {actionError}
+                            </div>
+                          )}
+
+                          <div>
+                            <label className="block text-[11px] font-bold text-[#14213D] uppercase tracking-wider mb-1.5">
+                              Decision
+                            </label>
+                            <Select
+                              value={approvalDecision}
+                              onChange={(e) => setApprovalDecision(e.target.value as any)}
+                              options={[
+                                { value: 'approved', label: 'Approve Participation & Mobilize Preparation' },
+                                { value: 'rejected', label: 'Decline / Reject Opportunity Internally' },
+                              ]}
+                            />
+                          </div>
+
+                          {approvalDecision === 'rejected' && (
+                            <div>
+                              <label className="block text-[11px] font-bold text-[#14213D] uppercase tracking-wider mb-1.5">
+                                Rejection Justification *
+                              </label>
+                              <Select
+                                value={rejectionReason}
+                                onChange={(e) => setRejectionReason(e.target.value)}
+                                options={[
+                                  { value: '', label: '-- Select Reason --' },
+                                  { value: 'Insufficient eligibility', label: 'Insufficient eligibility (Turnover / Experience QR)' },
+                                  { value: 'Commercial concern', label: 'Commercial concern (Unviable margin or high penalty)' },
+                                  { value: 'Documentation unavailable', label: 'Documentation unavailable (OEM Authorization missing)' },
+                                  { value: 'Management decision', label: 'Management decision' },
+                                  { value: 'Other', label: 'Other operational reason' },
+                                ]}
+                              />
+                            </div>
+                          )}
+
+                          <div>
+                            <label className="block text-[11px] font-bold text-[#14213D] uppercase tracking-wider mb-1.5">
+                              Directives / Remarks*
+                            </label>
+                            <Input
+                              value={approvalRemarks}
+                              onChange={(e) => setApprovalRemarks(e.target.value)}
+                              placeholder="e.g. Approved with Belgian OEM authorization. Ensure 2% margin."
+                              required
+                            />
+                          </div>
+
+                          <div className="pt-1 flex items-center justify-end">
+                            <Button
+                              type="submit"
+                              size="sm"
+                              variant={approvalDecision === 'approved' ? 'primary' : 'danger'}
+                              isLoading={isSubmitting}
+                              className={approvalDecision === 'approved' ? 'bg-[#0F5E63] hover:bg-[#0B4A4E] text-white font-medium px-4' : ''}
+                              leftIcon={approvalDecision === 'approved' ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}
+                            >
+                              {approvalDecision === 'approved'
+                                ? 'Approve Participation & Mobilize Preparation'
+                                : 'Decline & Reject Opportunity'}
+                            </Button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <CheckCircle2 className="w-4 h-4 text-[#0F5E63]" />
+                              <span className="text-xs font-bold text-[#14213D]">
+                                Decision Recorded: {selectedTender.status?.replace(/_/g, ' ').toUpperCase()}
+                              </span>
+                            </div>
+                            {selectedTender.internal_approval_at && (
+                              <span className="text-[11px] font-mono text-[#4A5568]">
+                                {new Date(selectedTender.internal_approval_at).toLocaleString('en-IN')}
+                              </span>
+                            )}
+                          </div>
+                          {(selectedTender.approval_conditions || selectedTender.remarks) && (
+                            <p className="text-xs text-[#4A5568] bg-white p-2.5 rounded-lg border border-[#DCD8CE]">
+                              <strong>Directives / Remarks:</strong> {selectedTender.approval_conditions || selectedTender.remarks}
+                            </p>
+                          )}
+                        </div>
+                      )
+                    ) : (
+                      <div className="p-3.5 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#4A5568] flex items-center gap-3">
+                        <ShieldAlert className="w-5 h-5 text-[#9A3412] shrink-0" />
+                        <div>
+                          <span className="font-semibold text-[#14213D] block mb-0.5">
+                            Strict Governance: Management Review Required
+                          </span>
+                          Only Management and Admin roles are authorized to record tender participation decisions during Internal Review.
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -3068,30 +3306,48 @@ export default function TendersPage() {
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-2 pt-2">
-                        <Button
-                          size="sm"
-                          variant="primary"
-                          onClick={() => {
-                            setApprovalDecision('approved');
-                            setIsApproveOpen(true);
-                          }}
-                          leftIcon={<Check className="h-4 w-4" />}
-                        >
-                          Approve & Start Preparation
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          onClick={() => {
-                            setApprovalDecision('rejected');
-                            setIsApproveOpen(true);
-                          }}
-                          leftIcon={<X className="h-4 w-4" />}
-                        >
-                          Reject Participation
-                        </Button>
-                      </div>
+                      {hasRole(['management', 'admin']) ? (
+                        <div className="flex items-center gap-2 pt-2">
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => {
+                              setApprovalDecision('approved');
+                              setIsApproveOpen(true);
+                            }}
+                            leftIcon={<Check className="h-4 w-4" />}
+                          >
+                            Approve & Start Preparation
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => {
+                              setApprovalDecision('rejected');
+                              setIsApproveOpen(true);
+                            }}
+                            leftIcon={<X className="h-4 w-4" />}
+                          >
+                            Reject Participation
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-t border-amber-200/60 mt-2">
+                          <span className="text-xs text-amber-800 font-medium">
+                            Strict Governance: Only Management and Admin roles can approve or reject participation during Internal Review.
+                          </span>
+                          {selectedTender.status === 'identified' && (
+                            <Button
+                              size="xs"
+                              variant="primary"
+                              onClick={() => handleQuickRequestApproval(selectedTender)}
+                              leftIcon={<Send className="h-3 w-3" />}
+                            >
+                              Submit for Review
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-2">
@@ -3625,10 +3881,12 @@ export default function TendersPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Select
               label="Assigned Salesperson"
+              placeholder="-- Select Assigned Salesperson --"
+              helperText="Ground executive managing client meetings, QRs, trials & depot demos."
               value={newTender.assigned_person_id}
               onChange={(e) => setNewTender({ ...newTender, assigned_person_id: e.target.value })}
             >
-              <option value="">-- Assign Salesperson --</option>
+              <option value="">-- Unassigned (None) --</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.full_name} ({u.role?.replace(/_/g, ' ')})
@@ -3638,6 +3896,8 @@ export default function TendersPage() {
 
             <Select
               label="Tender Owner (Responsible Executive)"
+              placeholder="-- Default (Same as Assigned) --"
+              helperText="Accountable executive for bid review, approvals & GeM submission."
               value={newTender.tender_owner_id}
               onChange={(e) => setNewTender({ ...newTender, tender_owner_id: e.target.value })}
             >
@@ -4087,6 +4347,7 @@ export default function TendersPage() {
         }}
         tenderId={dossierTenderId}
         currentUser={user}
+        users={users}
         onTenderUpdated={() => {
           fetchTenders();
           fetchDashboardStats();

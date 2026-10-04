@@ -374,9 +374,18 @@ export class TendersController {
   }
 
   @Put(':id')
-  @Patch(':id')
   @Roles('management', 'regional_manager', 'tender_team', 'sales', 'admin')
   async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTenderDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.update(id, dto, user);
+  }
+
+  @Patch(':id')
+  @Roles('management', 'regional_manager', 'tender_team', 'sales', 'admin')
+  async patchUpdate(
     @Param('id') id: string,
     @Body() dto: UpdateTenderDto,
     @CurrentUser() user: AuthUser,
@@ -464,13 +473,31 @@ export class TendersController {
   }
 
   @Post(':id/approve')
-  @Roles('management', 'regional_manager', 'admin')
+  @Roles('management', 'admin')
   async approveParticipation(
     @Param('id') id: string,
     @Body() dto: ApproveTenderDto,
     @CurrentUser() user: AuthUser,
   ) {
     return this.tendersService.approveParticipation(id, dto, user);
+  }
+
+  @Post(':id/reject')
+  @Roles('management', 'admin')
+  async rejectParticipation(
+    @Param('id') id: string,
+    @Body() dto: { reason?: string; rejection_reason?: string; remarks?: string },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.approveParticipation(
+      id,
+      {
+        decision: 'rejected',
+        rejection_reason: dto.rejection_reason || dto.reason || dto.remarks,
+        remarks: dto.remarks || dto.reason,
+      },
+      user,
+    );
   }
 
   @Post(':id/deadline-change')
@@ -650,7 +677,7 @@ export class TendersController {
   }
 
   @Post(':id/documents')
-  @Roles('management', 'regional_manager', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
   async addDocument(
     @Param('id') id: string,
     @Body() dto: CreateTenderDocumentDto,
@@ -660,13 +687,13 @@ export class TendersController {
   }
 
   @Post(':id/documents/init-checklist')
-  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async initChecklist(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.tendersService.initChecklist(id, user);
   }
 
   @Patch(':id/documents/:docId')
-  @Roles('management', 'regional_manager', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
   async updateDocument(
     @Param('id') id: string,
     @Param('docId') docId: string,
@@ -677,7 +704,7 @@ export class TendersController {
   }
 
   @Delete(':id/documents/:docId')
-  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async deleteDocument(
     @Param('id') id: string,
     @Param('docId') docId: string,

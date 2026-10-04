@@ -1255,7 +1255,7 @@ export class TendersService {
     if (dto.city !== undefined) updatePayload.city = dto.city?.trim() || null;
     if (dto.state !== undefined) updatePayload.state = dto.state?.trim() || null;
     if (dto.portal !== undefined) updatePayload.portal = dto.portal;
-    if ((dto as any).tender_url !== undefined) updatePayload.tender_url = (dto as any).tender_url;
+    if ((dto as any).tender_url !== undefined) updatePayload.tender_url = (dto as any).tender_url || null;
     if (dto.remarks !== undefined) updatePayload.remarks = dto.remarks;
     if ((dto as any).prep_checklist_done !== undefined) {
       updatePayload.prep_checklist_done = (dto as any).prep_checklist_done;
@@ -1288,6 +1288,12 @@ export class TendersService {
       updatePayload.assigned_person_id = a;
     }
 
+    if (dto.tender_owner_id !== undefined || (dto as any).owner !== undefined) {
+      const o = dto.tender_owner_id || (dto as any).owner || null;
+      updatePayload.tender_owner_id = o;
+      updatePayload.owner = o;
+    }
+
     if (dto.estimated_value !== undefined) updatePayload.estimated_value = dto.estimated_value;
     else if (dto.estimated_value_lakh !== undefined) {
       updatePayload.estimated_value = Number(dto.estimated_value_lakh) * 100000;
@@ -1298,6 +1304,10 @@ export class TendersService {
       .set(updatePayload)
       .where('id', '=', id)
       .execute();
+
+    if (dto.assigned_to !== undefined || dto.assigned_person_id !== undefined || dto.tender_owner_id !== undefined || (dto as any).owner !== undefined) {
+      await this.logActivity(id, 'TEAM_REASSIGNED', 'Updated tender team ownership / assignment', user.id);
+    }
 
     return this.findOne(id);
   }
@@ -1655,6 +1665,12 @@ export class TendersService {
    * Decide Internal Approval (Approve / Reject)
    */
   async approveParticipation(id: string, dto: ApproveTenderDto, user: AuthUser) {
+    if (user.role !== 'management' && user.role !== 'admin') {
+      throw new ForbiddenException(
+        'Strict Governance: Only Management and Admin roles are authorized to approve or reject tender participation during internal review.',
+      );
+    }
+
     const existing = await this.findOne(id);
     const normStatus = this.workflowService.normalizeStatus(existing.status);
 
@@ -1672,7 +1688,8 @@ export class TendersService {
         .execute();
     }
 
-    const decision = dto.decision.toLowerCase().trim();
+    const rawDecision = dto.decision || 'approved';
+    const decision = rawDecision.toLowerCase().trim();
     if (decision !== 'approved' && decision !== 'rejected') {
       throw new BadRequestException('Decision must be either "approved" or "rejected"');
     }
@@ -3365,7 +3382,11 @@ export class TendersService {
 
   async getLineItems(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const items = await this.db
       .selectFrom('tender_line_items')
@@ -3400,7 +3421,11 @@ export class TendersService {
 
   async addLineItem(tenderId: string, dto: CreateTenderLineItemDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     let quotedTotal = dto.quoted_total;
     if (quotedTotal === undefined && dto.quoted_unit_price !== undefined) {
@@ -3438,7 +3463,11 @@ export class TendersService {
 
   async updateLineItem(tenderId: string, itemId: string, dto: UpdateTenderLineItemDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const updateData: any = { updated_at: new Date() };
     if (dto.product_id !== undefined) updateData.product_id = dto.product_id;
@@ -3469,7 +3498,11 @@ export class TendersService {
 
   async deleteLineItem(tenderId: string, itemId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     await this.db
       .deleteFrom('tender_line_items')
@@ -3487,7 +3520,11 @@ export class TendersService {
 
   async getDocuments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const docs = await this.db
       .selectFrom('tender_documents')
@@ -3515,7 +3552,11 @@ export class TendersService {
 
   async addDocument(tenderId: string, dto: CreateTenderDocumentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const doc = await this.db
       .insertInto('tender_documents')
@@ -3541,14 +3582,18 @@ export class TendersService {
 
   async updateDocument(tenderId: string, docId: string, dto: UpdateTenderDocumentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const updateData: any = { updated_at: new Date() };
     if (dto.document_type !== undefined) updateData.document_type = dto.document_type;
     if (dto.is_mandatory !== undefined) updateData.is_mandatory = dto.is_mandatory;
     if (dto.status !== undefined) updateData.status = dto.status;
-    if (dto.file_url !== undefined) updateData.file_url = dto.file_url;
-    if (dto.file_name !== undefined) updateData.file_name = dto.file_name;
+    if (dto.file_url !== undefined) updateData.file_url = dto.file_url || null;
+    if (dto.file_name !== undefined) updateData.file_name = dto.file_name || null;
     if (dto.file_size !== undefined) updateData.file_size = dto.file_size;
     if (dto.mime_type !== undefined) updateData.mime_type = dto.mime_type;
     if (dto.owner_id !== undefined) updateData.owner_id = dto.owner_id;
@@ -3564,10 +3609,26 @@ export class TendersService {
       .executeTakeFirst();
 
     if (!updated) throw new NotFoundException(`Document ${docId} not found on tender ${tenderId}`);
+    
+    // Automatically synchronize document readiness with tender prep_checklist_done
+    const allDocs = await this.db
+      .selectFrom('tender_documents')
+      .selectAll()
+      .where('tender_id', '=', tenderId)
+      .execute();
+    const mandatoryDocs = allDocs.filter((d) => d.is_mandatory);
+    const allMandatoryReady = mandatoryDocs.length > 0 && mandatoryDocs.every((d) => ['Ready', 'Not Applicable'].includes(d.status));
+
+    await this.db
+      .updateTable('tenders')
+      .set({ prep_checklist_done: allMandatoryReady, updated_at: new Date() })
+      .where('id', '=', tenderId)
+      .execute();
+
     await this.logActivity(
       tenderId,
       'DOCUMENT_UPDATED',
-      `Updated document ${updated.document_type} status to ${updated.status}`,
+      `Updated document ${updated.document_type} status to ${updated.status} (Readiness: ${allMandatoryReady ? 'Complete' : 'In Progress'})`,
       user.id,
     );
     return updated;
@@ -3575,7 +3636,11 @@ export class TendersService {
 
   async deleteDocument(tenderId: string, docId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     await this.db
       .deleteFrom('tender_documents')
@@ -3589,7 +3654,11 @@ export class TendersService {
 
   async initChecklist(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     let catCode = 'general';
     if (tender.category_name) {
@@ -3666,7 +3735,11 @@ export class TendersService {
 
   async addCorrigendum(tenderId: string, dto: CreateTenderCorrigendumDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const oldDeadline = tender.submission_deadline ? new Date(tender.submission_deadline) : new Date();
     const newDeadline = this.parseDateTimeIST(dto.new_deadline);
@@ -3712,7 +3785,11 @@ export class TendersService {
 
   async getFinancialInstruments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     return this.db
       .selectFrom('tender_financial_instruments')
@@ -3726,7 +3803,11 @@ export class TendersService {
 
   async addFinancialInstrument(tenderId: string, dto: CreateTenderFinancialInstrumentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const inst = await this.db
       .insertInto('tender_financial_instruments')
@@ -3762,7 +3843,11 @@ export class TendersService {
     user: AuthUser,
   ) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const updateData: any = { updated_at: new Date() };
     if (dto.amount !== undefined) updateData.amount = dto.amount;
@@ -3855,7 +3940,11 @@ export class TendersService {
 
   async getComments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     return this.db
       .selectFrom('tender_comments')
@@ -3869,7 +3958,11 @@ export class TendersService {
 
   async addComment(tenderId: string, dto: CreateTenderCommentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id);
+    assertRegionScope(user, tender.region_id, {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
+    });
 
     const mentions = Array.isArray(dto.mentions) ? dto.mentions : [];
 

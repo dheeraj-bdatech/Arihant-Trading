@@ -362,9 +362,10 @@ export class UpdateTenderDto {
   @IsOptional()
   owner?: string;
 
-  @IsString()
   @IsOptional()
-  tender_url?: string;
+  @ValidateIf((o, v) => v !== null)
+  @IsString()
+  tender_url?: string | null;
 
   @Matches(UUID_PATTERN)
   @IsOptional()
@@ -1310,13 +1311,15 @@ export class UpdateTenderDocumentDto {
   @IsOptional()
   status?: string;
 
-  @IsString()
   @IsOptional()
-  file_url?: string;
+  @ValidateIf((o, v) => v !== null)
+  @IsString()
+  file_url?: string | null;
 
-  @IsString()
   @IsOptional()
-  file_name?: string;
+  @ValidateIf((o, v) => v !== null)
+  @IsString()
+  file_name?: string | null;
 
   @IsNumber()
   @IsOptional()
@@ -1327,8 +1330,9 @@ export class UpdateTenderDocumentDto {
   mime_type?: string;
 
   @IsOptional()
+  @ValidateIf((o, v) => Boolean(v))
   @Matches(UUID_PATTERN)
-  owner_id?: string;
+  owner_id?: string | null;
 
   @IsDateString()
   @IsOptional()

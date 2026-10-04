@@ -69,6 +69,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               badgeVariant: 'cyber',
             },
             {
+              label: 'My Assigned Tenders',
+              href: '/tenders?scope=my_tenders',
+              icon: FileText,
+              moduleKey: 'tenders',
+              badge: 'Bids',
+              badgeVariant: 'urgent',
+            },
+            {
               label: 'Commercial Price Quotes',
               href: '/proposals',
               icon: FileSpreadsheet,
@@ -744,6 +752,9 @@ export const Sidebar: React.FC = () => {
     if (!user) return false;
     if (moduleKey === 'reports') {
       return ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'].includes(user.role);
+    }
+    if (moduleKey === 'tenders' && user.role === 'sales') {
+      return true;
     }
     return roleProfile?.allowedModules?.includes(moduleKey as BosModuleKey);
   };

@@ -13,7 +13,7 @@ import type { UserRole } from '@arihant/shared';
 
 const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] }[] = [
   { path: '/regional', name: 'Regional Territory Command', roles: ['regional_manager', 'management', 'admin'] },
-  { path: '/tenders', name: 'GeM Defence Tenders', roles: ['management', 'regional_manager', 'tender_team', 'admin'] },
+  { path: '/tenders', name: 'GeM Defence Tenders', roles: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'] },
   { path: '/leads', name: 'Leads & CRM Accounts', roles: ['management', 'regional_manager', 'sales', 'admin'] },
   { path: '/visits', name: 'Field Tour Planner', roles: ['management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin'] },
   { path: '/demos', name: 'Demo Fleet Matrix', roles: ['management', 'regional_manager', 'sales', 'demo_team', 'admin'] },

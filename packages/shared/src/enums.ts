@@ -648,7 +648,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
     capabilities: {
       canViewAllIndia: false,
       canSwitchZones: false,
-      canApproveTenders: true,
+      canApproveTenders: false,
       canSubmitTenderBids: false,
       canManageDemos: true,
       canManageService: true,
@@ -673,6 +673,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
     territorialScope: 'assigned_accounts',
     allowedModules: [
       'dashboard',
+      'tenders',
       'leads',
       'visits',
       'demos',

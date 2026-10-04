@@ -383,6 +383,24 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
       expect(res.status).toBe(403);
     });
 
+    it('Strict Governance: blocks regional manager from approving during internal review', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/tenders/${approverTenderId}/approve`)
+        .set('Authorization', `Bearer ${rmToken}`)
+        .send({ decision: 'approved', remarks: 'Regional manager attempting approval' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('Strict Governance: blocks regional manager from rejecting during internal review', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/tenders/${approverTenderId}/approve`)
+        .set('Authorization', `Bearer ${rmToken}`)
+        .send({ decision: 'rejected', rejection_reason: 'Commercial risk too high' });
+
+      expect(res.status).toBe(403);
+    });
+
     it('Edge Case 8: reject without a reason is blocked', async () => {
       const res = await request(app.getHttpServer())
         .post(`/api/tenders/${approverTenderId}/approve`)
