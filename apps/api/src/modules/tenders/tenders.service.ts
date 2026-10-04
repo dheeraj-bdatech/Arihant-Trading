@@ -46,6 +46,21 @@ import {
   CreateTenderCategoryDto,
   UpdateTenderCategoryDto,
   ImportTenderSheetDto,
+  CreateTenderLineItemDto,
+  UpdateTenderLineItemDto,
+  CreateTenderDocumentDto,
+  UpdateTenderDocumentDto,
+  CreateTenderCorrigendumDto,
+  CreateTenderFinancialInstrumentDto,
+  UpdateTenderFinancialInstrumentDto,
+  CreateTenderCommentDto,
+  CreateTenderDelegationDto,
+  CreateApprovalRuleDto,
+  CreateLinkedTenderDto,
+  CreateSalesOrderFromTenderDto,
+  CreateCompetitorDto,
+  CreateTenderPortalDto,
+  CreateRegionMappingDto,
 } from './tenders.dto.js';
 
 @Injectable()
@@ -692,6 +707,7 @@ export class TendersService {
         'zones.name as zone_name',
         'regions.name as region_name',
         'tender_categories.name as category_name',
+        'tender_categories.code as category_code',
         'tender_categories.requires_pq as category_requires_pq',
         'assignee.full_name as assigned_to_name',
         'owner.full_name as tender_owner_name',
@@ -706,7 +722,20 @@ export class TendersService {
     }
 
     // Parallel child queries
-    const [history, outcomes, resultRow, approvals, portalIssues, deadlineChanges, activities] = await Promise.all([
+    const [
+      history,
+      outcomes,
+      resultRow,
+      approvals,
+      portalIssues,
+      deadlineChanges,
+      activities,
+      lineItems,
+      documents,
+      corrigenda,
+      financialInstruments,
+      comments,
+    ] = await Promise.all([
       this.db
         .selectFrom('tender_status_history')
         .leftJoin('users', 'tender_status_history.changed_by', 'users.id')
@@ -773,6 +802,50 @@ export class TendersService {
         .where('tender_id', '=', id)
         .orderBy('tender_activities.created_at', 'desc')
         .execute(),
+      this.db
+        .selectFrom('tender_line_items')
+        .leftJoin('products', 'tender_line_items.product_id', 'products.id')
+        .selectAll('tender_line_items')
+        .select([
+          'products.name as product_name',
+          'products.gem_listed as product_gem_listed',
+          'products.gem_catalogue_id as product_gem_catalogue_id',
+        ])
+        .where('tender_line_items.tender_id', '=', id)
+        .orderBy('tender_line_items.created_at', 'asc')
+        .execute(),
+      this.db
+        .selectFrom('tender_documents')
+        .leftJoin('users', 'tender_documents.owner_id', 'users.id')
+        .selectAll('tender_documents')
+        .select('users.full_name as owner_name')
+        .where('tender_documents.tender_id', '=', id)
+        .orderBy('tender_documents.created_at', 'asc')
+        .execute(),
+      this.db
+        .selectFrom('tender_corrigenda')
+        .leftJoin('users', 'tender_corrigenda.created_by', 'users.id')
+        .selectAll('tender_corrigenda')
+        .select('users.full_name as created_by_name')
+        .where('tender_corrigenda.tender_id', '=', id)
+        .orderBy('tender_corrigenda.created_at', 'desc')
+        .execute(),
+      this.db
+        .selectFrom('tender_financial_instruments')
+        .leftJoin('users', 'tender_financial_instruments.finance_owner_id', 'users.id')
+        .selectAll('tender_financial_instruments')
+        .select('users.full_name as finance_owner_name')
+        .where('tender_financial_instruments.tender_id', '=', id)
+        .orderBy('tender_financial_instruments.created_at', 'desc')
+        .execute(),
+      this.db
+        .selectFrom('tender_comments')
+        .leftJoin('users', 'tender_comments.author_id', 'users.id')
+        .selectAll('tender_comments')
+        .select(['users.full_name as author_name', 'users.email as author_email'])
+        .where('tender_comments.tender_id', '=', id)
+        .orderBy('tender_comments.created_at', 'asc')
+        .execute(),
     ]);
 
     const deadline = tender.submission_deadline || tender.bid_closing_date;
@@ -784,6 +857,9 @@ export class TendersService {
       daysLeft = Math.ceil(diffMs / (24 * 3600 * 1000));
       hoursLeft = Math.round(diffMs / (3600 * 1000));
     }
+
+    const readyOrNaDocs = documents.filter((d) => ['Ready', 'Not Applicable'].includes(d.status)).length;
+    const docCompletionPercent = documents.length > 0 ? Math.round((readyOrNaDocs / documents.length) * 100) : 100;
 
     return {
       ...tender,
@@ -802,6 +878,12 @@ export class TendersService {
       portal_issues: portalIssues,
       deadline_changes: deadlineChanges,
       activities,
+      line_items: lineItems,
+      documents,
+      document_completion_percentage: docCompletionPercent,
+      corrigenda,
+      financial_instruments: financialInstruments,
+      comments,
     };
   }
 
@@ -953,12 +1035,31 @@ export class TendersService {
     const initialStatus = 'identified';
     const estValue = dto.estimated_value ?? (dto.estimated_value_lakh ? Number(dto.estimated_value_lakh) * 100000 : null);
 
+    let portalId = dto.portal_id || null;
+    if (!portalId && (dto.portal || dto.tender_portal_url)) {
+      const pRec = await this.db
+        .selectFrom('tender_portals')
+        .select('id')
+        .where((eb) =>
+          eb.or([
+            eb(sql`lower(name)`, '=', (dto.portal || 'gem').toLowerCase().trim()),
+            eb(sql`lower(code)`, '=', (dto.portal || 'gem').toLowerCase().trim()),
+          ]),
+        )
+        .executeTakeFirst();
+      if (pRec) portalId = pRec.id;
+    }
+
     const created = await this.db.transaction().execute(async (trx) => {
       const tender = await trx
         .insertInto('tenders')
         .values({
           tender_no: tenderNumber,
           tender_number: tenderNumber,
+          tender_title: dto.tender_title || dto.requirement_text || tenderNumber,
+          portal_id: portalId,
+          tender_portal_url: dto.tender_portal_url || (dto as any).tender_url || null,
+          buyer_contact_id: dto.buyer_contact_id || null,
           organisation_id: orgId,
           organisation: orgName,
           department: dto.department?.trim() || null,
@@ -968,35 +1069,110 @@ export class TendersService {
           state: dto.state?.trim() || null,
           zone_id: zoneId,
           region_id: regionId,
+          tender_category_id: categoryId,
           category: categoryCode as any,
           category_id: categoryId,
+          tender_type: dto.tender_type || 'Open',
+          salesperson_id: dto.salesperson_id || null,
           quantity: dto.quantity || 1,
           bidder_turnover: dto.bidder_turnover || null,
           oem_turnover: dto.oem_turnover || null,
-          emd_fee: dto.emd_fee || 0,
+          emd_required: dto.emd_required ?? false,
+          emd_fee: dto.emd_fee || dto.emd_amount || 0,
+          emd_amount: dto.emd_amount || dto.emd_fee || 0,
+          emd_mode: dto.emd_mode || 'Online',
+          emd_exemption_reason: dto.emd_exemption_reason || null,
+          tender_fee_amount: dto.tender_fee_amount || null,
           publish_date: publicationDate || null,
           publication_date: publicationDate || null,
           bid_closing_date: submissionDeadline.toISOString(),
           submission_deadline: submissionDeadline.toISOString(),
+          pre_bid_meeting_date: dto.pre_bid_meeting_date ? new Date(dto.pre_bid_meeting_date).toISOString() : null,
+          query_submission_deadline: dto.query_submission_deadline ? new Date(dto.query_submission_deadline).toISOString() : null,
+          technical_opening_date: dto.technical_opening_date ? new Date(dto.technical_opening_date).toISOString() : null,
+          commercial_opening_date: dto.commercial_opening_date ? new Date(dto.commercial_opening_date).toISOString() : null,
+          bid_validity_days: dto.bid_validity_days || null,
           assigned_to: assignedTo,
           assigned_person_id: assignedTo,
           tender_owner_id: owner,
           owner: owner,
+          priority: dto.priority || 'Medium',
+          source: dto.source || 'Manual Entry',
           status: initialStatus,
           on_hold: false,
           prep_checklist_done: false,
           estimated_value: estValue,
           tender_value: dto.tender_value || null,
           portal: dto.portal || 'GeM',
-          tender_url: (dto as any).tender_url || null,
+          tender_url: (dto as any).tender_url || dto.tender_portal_url || null,
+          parent_tender_id: dto.parent_tender_id || null,
+          linked_pq_tender_id: dto.linked_pq_tender_id || null,
           remarks: dto.remarks || null,
           created_by: user.id,
           version: 1,
           last_activity_at: new Date(),
           extra_fields: (dto as any).extra_fields ? JSON.stringify((dto as any).extra_fields) : ('{}' as any),
+          custom_fields: dto.custom_fields ? JSON.stringify(dto.custom_fields) : ('{}' as any),
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+
+      // Insert line items if provided
+      if (Array.isArray(dto.line_items) && dto.line_items.length > 0) {
+        for (const li of dto.line_items) {
+          await trx
+            .insertInto('tender_line_items')
+            .values({
+              tender_id: tender.id,
+              product_id: li.product_id || null,
+              product_description: li.product_description || null,
+              quantity: li.quantity || 1,
+              unit: li.unit || 'Nos',
+              specification_summary: li.specification_summary || null,
+              is_compliant: li.is_compliant || 'Not Checked',
+              compliance_remarks: li.compliance_remarks || null,
+              quoted_unit_price: li.quoted_unit_price || null,
+              quoted_total: li.quoted_total || (li.quoted_unit_price ? Number(li.quoted_unit_price) * Number(li.quantity || 1) : null),
+            })
+            .execute();
+        }
+      }
+
+      // Auto-initialize document checklist for category
+      const templates = await trx
+        .selectFrom('document_checklist_templates')
+        .selectAll()
+        .where('category_code', '=', categoryCode)
+        .orderBy('sort_order', 'asc')
+        .execute();
+
+      for (const t of templates) {
+        await trx
+          .insertInto('tender_documents')
+          .values({
+            tender_id: tender.id,
+            document_type: t.document_type,
+            is_mandatory: t.is_mandatory,
+            status: 'Not Started',
+            owner_id: assignedTo || user.id,
+          })
+          .execute();
+      }
+
+      // Auto-create EMD financial instrument if required
+      if (dto.emd_required) {
+        await trx
+          .insertInto('tender_financial_instruments')
+          .values({
+            tender_id: tender.id,
+            instrument_type: 'EMD',
+            amount: dto.emd_amount || dto.emd_fee || 0,
+            mode: dto.emd_mode || 'Online',
+            status: 'Requested',
+            remarks: dto.emd_exemption_reason || null,
+          })
+          .execute();
+      }
 
       // Initial status history
       await trx
@@ -1640,9 +1816,9 @@ export class TendersService {
       throw new ConflictException('This tender was updated by someone else – refresh');
     }
 
-    const outcome = dto.outcome.toLowerCase().trim();
-    if (outcome !== 'won' && outcome !== 'lost') {
-      throw new BadRequestException('Outcome must be either "won" or "lost"');
+    const outcome = dto.outcome.toLowerCase().trim() as 'won' | 'lost' | 'partially_won';
+    if (outcome !== 'won' && outcome !== 'lost' && outcome !== 'partially_won') {
+      throw new BadRequestException('Outcome must be "won", "lost", or "partially_won"');
     }
 
     // Rule: "Allowed only if the tender has a PQ_SUBMITTED or TENDER_SUBMITTED entry in history."
@@ -1688,11 +1864,11 @@ export class TendersService {
 
     // Rule: WON requires value > 0 when require_won_value is on
     const settings = await this.getSettings();
-    const targetStatus = outcome === 'won' ? 'WON' : 'LOST';
+    const targetStatus = outcome === 'won' ? 'WON' : outcome === 'partially_won' ? 'PARTIALLY_WON' : 'LOST';
 
     const tenderVal = dto.value !== undefined ? dto.value : ((dto as any).value_lakh ? Number((dto as any).value_lakh) * 100000 : undefined);
 
-    if (outcome === 'won') {
+    if (outcome === 'won' || outcome === 'partially_won') {
       if (settings?.require_won_value) {
         if (!tenderVal || tenderVal <= 0) {
           throw new BadRequestException('Won value is required and must be greater than zero');
@@ -1771,9 +1947,24 @@ export class TendersService {
         .values({
           tender_id: id,
           outcome,
+          result: outcome.toUpperCase(),
           result_date: resultDayStr,
           value: tenderVal || null,
+          awarded_value: (dto as any).awarded_value || (outcome === 'won' || outcome === 'partially_won' ? tenderVal : null),
+          awarded_line_items: (dto as any).awarded_line_items ? JSON.stringify((dto as any).awarded_line_items) : ('[]' as any),
+          order_number: (dto as any).order_number || (dto as any).po_number || null,
+          loa_number: (dto as any).loa_number || null,
+          po_number: (dto as any).po_number || null,
+          loa_date: (dto as any).loa_date || null,
+          pbg_required: Boolean((dto as any).pbg_required),
+          pbg_amount: (dto as any).pbg_amount || null,
+          pbg_due_date: (dto as any).pbg_due_date || null,
           loss_reasons: lossReasonsList as any,
+          loss_reason_detail: dto.other_reason_text?.trim() || (dto as any).loss_reason_detail || null,
+          winning_price: (dto as any).winning_price || null,
+          our_price: (dto as any).our_price || null,
+          our_rank: (dto as any).our_rank || null,
+          lessons_learned: (dto as any).lessons_learned || null,
           other_reason_text: dto.other_reason_text?.trim() || null,
           competitor: dto.competitor?.trim() || null,
           notes: dto.notes?.trim() || null,
@@ -1783,8 +1974,35 @@ export class TendersService {
           assigned_to: (dto as any).responsible_person_id || existing.assigned_to,
           category_id: existing.category_id,
           product_id: (dto as any).product_id || existing.product_id,
+          recorded_by: user.id,
+          recorded_at: new Date(),
         })
         .execute();
+
+      // Finance Integration: If lost, automatically move EMD status to Refund Due
+      if (outcome === 'lost') {
+        await trx
+          .updateTable('tender_financial_instruments')
+          .set({ status: 'Refund Due', updated_at: new Date() })
+          .where('tender_id', '=', id)
+          .where('instrument_type', '=', 'EMD')
+          .where('status', 'in', ['Issued', 'Submitted', 'Requested', 'Approved'])
+          .execute();
+      }
+
+      // Finance Integration: If won and PBG required, create PBG instrument request
+      if ((outcome === 'won' || outcome === 'partially_won') && (dto as any).pbg_required) {
+        await trx
+          .insertInto('tender_financial_instruments')
+          .values({
+            tender_id: id,
+            instrument_type: 'PBG',
+            amount: (dto as any).pbg_amount || 0,
+            status: 'Requested',
+            remarks: `PBG due by ${(dto as any).pbg_due_date || 'LoA deadline'}`,
+          })
+          .execute();
+      }
 
       // Backwards compatibility with tender_outcomes
       await trx
@@ -2327,6 +2545,29 @@ export class TendersService {
         }
       }
     });
+  }
+
+  private async logActivity(
+    tenderId: string,
+    eventType: string,
+    description: string,
+    performedBy: string,
+    metadata?: any,
+  ) {
+    try {
+      await this.db
+        .insertInto('tender_activities')
+        .values({
+          tender_id: tenderId,
+          event_type: eventType,
+          description,
+          performed_by: performedBy,
+          metadata: metadata ? (typeof metadata === 'string' ? JSON.parse(metadata) : metadata) : null,
+        })
+        .execute();
+    } catch (err: any) {
+      this.logger.warn(`Failed to log tender activity for ${tenderId}: ${err?.message}`);
+    }
   }
 
   // =========================================================================
@@ -3116,5 +3357,1037 @@ export class TendersService {
       skipped: rows.length - (insertedCount + updatedCount),
       reports: rowReports,
     };
+  }
+
+  // =========================================================================
+  // Tender Line Items (Products, Quantity, Compliance & Quoted Pricing)
+  // =========================================================================
+
+  async getLineItems(tenderId: string, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const items = await this.db
+      .selectFrom('tender_line_items')
+      .leftJoin('products', 'tender_line_items.product_id', 'products.id')
+      .selectAll('tender_line_items')
+      .select([
+        'products.name as product_name',
+        'products.gem_listed as product_gem_listed',
+        'products.gem_catalogue_id as product_gem_catalogue_id',
+      ])
+      .where('tender_line_items.tender_id', '=', tenderId)
+      .orderBy('tender_line_items.created_at', 'asc')
+      .execute();
+
+    // Field-level security: strip quoted prices if user is salesperson/technical and not assigned
+    const canSeePrices =
+      ['admin', 'management', 'tender_team', 'regional_manager', 'accounts'].includes(user.role) ||
+      tender.assigned_to === user.id ||
+      tender.owner === user.id;
+
+    return items.map((item) => {
+      const isGemListed = item.product_gem_listed ?? false;
+      const gemWarning = !isGemListed;
+      return {
+        ...item,
+        gem_warning: gemWarning,
+        quoted_unit_price: canSeePrices ? item.quoted_unit_price : null,
+        quoted_total: canSeePrices ? item.quoted_total : null,
+      };
+    });
+  }
+
+  async addLineItem(tenderId: string, dto: CreateTenderLineItemDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    let quotedTotal = dto.quoted_total;
+    if (quotedTotal === undefined && dto.quoted_unit_price !== undefined) {
+      quotedTotal = Number(dto.quoted_unit_price) * Number(dto.quantity || 1);
+    }
+
+    const newItem = await this.db
+      .insertInto('tender_line_items')
+      .values({
+        tender_id: tenderId,
+        product_id: dto.product_id || null,
+        product_description: dto.product_description || null,
+        quantity: dto.quantity,
+        unit: dto.unit || 'Nos',
+        specification_summary: dto.specification_summary || null,
+        is_compliant: dto.is_compliant || 'Not Checked',
+        compliance_remarks: dto.compliance_remarks || null,
+        quoted_unit_price: dto.quoted_unit_price || null,
+        quoted_total: quotedTotal || null,
+        awarded: dto.awarded || false,
+        awarded_quantity: dto.awarded_quantity || null,
+        awarded_unit_price: dto.awarded_unit_price || null,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    await this.logActivity(
+      tenderId,
+      'LINE_ITEM_ADDED',
+      `Added product/line item: ${dto.product_description || dto.product_id}`,
+      user.id,
+    );
+    return newItem;
+  }
+
+  async updateLineItem(tenderId: string, itemId: string, dto: UpdateTenderLineItemDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const updateData: any = { updated_at: new Date() };
+    if (dto.product_id !== undefined) updateData.product_id = dto.product_id;
+    if (dto.product_description !== undefined) updateData.product_description = dto.product_description;
+    if (dto.quantity !== undefined) updateData.quantity = dto.quantity;
+    if (dto.unit !== undefined) updateData.unit = dto.unit;
+    if (dto.specification_summary !== undefined) updateData.specification_summary = dto.specification_summary;
+    if (dto.is_compliant !== undefined) updateData.is_compliant = dto.is_compliant;
+    if (dto.compliance_remarks !== undefined) updateData.compliance_remarks = dto.compliance_remarks;
+    if (dto.quoted_unit_price !== undefined) updateData.quoted_unit_price = dto.quoted_unit_price;
+    if (dto.quoted_total !== undefined) updateData.quoted_total = dto.quoted_total;
+    if (dto.awarded !== undefined) updateData.awarded = dto.awarded;
+    if (dto.awarded_quantity !== undefined) updateData.awarded_quantity = dto.awarded_quantity;
+    if (dto.awarded_unit_price !== undefined) updateData.awarded_unit_price = dto.awarded_unit_price;
+
+    const updated = await this.db
+      .updateTable('tender_line_items')
+      .set(updateData)
+      .where('id', '=', itemId)
+      .where('tender_id', '=', tenderId)
+      .returningAll()
+      .executeTakeFirst();
+
+    if (!updated) throw new NotFoundException(`Line item ${itemId} not found on tender ${tenderId}`);
+    await this.logActivity(tenderId, 'LINE_ITEM_UPDATED', `Updated product line item compliance / quantity`, user.id);
+    return updated;
+  }
+
+  async deleteLineItem(tenderId: string, itemId: string, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    await this.db
+      .deleteFrom('tender_line_items')
+      .where('id', '=', itemId)
+      .where('tender_id', '=', tenderId)
+      .execute();
+
+    await this.logActivity(tenderId, 'LINE_ITEM_DELETED', `Deleted line item ${itemId}`, user.id);
+    return { success: true };
+  }
+
+  // =========================================================================
+  // Document Checklist & Attachments
+  // =========================================================================
+
+  async getDocuments(tenderId: string, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const docs = await this.db
+      .selectFrom('tender_documents')
+      .leftJoin('users', 'tender_documents.owner_id', 'users.id')
+      .selectAll('tender_documents')
+      .select('users.full_name as owner_name')
+      .where('tender_documents.tender_id', '=', tenderId)
+      .orderBy('tender_documents.created_at', 'asc')
+      .execute();
+
+    const total = docs.length;
+    const readyOrNa = docs.filter((d) => ['Ready', 'Not Applicable'].includes(d.status)).length;
+    const mandatoryTotal = docs.filter((d) => d.is_mandatory).length;
+    const mandatoryReady = docs.filter((d) => d.is_mandatory && ['Ready', 'Not Applicable'].includes(d.status)).length;
+    const completionPercent = total > 0 ? Math.round((readyOrNa / total) * 100) : 100;
+
+    return {
+      documents: docs,
+      completion_percentage: completionPercent,
+      mandatory_ready: mandatoryReady,
+      mandatory_total: mandatoryTotal,
+      all_mandatory_ready: mandatoryReady === mandatoryTotal,
+    };
+  }
+
+  async addDocument(tenderId: string, dto: CreateTenderDocumentDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const doc = await this.db
+      .insertInto('tender_documents')
+      .values({
+        tender_id: tenderId,
+        document_type: dto.document_type,
+        is_mandatory: dto.is_mandatory ?? false,
+        status: dto.status || 'Not Started',
+        file_url: dto.file_url || null,
+        file_name: dto.file_name || null,
+        file_size: dto.file_size || null,
+        mime_type: dto.mime_type || null,
+        owner_id: dto.owner_id || user.id,
+        due_date: dto.due_date || null,
+        notes: dto.notes || null,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    await this.logActivity(tenderId, 'DOCUMENT_ADDED', `Added document: ${dto.document_type}`, user.id);
+    return doc;
+  }
+
+  async updateDocument(tenderId: string, docId: string, dto: UpdateTenderDocumentDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const updateData: any = { updated_at: new Date() };
+    if (dto.document_type !== undefined) updateData.document_type = dto.document_type;
+    if (dto.is_mandatory !== undefined) updateData.is_mandatory = dto.is_mandatory;
+    if (dto.status !== undefined) updateData.status = dto.status;
+    if (dto.file_url !== undefined) updateData.file_url = dto.file_url;
+    if (dto.file_name !== undefined) updateData.file_name = dto.file_name;
+    if (dto.file_size !== undefined) updateData.file_size = dto.file_size;
+    if (dto.mime_type !== undefined) updateData.mime_type = dto.mime_type;
+    if (dto.owner_id !== undefined) updateData.owner_id = dto.owner_id;
+    if (dto.due_date !== undefined) updateData.due_date = dto.due_date;
+    if (dto.notes !== undefined) updateData.notes = dto.notes;
+
+    const updated = await this.db
+      .updateTable('tender_documents')
+      .set(updateData)
+      .where('id', '=', docId)
+      .where('tender_id', '=', tenderId)
+      .returningAll()
+      .executeTakeFirst();
+
+    if (!updated) throw new NotFoundException(`Document ${docId} not found on tender ${tenderId}`);
+    await this.logActivity(
+      tenderId,
+      'DOCUMENT_UPDATED',
+      `Updated document ${updated.document_type} status to ${updated.status}`,
+      user.id,
+    );
+    return updated;
+  }
+
+  async deleteDocument(tenderId: string, docId: string, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    await this.db
+      .deleteFrom('tender_documents')
+      .where('id', '=', docId)
+      .where('tender_id', '=', tenderId)
+      .execute();
+
+    await this.logActivity(tenderId, 'DOCUMENT_DELETED', `Deleted document ${docId}`, user.id);
+    return { success: true };
+  }
+
+  async initChecklist(tenderId: string, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    let catCode = 'general';
+    if (tender.category_name) {
+      const lower = tender.category_name.toLowerCase();
+      if (lower.includes('pq')) catCode = 'pq';
+      else if (lower.includes('mha')) catCode = 'mha';
+    } else if (tender.category) {
+      catCode = tender.category === 'pq' ? 'pq' : 'general';
+    }
+
+    let templates = await this.db
+      .selectFrom('document_checklist_templates')
+      .selectAll()
+      .where('category_code', '=', catCode)
+      .orderBy('sort_order', 'asc')
+      .execute();
+
+    if (templates.length === 0) {
+      templates = await this.db
+        .selectFrom('document_checklist_templates')
+        .selectAll()
+        .where('category_code', '=', 'general')
+        .orderBy('sort_order', 'asc')
+        .execute();
+    }
+
+    let createdCount = 0;
+    for (const t of templates) {
+      const exists = await this.db
+        .selectFrom('tender_documents')
+        .select('id')
+        .where('tender_id', '=', tenderId)
+        .where('document_type', '=', t.document_type)
+        .executeTakeFirst();
+
+      if (!exists) {
+        await this.db
+          .insertInto('tender_documents')
+          .values({
+            tender_id: tenderId,
+            document_type: t.document_type,
+            is_mandatory: t.is_mandatory,
+            status: 'Not Started',
+            owner_id: tender.assigned_to || user.id,
+          })
+          .execute();
+        createdCount++;
+      }
+    }
+
+    await this.logActivity(
+      tenderId,
+      'CHECKLIST_INITIALIZED',
+      `Initialized ${createdCount} mandatory document checklist items for ${catCode.toUpperCase()}`,
+      user.id,
+    );
+    return this.getDocuments(tenderId, user);
+  }
+
+  // =========================================================================
+  // Tender Corrigenda & Deadline Extension
+  // =========================================================================
+
+  async getCorrigenda(tenderId: string) {
+    return this.db
+      .selectFrom('tender_corrigenda')
+      .leftJoin('users', 'tender_corrigenda.created_by', 'users.id')
+      .selectAll('tender_corrigenda')
+      .select('users.full_name as created_by_name')
+      .where('tender_id', '=', tenderId)
+      .orderBy('tender_corrigenda.created_at', 'desc')
+      .execute();
+  }
+
+  async addCorrigendum(tenderId: string, dto: CreateTenderCorrigendumDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const oldDeadline = tender.submission_deadline ? new Date(tender.submission_deadline) : new Date();
+    const newDeadline = this.parseDateTimeIST(dto.new_deadline);
+    if (!newDeadline) throw new BadRequestException('Invalid new deadline date format');
+
+    const corrigendum = await this.db
+      .insertInto('tender_corrigenda')
+      .values({
+        tender_id: tenderId,
+        corrigendum_number: dto.corrigendum_number.trim(),
+        issued_date: dto.issued_date || new Date().toISOString().split('T')[0],
+        summary: dto.summary || null,
+        old_deadline: oldDeadline,
+        new_deadline: newDeadline,
+        attachment_url: dto.attachment_url || null,
+        created_by: user.id,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    // Update tender deadline
+    await this.updateDeadline(
+      tenderId,
+      {
+        new_deadline: newDeadline.toISOString(),
+        reason: `Corrigendum ${dto.corrigendum_number}: ${dto.summary || 'Deadline extended'}`,
+      },
+      user,
+    );
+
+    await this.logActivity(
+      tenderId,
+      'CORRIGENDUM_ISSUED',
+      `Corrigendum ${dto.corrigendum_number} recorded. Deadline updated.`,
+      user.id,
+    );
+    return corrigendum;
+  }
+
+  // =========================================================================
+  // Financial Instruments (EMD, PBG, Fees)
+  // =========================================================================
+
+  async getFinancialInstruments(tenderId: string, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    return this.db
+      .selectFrom('tender_financial_instruments')
+      .leftJoin('users', 'tender_financial_instruments.finance_owner_id', 'users.id')
+      .selectAll('tender_financial_instruments')
+      .select('users.full_name as finance_owner_name')
+      .where('tender_id', '=', tenderId)
+      .orderBy('tender_financial_instruments.created_at', 'desc')
+      .execute();
+  }
+
+  async addFinancialInstrument(tenderId: string, dto: CreateTenderFinancialInstrumentDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const inst = await this.db
+      .insertInto('tender_financial_instruments')
+      .values({
+        tender_id: tenderId,
+        instrument_type: dto.instrument_type,
+        amount: dto.amount,
+        mode: dto.mode || 'Online',
+        reference_number: dto.reference_number || null,
+        bank: dto.bank || null,
+        issue_date: dto.issue_date || null,
+        expiry_date: dto.expiry_date || null,
+        status: dto.status || 'Requested',
+        finance_owner_id: dto.finance_owner_id || null,
+        remarks: dto.remarks || null,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    await this.logActivity(
+      tenderId,
+      'FINANCIAL_INSTRUMENT_REQUESTED',
+      `${dto.instrument_type} of ₹${dto.amount} logged (${dto.status || 'Requested'})`,
+      user.id,
+    );
+    return inst;
+  }
+
+  async updateFinancialInstrument(
+    tenderId: string,
+    instrumentId: string,
+    dto: UpdateTenderFinancialInstrumentDto,
+    user: AuthUser,
+  ) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const updateData: any = { updated_at: new Date() };
+    if (dto.amount !== undefined) updateData.amount = dto.amount;
+    if (dto.mode !== undefined) updateData.mode = dto.mode;
+    if (dto.reference_number !== undefined) updateData.reference_number = dto.reference_number;
+    if (dto.bank !== undefined) updateData.bank = dto.bank;
+    if (dto.issue_date !== undefined) updateData.issue_date = dto.issue_date;
+    if (dto.expiry_date !== undefined) updateData.expiry_date = dto.expiry_date;
+    if (dto.status !== undefined) updateData.status = dto.status;
+    if (dto.finance_owner_id !== undefined) updateData.finance_owner_id = dto.finance_owner_id;
+    if (dto.remarks !== undefined) updateData.remarks = dto.remarks;
+
+    const updated = await this.db
+      .updateTable('tender_financial_instruments')
+      .set(updateData)
+      .where('id', '=', instrumentId)
+      .where('tender_id', '=', tenderId)
+      .returningAll()
+      .executeTakeFirst();
+
+    if (!updated) throw new NotFoundException(`Financial instrument ${instrumentId} not found`);
+    await this.logActivity(
+      tenderId,
+      'FINANCIAL_INSTRUMENT_UPDATED',
+      `${updated.instrument_type} updated to status "${updated.status}"`,
+      user.id,
+    );
+    return updated;
+  }
+
+  async getFinanceEmdTracking(user: AuthUser) {
+    const instruments = await this.db
+      .selectFrom('tender_financial_instruments')
+      .leftJoin('tenders', 'tender_financial_instruments.tender_id', 'tenders.id')
+      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
+      .select([
+        'tender_financial_instruments.id',
+        'tender_financial_instruments.tender_id',
+        'tender_financial_instruments.instrument_type',
+        'tender_financial_instruments.amount',
+        'tender_financial_instruments.mode',
+        'tender_financial_instruments.status',
+        'tender_financial_instruments.reference_number',
+        'tender_financial_instruments.bank',
+        'tender_financial_instruments.issue_date',
+        'tender_financial_instruments.expiry_date',
+        'tender_financial_instruments.created_at',
+        'tenders.tender_number',
+        'tenders.tender_no',
+        'tenders.status as tender_status',
+        'tenders.submission_deadline',
+        'organisations.name as organisation_name',
+      ])
+      .where('tender_financial_instruments.instrument_type', 'in', ['EMD', 'PBG'])
+      .orderBy('tender_financial_instruments.created_at', 'desc')
+      .execute();
+
+    const totalEmdBlocked = instruments
+      .filter((i) => i.instrument_type === 'EMD' && ['Issued', 'Submitted'].includes(i.status))
+      .reduce((sum, i) => sum + Number(i.amount || 0), 0);
+
+    const totalRefundDue = instruments
+      .filter((i) => i.instrument_type === 'EMD' && i.status === 'Refund Due')
+      .reduce((sum, i) => sum + Number(i.amount || 0), 0);
+
+    const refundDueItems = instruments
+      .filter((i) => i.instrument_type === 'EMD' && i.status === 'Refund Due')
+      .map((i) => {
+        const daysPending = Math.floor((Date.now() - new Date(i.created_at).getTime()) / (1000 * 3600 * 24));
+        return {
+          ...i,
+          days_pending: daysPending,
+          aging_bucket: daysPending > 30 ? '> 30 days' : '< 30 days',
+        };
+      });
+
+    return {
+      total_emd_blocked: totalEmdBlocked,
+      total_refund_due: totalRefundDue,
+      refund_due_count: refundDueItems.length,
+      refund_due_items: refundDueItems,
+      all_instruments: instruments,
+      instruments: instruments,
+    };
+  }
+
+  // =========================================================================
+  // Tender Discussions & Mentions (Replaces WhatsApp)
+  // =========================================================================
+
+  async getComments(tenderId: string, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    return this.db
+      .selectFrom('tender_comments')
+      .leftJoin('users', 'tender_comments.author_id', 'users.id')
+      .selectAll('tender_comments')
+      .select(['users.full_name as author_name', 'users.role as author_role', 'users.email as author_email'])
+      .where('tender_id', '=', tenderId)
+      .orderBy('tender_comments.created_at', 'asc')
+      .execute();
+  }
+
+  async addComment(tenderId: string, dto: CreateTenderCommentDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    assertRegionScope(user, tender.region_id);
+
+    const mentions = Array.isArray(dto.mentions) ? dto.mentions : [];
+
+    const comment = await this.db
+      .insertInto('tender_comments')
+      .values({
+        tender_id: tenderId,
+        author_id: user.id,
+        body: dto.body.trim(),
+        mentions: JSON.stringify(mentions) as any,
+        is_internal: dto.is_internal ?? true,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    await this.logActivity(tenderId, 'COMMENT_POSTED', `Discussion note posted by ${user.full_name}`, user.id);
+
+    // If users were mentioned, create in-app notifications
+    for (const mentionedId of mentions) {
+      await this.db
+        .insertInto('notifications')
+        .values({
+          user_id: mentionedId,
+          type: 'mention',
+          title: `Mentioned on tender ${tender.tender_number || tender.tender_no}`,
+          body: `${user.full_name}: "${dto.body.slice(0, 100)}..."`,
+          entity_type: 'tender',
+          entity_id: tenderId,
+        })
+        .execute()
+        .catch(() => {});
+    }
+
+    return comment;
+  }
+
+  // =========================================================================
+  // Approver Delegations (Out-of-office delegation)
+  // =========================================================================
+
+  async getDelegations(user: AuthUser) {
+    return this.db
+      .selectFrom('tender_user_delegations')
+      .leftJoin('users as delegator', 'tender_user_delegations.delegator_id', 'delegator.id')
+      .leftJoin('users as delegatee', 'tender_user_delegations.delegatee_id', 'delegatee.id')
+      .selectAll('tender_user_delegations')
+      .select([
+        'delegator.full_name as delegator_name',
+        'delegatee.full_name as delegatee_name',
+      ])
+      .where((eb) =>
+        eb.or([
+          eb('delegator_id', '=', user.id),
+          eb('delegatee_id', '=', user.id),
+        ]),
+      )
+      .orderBy('tender_user_delegations.created_at', 'desc')
+      .execute();
+  }
+
+  async createDelegation(dto: CreateTenderDelegationDto, user: AuthUser) {
+    return this.db
+      .insertInto('tender_user_delegations')
+      .values({
+        delegator_id: user.id,
+        delegatee_id: dto.delegatee_id,
+        start_date: dto.start_date,
+        end_date: dto.end_date,
+        reason: dto.reason || 'Out of office delegation',
+        is_active: true,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  // =========================================================================
+  // Masters: Competitors, Portals, Region Mapping, Approval Rules
+  // =========================================================================
+
+  async getCompetitors() {
+    return this.db
+      .selectFrom('competitors')
+      .selectAll()
+      .where('is_active', '=', true)
+      .orderBy('name', 'asc')
+      .execute();
+  }
+
+  async createCompetitor(dto: CreateCompetitorDto) {
+    return this.db
+      .insertInto('competitors')
+      .values({
+        name: dto.name.trim(),
+        code: dto.code ? dto.code.trim().toUpperCase() : null,
+        description: dto.description || null,
+        is_active: true,
+      })
+      .onConflict((oc) => oc.column('name').doUpdateSet({ is_active: true }))
+      .returningAll()
+      .executeTakeFirst();
+  }
+
+  async getPortals() {
+    return this.db
+      .selectFrom('tender_portals')
+      .selectAll()
+      .where('is_active', '=', true)
+      .orderBy('name', 'asc')
+      .execute();
+  }
+
+  async createPortal(dto: CreateTenderPortalDto) {
+    return this.db
+      .insertInto('tender_portals')
+      .values({
+        name: dto.name.trim(),
+        code: dto.code.trim().toLowerCase(),
+        base_url: dto.base_url || null,
+        is_active: true,
+      })
+      .onConflict((oc) => oc.column('code').doUpdateSet({ name: dto.name, base_url: dto.base_url }))
+      .returningAll()
+      .executeTakeFirst();
+  }
+
+  async getRegionMappings() {
+    return this.db
+      .selectFrom('region_mapping')
+      .leftJoin('regions', 'region_mapping.region_id', 'regions.id')
+      .leftJoin('zones', 'region_mapping.zone_id', 'zones.id')
+      .selectAll('region_mapping')
+      .select([
+        'regions.name as region_name',
+        'zones.name as zone_name',
+      ])
+      .orderBy('region_mapping.state', 'asc')
+      .execute();
+  }
+
+  async createRegionMapping(dto: CreateRegionMappingDto) {
+    return this.db
+      .insertInto('region_mapping')
+      .values({
+        state: dto.state.trim(),
+        city: dto.city ? dto.city.trim() : null,
+        region_id: dto.region_id,
+        zone_id: dto.zone_id,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  async getApprovalRules() {
+    return this.db
+      .selectFrom('approval_rules')
+      .leftJoin('tender_categories', 'approval_rules.category_id', 'tender_categories.id')
+      .leftJoin('zones', 'approval_rules.zone_id', 'zones.id')
+      .leftJoin('users', 'approval_rules.approver_id', 'users.id')
+      .selectAll('approval_rules')
+      .select([
+        'tender_categories.name as category_name',
+        'zones.name as zone_name',
+        'users.full_name as approver_name',
+      ])
+      .orderBy('approval_rules.level', 'asc')
+      .execute();
+  }
+
+  async createApprovalRule(dto: CreateApprovalRuleDto) {
+    return this.db
+      .insertInto('approval_rules')
+      .values({
+        category_id: dto.category_id || null,
+        zone_id: dto.zone_id || null,
+        min_value: dto.min_value || 0,
+        max_value: dto.max_value || null,
+        approver_role: dto.approver_role || 'management',
+        approver_id: dto.approver_id || null,
+        level: dto.level || 1,
+        is_active: true,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  // =========================================================================
+  // Cross-Module Integrations: Linked Tender & Sales Order
+  // =========================================================================
+
+  async createLinkedTender(tenderId: string, dto: CreateLinkedTenderDto, user: AuthUser) {
+    const parent = await this.findOne(tenderId);
+    const parentNorm = this.workflowService.normalizeStatus(parent.status);
+
+    if (parentNorm !== 'PQ_QUALIFIED' && parentNorm !== 'WON') {
+      throw new BadRequestException('A linked tender can only be created from a PQ_QUALIFIED or WON PQ tender');
+    }
+
+    let catId = dto.category_id;
+    if (!catId) {
+      const genCat = await this.db
+        .selectFrom('tender_categories')
+        .select('id')
+        .where('code', 'in', ['general', 'general_mha'])
+        .executeTakeFirst();
+      if (genCat) catId = genCat.id;
+    }
+
+    const newTender = await this.create(
+      {
+        tender_number: dto.tender_number.trim(),
+        tender_title: dto.tender_title.trim(),
+        organisation_id: parent.organisation_id || undefined,
+        organisation: parent.organisation || undefined,
+        department: parent.department || undefined,
+        city: parent.city || undefined,
+        state: parent.state || undefined,
+        zone_id: parent.zone_id || undefined,
+        region_id: parent.region_id || undefined,
+        category_id: catId || undefined,
+        tender_type: dto.tender_type || 'Open',
+        submission_deadline: dto.submission_deadline,
+        estimated_value: dto.estimated_value,
+        assigned_to: parent.assigned_to || undefined,
+        tender_owner_id: parent.tender_owner_id || undefined,
+        remarks: dto.remarks || `Linked from PQ tender ${parent.tender_number || parent.tender_no}`,
+        linked_pq_tender_id: parent.id,
+      },
+      user,
+    );
+
+    // Copy line items from parent
+    const parentLineItems = await this.db
+      .selectFrom('tender_line_items')
+      .selectAll()
+      .where('tender_id', '=', parent.id)
+      .execute();
+
+    for (const li of parentLineItems) {
+      await this.db
+        .insertInto('tender_line_items')
+        .values({
+          tender_id: newTender.id,
+          product_id: li.product_id,
+          product_description: li.product_description,
+          quantity: li.quantity,
+          unit: li.unit,
+          specification_summary: li.specification_summary,
+          is_compliant: li.is_compliant,
+          compliance_remarks: li.compliance_remarks,
+          quoted_unit_price: li.quoted_unit_price,
+          quoted_total: li.quoted_total,
+        })
+        .execute();
+    }
+
+    // Initialize document checklist for new tender
+    await this.initChecklist(newTender.id, user).catch(() => {});
+
+    await this.logActivity(
+      parent.id,
+      'LINKED_TENDER_CREATED',
+      `Created General tender ${dto.tender_number} linked to this PQ`,
+      user.id,
+    );
+    return newTender;
+  }
+
+  async createSalesOrder(tenderId: string, dto: CreateSalesOrderFromTenderDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId);
+    const norm = this.workflowService.normalizeStatus(tender.status);
+
+    if (norm !== 'WON' && norm !== 'PARTIALLY_WON') {
+      throw new BadRequestException('Sales Orders can only be generated from WON or PARTIALLY_WON tenders');
+    }
+
+    const cleanRef = (dto.order_number || `ORD-${Date.now()}`).trim();
+    const deliveryNo = cleanRef.startsWith('SO-') ? cleanRef : `SO-${cleanRef}`;
+
+    const delivery = await this.db
+      .insertInto('deliveries')
+      .values({
+        delivery_no: deliveryNo,
+        organisation_id: tender.organisation_id || (user as any).default_org_id,
+        tender_id: tenderId,
+        order_reference: dto.order_number,
+        delivery_date: dto.order_date || new Date().toISOString().split('T')[0],
+        delivery_location: dto.delivery_location || tender.city || 'Client Site',
+        assigned_to: tender.assigned_to || user.id,
+        status: 'order_confirmed' as any,
+        remarks: `Auto-generated from won tender ${tender.tender_number || tender.tender_no}. Terms: ${dto.delivery_terms || 'Standard'}`,
+        created_by: user.id,
+      })
+      .returningAll()
+      .executeTakeFirst();
+
+    await this.logActivity(
+      tenderId,
+      'SALES_ORDER_CREATED',
+      `Sales Order created with PO/LoA ref: ${dto.order_number}`,
+      user.id,
+    );
+    return {
+      id: delivery?.id,
+      success: true,
+      sales_order: delivery,
+      tender_id: tenderId,
+      order_number: dto.order_number,
+    };
+  }
+
+  // =========================================================================
+  // Deadline Centre & Calendar
+  // =========================================================================
+
+  async getDeadlineCentre(user: AuthUser) {
+    const now = new Date();
+    const in7Days = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
+    const in48Hours = new Date(now.getTime() + 48 * 3600 * 1000);
+    const in24Hours = new Date(now.getTime() + 24 * 3600 * 1000);
+
+    const nonTerminalStatuses = [
+      'identified',
+      'awaiting_approval',
+      'under_preparation',
+      'pq_submitted',
+      'pq_qualified',
+      'submitted',
+      'technical_eval',
+      'commercial_eval',
+      'reverse_auction',
+    ];
+
+    let baseQuery = this.db
+      .selectFrom('tenders')
+      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'tenders.assigned_to', 'assignee.id')
+      .select([
+        'tenders.id',
+        'tenders.tender_number',
+        'tenders.tender_no',
+        'tenders.tender_title',
+        'tenders.organisation',
+        'organisations.name as organisation_name',
+        'tenders.status',
+        'tenders.submission_deadline',
+        'tenders.pre_bid_meeting_date',
+        'tenders.query_submission_deadline',
+        'tenders.technical_opening_date',
+        'tenders.assigned_to',
+        'assignee.full_name as assigned_to_name',
+        'tenders.region_id',
+        'tenders.zone_id',
+      ])
+      .where('tenders.is_deleted', '=', false)
+      .where('tenders.status', 'in', nonTerminalStatuses as any);
+
+    if (user.role === 'regional_manager' && user.region_id) {
+      baseQuery = baseQuery.where('tenders.region_id', '=', user.region_id);
+    } else if (user.role === 'sales') {
+      baseQuery = baseQuery.where('tenders.assigned_to', '=', user.id);
+    }
+
+    const allActive = await baseQuery.execute();
+
+    const upcoming7d = allActive.filter((t) => {
+      if (!t.submission_deadline) return false;
+      const d = new Date(t.submission_deadline);
+      return d >= now && d <= in7Days;
+    });
+
+    const in72Hours = new Date(now.getTime() + 72 * 3600 * 1000);
+    const approaching72h = allActive.filter((t) => {
+      if (!t.submission_deadline) return false;
+      const d = new Date(t.submission_deadline);
+      return d >= now && d <= in72Hours;
+    });
+
+    const approaching48h = allActive.filter((t) => {
+      if (!t.submission_deadline) return false;
+      const d = new Date(t.submission_deadline);
+      return d >= now && d <= in48Hours;
+    });
+
+    const urgent24h = allActive.filter((t) => {
+      if (!t.submission_deadline) return false;
+      const d = new Date(t.submission_deadline);
+      return d >= now && d <= in24Hours;
+    });
+
+    const overdue = allActive.filter((t) => {
+      if (!t.submission_deadline) return false;
+      const d = new Date(t.submission_deadline);
+      return d < now;
+    });
+
+    const pendingApprovals = allActive.filter((t) =>
+      ['awaiting_approval', 'AWAITING_INTERNAL_APPROVAL'].includes(t.status),
+    );
+
+    const incompletePrep = allActive.filter((t) =>
+      ['under_preparation', 'UNDER_PREPARATION'].includes(t.status),
+    );
+
+    const resultFollowUps = allActive.filter((t) =>
+      ['submitted', 'TENDER_SUBMITTED', 'technical_eval', 'commercial_eval'].includes(t.status),
+    );
+
+    return {
+      upcoming_submissions_7d: upcoming7d,
+      upcoming_7d: upcoming7d,
+      approaching_deadlines_72h: approaching72h,
+      approaching_48h: approaching48h,
+      urgent_deadlines_24h: urgent24h,
+      urgent_24h: urgent24h,
+      overdue: overdue,
+      incomplete_preparation: incompletePrep,
+      result_follow_ups: resultFollowUps,
+      pending_internal_approvals: pendingApprovals,
+      pending_approvals: pendingApprovals,
+      counts: {
+        upcoming_submissions_7d: upcoming7d.length,
+        upcoming_7d: upcoming7d.length,
+        approaching_deadlines_72h: approaching72h.length,
+        approaching_48h: approaching48h.length,
+        urgent_deadlines_24h: urgent24h.length,
+        urgent_24h: urgent24h.length,
+        incomplete_preparation: incompletePrep.length,
+        result_follow_ups: resultFollowUps.length,
+        overdue: overdue.length,
+        pending_internal_approvals: pendingApprovals.length,
+        pending_approvals: pendingApprovals.length,
+      },
+    };
+  }
+
+  async getCalendarEvents(user: AuthUser, query: any) {
+    let q = this.db
+      .selectFrom('tenders')
+      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
+      .select([
+        'tenders.id',
+        'tenders.tender_number',
+        'tenders.tender_no',
+        'tenders.tender_title',
+        'tenders.organisation',
+        'organisations.name as organisation_name',
+        'tenders.status',
+        'tenders.submission_deadline',
+        'tenders.publication_date',
+        'tenders.pre_bid_meeting_date',
+        'tenders.query_submission_deadline',
+        'tenders.technical_opening_date',
+        'tenders.commercial_opening_date',
+        'tenders.region_id',
+        'tenders.zone_id',
+      ])
+      .where('tenders.is_deleted', '=', false);
+
+    if (user.role === 'regional_manager' && user.region_id) {
+      q = q.where('tenders.region_id', '=', user.region_id);
+    } else if (user.role === 'sales') {
+      q = q.where('tenders.assigned_to', '=', user.id);
+    }
+
+    const tenders = await q.execute();
+    const events: any[] = [];
+
+    for (const t of tenders) {
+      const org = t.organisation || t.organisation_name || 'Customer';
+      const no = t.tender_number || t.tender_no || 'Tender';
+
+      if (t.submission_deadline) {
+        events.push({
+          id: `${t.id}-sub`,
+          tender_id: t.id,
+          title: `Submission: ${no} (${org})`,
+          date: t.submission_deadline,
+          event_date: t.submission_deadline,
+          event_type: 'submission_deadline',
+          status: t.status,
+        });
+      }
+      if (t.pre_bid_meeting_date) {
+        events.push({
+          id: `${t.id}-prebid`,
+          tender_id: t.id,
+          title: `Pre-Bid: ${no} (${org})`,
+          date: t.pre_bid_meeting_date,
+          event_date: t.pre_bid_meeting_date,
+          event_type: 'pre_bid_meeting',
+          status: t.status,
+        });
+      }
+      if (t.query_submission_deadline) {
+        events.push({
+          id: `${t.id}-query`,
+          tender_id: t.id,
+          title: `Queries Due: ${no} (${org})`,
+          date: t.query_submission_deadline,
+          event_date: t.query_submission_deadline,
+          event_type: 'query_deadline',
+          status: t.status,
+        });
+      }
+      if (t.technical_opening_date) {
+        events.push({
+          id: `${t.id}-techopen`,
+          tender_id: t.id,
+          title: `Tech Opening: ${no} (${org})`,
+          date: t.technical_opening_date,
+          event_date: t.technical_opening_date,
+          event_type: 'technical_opening',
+          status: t.status,
+        });
+      }
+    }
+
+    events.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    return events;
   }
 }

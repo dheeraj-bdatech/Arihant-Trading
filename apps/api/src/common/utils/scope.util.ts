@@ -5,7 +5,7 @@ import type { AuthUser } from '@arihant/shared';
  * Checks if the user is allowed to access/mutate a region-scoped entity
  */
 export function checkRegionScope(user: AuthUser, entityRegionId: string | null, entityZoneId?: string | null): boolean {
-  if (user.role === 'management' || user.role === 'admin') {
+  if (user.role === 'management' || user.role === 'admin' || user.role === 'accounts') {
     return true;
   }
 

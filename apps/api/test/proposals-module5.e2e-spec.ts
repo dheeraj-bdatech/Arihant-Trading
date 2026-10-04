@@ -347,7 +347,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
     beforeEach(async () => {
       const res = await request(app.getHttpServer())
         .post('/api/proposals')
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrgId,
           product_id: testProductId,
@@ -394,12 +394,18 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({ status: 'APPROVED' });
       expect(unauthApprove.status).toBe(403);
-      expect(unauthApprove.body.message).toContain('Only management, admin, or regional managers');
 
-      // 4. Regional Manager approves
-      res = await request(app.getHttpServer())
+      // 4a. Regional Manager attempts to approve (Unauthorized - management/admin only)
+      const rmApprove = await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}/status`)
         .set('Authorization', `Bearer ${rmToken}`)
+        .send({ status: 'APPROVED' });
+      expect(rmApprove.status).toBe(403);
+
+      // 4b. Management approves (Authorized, not creator)
+      res = await request(app.getHttpServer())
+        .patch(`/api/proposals/${propId}/status`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ status: 'APPROVED' });
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('APPROVED');
@@ -479,7 +485,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
     beforeAll(async () => {
       const res = await request(app.getHttpServer())
         .post('/api/proposals')
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrgId,
           product_id: testProductId,
@@ -607,10 +613,10 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
   // =========================================================================
   describe('Event-Driven Architecture (EDA) & Notifications', () => {
     it('✓ Emits domain events and generates persistent notifications on assignment and review request', async () => {
-      // 1. Management creates a proposal assigned to salesUserId
+      // 1. Sales creates a proposal assigned to salesUserId
       const createRes = await request(app.getHttpServer())
         .post('/api/proposals')
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrgId,
           product_id: testProductId,

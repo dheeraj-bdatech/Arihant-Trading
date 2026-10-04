@@ -22,6 +22,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
   let rmUserId: string;
   let salesToken: string;
   let salesUserId: string;
+  let adminToken: string;
+  let adminUserId: string;
 
   let testOrgId: string;
   let testOrg2Id: string;
@@ -69,6 +71,13 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
     expect(salesRes.status).toBe(200);
     salesToken = salesRes.body.accessToken;
     salesUserId = salesRes.body.user.id;
+
+    const adminRes = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: 'admin@arihant.com', password: 'password123' });
+    expect(adminRes.status).toBe(200);
+    adminToken = adminRes.body.accessToken;
+    adminUserId = adminRes.body.user.id;
 
     // 2. Fetch master references
     const orgsRes = await request(app.getHttpServer())
@@ -528,7 +537,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
       expect(['REQUESTED', 'PROPOSAL_REQUESTED']).toContain(getRes.body.status);
     });
 
-    it('E21: Self-approval is blocked unless allow_self_approval setting is on or user is admin', async () => {
+    it('E21: Proposal approval is restricted to Management & Admin and self-approval is strictly blocked', async () => {
       // Move to READY_FOR_REVIEW with RM as responsible person
       await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/start-preparation`)
@@ -540,10 +549,18 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .set('Authorization', `Bearer ${rmToken}`)
         .send({ change_summary: 'Self approval check' });
 
-      // RM is responsible person, attempts self approval
-      const selfApproveRes = await request(app.getHttpServer())
+      // 1. Regional Manager attempts approval -> 403 Access denied (management & admin only)
+      const rmApproveRes = await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/approve`)
         .set('Authorization', `Bearer ${rmToken}`)
+        .send({ remarks: 'RM approval' });
+      expect(rmApproveRes.status).toBe(403);
+      expect(rmApproveRes.body.message).toContain('required role (management, admin)');
+
+      // 2. Creator (mgmtToken) attempts self-approval -> 403 Forbidden (Self-approval is blocked)
+      const selfApproveRes = await request(app.getHttpServer())
+        .post(`/api/proposals/${propId}/approve`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ remarks: 'Self approval' });
       expect(selfApproveRes.status).toBe(403);
       expect(selfApproveRes.body.message).toContain('Self-approval is blocked');
@@ -560,16 +577,17 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
     });
 
     it('E23: Material edit after approval invalidates approval and reverts to READY_FOR_REVIEW', async () => {
-      // Re-submit and approve
+      // Re-submit and approve via independent admin (not creator)
       await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/submit-for-review`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ change_summary: 'Attached detailed specs' });
 
-      await request(app.getHttpServer())
+      const approveRes = await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/approve`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ remarks: 'Approved' });
+      expect([200, 201]).toContain(approveRes.status);
 
       // Change product (material edit)
       const editRes = await request(app.getHttpServer())

@@ -35,6 +35,21 @@ import {
   CreateTenderCategoryDto,
   UpdateTenderCategoryDto,
   ImportTenderSheetDto,
+  CreateTenderLineItemDto,
+  UpdateTenderLineItemDto,
+  CreateTenderDocumentDto,
+  UpdateTenderDocumentDto,
+  CreateTenderCorrigendumDto,
+  CreateTenderFinancialInstrumentDto,
+  UpdateTenderFinancialInstrumentDto,
+  CreateTenderCommentDto,
+  CreateTenderDelegationDto,
+  CreateApprovalRuleDto,
+  CreateLinkedTenderDto,
+  CreateSalesOrderFromTenderDto,
+  CreateCompetitorDto,
+  CreateTenderPortalDto,
+  CreateRegionMappingDto,
 } from './tenders.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -147,9 +162,90 @@ export class TendersController {
     return this.tendersService.getRegions(zoneId);
   }
 
+  @Get('competitors')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
+  async getCompetitors() {
+    return this.tendersService.getCompetitors();
+  }
+
+  @Post('competitors')
+  @Roles('management', 'tender_team', 'admin')
+  async createCompetitor(@Body() dto: CreateCompetitorDto) {
+    return this.tendersService.createCompetitor(dto);
+  }
+
+  @Get('portals')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
+  async getPortals() {
+    return this.tendersService.getPortals();
+  }
+
+  @Post('portals')
+  @Roles('management', 'admin')
+  async createPortal(@Body() dto: CreateTenderPortalDto) {
+    return this.tendersService.createPortal(dto);
+  }
+
+  @Get('region-mapping')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
+  async getRegionMappings() {
+    return this.tendersService.getRegionMappings();
+  }
+
+  @Post('region-mapping')
+  @Roles('management', 'admin')
+  async createRegionMapping(@Body() dto: CreateRegionMappingDto) {
+    return this.tendersService.createRegionMapping(dto);
+  }
+
+  @Get('approval-rules')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async getApprovalRules() {
+    return this.tendersService.getApprovalRules();
+  }
+
+  @Post('approval-rules')
+  @Roles('management', 'admin')
+  async createApprovalRule(@Body() dto: CreateApprovalRuleDto) {
+    return this.tendersService.createApprovalRule(dto);
+  }
+
+  @Get('delegations')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async getDelegations(@CurrentUser() user: AuthUser) {
+    return this.tendersService.getDelegations(user);
+  }
+
+  @Post('delegations')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async createDelegation(
+    @Body() dto: CreateTenderDelegationDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.createDelegation(dto, user);
+  }
+
   // =========================================================================
   // Reports & Dashboards
   // =========================================================================
+
+  @Get('deadline-centre')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
+  async getDeadlineCentre(@CurrentUser() user: AuthUser) {
+    return this.tendersService.getDeadlineCentre(user);
+  }
+
+  @Get('calendar')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
+  async getCalendarEvents(@CurrentUser() user: AuthUser, @Query() query: any) {
+    return this.tendersService.getCalendarEvents(user, query);
+  }
+
+  @Get('finance/emd-tracking')
+  @Roles('management', 'accounts', 'tender_team', 'admin')
+  async getFinanceEmdTracking(@CurrentUser() user: AuthUser) {
+    return this.tendersService.getFinanceEmdTracking(user);
+  }
 
   @Get('stats')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
@@ -489,5 +585,199 @@ export class TendersController {
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async getActivities(@Param('id') id: string) {
     return this.tendersService.getActivities(id);
+  }
+
+  // =========================================================================
+  // Tender Line Items (Products & Compliance)
+  // =========================================================================
+
+  @Get(':id/line-items')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  async getLineItems(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getLineItems(id, user);
+  }
+
+  @Post(':id/line-items')
+  @Roles('management', 'regional_manager', 'tender_team', 'sales', 'admin')
+  async addLineItem(
+    @Param('id') id: string,
+    @Body() dto: CreateTenderLineItemDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.addLineItem(id, dto, user);
+  }
+
+  @Put(':id/line-items/:itemId')
+  @Roles('management', 'regional_manager', 'tender_team', 'demo_team', 'service_team', 'admin')
+  async updateLineItemPut(
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: UpdateTenderLineItemDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.updateLineItem(id, itemId, dto, user);
+  }
+
+  @Patch(':id/line-items/:itemId')
+  @Roles('management', 'regional_manager', 'tender_team', 'demo_team', 'service_team', 'admin')
+  async updateLineItem(
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: UpdateTenderLineItemDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.updateLineItem(id, itemId, dto, user);
+  }
+
+  @Delete(':id/line-items/:itemId')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async deleteLineItem(
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.deleteLineItem(id, itemId, user);
+  }
+
+  // =========================================================================
+  // Tender Documents & Checklist
+  // =========================================================================
+
+  @Get(':id/documents')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  async getDocuments(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getDocuments(id, user);
+  }
+
+  @Post(':id/documents')
+  @Roles('management', 'regional_manager', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  async addDocument(
+    @Param('id') id: string,
+    @Body() dto: CreateTenderDocumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.addDocument(id, dto, user);
+  }
+
+  @Post(':id/documents/init-checklist')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async initChecklist(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.initChecklist(id, user);
+  }
+
+  @Patch(':id/documents/:docId')
+  @Roles('management', 'regional_manager', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  async updateDocument(
+    @Param('id') id: string,
+    @Param('docId') docId: string,
+    @Body() dto: UpdateTenderDocumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.updateDocument(id, docId, dto, user);
+  }
+
+  @Delete(':id/documents/:docId')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async deleteDocument(
+    @Param('id') id: string,
+    @Param('docId') docId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.deleteDocument(id, docId, user);
+  }
+
+  // =========================================================================
+  // Tender Corrigenda
+  // =========================================================================
+
+  @Get(':id/corrigenda')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
+  async getCorrigenda(@Param('id') id: string) {
+    return this.tendersService.getCorrigenda(id);
+  }
+
+  @Post(':id/corrigenda')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async addCorrigendum(
+    @Param('id') id: string,
+    @Body() dto: CreateTenderCorrigendumDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.addCorrigendum(id, dto, user);
+  }
+
+  // =========================================================================
+  // Tender Financial Instruments (EMD, PBG, Fees)
+  // =========================================================================
+
+  @Get(':id/financial-instruments')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'accounts', 'admin')
+  async getFinancialInstruments(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getFinancialInstruments(id, user);
+  }
+
+  @Post(':id/financial-instruments')
+  @Roles('management', 'regional_manager', 'tender_team', 'accounts', 'admin')
+  async addFinancialInstrument(
+    @Param('id') id: string,
+    @Body() dto: CreateTenderFinancialInstrumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.addFinancialInstrument(id, dto, user);
+  }
+
+  @Patch(':id/financial-instruments/:instrumentId')
+  @Roles('management', 'accounts', 'admin')
+  async updateFinancialInstrument(
+    @Param('id') id: string,
+    @Param('instrumentId') instrumentId: string,
+    @Body() dto: UpdateTenderFinancialInstrumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.updateFinancialInstrument(id, instrumentId, dto, user);
+  }
+
+  // =========================================================================
+  // Tender Discussion / Comments
+  // =========================================================================
+
+  @Get(':id/comments')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  async getComments(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getComments(id, user);
+  }
+
+  @Post(':id/comments')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin')
+  async addComment(
+    @Param('id') id: string,
+    @Body() dto: CreateTenderCommentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.addComment(id, dto, user);
+  }
+
+  // =========================================================================
+  // Inter-Module Transitions (PQ -> General, Won -> Sales Order)
+  // =========================================================================
+
+  @Post(':id/create-linked-tender')
+  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  async createLinkedTender(
+    @Param('id') id: string,
+    @Body() dto: CreateLinkedTenderDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.createLinkedTender(id, dto, user);
+  }
+
+  @Post(':id/create-sales-order')
+  @Roles('management', 'regional_manager', 'tender_team', 'sales', 'admin')
+  async createSalesOrder(
+    @Param('id') id: string,
+    @Body() dto: CreateSalesOrderFromTenderDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.createSalesOrder(id, dto, user);
   }
 }

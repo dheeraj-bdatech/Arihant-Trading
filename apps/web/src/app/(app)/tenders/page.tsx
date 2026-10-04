@@ -40,7 +40,16 @@ import {
   Compass,
   FileBarChart,
   AlertOctagon,
+  Upload,
+  Settings,
+  UserCheck,
 } from 'lucide-react';
+import { TenderDossierModal } from './components/TenderDossierModal';
+import { ApprovalsInboxView } from './components/ApprovalsInboxView';
+import { TenderCalendarView } from './components/TenderCalendarView';
+import { FinanceEmdView } from './components/FinanceEmdView';
+import { TenderSettingsModal } from './components/TenderSettingsModal';
+import { BulkImportWizardModal } from './components/BulkImportWizardModal';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
@@ -87,7 +96,15 @@ export default function TendersPage() {
   const highlightId = searchParams.get('highlight');
 
   // Top-Level Navigation Tabs
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'analytics' | 'deadlines' | 'portal_issues'>('pipeline');
+  const [activeTab, setActiveTab] = useState<
+    | 'pipeline'
+    | 'approvals_inbox'
+    | 'calendar'
+    | 'finance_emd'
+    | 'deadlines'
+    | 'portal_issues'
+    | 'analytics'
+  >('pipeline');
 
   // Master lists
   const [tenders, setTenders] = useState<any[]>([]);
@@ -154,6 +171,12 @@ export default function TendersPage() {
   const [activities, setActivities] = useState<any[]>([]);
   const [portalIssues, setPortalIssues] = useState<any[]>([]);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+
+  // Enterprise Blueprint Modals
+  const [isDossierOpen, setIsDossierOpen] = useState(false);
+  const [dossierTenderId, setDossierTenderId] = useState<string | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
 
   // Action Modals
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -373,7 +396,8 @@ export default function TendersPage() {
     initialTab: 'overview' | 'approval' | 'transitions' | 'portal_issues' | 'outcome' | 'timeline' = 'overview'
   ) => {
     setSelectedTender(tender);
-    setIsDetailOpen(true);
+    setDossierTenderId(tender.id);
+    setIsDossierOpen(true);
     setDetailTab(initialTab);
     setIsLoadingDetails(true);
     try {
@@ -942,6 +966,26 @@ export default function TendersPage() {
             >
               <span>Refresh</span>
             </Button>
+            {hasRole(['management', 'tender_team', 'admin']) && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsImportOpen(true)}
+                  leftIcon={<Upload className="h-3.5 w-3.5 text-[#4A5568]" />}
+                >
+                  <span>Bulk Import</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsSettingsOpen(true)}
+                  leftIcon={<Settings className="h-3.5 w-3.5 text-[#4A5568]" />}
+                >
+                  <span>Settings & SLAs</span>
+                </Button>
+              </>
+            )}
             {hasRole(['management', 'regional_manager', 'tender_team', 'admin']) && (
               <Button
                 variant="primary"
@@ -964,7 +1008,7 @@ export default function TendersPage() {
         activeTab={activeTab}
         onChange={(tabId) => {
           setActiveTab(tabId as any);
-          if (tabId !== 'pipeline') {
+          if (tabId === 'analytics') {
             fetchReports();
           }
         }}
@@ -976,24 +1020,41 @@ export default function TendersPage() {
             count: totalCount || dashboardStats.total,
           },
           {
-            id: 'analytics',
-            label: 'Executive Reporting & Analytics (§27)',
-            icon: <BarChart3 className="h-4 w-4" />,
-            count: `${dashboardStats.win_rate !== undefined ? dashboardStats.win_rate : (dashboardStats.win_rate_percentage || 0)}% Win`,
+            id: 'approvals_inbox',
+            label: 'Approvals Inbox & SLA',
+            icon: <UserCheck className="h-4 w-4" />,
+            count: dashboardStats.pending_approvals,
+            badgeVariant: (dashboardStats.pending_approvals || 0) > 0 ? 'urgent' : 'default',
+          },
+          {
+            id: 'calendar',
+            label: 'Tender Calendar',
+            icon: <Calendar className="h-4 w-4" />,
+          },
+          {
+            id: 'finance_emd',
+            label: 'Finance & EMD / PBG',
+            icon: <IndianRupee className="h-4 w-4" />,
           },
           {
             id: 'deadlines',
-            label: 'Deadline & Urgency Command (§24)',
+            label: 'Deadline & Urgency Command',
             icon: <Clock className="h-4 w-4" />,
             count: (dashboardStats.urgent_deadlines || 0) + (dashboardStats.upcoming_deadlines || 0),
             badgeVariant: (dashboardStats.urgent_deadlines || 0) > 0 ? 'urgent' : 'info',
           },
           {
             id: 'portal_issues',
-            label: 'GeM & Portal Issues Hub (§25)',
+            label: 'GeM & Portal Issues',
             icon: <AlertTriangle className="h-4 w-4" />,
             count: dashboardStats.open_portal_issues || globalPortalIssues.length,
             badgeVariant: (dashboardStats.open_portal_issues || 0) > 0 ? 'warning' : 'default',
+          },
+          {
+            id: 'analytics',
+            label: 'Win/Loss Analytics',
+            icon: <BarChart3 className="h-4 w-4" />,
+            count: `${dashboardStats.win_rate !== undefined ? dashboardStats.win_rate : (dashboardStats.win_rate_percentage || 0)}% Win`,
           },
         ]}
       />
@@ -1667,6 +1728,45 @@ export default function TendersPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB: APPROVALS INBOX & GOVERNANCE */}
+      {/* ========================================================================= */}
+      {activeTab === 'approvals_inbox' && (
+        <ApprovalsInboxView
+          currentUser={user}
+          onOpenDossier={(id) => {
+            setDossierTenderId(id);
+            setIsDossierOpen(true);
+          }}
+        />
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB: SHARED TENDER CALENDAR & MILESTONES */}
+      {/* ========================================================================= */}
+      {activeTab === 'calendar' && (
+        <TenderCalendarView
+          currentUser={user}
+          onOpenDossier={(id) => {
+            setDossierTenderId(id);
+            setIsDossierOpen(true);
+          }}
+        />
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB: FINANCE & EMD / PBG REPOSITORY */}
+      {/* ========================================================================= */}
+      {activeTab === 'finance_emd' && (
+        <FinanceEmdView
+          currentUser={user}
+          onOpenDossier={(id) => {
+            setDossierTenderId(id);
+            setIsDossierOpen(true);
+          }}
+        />
       )}
 
       {/* ========================================================================= */}
@@ -3975,6 +4075,46 @@ export default function TendersPage() {
           </div>
         </form>
       </Modal>
+
+      {/* ========================================================================= */}
+      {/* 11. Enterprise 11-Tab Tender Dossier Modal (Operational Blueprint) */}
+      {/* ========================================================================= */}
+      <TenderDossierModal
+        isOpen={isDossierOpen}
+        onClose={() => {
+          setIsDossierOpen(false);
+          setDossierTenderId(null);
+        }}
+        tenderId={dossierTenderId}
+        currentUser={user}
+        onTenderUpdated={() => {
+          fetchTenders();
+          fetchDashboardStats();
+          fetchReports();
+        }}
+      />
+
+      {/* ========================================================================= */}
+      {/* 12. Master Configuration & Governance Modal */}
+      {/* ========================================================================= */}
+      <TenderSettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        currentUser={user}
+      />
+
+      {/* ========================================================================= */}
+      {/* 13. Arihant Tender Sheet Bulk Import Wizard Modal */}
+      {/* ========================================================================= */}
+      <BulkImportWizardModal
+        isOpen={isImportOpen}
+        onClose={() => setIsImportOpen(false)}
+        onImportComplete={() => {
+          fetchTenders();
+          fetchDashboardStats();
+          fetchReports();
+        }}
+      />
     </PageContainer>
   );
 }

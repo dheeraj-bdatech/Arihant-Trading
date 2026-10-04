@@ -152,7 +152,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
           outcome: 'Client satisfied with sensitivity parameters; requested field trial next week.',
           opportunity: 'High probability upcoming tender for 150 units',
           next_action: 'Coordinate depot demo unit dispatch',
-          followup_date: '2026-10-02',
+          followup_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
           demo_required: true,
           tender_opportunity: 'Tender closing in October 2026',
         });
@@ -431,7 +431,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg2Id,
-          planned_date: '2026-10-03',
+          planned_date: new Date().toISOString().split('T')[0],
           purpose: 'Demonstration of Passive Night Vision',
         });
       visitToCancelId = res.body.id;
@@ -486,10 +486,11 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg1Id,
-          planned_date: '2026-10-04',
+          planned_date: new Date(Date.now() + 86400000 * 14).toISOString().split('T')[0],
           location: 'Delhi Central Base',
           purpose: 'Service review',
         });
+      expect(res.status).toBe(201);
       visitToModifyId = res.body.id;
     });
 

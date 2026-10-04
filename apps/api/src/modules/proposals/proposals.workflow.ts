@@ -144,8 +144,8 @@ export class ProposalsWorkflowService {
             allowed.push('UNDER_PREPARATION');
           }
         } else if (current === 'READY_FOR_REVIEW') {
-          // Reviewer requesting changes
-          if (isAdminOrMgmt || isRegionalMgr) {
+          // Reviewer requesting changes - management and admin only
+          if (isAdminOrMgmt) {
             allowed.push('UNDER_PREPARATION');
           }
         } else if (current === 'APPROVED') {
@@ -164,11 +164,14 @@ export class ProposalsWorkflowService {
           allowed.push('READY_FOR_REVIEW');
         }
       } else if (target === 'APPROVED') {
-        // Approver check: management, admin, or regional manager
-        if (isAdminOrMgmt || isRegionalMgr) {
-          // Self-approval guard: approver cannot be responsible person unless allowed or admin
-          const isSelf = userId === responsibleId;
-          if (!isSelf || settings?.allow_self_approval || role === 'admin') {
+        // Approver check: management and admin only (anti-self-approval: not the one who created/requested/authored it)
+        if (isAdminOrMgmt) {
+          const isCreator =
+            userId === proposal.created_by_id ||
+            userId === proposal.created_by ||
+            isRequester ||
+            isResponsible;
+          if (!isCreator) {
             allowed.push('APPROVED');
           }
         }
@@ -257,16 +260,21 @@ export class ProposalsWorkflowService {
     // Check transition allowed list
     if (!allowed.includes(target)) {
       if (target === 'APPROVED') {
-        if (role !== 'admin' && role !== 'management' && role !== 'regional_manager') {
+        if (role !== 'admin' && role !== 'management') {
           throw new ForbiddenException({
-            message: 'Only management, admin, or regional managers can approve proposals',
+            message: 'Only Top Management and System Administrator can approve proposals.',
             allowed_transitions: allowed,
           });
         }
-        if (user.id === responsibleId && !settings?.allow_self_approval && role !== 'admin') {
-          // E21: Self approval blocked
+        const isCreator =
+          user.id === proposal.created_by_id ||
+          user.id === proposal.created_by ||
+          user.id === (proposal.requested_by_id || proposal.requested_by) ||
+          user.id === (proposal.responsible_person_id || proposal.responsible_id);
+        if (isCreator) {
+          // Self-approval blocked
           throw new ForbiddenException({
-            message: 'Self-approval is blocked. Responsible person cannot approve their own proposal.',
+            message: 'Self-approval is blocked. The person who created, requested, or authored this proposal cannot approve it.',
             allowed_transitions: allowed,
           });
         }

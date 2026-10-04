@@ -305,8 +305,8 @@ export default function ExpensesPage() {
             <option value="hotel">Hotel & Lodging</option>
             <option value="local_conveyance">Local Conveyance (Auto/Taxi)</option>
             <option value="food">Food & Daily Allowance</option>
-            <option value="demo_expenses">Demo Freight / Unit Transit</option>
-            <option value="service_expenses">Service Spares & Tools</option>
+            <option value="demo">Demo Freight / Unit Transit</option>
+            <option value="service">Service Spares & Tools</option>
             <option value="other">Other Out-of-Pocket</option>
           </Select>
           <Button
@@ -492,7 +492,8 @@ export default function ExpensesPage() {
                 { value: 'hotel', label: 'Hotel & Lodging' },
                 { value: 'food', label: 'Food & Meals' },
                 { value: 'demo', label: 'Demo / Trial Expenses' },
-                { value: 'other', label: 'Other Sundry' },
+                { value: 'service', label: 'Service Spares & Hardware Tools' },
+                { value: 'other', label: 'Other Sundry / Field Out-of-Pocket' },
               ]}
             />
             <Input

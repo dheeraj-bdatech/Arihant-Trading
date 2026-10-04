@@ -337,6 +337,22 @@ export class DemosService {
     // Role-based visibility
     if (user.role === 'sales') {
       baseQuery = baseQuery.where('demos.requested_by', '=', user.id);
+    } else if (user.role === 'regional_manager') {
+      if (user.zone_id) {
+        baseQuery = baseQuery.where((eb) =>
+          eb.or([
+            eb('organisations.zone_id', '=', user.zone_id),
+            eb('demos.requested_by', '=', user.id),
+          ]),
+        );
+      } else if (user.region_id) {
+        baseQuery = baseQuery.where((eb) =>
+          eb.or([
+            eb('organisations.region_id', '=', user.region_id),
+            eb('demos.requested_by', '=', user.id),
+          ]),
+        );
+      }
     }
 
     if (query.status) {

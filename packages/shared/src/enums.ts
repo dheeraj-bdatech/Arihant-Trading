@@ -118,13 +118,18 @@ export type TenderStatus =
   | 'under_preparation'
   | 'pq_submitted'
   | 'pq_qualified'
+  | 'pq_not_qualified'
   | 'submitted'
   | 'technical_eval'
+  | 'technically_disqualified'
   | 'commercial_eval'
+  | 'reverse_auction'
   | 'won'
+  | 'partially_won'
   | 'lost'
   | 'cancelled'
-  | 'on_hold';
+  | 'on_hold'
+  | 'not_submitted';
 
 export const TENDER_STATUSES: TenderStatus[] = [
   'identified',
@@ -133,13 +138,18 @@ export const TENDER_STATUSES: TenderStatus[] = [
   'under_preparation',
   'pq_submitted',
   'pq_qualified',
+  'pq_not_qualified',
   'submitted',
   'technical_eval',
+  'technically_disqualified',
   'commercial_eval',
+  'reverse_auction',
   'won',
+  'partially_won',
   'lost',
   'cancelled',
   'on_hold',
+  'not_submitted',
 ];
 
 export const TENDER_UPCOMING_DAYS = 7;
@@ -154,11 +164,73 @@ export const TENDER_PORTAL_ISSUE_STATUSES: TenderPortalIssueStatus[] = [
   'CLOSED',
 ];
 
-export type TenderApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type TenderApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'RETURNED';
 export const TENDER_APPROVAL_STATUSES: TenderApprovalStatus[] = [
   'PENDING',
   'APPROVED',
   'REJECTED',
+  'RETURNED',
+];
+
+export type TenderType = 'Open' | 'Limited' | 'Single Source' | 'Reverse Auction' | 'Rate Contract' | 'EOI';
+export const TENDER_TYPES: TenderType[] = ['Open', 'Limited', 'Single Source', 'Reverse Auction', 'Rate Contract', 'EOI'];
+
+export type TenderLineItemCompliance = 'Yes' | 'No' | 'Partial' | 'Not Checked';
+export const TENDER_LINE_ITEM_COMPLIANCE: TenderLineItemCompliance[] = ['Yes', 'No', 'Partial', 'Not Checked'];
+
+export type TenderFinancialInstrumentType = 'EMD' | 'Tender Fee' | 'PBG' | 'Security Deposit';
+export const TENDER_FINANCIAL_INSTRUMENT_TYPES: TenderFinancialInstrumentType[] = ['EMD', 'Tender Fee', 'PBG', 'Security Deposit'];
+
+export type TenderFinancialInstrumentStatus =
+  | 'Requested'
+  | 'Approved'
+  | 'Issued'
+  | 'Submitted'
+  | 'Refund Due'
+  | 'Refunded'
+  | 'Forfeited'
+  | 'Released'
+  | 'Expired';
+export const TENDER_FINANCIAL_INSTRUMENT_STATUSES: TenderFinancialInstrumentStatus[] = [
+  'Requested',
+  'Approved',
+  'Issued',
+  'Submitted',
+  'Refund Due',
+  'Refunded',
+  'Forfeited',
+  'Released',
+  'Expired',
+];
+
+export type TenderDocumentStatus = 'Not Started' | 'In Progress' | 'Ready' | 'Not Applicable';
+export const TENDER_DOCUMENT_STATUSES: TenderDocumentStatus[] = ['Not Started', 'In Progress', 'Ready', 'Not Applicable'];
+
+export type TenderPortalIssueCategory =
+  | 'Product Not Listed'
+  | 'Portal Downtime'
+  | 'DSC/Login Issue'
+  | 'Upload Failure'
+  | 'Payment Failure'
+  | 'Catalogue Mismatch'
+  | 'Other';
+export const TENDER_PORTAL_ISSUE_CATEGORIES: TenderPortalIssueCategory[] = [
+  'Product Not Listed',
+  'Portal Downtime',
+  'DSC/Login Issue',
+  'Upload Failure',
+  'Payment Failure',
+  'Catalogue Mismatch',
+  'Other',
+];
+
+export type TenderResultOutcome = 'Won' | 'Lost' | 'Partially Won' | 'Cancelled by Organisation' | 'No Result Declared';
+export const TENDER_RESULT_OUTCOMES: TenderResultOutcome[] = [
+  'Won',
+  'Lost',
+  'Partially Won',
+  'Cancelled by Organisation',
+  'No Result Declared',
 ];
 
 export type TenderLossReason =
@@ -192,20 +264,30 @@ export const TENDER_STATUS_LABELS: Record<string, string> = {
   PQ_SUBMITTED: 'PQ Submitted',
   pq_qualified: 'PQ Qualified',
   PQ_QUALIFIED: 'PQ Qualified',
+  pq_not_qualified: 'PQ Not Qualified',
+  PQ_NOT_QUALIFIED: 'PQ Not Qualified',
   submitted: 'Tender Submitted',
   TENDER_SUBMITTED: 'Tender Submitted',
   technical_eval: 'Technical Evaluation',
   TECHNICAL_EVALUATION: 'Technical Evaluation',
+  technically_disqualified: 'Technically Disqualified',
+  TECHNICALLY_DISQUALIFIED: 'Technically Disqualified',
   commercial_eval: 'Commercial Evaluation',
   COMMERCIAL_EVALUATION: 'Commercial Evaluation',
+  reverse_auction: 'Reverse Auction',
+  REVERSE_AUCTION: 'Reverse Auction',
   won: 'Won',
   WON: 'Won',
+  partially_won: 'Partially Won',
+  PARTIALLY_WON: 'Partially Won',
   lost: 'Lost',
   LOST: 'Lost',
   cancelled: 'Cancelled',
   CANCELLED: 'Cancelled',
   on_hold: 'On Hold',
   ON_HOLD: 'On Hold',
+  not_submitted: 'Not Submitted',
+  NOT_SUBMITTED: 'Not Submitted',
 };
 
 export type VisitStatus =
@@ -348,6 +430,7 @@ export type ProposalFollowUpResponse = typeof PROPOSAL_FOLLOW_UP_RESPONSES[numbe
 
 export type ServiceTicketStatus =
   | 'received'
+  | 'new'
   | 'created'
   | 'assigned'
   | 'visit_scheduled'
@@ -356,11 +439,65 @@ export type ServiceTicketStatus =
   | 'awaiting_customer'
   | 'escalated'
   | 'revisit'
+  | 'revisit_required'
+  | 'on_hold'
   | 'resolved'
-  | 'closed';
+  | 'report_submitted'
+  | 'closed'
+  | 'cancelled'
+  | 'reopened';
 
 export type ServicePriority = 'low' | 'medium' | 'high' | 'critical';
-export type WarrantyStatus = 'in_warranty' | 'out_of_warranty' | 'amc';
+export type WarrantyStatus = 'in_warranty' | 'out_of_warranty' | 'amc' | 'Under Warranty' | 'Under AMC' | 'Out of Warranty' | 'Partial Coverage' | 'Unknown';
+
+export type ProblemCategory =
+  | 'Breakdown'
+  | 'Installation'
+  | 'Preventive Maintenance'
+  | 'Calibration'
+  | 'Noise/Leak'
+  | 'Electrical'
+  | 'Software'
+  | 'Other';
+
+export type ComplaintSource =
+  | 'Phone'
+  | 'Email'
+  | 'WhatsApp'
+  | 'Walk-in'
+  | 'Customer Portal'
+  | 'Sales Rep'
+  | 'Auto-PM';
+
+export type VisitOutcome =
+  | 'Completed'
+  | 'Partially Completed'
+  | 'Customer Not Available'
+  | 'Part Required'
+  | 'Escalation Needed'
+  | 'Revisit Required';
+
+export type CustomerConfirmationType =
+  | 'Signature'
+  | 'OTP'
+  | 'Email Confirmation'
+  | 'Photo of Signed Job Sheet'
+  | 'Not Obtained';
+
+export type ReportStatus =
+  | 'Draft'
+  | 'Submitted'
+  | 'Approved'
+  | 'Returned for Correction';
+
+export type PartRequestStatus =
+  | 'Requested'
+  | 'Reserved'
+  | 'Issued'
+  | 'Partially Issued'
+  | 'Unavailable – Ordered'
+  | 'Cancelled'
+  | 'Returned';
 
 export type ExpenseStatus =
   | 'submitted'

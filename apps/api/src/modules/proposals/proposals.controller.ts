@@ -229,7 +229,7 @@ export class ProposalsController {
   }
 
   @Post(':id/approve')
-  @Roles('management', 'regional_manager', 'admin')
+  @Roles('management', 'admin')
   async approve(
     @Param('id') id: string,
     @Body() dto: ApproveProposalDto,
@@ -245,7 +245,7 @@ export class ProposalsController {
   }
 
   @Post(':id/request-changes')
-  @Roles('management', 'regional_manager', 'admin')
+  @Roles('management', 'admin')
   async requestChanges(
     @Param('id') id: string,
     @Body() dto: RequestChangesDto,

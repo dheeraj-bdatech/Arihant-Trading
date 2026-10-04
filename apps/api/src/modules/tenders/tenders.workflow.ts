@@ -8,18 +8,28 @@ export type StandardTenderStatus =
   | 'UNDER_PREPARATION'
   | 'PQ_SUBMITTED'
   | 'PQ_QUALIFIED'
+  | 'PQ_NOT_QUALIFIED'
   | 'TENDER_SUBMITTED'
   | 'TECHNICAL_EVALUATION'
+  | 'TECHNICALLY_DISQUALIFIED'
   | 'COMMERCIAL_EVALUATION'
+  | 'REVERSE_AUCTION'
   | 'WON'
+  | 'PARTIALLY_WON'
   | 'LOST'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'ON_HOLD'
+  | 'NOT_SUBMITTED';
 
 export const TERMINAL_STATUSES: StandardTenderStatus[] = [
   'WON',
+  'PARTIALLY_WON',
   'LOST',
   'CANCELLED',
   'REJECTED_INTERNALLY',
+  'PQ_NOT_QUALIFIED',
+  'TECHNICALLY_DISQUALIFIED',
+  'NOT_SUBMITTED',
 ];
 
 @Injectable()
@@ -37,15 +47,21 @@ export class TendersWorkflowService {
       UNDER_PREPARATION: 'UNDER_PREPARATION',
       PQ_SUBMITTED: 'PQ_SUBMITTED',
       PQ_QUALIFIED: 'PQ_QUALIFIED',
+      PQ_NOT_QUALIFIED: 'PQ_NOT_QUALIFIED',
       SUBMITTED: 'TENDER_SUBMITTED',
       TENDER_SUBMITTED: 'TENDER_SUBMITTED',
       TECHNICAL_EVAL: 'TECHNICAL_EVALUATION',
       TECHNICAL_EVALUATION: 'TECHNICAL_EVALUATION',
+      TECHNICALLY_DISQUALIFIED: 'TECHNICALLY_DISQUALIFIED',
       COMMERCIAL_EVAL: 'COMMERCIAL_EVALUATION',
       COMMERCIAL_EVALUATION: 'COMMERCIAL_EVALUATION',
+      REVERSE_AUCTION: 'REVERSE_AUCTION',
       WON: 'WON',
+      PARTIALLY_WON: 'PARTIALLY_WON',
       LOST: 'LOST',
       CANCELLED: 'CANCELLED',
+      ON_HOLD: 'ON_HOLD',
+      NOT_SUBMITTED: 'NOT_SUBMITTED',
     };
 
     if (map[s]) return map[s];
@@ -64,12 +80,18 @@ export class TendersWorkflowService {
       UNDER_PREPARATION: 'under_preparation',
       PQ_SUBMITTED: 'pq_submitted',
       PQ_QUALIFIED: 'pq_qualified',
+      PQ_NOT_QUALIFIED: 'pq_not_qualified',
       TENDER_SUBMITTED: 'submitted',
       TECHNICAL_EVALUATION: 'technical_eval',
+      TECHNICALLY_DISQUALIFIED: 'technically_disqualified',
       COMMERCIAL_EVALUATION: 'commercial_eval',
+      REVERSE_AUCTION: 'reverse_auction',
       WON: 'won',
+      PARTIALLY_WON: 'partially_won',
       LOST: 'lost',
       CANCELLED: 'cancelled',
+      ON_HOLD: 'on_hold',
+      NOT_SUBMITTED: 'not_submitted',
     };
     return map[s] || 'identified';
   }
@@ -86,12 +108,18 @@ export class TendersWorkflowService {
       UNDER_PREPARATION: 'Under Preparation',
       PQ_SUBMITTED: 'PQ Submitted',
       PQ_QUALIFIED: 'PQ Qualified',
+      PQ_NOT_QUALIFIED: 'PQ Not Qualified',
       TENDER_SUBMITTED: 'Tender Submitted',
       TECHNICAL_EVALUATION: 'Technical Evaluation',
+      TECHNICALLY_DISQUALIFIED: 'Technically Disqualified',
       COMMERCIAL_EVALUATION: 'Commercial Evaluation',
+      REVERSE_AUCTION: 'Reverse Auction',
       WON: 'Won',
+      PARTIALLY_WON: 'Partially Won',
       LOST: 'Lost',
       CANCELLED: 'Cancelled',
+      ON_HOLD: 'On Hold',
+      NOT_SUBMITTED: 'Not Submitted',
     };
     return labels[norm] || norm;
   }
@@ -113,22 +141,81 @@ export class TendersWorkflowService {
       'IDENTIFIED',
       'CANCELLED',
     ],
-    REJECTED_INTERNALLY: [], // Terminal; reopen only
-    UNDER_PREPARATION: ['PQ_SUBMITTED', 'TENDER_SUBMITTED', 'CANCELLED'],
-    PQ_SUBMITTED: ['PQ_QUALIFIED', 'LOST', 'CANCELLED'],
-    PQ_QUALIFIED: ['TENDER_SUBMITTED', 'WON', 'CANCELLED'],
+    REJECTED_INTERNALLY: [
+      'AWAITING_INTERNAL_APPROVAL', // Resubmit for Approval creates round 2
+      'CANCELLED',
+    ],
+    UNDER_PREPARATION: [
+      'PQ_SUBMITTED',
+      'TENDER_SUBMITTED',
+      'NOT_SUBMITTED',
+      'ON_HOLD',
+      'CANCELLED',
+    ],
+    PQ_SUBMITTED: [
+      'PQ_QUALIFIED',
+      'PQ_NOT_QUALIFIED',
+      'LOST',
+      'ON_HOLD',
+      'CANCELLED',
+    ],
+    PQ_QUALIFIED: [
+      'TENDER_SUBMITTED',
+      'WON',
+      'ON_HOLD',
+      'CANCELLED',
+    ],
+    PQ_NOT_QUALIFIED: [], // Terminal; counted as Lost
     TENDER_SUBMITTED: [
       'TECHNICAL_EVALUATION',
       'COMMERCIAL_EVALUATION',
       'WON',
+      'PARTIALLY_WON',
       'LOST',
+      'ON_HOLD',
       'CANCELLED',
     ],
-    TECHNICAL_EVALUATION: ['COMMERCIAL_EVALUATION', 'LOST', 'CANCELLED'],
-    COMMERCIAL_EVALUATION: ['WON', 'LOST', 'CANCELLED'],
+    TECHNICAL_EVALUATION: [
+      'COMMERCIAL_EVALUATION',
+      'TECHNICALLY_DISQUALIFIED',
+      'LOST',
+      'ON_HOLD',
+      'CANCELLED',
+    ],
+    TECHNICALLY_DISQUALIFIED: [], // Terminal; counted as Lost
+    COMMERCIAL_EVALUATION: [
+      'REVERSE_AUCTION',
+      'WON',
+      'PARTIALLY_WON',
+      'LOST',
+      'ON_HOLD',
+      'CANCELLED',
+    ],
+    REVERSE_AUCTION: [
+      'WON',
+      'PARTIALLY_WON',
+      'LOST',
+      'ON_HOLD',
+      'CANCELLED',
+    ],
     WON: [], // Terminal
+    PARTIALLY_WON: [], // Terminal
     LOST: [], // Terminal
     CANCELLED: [], // Terminal
+    ON_HOLD: [
+      'IDENTIFIED',
+      'AWAITING_INTERNAL_APPROVAL',
+      'UNDER_PREPARATION',
+      'PQ_SUBMITTED',
+      'PQ_QUALIFIED',
+      'TENDER_SUBMITTED',
+      'TECHNICAL_EVALUATION',
+      'COMMERCIAL_EVALUATION',
+      'REVERSE_AUCTION',
+      'CANCELLED',
+      'NOT_SUBMITTED',
+    ],
+    NOT_SUBMITTED: [], // Terminal
   };
 
   /**
@@ -217,12 +304,13 @@ export class TendersWorkflowService {
 
     // Check transition matrix
     if (!this.canTransition(from, to)) {
-      if (options?.isRecordResultAction && (to === 'WON' || to === 'LOST')) {
+      if (options?.isRecordResultAction && (to === 'WON' || to === 'LOST' || to === 'PARTIALLY_WON')) {
         const evaluationStages: StandardTenderStatus[] = [
           'PQ_QUALIFIED',
           'TENDER_SUBMITTED',
           'TECHNICAL_EVALUATION',
           'COMMERCIAL_EVALUATION',
+          'REVERSE_AUCTION',
         ];
         if (!evaluationStages.includes(from)) {
           throw new BadRequestException(
@@ -332,8 +420,8 @@ export class TendersWorkflowService {
       }
     }
 
-    // Rule: WON and LOST can only be set through Record Result form
-    if ((to === 'WON' || to === 'LOST') && !options?.isRecordResultAction) {
+    // Rule: WON, PARTIALLY_WON, and LOST can only be set through Record Result form
+    if ((to === 'WON' || to === 'LOST' || to === 'PARTIALLY_WON') && !options?.isRecordResultAction) {
       throw new BadRequestException(
         `Setting status to "${this.getStatusLabel(to)}" is only permitted through the "Record Result" form.`,
       );

@@ -1738,16 +1738,58 @@ export default function ProposalsPage() {
                   </Button>
                 )}
 
-                {selectedProposal.status === 'READY_FOR_REVIEW' && (
-                  <Button
-                    variant="success"
-                    size="xs"
-                    onClick={() => initiateStatusChange('APPROVED')}
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                    <span>Approve Proposal</span>
-                  </Button>
-                )}
+                {selectedProposal.status === 'READY_FOR_REVIEW' && (() => {
+                  const isManagementOrAdmin = ['management', 'admin'].includes(user?.role || '');
+                  const isCreator = Boolean(
+                    user && (
+                      selectedProposal.created_by_id === user.id ||
+                      selectedProposal.created_by === user.id ||
+                      selectedProposal.requested_by_id === user.id ||
+                      selectedProposal.requested_by === user.id ||
+                      selectedProposal.responsible_person_id === user.id ||
+                      selectedProposal.responsible_id === user.id
+                    )
+                  );
+
+                  if (!isManagementOrAdmin) {
+                    return (
+                      <span className="text-[11px] text-[#4A5568] bg-[#FBFAF7] px-2.5 py-1 rounded border border-[#DCD8CE] italic">
+                        Awaiting Management / Admin Approval
+                      </span>
+                    );
+                  }
+
+                  if (isCreator) {
+                    return (
+                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-medium" title="Dual-control policy: You created/authored this proposal and cannot approve your own quotation.">
+                        <AlertTriangle className="h-3 w-3 text-amber-600 shrink-0" />
+                        <span>Self-Approval Prohibited (Created by you)</span>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        className="text-red-700 border-red-200 hover:bg-red-50"
+                        onClick={() => initiateStatusChange('UNDER_PREPARATION')}
+                      >
+                        <X className="h-3.5 w-3.5 mr-1" />
+                        <span>Request Changes</span>
+                      </Button>
+                      <Button
+                        variant="success"
+                        size="xs"
+                        onClick={() => initiateStatusChange('APPROVED')}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                        <span>Approve Proposal</span>
+                      </Button>
+                    </div>
+                  );
+                })()}
 
                 {selectedProposal.status === 'APPROVED' && (
                   <Button
