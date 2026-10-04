@@ -2,11 +2,13 @@ import {
   IsString,
   IsNotEmpty,
   IsOptional,
-  IsUUID,
   IsDateString,
   IsEnum,
+  Matches,
 } from 'class-validator';
 import type { TaskStatus, TaskBlockerType, TaskBlockerDecision } from '@arihant/shared';
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class CreateTaskDto {
   @IsString()
@@ -17,7 +19,7 @@ export class CreateTaskDto {
   @IsOptional()
   description?: string;
 
-  @IsUUID('all')
+  @Matches(UUID_PATTERN, { message: 'assigned_to must be a valid UUID' })
   @IsOptional()
   assigned_to?: string;
 
@@ -37,7 +39,7 @@ export class CreateTaskDto {
   @IsOptional()
   related_entity_type?: string;
 
-  @IsUUID('all')
+  @Matches(UUID_PATTERN, { message: 'related_entity_id must be a valid UUID' })
   @IsOptional()
   related_entity_id?: string;
 
@@ -102,7 +104,7 @@ export class ResolveBlockerDto {
   @IsOptional()
   new_deadline?: string;
 
-  @IsUUID('all')
+  @Matches(UUID_PATTERN, { message: 'reassigned_to must be a valid UUID' })
   @IsOptional()
   reassigned_to?: string;
 }

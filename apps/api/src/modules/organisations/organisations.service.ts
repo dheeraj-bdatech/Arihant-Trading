@@ -53,7 +53,7 @@ export class OrganisationsService {
     }
 
     const countRes = await baseQuery
-      .select(sql<number>`count(organisations.id)::int`.as('total'))
+      .select(sql<number>`count(distinct organisations.id)::int`.as('total'))
       .executeTakeFirst();
     const total = countRes?.total || 0;
 
@@ -446,6 +446,23 @@ export class OrganisationsService {
 
   async create(dto: CreateOrganisationDto, actorId: string) {
     const name = dto.name.trim();
+
+    // B2G Deduplication (§6, §7): return existing organisation if name and city match
+    const existing = await this.db
+      .selectFrom('organisations')
+      .selectAll()
+      .where(sql`lower(trim(name))`, '=', name.toLowerCase())
+      .where((eb) => {
+        if (dto.city) {
+          return eb(sql`lower(trim(coalesce(city, '')))`, '=', dto.city.trim().toLowerCase());
+        }
+        return eb.val(true);
+      })
+      .executeTakeFirst();
+
+    if (existing) {
+      return existing;
+    }
 
     const org = await this.db
       .insertInto('organisations')

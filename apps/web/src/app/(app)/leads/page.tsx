@@ -172,6 +172,7 @@ export default function LeadsPage() {
   // 2. Customers / Organisations State
   const [customers, setCustomers] = useState<any[]>([]);
   const [customersTotal, setCustomersTotal] = useState(0);
+  const [totalCustomersCount, setTotalCustomersCount] = useState(0);
   const [customersPage, setCustomersPage] = useState(1);
   const [customersTotalPages, setCustomersTotalPages] = useState(1);
   const [customersLoading, setCustomersLoading] = useState(false);
@@ -364,7 +365,13 @@ export default function LeadsPage() {
         if (usrRes.status === 'fulfilled') setUsersList(usrRes.value.data || usrRes.value || []);
         if (znRes.status === 'fulfilled') setZonesList(znRes.value.data || znRes.value || []);
         if (regRes.status === 'fulfilled') setRegionsList(regRes.value.data || regRes.value || []);
-        if (orgRes.status === 'fulfilled') setOrganisationsList(orgRes.value.data || orgRes.value || []);
+        if (orgRes.status === 'fulfilled') {
+          const orgList = orgRes.value.data || orgRes.value || [];
+          setOrganisationsList(orgList);
+          const totalOrgs = orgRes.value.total ?? (Array.isArray(orgRes.value) ? orgRes.value.length : orgList.length);
+          setTotalCustomersCount(totalOrgs);
+          setCustomersTotal((prev) => (prev > 0 ? prev : totalOrgs));
+        }
       } catch (err) {
         console.error('Failed to load masters:', err);
       }
@@ -382,6 +389,11 @@ export default function LeadsPage() {
       if (lDash.status === 'fulfilled') {
         const val = lDash.value?.data || lDash.value || {};
         const m = val.metrics || val;
+        const totalCust = val.total_customers ?? val.totalCustomers ?? m.totalCustomers;
+        if (typeof totalCust === 'number' && totalCust > 0) {
+          setTotalCustomersCount(totalCust);
+          setCustomersTotal((prev) => (prev > 0 && customerSearch ? prev : totalCust));
+        }
         setLeadStats({
           ...val,
           ...m,
@@ -448,8 +460,12 @@ export default function LeadsPage() {
 
       const list = Array.isArray(res) ? res : (res?.data || []);
       setCustomers(list);
-      setCustomersTotal(res?.total ?? list.length);
-      setCustomersTotalPages(res?.totalPages ?? 1);
+      const total = typeof res?.total === 'number' ? res.total : list.length;
+      setCustomersTotal(total);
+      if (!customerSearch) {
+        setTotalCustomersCount(total);
+      }
+      setCustomersTotalPages(res?.totalPages ?? Math.max(1, Math.ceil(total / 15)));
     } catch (err) {
       console.error('Failed to load customers:', err);
       setCustomers([]);
@@ -518,10 +534,20 @@ export default function LeadsPage() {
     }
   }, []);
 
+  // Reset pages when filters change to prevent 0-record offset mismatches
+  useEffect(() => {
+    setLeadsPage(1);
+  }, [leadFilters]);
+
+  useEffect(() => {
+    setCustomersPage(1);
+  }, [customerSearch]);
+
   // Initial and reactive data fetching
   useEffect(() => {
     fetchDashboardStats();
-  }, [fetchDashboardStats]);
+    fetchCustomers();
+  }, [fetchDashboardStats, fetchCustomers]);
 
   useEffect(() => {
     if (activeTab === 'leads') fetchLeads();
@@ -675,7 +701,7 @@ export default function LeadsPage() {
       resetLeadForm();
       fetchLeads();
       fetchDashboardStats();
-      if (activeTab === 'customers') fetchCustomers();
+      fetchCustomers();
       if (activeTab === 'followups') fetchFollowups();
     } catch (err: any) {
       const msg = err.message || 'Failed to register lead.';
@@ -1033,9 +1059,9 @@ export default function LeadsPage() {
               size="sm"
               onClick={() => {
                 fetchDashboardStats();
-                if (activeTab === 'leads') fetchLeads();
-                else if (activeTab === 'customers') fetchCustomers();
-                else if (activeTab === 'followups') fetchFollowups();
+                fetchLeads();
+                fetchCustomers();
+                if (activeTab === 'followups') fetchFollowups();
                 else if (activeTab === 'reports') fetchReports();
               }}
               leftIcon={<RefreshCw className="h-4 w-4" />}
@@ -1101,7 +1127,14 @@ export default function LeadsPage() {
           onChange={setActiveTab}
           tabs={[
             { id: 'leads', label: 'Lead Register & Pipeline', icon: <Target className="h-4 w-4" />, count: leadsTotal },
-            { id: 'customers', label: 'Customer Register (360°)', icon: <Building className="h-4 w-4" />, count: customersTotal },
+            {
+              id: 'customers',
+              label: 'Customer Register (360°)',
+              icon: <Building className="h-4 w-4" />,
+              count: (activeTab === 'customers' && customerSearch)
+                ? customersTotal
+                : (totalCustomersCount || customersTotal),
+            },
             { id: 'followups', label: 'Follow-ups Desk', icon: <Clock className="h-4 w-4" />, count: (followupStats?.dueToday ?? followupStats?.due_today) ? `${followupStats?.dueToday ?? followupStats?.due_today} today` : undefined },
             { id: 'reports', label: 'Executive Intelligence Reports', icon: <TrendingUp className="h-4 w-4" /> },
           ]}
@@ -1393,7 +1426,7 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       {activeTab === 'customers' && (
         <div className="space-y-4">
-          <div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex items-center justify-between gap-3">
+          <div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex flex-wrap items-center justify-between gap-3">
             <div className="relative w-full sm:w-80">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#4A5568]" />
               <input
@@ -1401,11 +1434,32 @@ export default function LeadsPage() {
                 placeholder="Search organisations by name, city, sector..."
                 value={customerSearch}
                 onChange={(e) => setCustomerSearch(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] placeholder-[#4A5568] focus:outline-none focus:border-[#0F5E63]"
+                className="w-full pl-9 pr-8 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] placeholder-[#4A5568] focus:outline-none focus:border-[#0F5E63]"
               />
+              {customerSearch && (
+                <button
+                  type="button"
+                  onClick={() => setCustomerSearch('')}
+                  className="absolute right-2.5 top-2 text-[#4A5568] hover:text-[#14213D] text-xs font-bold"
+                  title="Clear search"
+                >
+                  ✕
+                </button>
+              )}
             </div>
             <div className="text-xs text-[#4A5568] font-medium">
-              Total {customersTotal} accounts in system
+              {customerSearch ? (
+                <span>
+                  Showing <strong className="text-[#14213D]">{customers.length}</strong> of{' '}
+                  <strong className="text-[#14213D]">{customersTotal}</strong> matching accounts{' '}
+                  <span className="text-[#4A5568]/80">({totalCustomersCount || customersTotal} total in system)</span>
+                </span>
+              ) : (
+                <span>
+                  Showing <strong className="text-[#14213D]">{customers.length}</strong> of{' '}
+                  <strong className="text-[#14213D]">{customersTotal}</strong> accounts in system
+                </span>
+              )}
             </div>
           </div>
 
@@ -1525,7 +1579,7 @@ export default function LeadsPage() {
           {customersTotalPages > 1 && (
             <div className="flex items-center justify-between pt-2">
               <span className="text-xs text-[#4A5568]">
-                Page {customersPage} of {customersTotalPages}
+                Showing {customers.length > 0 ? (customersPage - 1) * 15 + 1 : 0}–{Math.min(customersPage * 15, customersTotal)} of {customersTotal} accounts • Page {customersPage} of {customersTotalPages}
               </span>
               <div className="flex items-center gap-2">
                 <Button

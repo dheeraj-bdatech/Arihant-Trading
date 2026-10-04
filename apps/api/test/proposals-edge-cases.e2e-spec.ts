@@ -951,7 +951,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           contact_person: 'Col. Sharma',
           summary: 'Client acknowledged receipt and asked for warranty details',
           response: 'Positive',
-          next_follow_up_date: '2026-09-30',
+          next_follow_up_date: new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0],
         });
       expect(okFu.status).toBe(201);
       expect(okFu.body.proposal.status).toBe('FOLLOW_UP_REQUIRED');

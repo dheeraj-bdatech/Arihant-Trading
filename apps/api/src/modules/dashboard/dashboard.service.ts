@@ -128,7 +128,36 @@ export class DashboardService {
         .executeTakeFirst(),
     ]);
 
-    // 6. Recent critical exceptions (for management command center)
+    // 6. Deliveries metrics
+    const [delivTotal, delivScheduled, delivInTransit, delivDelivered, delivInstalled] = await Promise.all([
+      this.db.selectFrom('deliveries').select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
+      this.db.selectFrom('deliveries').select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'scheduled').executeTakeFirst(),
+      this.db.selectFrom('deliveries').select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'in_transit').executeTakeFirst(),
+      this.db.selectFrom('deliveries').select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'delivered').executeTakeFirst(),
+      this.db.selectFrom('deliveries').select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'installed').executeTakeFirst(),
+    ]);
+
+    // 7. Visits metrics
+    let visitQuery = this.db.selectFrom('visits');
+    if (['sales', 'demo_team', 'service_team'].includes(user.role)) {
+      visitQuery = visitQuery.where('assigned_to', '=', user.id);
+    }
+    const [visitTotal, visitPlanned, visitCompleted] = await Promise.all([
+      visitQuery.select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
+      visitQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'planned').executeTakeFirst(),
+      visitQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'completed').executeTakeFirst(),
+    ]);
+
+    // 8. Proposals metrics
+    const [propTotal, propUnderPrep, propSent, propConverted, propLost] = await Promise.all([
+      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
+      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['under_preparation', 'UNDER_PREPARATION']).executeTakeFirst(),
+      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['sent', 'SENT_TO_CUSTOMER']).executeTakeFirst(),
+      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['converted', 'CONVERTED']).executeTakeFirst(),
+      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['lost', 'LOST']).executeTakeFirst(),
+    ]);
+
+    // 9. Recent critical exceptions (for management command center)
     const recentExceptions: any[] = [];
 
     // Tenders closing soon
@@ -228,6 +257,25 @@ export class DashboardService {
         total: ticketTotal?.c || 0,
         open: ticketOpen?.c || 0,
         critical: ticketCritical?.c || 0,
+      },
+      deliveriesCount: {
+        total: delivTotal?.c || 0,
+        scheduled: delivScheduled?.c || 0,
+        inTransit: delivInTransit?.c || 0,
+        delivered: delivDelivered?.c || 0,
+        installed: delivInstalled?.c || 0,
+      },
+      visitsCount: {
+        total: visitTotal?.c || 0,
+        planned: visitPlanned?.c || 0,
+        completed: visitCompleted?.c || 0,
+      },
+      proposalsCount: {
+        total: propTotal?.c || 0,
+        draft: propUnderPrep?.c || 0,
+        submitted: propSent?.c || 0,
+        won: propConverted?.c || 0,
+        lost: propLost?.c || 0,
       },
       recentExceptions,
     };

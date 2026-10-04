@@ -618,6 +618,8 @@ export class DemosService {
           travel_to: dto.travel_to || null,
           travel_date: dto.travel_date || null,
           travel_remarks: dto.travel_remarks || null,
+          tender_id: dto.tender_id || null,
+          deal_value: dto.deal_value || null,
           status: 'requested',
           version: 1,
         })
@@ -953,8 +955,11 @@ export class DemosService {
       const conflict = await trx
         .selectFrom('demo_reservations')
         .innerJoin('demos', 'demo_reservations.demo_id', 'demos.id')
+        .leftJoin('tenders', 'demos.tender_id', 'tenders.id')
+        .leftJoin('organisations', 'demos.organisation_id', 'organisations.id')
+        .leftJoin('users as requester', 'demos.requested_by', 'requester.id')
         .where('demo_reservations.equipment_id', '=', dto.equipment_id)
-        .where('demo_reservations.status', 'in', ['approved', 'requested', 'alternative_suggested'])
+        .where('demo_reservations.status', 'in', ['approved', 'requested'])
         .where(sql<boolean>`coalesce(demos.status, '') not in ('cancelled', 'completed')`)
         .where('demo_reservations.reserved_from', '<=', toDate)
         .where(sql<boolean>`coalesce(demo_reservations.reserved_to, demo_reservations.reserved_from) >= ${fromDate}`)
@@ -962,23 +967,82 @@ export class DemosService {
           'demo_reservations.id',
           'demo_reservations.reserved_from',
           'demo_reservations.reserved_to',
+          'demo_reservations.demo_id',
           'demos.demo_no',
           'demos.location as demo_location',
+          'demos.deal_value',
+          'demos.tender_id',
+          'tenders.tender_no',
+          'tenders.estimated_value as tender_value',
+          'organisations.name as organisation_name',
+          'requester.full_name as requested_by_name',
         ])
         .executeTakeFirst();
+
+      const currentTender = demo.tender_id
+        ? await trx.selectFrom('tenders').select(['tender_no', 'estimated_value']).where('id', '=', demo.tender_id).executeTakeFirst()
+        : null;
+      const currentEffectiveValue = Number(demo.deal_value || currentTender?.estimated_value || 0);
 
       if (conflict) {
         const confFrom = formatDateOnly(conflict.reserved_from, fromDate);
         const confTo = formatDateOnly(conflict.reserved_to, confFrom);
-        throw new ConflictException({
-          code: 'EQUIPMENT_ALREADY_RESERVED',
-          message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is already reserved from ${confFrom} to ${confTo} for Demo ${conflict.demo_no || ''}.`,
-          conflicting_reservation: conflict,
-        });
+        const conflictEffectiveValue = Number(conflict.deal_value || conflict.tender_value || 0);
+        const isCurrentHigher = currentEffectiveValue > conflictEffectiveValue;
+
+        if (dto.override_conflict && ['management', 'admin'].includes(user.role)) {
+          // Management Strategic Override based on Higher Tender Value (§16)
+          await trx
+            .updateTable('demo_reservations')
+            .set({
+              status: 'alternative_suggested',
+              remarks: `Superseded by Management: Unit prioritized to Demo ${demo.demo_no} due to higher tender value (₹${currentEffectiveValue.toLocaleString('en-IN')} vs ₹${conflictEffectiveValue.toLocaleString('en-IN')}). ${dto.override_reason || ''}`.trim(),
+            })
+            .where('id', '=', conflict.id)
+            .execute();
+
+          this.eventEmitter.emit('audit.log', {
+            actorId: user.id,
+            entityType: 'demo_reservation',
+            entityId: conflict.id,
+            action: 'management_tender_priority_override',
+            previousValue: { status: 'approved', demo_id: conflict.demo_id },
+            newValue: {
+              status: 'alternative_suggested',
+              superseded_by_demo_id: demoId,
+              current_tender_value: currentEffectiveValue,
+              superseded_tender_value: conflictEffectiveValue,
+              reason: dto.override_reason,
+            },
+          });
+        } else {
+          throw new ConflictException({
+            code: 'EQUIPMENT_ALREADY_RESERVED',
+            message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is already reserved from ${confFrom} to ${confTo} for Demo ${conflict.demo_no || ''} (${conflict.organisation_name || 'Client'}).`,
+            conflicting_reservation: conflict,
+            priority_analysis: {
+              conflicting_demo: {
+                demo_no: conflict.demo_no,
+                organisation: conflict.organisation_name,
+                salesperson: conflict.requested_by_name,
+                tender_no: conflict.tender_no,
+                tender_value: conflictEffectiveValue,
+              },
+              current_demo: {
+                demo_no: demo.demo_no,
+                tender_no: currentTender?.tender_no,
+                tender_value: currentEffectiveValue,
+              },
+              recommendation: isCurrentHigher
+                ? `Current demo has higher tender value (₹${currentEffectiveValue.toLocaleString('en-IN')} vs ₹${conflictEffectiveValue.toLocaleString('en-IN')}). Management approval can override reservation.`
+                : `Conflicting demo has higher or equal tender value (₹${conflictEffectiveValue.toLocaleString('en-IN')} vs ₹${currentEffectiveValue.toLocaleString('en-IN')}). Keep existing reservation or select alternate unit/dates.`,
+            },
+          });
+        }
       }
 
       // Check if equipment availability_status is 'reserved' and reserved_until covers the date
-      if (equipment.availability_status === 'reserved' && equipment.reserved_until) {
+      if (!dto.override_conflict && equipment.availability_status === 'reserved' && equipment.reserved_until) {
         const reservedUntilStr = formatDateOnly(equipment.reserved_until);
         if (reservedUntilStr >= fromDate) {
           throw new ConflictException({

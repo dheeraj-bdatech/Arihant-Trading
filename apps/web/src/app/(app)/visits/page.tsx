@@ -693,7 +693,7 @@ export default function VisitsPage() {
       case 'modified':
         return <Badge variant="info" size="sm">MODIFIED</Badge>;
       case 'not_completed':
-        return <Badge variant="default" size="sm">NOT COMPLETED</Badge>;
+        return <Badge variant="warning" size="sm">CONTACT UNAVAILABLE</Badge>;
       default:
         return <Badge variant="info" size="sm">PLANNED</Badge>;
     }

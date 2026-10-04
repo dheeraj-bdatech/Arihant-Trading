@@ -27,14 +27,17 @@ export class ProposalProductItemDto {
 }
 
 export class CreateProposalDto {
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Customer/Organisation ID must be a valid UUID' })
   @IsOptional()
   customer_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Customer/Organisation ID must be a valid UUID' })
   @IsOptional()
   organisation_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Primary Product ID must be a valid UUID' })
   @IsOptional()
   product_id?: string;
@@ -45,42 +48,52 @@ export class CreateProposalDto {
   @IsOptional()
   products?: ProposalProductItemDto[];
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
   sector?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Sector/Department ID must be a valid UUID' })
   @IsOptional()
   sector_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Requested by ID must be a valid UUID' })
   @IsOptional()
   requested_by?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Requested by ID must be a valid UUID' })
   @IsOptional()
   requested_by_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Responsible person ID must be a valid UUID' })
   @IsOptional()
   responsible_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Responsible person ID must be a valid UUID' })
   @IsOptional()
   responsible_person_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Follow-up owner ID must be a valid UUID' })
   @IsOptional()
   followup_owner_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Follow-up owner ID must be a valid UUID' })
   @IsOptional()
   follow_up_owner_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Lead ID must be a valid UUID' })
   @IsOptional()
   lead_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsDateString({}, { message: 'Request date must be a valid YYYY-MM-DD string' })
   @IsOptional()
   request_date?: string;
@@ -89,43 +102,53 @@ export class CreateProposalDto {
   @IsNotEmpty({ message: 'Required completion date is required' })
   required_date!: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsDateString({}, { message: 'Sent date must be a valid YYYY-MM-DD string' })
   @IsOptional()
   sent_date?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
   version?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
   reference?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
   email_reference?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
   status?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsDateString({}, { message: 'Next follow-up date must be a valid YYYY-MM-DD string' })
   @IsOptional()
   next_followup?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsDateString({}, { message: 'Next follow-up date must be a valid YYYY-MM-DD string' })
   @IsOptional()
   next_follow_up_date?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
   @MaxLength(2000, { message: 'Remarks cannot exceed 2000 characters' })
   remarks?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Related proposal ID must be a valid UUID' })
   @IsOptional()
   related_proposal_id?: string;
 
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
   duplicate_override_reason?: string;

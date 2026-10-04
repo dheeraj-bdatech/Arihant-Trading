@@ -215,6 +215,16 @@ export class DemosController {
     return this.demosService.reserveEquipment(id, dto, user);
   }
 
+  @Post(':id/reserve-equipment')
+  @Roles('management', 'regional_manager', 'demo_team', 'admin')
+  async reserveEquipmentAlias(
+    @Param('id') id: string,
+    @Body() dto: ReserveEquipmentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.demosService.reserveEquipment(id, dto, user);
+  }
+
   @Post('reservations/:id/alternative')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async suggestAlternative(

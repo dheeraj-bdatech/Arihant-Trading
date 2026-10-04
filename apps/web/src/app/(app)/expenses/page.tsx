@@ -18,6 +18,9 @@ import {
   CreditCard,
   ExternalLink,
   MapPin,
+  Download,
+  Filter,
+  Coins,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -32,6 +35,8 @@ import {
   PageContainer,
   PageHeader,
   EmptyState,
+  StatCard,
+  StatGrid,
 } from '@/components/ui';
 import { formatINR } from '@arihant/shared';
 
@@ -41,8 +46,12 @@ export default function ExpensesPage() {
   const visitIdParam = searchParams.get('visit_id');
 
   const [expenses, setExpenses] = useState<any[]>([]);
+  const [summary, setSummary] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Modals
   const [isSubmitOpen, setIsSubmitOpen] = useState(false);
@@ -76,11 +85,21 @@ export default function ExpensesPage() {
   const fetchExpenses = async () => {
     try {
       setIsLoading(true);
-      const res = await api.get('/expenses', {
-        status: activeTab !== 'all' ? activeTab : undefined,
-        limit: 50,
-      });
+      const [res, summaryRes] = await Promise.all([
+        api.get('/expenses', {
+          status: activeTab !== 'all' ? activeTab : undefined,
+          category: categoryFilter !== 'all' ? categoryFilter : undefined,
+          search: searchQuery || undefined,
+          limit: 50,
+        }),
+        api
+          .get('/expenses/summary', {
+            category: categoryFilter !== 'all' ? categoryFilter : undefined,
+          })
+          .catch(() => null),
+      ]);
       setExpenses(res.data || []);
+      if (summaryRes) setSummary(summaryRes);
     } catch (err) {
       console.error('Failed to load expenses:', err);
     } finally {
@@ -88,9 +107,34 @@ export default function ExpensesPage() {
     }
   };
 
+  const handleExportCsv = async () => {
+    try {
+      setIsExporting(true);
+      const csvData = await api.get<string>('/expenses/export/csv', {
+        status: activeTab !== 'all' ? activeTab : undefined,
+        category: categoryFilter !== 'all' ? categoryFilter : undefined,
+      });
+      const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute(
+        'download',
+        `arihant-expenses-${new Date().toISOString().split('T')[0]}.csv`,
+      );
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error('Failed to export expenses for Tally:', err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   useEffect(() => {
     fetchExpenses();
-  }, [activeTab]);
+  }, [activeTab, categoryFilter]);
 
   useEffect(() => {
     api
@@ -184,16 +228,98 @@ export default function ExpensesPage() {
         subtitle="Stage 1: Regional Manager verification • Stage 2: Corporate Accounts disbursement."
         icon={<Receipt className="h-5 w-5 text-[#0F5E63]" />}
         actions={
-          <Button
-            onClick={() => setIsSubmitOpen(true)}
-            variant="primary"
-            className="shadow-xs"
-          >
-            <Plus className="h-4 w-4 mr-1.5" />
-            <span>Submit Reimbursement</span>
-          </Button>
+          <div className="flex items-center gap-2.5">
+            <Button
+              onClick={handleExportCsv}
+              variant="outline"
+              disabled={isExporting}
+              className="border-[#DCD8CE] hover:border-[#0F5E63] text-[#14213D] shadow-xs"
+            >
+              <Download className="h-4 w-4 mr-1.5 text-[#0F5E63]" />
+              <span>{isExporting ? 'Exporting...' : 'Export for Tally (CSV)'}</span>
+            </Button>
+            <Button
+              onClick={() => setIsSubmitOpen(true)}
+              variant="primary"
+              className="shadow-xs"
+            >
+              <Plus className="h-4 w-4 mr-1.5" />
+              <span>Submit Reimbursement</span>
+            </Button>
+          </div>
         }
       />
+
+      {/* Financial Summary HUD */}
+      <StatGrid cols={4}>
+        <StatCard
+          label="Total Claims Submitted"
+          value={formatINR(summary?.metrics?.total_amount || 0)}
+          subtext={`${summary?.metrics?.total_count || 0} claims in system`}
+          icon={<Coins className="h-5 w-5 text-[#0F5E63]" />}
+        />
+        <StatCard
+          label="Stage 1: Awaiting RM"
+          value={formatINR(summary?.metrics?.pending_manager_amount || 0)}
+          subtext="Pending field manager review"
+          icon={<Clock className="h-5 w-5 text-[#9A3412]" />}
+          variant="amber"
+        />
+        <StatCard
+          label="Stage 2: In Accounts"
+          value={formatINR(summary?.metrics?.pending_accounts_amount || 0)}
+          subtext="Ready for finance clearance"
+          icon={<ShieldCheck className="h-5 w-5 text-[#0F5E63]" />}
+          variant="emerald"
+        />
+        <StatCard
+          label="Settled & Reconciled"
+          value={formatINR(summary?.metrics?.approved_amount || 0)}
+          subtext="Processed into Tally accounts"
+          icon={<CheckCircle2 className="h-5 w-5 text-[#0F5E63]" />}
+          variant="primary"
+        />
+      </StatGrid>
+
+      {/* Category & Search Filter Bar */}
+      <div className="flex flex-col sm:flex-row gap-3 items-center justify-between p-3.5 bg-white border border-[#DCD8CE] rounded-[14px]">
+        <div className="flex-1 w-full sm:w-auto">
+          <Input
+            placeholder="Search claims by purpose, employee, or customer..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') fetchExpenses();
+            }}
+            className="w-full"
+          />
+        </div>
+        <div className="flex items-center gap-2.5 w-full sm:w-auto">
+          <Select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="w-full sm:w-48 text-xs font-semibold"
+          >
+            <option value="all">All Categories</option>
+            <option value="travel">Travel (Train/Flight/Bus)</option>
+            <option value="hotel">Hotel & Lodging</option>
+            <option value="local_conveyance">Local Conveyance (Auto/Taxi)</option>
+            <option value="food">Food & Daily Allowance</option>
+            <option value="demo_expenses">Demo Freight / Unit Transit</option>
+            <option value="service_expenses">Service Spares & Tools</option>
+            <option value="other">Other Out-of-Pocket</option>
+          </Select>
+          <Button
+            onClick={() => fetchExpenses()}
+            variant="secondary"
+            size="sm"
+            className="whitespace-nowrap"
+          >
+            <Filter className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
+            Apply Filter
+          </Button>
+        </div>
+      </div>
 
       {/* Tabs */}
       <Tabs

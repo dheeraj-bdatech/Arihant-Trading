@@ -149,11 +149,9 @@ export class VisitsService {
       const vHasTimes = Boolean(v.start_time && v.end_time);
       const staffLabel = (v as any).employee_name ? `Officer ${(v as any).employee_name}` : 'Selected officer';
 
-      // 1. Same organization: allow multiple appointments on same day if times don't overlap
+      // 1. Same organization: strictly reject duplicate visit to same organization on same date
       if (params.organisationId && v.organisation_id === params.organisationId) {
-        if (!vHasTimes && !newHasTimes) {
-          conflicts.push(`${staffLabel} already has an all-day visit scheduled for ${v.organisation_name} on ${params.plannedDate}. Please select another officer or specify time slots.`);
-        }
+        conflicts.push(`${staffLabel} already has a visit scheduled for ${v.organisation_name} on ${params.plannedDate}.`);
       }
 
       // 2. Direct Time Overlap Check for the same staff member
@@ -326,10 +324,15 @@ export class VisitsService {
         'visits.updated_at',
         'organisations.name as organisation_name',
         'organisations.city as city',
+        'organisations.state as state',
+        'organisations.zone_id as zone_id',
         'organisations.region_id',
         'products.name as product_name',
         sql<string | null>`coalesce(contacts.full_name, visits.contact_person)`.as('contact_name'),
         'visits.contact_person',
+        'contacts.designation as contact_designation',
+        'contacts.mobile as contact_mobile',
+        'contacts.email as contact_email',
         'assignee.full_name as assignee_name',
         'planner.full_name as planner_name',
         'manager.full_name as manager_name',
@@ -369,11 +372,15 @@ export class VisitsService {
       .select([
         'organisations.name as organisation_name',
         'organisations.city as city',
+        'organisations.state as state',
+        'organisations.zone_id as zone_id',
         'organisations.region_id',
         'products.name as product_name',
         sql<string | null>`coalesce(contacts.full_name, visits.contact_person)`.as('contact_name'),
         'visits.contact_person',
+        'contacts.designation as contact_designation',
         'contacts.mobile as contact_mobile',
+        'contacts.email as contact_email',
         'assignee.full_name as assignee_name',
         'planner.full_name as planner_name',
         'manager.full_name as manager_name',

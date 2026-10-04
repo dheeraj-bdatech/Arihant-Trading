@@ -411,6 +411,7 @@ export type BosModuleKey =
   | 'visits'
   | 'demos'
   | 'proposals'
+  | 'deliveries'
   | 'service'
   | 'expenses'
   | 'tasks'
@@ -460,6 +461,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
       'visits',
       'demos',
       'proposals',
+      'deliveries',
       'service',
       'expenses',
       'tasks',
@@ -500,6 +502,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
       'visits',
       'demos',
       'proposals',
+      'deliveries',
       'service',
       'expenses',
       'tasks',
@@ -537,6 +540,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
       'visits',
       'demos',
       'proposals',
+      'deliveries',
       'tasks',
       'expenses',
       'notifications',
@@ -636,6 +640,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
     allowedModules: [
       'dashboard',
       'service',
+      'deliveries',
       'visits',
       'tasks',
       'expenses',
@@ -705,6 +710,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
       'visits',
       'demos',
       'proposals',
+      'deliveries',
       'service',
       'expenses',
       'tasks',

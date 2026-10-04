@@ -66,6 +66,11 @@ async function request<T = any>(
     return {} as T;
   }
 
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/csv') || contentType.includes('text/plain')) {
+    return (await response.text()) as unknown as T;
+  }
+
   return response.json();
 }
 

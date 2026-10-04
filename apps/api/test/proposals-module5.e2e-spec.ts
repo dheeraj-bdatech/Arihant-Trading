@@ -161,6 +161,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
           product_id: testProductId,
           sector: 'Defence',
           responsible_id: '00000000-0000-0000-0000-000000000000',
+          request_date: '2026-09-20',
           required_date: '2026-09-30',
         });
 
@@ -519,7 +520,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
           owner_id: salesUserId,
           remarks: 'Discussed technical specs with purchase officer.',
           outcome: 'Requested revised delivery schedule',
-          next_followup_date: '2026-09-28',
+          next_followup_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
         });
 
       expect(followupRes.status).toBe(201);
@@ -564,6 +565,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
           product_id: testProductId,
           sector: 'Infrastructure',
           responsible_id: salesUserId,
+          request_date: '2026-09-20',
           required_date: '2026-09-30',
           duplicate_override_reason: 'Testing history and soft delete',
         });

@@ -47,6 +47,24 @@ export class TasksService {
       baseQuery = baseQuery.where('tasks.assigned_to', '=', query.assigned_to);
     }
 
+    if (query.department) {
+      baseQuery = baseQuery.where('tasks.department', '=', query.department);
+    }
+
+    if (query.priority) {
+      baseQuery = baseQuery.where('tasks.priority', '=', query.priority as any);
+    }
+
+    const fromDate = query.dateFrom || (query as any).from_date;
+    if (fromDate) {
+      baseQuery = baseQuery.where('tasks.deadline', '>=', fromDate);
+    }
+
+    const toDate = query.dateTo || (query as any).to_date;
+    if (toDate) {
+      baseQuery = baseQuery.where('tasks.deadline', '<=', toDate);
+    }
+
     if (query.overdueOnly) {
       const today = new Date().toISOString().split('T')[0];
       baseQuery = baseQuery

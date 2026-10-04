@@ -173,8 +173,40 @@ export default function ProposalsPage() {
   });
 
   const [formError, setFormError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [duplicateWarning, setDuplicateWarning] = useState<{ detected: boolean; message: string; proposalNo?: string } | null>(null);
+  const [duplicateOverrideReason, setDuplicateOverrideReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const resetCreateForm = () => {
+    setNewProposal({
+      organisation_id: '',
+      product_id: '',
+      sector: 'Defence',
+      responsible_id: '',
+      request_date: new Date().toISOString().split('T')[0],
+      required_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      version: 'v1.0',
+      reference: '',
+      followup_owner_id: '',
+      next_followup: '',
+      remarks: '',
+    });
+    setFormError(null);
+    setDuplicateWarning(null);
+    setDuplicateOverrideReason('');
+  };
+
+  // Auto-dismiss success message
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => {
+        setSuccessMessage(null);
+      }, 7000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
 
   // Fetch Reference Masters (Organisations, Products, Users)
   const fetchMasters = async () => {
@@ -424,57 +456,104 @@ export default function ProposalsPage() {
     e.preventDefault();
     setFormError(null);
 
-    if (!newProposal.organisation_id) {
+    // 1. Comprehensive Field Validations
+    if (!newProposal.organisation_id?.trim()) {
       setFormError('Please select a customer organisation');
       return;
     }
-    if (!newProposal.product_id) {
+    if (!newProposal.product_id?.trim()) {
       setFormError('Please select a product');
       return;
     }
-    if (!newProposal.responsible_id) {
+    if (!newProposal.sector?.trim()) {
+      setFormError('Please select a sector / department');
+      return;
+    }
+    if (!newProposal.responsible_id?.trim()) {
       setFormError('Please assign a responsible proposal person');
+      return;
+    }
+    if (!newProposal.request_date) {
+      setFormError('Request date is required');
+      return;
+    }
+    const todayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+
+    if (newProposal.request_date > todayStr) {
+      setFormError('Request date cannot be in the future');
+      return;
+    }
+    if (!newProposal.required_date) {
+      setFormError('Required completion date is required');
       return;
     }
     if (newProposal.required_date < newProposal.request_date) {
       setFormError('Required completion date cannot be before request date');
       return;
     }
+    if (newProposal.next_followup && isNaN(Date.parse(newProposal.next_followup))) {
+      setFormError('Initial follow-up date must be a valid date');
+      return;
+    }
+    if (duplicateWarning && !duplicateOverrideReason?.trim()) {
+      setFormError('Please provide a reason to override the duplicate proposal detection.');
+      return;
+    }
 
     try {
       setIsSubmitting(true);
-      await api.post('/proposals', {
-        organisation_id: newProposal.organisation_id,
-        product_id: newProposal.product_id,
-        sector: newProposal.sector,
-        responsible_id: newProposal.responsible_id,
-        followup_owner_id: newProposal.followup_owner_id || newProposal.responsible_id,
+      const payload: any = {
+        organisation_id: newProposal.organisation_id.trim(),
+        product_id: newProposal.product_id.trim(),
+        sector: newProposal.sector.trim(),
+        responsible_id: newProposal.responsible_id.trim(),
+        followup_owner_id: (newProposal.followup_owner_id || newProposal.responsible_id).trim(),
         request_date: newProposal.request_date,
         required_date: newProposal.required_date,
-        version: newProposal.version || 'v1.0',
-        reference: newProposal.reference || undefined,
-        next_followup: newProposal.next_followup || undefined,
-        remarks: newProposal.remarks || undefined,
-      });
+        version: (newProposal.version || 'v1.0').trim(),
+      };
+
+      if (newProposal.reference?.trim()) payload.reference = newProposal.reference.trim();
+      if (newProposal.next_followup?.trim()) payload.next_followup = newProposal.next_followup.trim();
+      if (newProposal.remarks?.trim()) payload.remarks = newProposal.remarks.trim();
+      if (duplicateOverrideReason?.trim()) payload.duplicate_override_reason = duplicateOverrideReason.trim();
+
+      const created = await api.post('/proposals', payload);
+      const quoteNo = created?.proposal_no || created?.proposal_number || 'New Quote';
 
       setIsCreateOpen(false);
-      setNewProposal({
-        organisation_id: '',
-        product_id: '',
-        sector: 'Defence',
-        responsible_id: '',
-        request_date: new Date().toISOString().split('T')[0],
-        required_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        version: 'v1.0',
-        reference: '',
-        followup_owner_id: '',
-        next_followup: '',
-        remarks: '',
-      });
+      resetCreateForm();
+      setSuccessMessage(`Proposal ${quoteNo} has been successfully registered and listed under Commercial Price Quotes.`);
+
+      // Reset filters so the newly created proposal is immediately listed
+      setSelectedStatus('all');
+      setSelectedFollowupCondition('all');
+      setSearch('');
+      setPage(1);
+
       await fetchProposals();
       await fetchStats();
     } catch (err: any) {
-      setFormError(err.message || 'Failed to create proposal request');
+      const isDuplicate =
+        err?.data?.duplicate_detected ||
+        err?.status === 409 ||
+        (typeof err?.message === 'string' && err.message.toLowerCase().includes('duplicate'));
+
+      if (isDuplicate) {
+        setDuplicateWarning({
+          detected: true,
+          message: err?.message || 'A similar proposal was already registered for this customer and product within the duplicate detection window.',
+          proposalNo: err?.data?.existing_proposal_no,
+        });
+        setFormError(err?.message || 'Duplicate proposal detected. Provide an override reason below to proceed.');
+      } else {
+        setFormError(err.message || 'Failed to create proposal request');
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -668,6 +747,7 @@ export default function ProposalsPage() {
               variant="primary"
               size="sm"
               onClick={() => {
+                resetCreateForm();
                 setNewProposal((prev) => ({
                   ...prev,
                   responsible_id: user?.id || prev.responsible_id,
@@ -682,6 +762,28 @@ export default function ProposalsPage() {
           </div>
         }
       />
+
+      {/* Success Confirmation Banner */}
+      {successMessage && (
+        <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-[14px] text-emerald-900 flex items-center justify-between shadow-xs animate-in fade-in duration-200">
+          <div className="flex items-center gap-3">
+            <div className="p-1.5 bg-emerald-600 text-white rounded-full shrink-0">
+              <Check className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Quotation Registered</p>
+              <p className="text-xs font-medium text-emerald-900">{successMessage}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setSuccessMessage(null)}
+            className="text-emerald-700 hover:text-emerald-950 p-1.5 rounded-lg hover:bg-emerald-100 transition-colors"
+            title="Dismiss confirmation"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* 2. Executive Metric HUD (StatCards with click-to-filter capability) */}
       <StatGrid cols={5} className="gap-3">
@@ -1026,7 +1128,15 @@ export default function ProposalsPage() {
         )}
       </Card>
 
-      {/* 4. Proposal Register Table */}
+      {/* 4. Commercial Price Quotes Table */}
+      <div className="flex items-center justify-between pt-1 pb-0.5">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-bold text-[#14213D] font-serif">Commercial Price Quotes</h2>
+          <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#E3EFEE] text-[#0F5E63] font-mono font-bold">
+            {total} {total === 1 ? 'quote' : 'quotes'}
+          </span>
+        </div>
+      </div>
       <Card padding="none" className="bg-white border-[#DCD8CE] overflow-x-auto shadow-xs">
         <Table>
           <TableHeader>
@@ -1327,16 +1437,44 @@ export default function ProposalsPage() {
       {/* 5. Create Proposal Request Modal */}
       <Modal
         isOpen={isCreateOpen}
-        onClose={() => setIsCreateOpen(false)}
+        onClose={() => {
+          setIsCreateOpen(false);
+          resetCreateForm();
+        }}
         title="Create Proposal Request"
-        description="Register a new proposal inquiry with mandatory customer, sector, product, and responsibility tracking."
+        description="Register a new commercial price quote inquiry with customer, sector, product, and responsibility tracking."
         maxWidth="2xl"
       >
         <form onSubmit={handleCreateProposal} className="space-y-4">
           {formError && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 flex items-center gap-2">
-              <AlertCircle className="h-4 w-4 shrink-0" />
+              <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
               <span>{formError}</span>
+            </div>
+          )}
+
+          {duplicateWarning && (
+            <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-lg text-xs space-y-2">
+              <div className="flex items-start gap-2 text-amber-900">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
+                <div>
+                  <span className="font-bold">Duplicate Proposal Detected: </span>
+                  <span>{duplicateWarning.message}</span>
+                </div>
+              </div>
+              <div className="pt-1">
+                <label className="text-[11px] font-semibold text-amber-950 block mb-1">
+                  Duplicate Override Reason <span className="text-red-600">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. New fiscal budget inquiry or distinct delivery scope"
+                  value={duplicateOverrideReason}
+                  onChange={(e) => setDuplicateOverrideReason(e.target.value)}
+                  className="w-full text-xs py-1.5 px-3 bg-white border border-amber-300 rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                />
+              </div>
             </div>
           )}
 
@@ -1349,7 +1487,10 @@ export default function ProposalsPage() {
               <select
                 required
                 value={newProposal.organisation_id}
-                onChange={(e) => setNewProposal({ ...newProposal, organisation_id: e.target.value })}
+                onChange={(e) => {
+                  setNewProposal({ ...newProposal, organisation_id: e.target.value });
+                  setDuplicateWarning(null);
+                }}
                 className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
               >
                 <option value="">Select customer organisation...</option>
@@ -1369,7 +1510,10 @@ export default function ProposalsPage() {
               <select
                 required
                 value={newProposal.product_id}
-                onChange={(e) => setNewProposal({ ...newProposal, product_id: e.target.value })}
+                onChange={(e) => {
+                  setNewProposal({ ...newProposal, product_id: e.target.value });
+                  setDuplicateWarning(null);
+                }}
                 className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
               >
                 <option value="">Select product...</option>
@@ -1496,11 +1640,19 @@ export default function ProposalsPage() {
           />
 
           <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
-            <Button variant="outline" size="sm" type="button" onClick={() => setIsCreateOpen(false)}>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={() => {
+                setIsCreateOpen(false);
+                resetCreateForm();
+              }}
+            >
               Cancel
             </Button>
             <Button variant="primary" size="sm" type="submit" isLoading={isSubmitting}>
-              Create Proposal Request
+              {duplicateWarning ? 'Override & Create Quote' : 'Create Proposal Request'}
             </Button>
           </div>
         </form>

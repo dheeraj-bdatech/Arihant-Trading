@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
@@ -223,6 +224,15 @@ export class VisitsController {
     return this.visitsService.cancel(id, dto, user);
   }
 
+  @Delete(':id')
+  async delete(
+    @Param('id') id: string,
+    @Query('reason') reason: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.visitsService.cancel(id, { reason: reason || 'Cancelled by user request' }, user);
+  }
+
   @Post(':id/destination')
   async changeDestination(
     @Param('id') id: string,
@@ -244,6 +254,16 @@ export class VisitsController {
   @Post(':id/intervention')
   @Roles('management', 'regional_manager', 'admin')
   async addManagerIntervention(
+    @Param('id') id: string,
+    @Body() dto: ManagerInterventionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.visitsService.addManagerIntervention(id, dto, user);
+  }
+
+  @Post(':id/manager-intervention')
+  @Roles('management', 'regional_manager', 'admin')
+  async addManagerInterventionAlias(
     @Param('id') id: string,
     @Body() dto: ManagerInterventionDto,
     @CurrentUser() user: AuthUser,

@@ -136,6 +136,8 @@ async function runMigration() {
       '013_lead_and_org_department.sql',
       '014_lead_category_new_lead.sql',
       '015_proposal_management_specification.sql',
+      '016_operational_blueprint_alignments.sql',
+      '017_delivery_management.sql',
     ];
     for (const mName of additionalMigrations) {
       const mPath = path.join(rootDir, 'db/migrations', mName);

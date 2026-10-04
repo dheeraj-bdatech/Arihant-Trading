@@ -22,6 +22,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   X,
+  Truck,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useSidebar } from '@/lib/sidebar-context';
@@ -93,6 +94,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               moduleKey: 'demos',
               badge: 'Trials',
               badgeVariant: 'neutral',
+            },
+            {
+              label: 'Deliveries & Logistics',
+              href: '/deliveries',
+              icon: Truck,
+              moduleKey: 'deliveries',
+              badge: 'Consignments',
+              badgeVariant: 'cyber',
             },
           ],
         },
@@ -276,6 +285,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               badge: 'Repair Tour',
               badgeVariant: 'cyber',
             },
+            {
+              label: 'Deliveries & Installations',
+              href: '/deliveries',
+              icon: Truck,
+              moduleKey: 'deliveries',
+              badge: 'Commissioning',
+              badgeVariant: 'cyber',
+            },
           ],
         },
         {
@@ -434,6 +451,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               icon: Wrench,
               moduleKey: 'service',
             },
+            {
+              label: 'Logistics & Deliveries',
+              href: '/deliveries',
+              icon: Truck,
+              moduleKey: 'deliveries',
+              badge: 'Consignments',
+              badgeVariant: 'cyber',
+            },
           ],
         },
         {
@@ -541,6 +566,12 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               icon: Wrench,
               moduleKey: 'service',
             },
+            {
+              label: 'Logistics & Deliveries',
+              href: '/deliveries',
+              icon: Truck,
+              moduleKey: 'deliveries',
+            },
           ],
         },
         {
@@ -645,6 +676,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               href: '/service',
               icon: Wrench,
               moduleKey: 'service',
+            },
+            {
+              label: 'Logistics & Deliveries',
+              href: '/deliveries',
+              icon: Truck,
+              moduleKey: 'deliveries',
+              badge: 'Consignments',
+              badgeVariant: 'cyber',
             },
           ],
         },

@@ -23,12 +23,19 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
 
   // Fetch unread count & listen to socket notifications
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setUnreadCount(0);
+      return;
+    }
+
+    let isMounted = true;
 
     const fetchUnread = async () => {
       try {
         const res = await api.get('/notifications/unread-count');
-        setUnreadCount(res.count || 0);
+        if (!isMounted) return;
+        const count = Number(res?.count ?? res?.unreadCount ?? 0);
+        setUnreadCount(count);
       } catch {
         // quiet error
       }
@@ -36,16 +43,39 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
 
     fetchUnread();
 
+    const handleUpdated = (e: any) => {
+      if (!isMounted) return;
+      if (typeof e?.detail?.count === 'number') {
+        setUnreadCount(e.detail.count);
+      } else {
+        fetchUnread();
+      }
+    };
+
+    const handleFocus = () => {
+      if (isMounted) fetchUnread();
+    };
+
+    window.addEventListener('notifications:updated', handleUpdated);
+    window.addEventListener('focus', handleFocus);
+
     const socket = getSocket();
+    const handleNewNotif = () => {
+      if (isMounted) fetchUnread();
+    };
+
     if (socket) {
-      const handleNewNotif = () => {
-        setUnreadCount((c) => c + 1);
-      };
       socket.on('notification:new', handleNewNotif);
-      return () => {
-        socket.off('notification:new', handleNewNotif);
-      };
     }
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('notifications:updated', handleUpdated);
+      window.removeEventListener('focus', handleFocus);
+      if (socket) {
+        socket.off('notification:new', handleNewNotif);
+      }
+    };
   }, [user]);
 
   return (
@@ -85,11 +115,19 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
           href="/notifications"
           className="relative p-2 rounded-[8px] bg-white hover:bg-[#F1F7F5] border border-[#E3E7ED] text-[#5E6A7C] hover:text-[#0F5E4E] transition-colors"
           title="Notifications"
+          aria-label={
+            unreadCount > 0
+              ? `${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}`
+              : 'Notifications'
+          }
         >
           <Bell className="h-4 w-4" />
           {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-[#B42318] text-white text-[10px] font-bold flex items-center justify-center animate-pulse shadow-xs">
-              {unreadCount > 9 ? '9+' : unreadCount}
+            <span
+              data-testid="notification-badge"
+              className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#B42318] text-white text-[10px] font-bold font-mono flex items-center justify-center animate-pulse shadow-xs"
+            >
+              {unreadCount > 99 ? '99+' : unreadCount}
             </span>
           )}
         </Link>

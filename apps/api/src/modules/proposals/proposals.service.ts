@@ -447,6 +447,11 @@ export class ProposalsService {
    * Find single proposal by ID with full relations, allowed_transitions and history
    */
   async findOne(id: string, user?: AuthUser): Promise<any> {
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!id || typeof id !== 'string' || !UUID_REGEX.test(id.trim())) {
+      throw new NotFoundException(`Proposal with ID ${id} not found`);
+    }
+
     const proposal = await this.db
       .selectFrom('proposals')
       .selectAll('proposals')
@@ -505,18 +510,21 @@ export class ProposalsService {
       const role = (user.role || '').toLowerCase();
       const isGlobal = role === 'admin' || role === 'management';
       if (!isGlobal) {
+        const isParty =
+          proposal.created_by_id === user.id ||
+          proposal.created_by === user.id ||
+          proposal.responsible_person_id === user.id ||
+          proposal.responsible_id === user.id ||
+          proposal.requested_by_id === user.id ||
+          proposal.requested_by === user.id ||
+          proposal.follow_up_owner_id === user.id ||
+          proposal.followup_owner_id === user.id;
+
         if (role === 'regional_manager' && user.region_id) {
-          if ((proposal as any).organisation_region_id !== user.region_id) {
+          if (!isParty && (proposal as any).organisation_region_id !== user.region_id) {
             throw new NotFoundException(`Proposal not found`);
           }
         } else {
-          const isParty =
-            proposal.responsible_person_id === user.id ||
-            proposal.responsible_id === user.id ||
-            proposal.requested_by_id === user.id ||
-            proposal.requested_by === user.id ||
-            proposal.follow_up_owner_id === user.id ||
-            proposal.followup_owner_id === user.id;
           if (!isParty && (proposal as any).organisation_region_id !== user.region_id) {
             throw new NotFoundException(`Proposal not found`);
           }
@@ -795,6 +803,10 @@ export class ProposalsService {
       const sanitizedRemarks = this.sanitizeText(dto.remarks);
       const emailRef = this.sanitizeText(dto.email_reference || dto.reference);
 
+      const rawNextFu = dto.next_follow_up_date || dto.next_followup;
+      const cleanNextFu = (typeof rawNextFu === 'string' && rawNextFu.trim() !== '') ? rawNextFu.trim() : null;
+      const cleanSentDate = (typeof dto.sent_date === 'string' && dto.sent_date.trim() !== '') ? dto.sent_date.trim() : null;
+
       const inserted = await trx
         .insertInto('proposals')
         .values({
@@ -816,14 +828,14 @@ export class ProposalsService {
           followup_owner_id: dto.follow_up_owner_id || dto.followup_owner_id || null,
           request_date: requestDate,
           required_date: requiredDate,
-          sent_date: dto.sent_date || null,
+          sent_date: cleanSentDate,
           current_version: 1,
           version: dto.version || 'v1.0',
           email_reference: emailRef,
           reference: emailRef,
           status: 'PROPOSAL_REQUESTED',
-          next_follow_up_date: dto.next_follow_up_date || dto.next_followup || null,
-          next_followup: dto.next_follow_up_date || dto.next_followup || null,
+          next_follow_up_date: cleanNextFu,
+          next_followup: cleanNextFu,
           remarks: sanitizedRemarks,
           is_urgent: isUrgent,
           review_cycle_count: 0,
@@ -931,7 +943,12 @@ export class ProposalsService {
     });
 
     await this.outboxService.processPendingEvents().catch(() => {});
-    const record: any = await this.findOne(createdId, user);
+    let record: any;
+    try {
+      record = await this.findOne(createdId, user);
+    } catch {
+      record = await this.findOne(createdId);
+    }
     if (requiredDate < today) {
       record.warning = 'Required date is already in the past; proposal flagged in Preparation Overdue (E3)';
       record.warnings = [record.warning];
@@ -3051,6 +3068,11 @@ export class ProposalsService {
   }
 
   async getHistory(id: string): Promise<any> {
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!id || typeof id !== 'string' || !UUID_REGEX.test(id.trim())) {
+      throw new NotFoundException(`Proposal with ID ${id} not found`);
+    }
+
     const list = await this.db
       .selectFrom('proposal_status_history')
       .selectAll()
@@ -3064,6 +3086,11 @@ export class ProposalsService {
   }
 
   async getVersions(id: string): Promise<any> {
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!id || typeof id !== 'string' || !UUID_REGEX.test(id.trim())) {
+      throw new NotFoundException(`Proposal with ID ${id} not found`);
+    }
+
     return this.db
       .selectFrom('proposal_versions')
       .selectAll()
@@ -3073,6 +3100,11 @@ export class ProposalsService {
   }
 
   async getActivity(id: string): Promise<any> {
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!id || typeof id !== 'string' || !UUID_REGEX.test(id.trim())) {
+      throw new NotFoundException(`Proposal with ID ${id} not found`);
+    }
+
     return this.db
       .selectFrom('proposal_timeline')
       .leftJoin('users', 'proposal_timeline.actor_id', 'users.id')

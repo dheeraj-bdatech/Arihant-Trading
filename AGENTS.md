@@ -4,6 +4,19 @@ This document establishes the architecture, code rules, UI design system convent
 
 ---
 
+## 0. Business Logic Ground Truth & Verification Contract (MANDATORY)
+
+> [!IMPORTANT]
+> **MANDATORY VERIFICATION DIRECTIVE:**
+> Whenever instructed to **build**, **create**, or **edit** anything in this repository, agents **MUST verify** implementation details, field definitions, lifecycle states, and role permissions against:
+> 1. [ARIHANT_BOS_OPERATIONAL_BLUEPRINT_SPEC.md](file:///home/dheerajsingh/Desktop/arihant-bos/docs/ARIHANT_BOS_OPERATIONAL_BLUEPRINT_SPEC.md) (Master Operational Blueprint Specification)
+> 2. [Arihant Trading Corporation BOS Scope Blueprint.pdf](file:///home/dheerajsingh/Desktop/arihant-bos/docs/Arihant%20Trading%20Corporation%20BOS%20Scope%20Blueprint.pdf) (Official 31-Page Scope Blueprint PDF)
+> 3. [.agents/rules/business-verification-contract.md](file:///home/dheerajsingh/Desktop/arihant-bos/.agents/rules/business-verification-contract.md)
+>
+> Every feature or code change must satisfy the **7 Verification Gates** (Scope compliance, 8-Role RBAC & regional filtering, Kysely & `@arihant/shared` alignment, light `#F6F5F1` design tokens & `@/components/ui` primitives, mobile-first field ergonomics, immutable audit trails, and 0-error TypeScript compilation).
+
+---
+
 ## 1. UI Design System & Component Library (Client UI-Kit Aligned)
 
 ### Core Aesthetic Principles

@@ -7,7 +7,9 @@ import {
   Body,
   Query,
   UseGuards,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { ExpensesService } from './expenses.service.js';
 import {
   CreateExpenseDto,
@@ -28,6 +30,28 @@ export class ExpensesController {
   @Get()
   async findAll(@Query() query: ExpenseFilterDto, @CurrentUser() user: AuthUser) {
     return this.expensesService.findAll(query, user);
+  }
+
+  @Get('summary')
+  @Roles('management', 'regional_manager', 'accounts', 'admin')
+  async getSummary(@Query() query: ExpenseFilterDto, @CurrentUser() user: AuthUser) {
+    return this.expensesService.getExpenseSummary(query, user);
+  }
+
+  @Get('export/csv')
+  @Roles('management', 'regional_manager', 'accounts', 'admin')
+  async exportCsv(
+    @Query() query: ExpenseFilterDto,
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ) {
+    const csv = await this.expensesService.exportExpenses(query, user);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="arihant-expenses-${new Date().toISOString().split('T')[0]}.csv"`,
+    );
+    return res.send(csv);
   }
 
   @Get(':id')

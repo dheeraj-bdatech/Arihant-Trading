@@ -59,12 +59,33 @@ export interface ExpenseFilterDto extends PaginationQueryDto {
   status?: string;
   employee_id?: string;
   category?: string;
+  organisation_id?: string;
+  customer_id?: string;
+  from_date?: string;
+  to_date?: string;
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export interface TaskFilterDto extends PaginationQueryDto {
   status?: string;
   assigned_to?: string;
+  department?: string;
+  priority?: string;
   overdueOnly?: boolean;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface DeliveryFilterDto extends PaginationQueryDto {
+  status?: string;
+  organisation_id?: string;
+  customer_id?: string;
+  assigned_to?: string;
+  product_id?: string;
+  tender_id?: string;
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export interface DashboardMetricsDto {
@@ -99,6 +120,25 @@ export interface DashboardMetricsDto {
     total: number;
     open: number;
     critical: number;
+  };
+  deliveriesCount?: {
+    total: number;
+    scheduled: number;
+    inTransit: number;
+    delivered: number;
+    installed: number;
+  };
+  visitsCount?: {
+    total: number;
+    planned: number;
+    completed: number;
+  };
+  proposalsCount?: {
+    total: number;
+    draft: number;
+    submitted: number;
+    won: number;
+    lost: number;
   };
   recentExceptions: Array<{
     id: string;

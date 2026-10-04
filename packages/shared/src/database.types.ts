@@ -252,6 +252,8 @@ export interface VisitUpdatesTable {
   next_action: string | null;
   followup_date: string | null;
   remarks: string | null;
+  contact_unavailable?: Generated<boolean>;
+  contact_unavailable_reason?: string | null;
   updated_by: string | null;
   created_at: Generated<Date>;
 }
@@ -292,6 +294,8 @@ export interface DemosTable {
   demo_no: Generated<string>;
   organisation_id: string;
   lead_id: string | null;
+  tender_id?: string | null;
+  deal_value?: number | string | null;
   product_id: string | null;
   requested_by: string | null;
   coordinator_id: string | null;
@@ -983,9 +987,44 @@ export interface AppUsersTable {
   updated_at: Date;
 }
 
+export type DeliveryStatus =
+  | 'scheduled'
+  | 'dispatched'
+  | 'in_transit'
+  | 'delivered'
+  | 'installed'
+  | 'handover_completed'
+  | 'cancelled';
+
+export interface DeliveriesTable {
+  id: Generated<string>;
+  delivery_no: string;
+  organisation_id: string;
+  product_id: string | null;
+  model: string | null;
+  equipment_serial: string | null;
+  delivery_date: string;
+  delivery_location: string;
+  assigned_to: string | null;
+  tender_id: string | null;
+  order_reference: string | null;
+  status: Generated<DeliveryStatus>;
+  installation_required: Generated<boolean>;
+  installation_date: string | null;
+  installed_by: string | null;
+  installation_notes: string | null;
+  remarks: string | null;
+  document_url: string | null;
+  version: Generated<number>;
+  created_by: string | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
 export interface Database {
   zones: ZonesTable;
   regions: RegionsTable;
+  deliveries: DeliveriesTable;
   products: ProductsTable;
   users: UsersTable;
   app_users: AppUsersTable;

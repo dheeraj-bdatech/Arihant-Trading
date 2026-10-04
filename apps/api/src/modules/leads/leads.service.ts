@@ -1179,6 +1179,16 @@ export class LeadsService {
       ])
       .executeTakeFirst();
 
+    // Customer accounts count (territorially scoped if regional manager)
+    let orgQuery = this.db.selectFrom('organisations');
+    if (user.role === 'regional_manager' && user.region_id) {
+      orgQuery = orgQuery.where('organisations.region_id', '=', user.region_id);
+    }
+    const orgStats = await orgQuery
+      .select(sql<number>`count(distinct organisations.id)::int`.as('total_customers'))
+      .executeTakeFirst();
+    const totalCustomers = Number(orgStats?.total_customers) || 0;
+
     const totalLeads = Number(stats?.total_leads) || 0;
     const freshLeads = Number(stats?.fresh_leads) || 0;
     const reApproachedLeads = Number(stats?.re_approached_leads) || 0;
@@ -1196,6 +1206,9 @@ export class LeadsService {
       // Top-level counts for direct card bindings (both snake_case and camelCase)
       total_leads: totalLeads,
       totalLeads,
+      total_customers: totalCustomers,
+      totalCustomers,
+      total_organisations: totalCustomers,
       fresh_leads: freshLeads,
       freshLeads,
       reapproached_leads: reApproachedLeads,
@@ -1217,6 +1230,7 @@ export class LeadsService {
       // Nested metrics preserving contract for e2e tests & intelligence reporting
       metrics: {
         totalLeads,
+        totalCustomers,
         freshLeads,
         reApproachedLeads,
         activeLeads,

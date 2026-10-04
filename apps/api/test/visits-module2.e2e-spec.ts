@@ -228,7 +228,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
   // SCENARIO B: Trips & Manager Optimization (Trip ├── Visit 1, Visit 2)
   // =========================================================================
   describe('Scenario B: Trips & Manager Optimization', () => {
-    const tripDate = '2026-09-29';
+    const tripDate = new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0];
 
     it('sales executive creates a new planned trip', async () => {
       const res = await request(app.getHttpServer())
@@ -306,7 +306,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
   // SCENARIO C: Conflict & Proximity Detection
   // =========================================================================
   describe('Scenario C: Conflict & Proximity Detection', () => {
-    const conflictDate = '2026-09-30';
+    const conflictDate = new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0];
 
     it('creates an initial visit from 10:00 to 11:30', async () => {
       const res = await request(app.getHttpServer())
@@ -370,7 +370,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg1Id,
-          planned_date: '2026-10-01',
+          planned_date: new Date(Date.now() + 86400000 * 6).toISOString().split('T')[0],
           purpose: 'Pre-demonstration site readiness check',
         });
       visitToRescheduleId = res.body.id;
@@ -381,7 +381,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .post(`/api/visits/${visitToRescheduleId}/reschedule`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          new_date: '2026-10-05',
+          new_date: new Date(Date.now() + 86400000 * 8).toISOString().split('T')[0],
           reason: '',
         });
 
@@ -394,7 +394,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .post(`/api/visits/${visitToRescheduleId}/reschedule`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          new_date: '2026-10-05',
+          new_date: new Date(Date.now() + 86400000 * 8).toISOString().split('T')[0],
           reason: 'Customer requested another date due to VIP visit.',
         });
 
@@ -521,7 +521,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg2Id,
-          planned_date: '2026-10-05',
+          planned_date: new Date(Date.now() + 86400000 * 10).toISOString().split('T')[0],
           purpose: 'Validation test meeting',
         });
       visitForValidationId = res.body.id;
@@ -605,7 +605,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg1Id,
-          planned_date: '2026-10-06',
+          planned_date: new Date(Date.now() + 86400000 * 12).toISOString().split('T')[0],
           purpose: 'RBAC boundary validation',
         });
       rbacVisitId = res.body.id;

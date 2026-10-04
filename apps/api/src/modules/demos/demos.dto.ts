@@ -46,6 +46,16 @@ export class CreateDemoDto {
 
   @Transform(({ value }) => (value === '' || value === null ? undefined : value))
   @ValidateIf((o, v) => v !== '' && v !== null && v !== undefined)
+  @Matches(UUID_PATTERN, { message: 'tender_id must be a valid UUID' })
+  @IsOptional()
+  tender_id?: string;
+
+  @IsNumber()
+  @IsOptional()
+  deal_value?: number;
+
+  @Transform(({ value }) => (value === '' || value === null ? undefined : value))
+  @ValidateIf((o, v) => v !== '' && v !== null && v !== undefined)
   @Matches(UUID_PATTERN, { message: 'assigned_to must be a valid UUID' })
   @IsOptional()
   assigned_to?: string;
@@ -228,6 +238,14 @@ export class ReserveEquipmentDto {
   @IsString()
   @IsOptional()
   remarks?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  override_conflict?: boolean;
+
+  @IsString()
+  @IsOptional()
+  override_reason?: string;
 }
 
 export class SuggestAlternativeDto {
