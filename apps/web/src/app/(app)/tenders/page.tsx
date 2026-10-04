@@ -143,8 +143,8 @@ export default function TendersPage() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [zoneFilter, setZoneFilter] = useState('');
   const [deadlineFilter, setDeadlineFilter] = useState('');
-  const [sortBy, setSortBy] = useState('submission_deadline');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [sortBy, setSortBy] = useState('created_at');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [activeHudFilter, setActiveHudFilter] = useState<string | null>(null);
 
   // Detail Modal & Sub-panels
@@ -368,10 +368,13 @@ export default function TendersPage() {
   }, [fetchTenders]);
 
   // Open Tender Detail & Fetch History & Portal Issues
-  const openTenderDetails = async (tender: any) => {
+  const openTenderDetails = async (
+    tender: any,
+    initialTab: 'overview' | 'approval' | 'transitions' | 'portal_issues' | 'outcome' | 'timeline' = 'overview'
+  ) => {
     setSelectedTender(tender);
     setIsDetailOpen(true);
-    setDetailTab('overview');
+    setDetailTab(initialTab);
     setIsLoadingDetails(true);
     try {
       const [fullTender, actRes, issuesRes] = await Promise.all([
@@ -1177,7 +1180,7 @@ export default function TendersPage() {
                   name: 'Tender Identified',
                   desc: 'New requirement logged',
                   active: statusFilter === 'identified',
-                  count: dashboardStats.pending ? Math.max(0, dashboardStats.pending - (dashboardStats.pending_approvals || 0) - (dashboardStats.under_preparation || 0)) : 0,
+                  count: dashboardStats.identified ?? dashboardStats.stage_1_identified ?? 0,
                 },
                 {
                   key: 'awaiting_approval',
@@ -1185,7 +1188,7 @@ export default function TendersPage() {
                   name: 'Submitted for Review',
                   desc: 'Awaiting RM signoff',
                   active: statusFilter === 'awaiting_approval',
-                  count: dashboardStats.pending_approvals || 0,
+                  count: dashboardStats.pending_approvals ?? dashboardStats.awaiting_approval ?? 0,
                 },
                 {
                   key: 'rejected_internally',
@@ -1193,7 +1196,7 @@ export default function TendersPage() {
                   name: 'Authorised Decision',
                   desc: 'Approved / rejected by RM',
                   active: statusFilter === 'rejected_internally',
-                  count: tenders.filter((t) => t.status === 'rejected_internally').length,
+                  count: dashboardStats.rejected_internally ?? dashboardStats.stage_3_decision ?? 0,
                 },
                 {
                   key: 'under_preparation',
@@ -1201,7 +1204,7 @@ export default function TendersPage() {
                   name: 'Tender Preparation',
                   desc: 'Bidding & PQ packets',
                   active: statusFilter === 'under_preparation',
-                  count: dashboardStats.under_preparation || 0,
+                  count: dashboardStats.under_preparation ?? dashboardStats.stage_4_prep ?? 0,
                 },
                 {
                   key: 'submitted',
@@ -1209,25 +1212,21 @@ export default function TendersPage() {
                   name: 'Tender Submitted',
                   desc: 'Bids filed on GeM/portal',
                   active: statusFilter === 'submitted',
-                  count: dashboardStats.submitted || 0,
+                  count: dashboardStats.submitted ?? dashboardStats.tenders_submitted ?? 0,
                 },
                 {
-                  key: 'won',
+                  key: 'results',
                   stageNum: '6',
                   name: 'Result Tracking',
                   desc: 'Technical & outcome',
-                  active: ['won', 'lost', 'technical_eval', 'commercial_eval'].includes(statusFilter),
-                  count: (dashboardStats.won || 0) + (dashboardStats.lost || 0),
+                  active: ['won', 'lost', 'technical_eval', 'commercial_eval', 'results'].includes(statusFilter),
+                  count: dashboardStats.result_tracking ?? ((dashboardStats.won || 0) + (dashboardStats.lost || 0)),
                 },
               ].map((st) => (
                 <div
                   key={st.key}
                   onClick={() => {
-                    if (st.key === 'won') {
-                      setStatusFilter(statusFilter === 'won' ? '' : 'won');
-                    } else {
-                      setStatusFilter(statusFilter === st.key ? '' : st.key);
-                    }
+                    setStatusFilter(statusFilter === st.key ? '' : st.key);
                     setActiveHudFilter(null);
                     setPage(1);
                   }}
@@ -1329,7 +1328,27 @@ export default function TendersPage() {
               className="w-44"
             />
 
-            {(search || statusFilter || categoryFilter || zoneFilter || deadlineFilter || activeHudFilter) && (
+            <Select
+              value={`${sortBy}:${sortOrder}`}
+              onChange={(e) => {
+                const parts = e.target.value.split(':');
+                setSortBy(parts[0]);
+                setSortOrder(parts[1] as 'asc' | 'desc');
+                setPage(1);
+              }}
+              options={[
+                { value: 'created_at:desc', label: 'Recent First (Newest)' },
+                { value: 'created_at:asc', label: 'Oldest First' },
+                { value: 'submission_deadline:asc', label: 'Deadline: Nearest First' },
+                { value: 'submission_deadline:desc', label: 'Deadline: Furthest First' },
+                { value: 'estimated_value:desc', label: 'Value: High to Low' },
+                { value: 'estimated_value:asc', label: 'Value: Low to High' },
+                { value: 'publication_date:desc', label: 'Publish Date (Recent)' },
+              ]}
+              className="w-52"
+            />
+
+            {(search || statusFilter || categoryFilter || zoneFilter || deadlineFilter || activeHudFilter || sortBy !== 'created_at' || sortOrder !== 'desc') && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -1340,6 +1359,8 @@ export default function TendersPage() {
                   setZoneFilter('');
                   setDeadlineFilter('');
                   setActiveHudFilter(null);
+                  setSortBy('created_at');
+                  setSortOrder('desc');
                   setPage(1);
                 }}
               >
@@ -1517,15 +1538,34 @@ export default function TendersPage() {
                           <td className="p-3.5 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end gap-1.5">
                               {tender.status === 'identified' && (
-                                <Button
-                                  size="xs"
-                                  variant="primary"
-                                  onClick={() => handleQuickRequestApproval(tender)}
-                                  title="Submit for Internal Review"
-                                >
-                                  <Send className="h-3 w-3 mr-1" />
-                                  <span>Review</span>
-                                </Button>
+                                <div className="flex items-center gap-1">
+                                  {hasRole(['management', 'regional_manager', 'admin']) ? (
+                                    <Button
+                                      size="xs"
+                                      variant="primary"
+                                      className="bg-[#0F5E63] hover:bg-[#0B4A4E] text-white"
+                                      onClick={() => {
+                                        setSelectedTender(tender);
+                                        setApprovalDecision('approved');
+                                        setIsApproveOpen(true);
+                                      }}
+                                      title="Review as Management & Authorise"
+                                    >
+                                      <ShieldCheck className="h-3 w-3 mr-1" />
+                                      <span>Review as Management</span>
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="xs"
+                                      variant="primary"
+                                      onClick={() => handleQuickRequestApproval(tender)}
+                                      title="Submit for Internal Review"
+                                    >
+                                      <Send className="h-3 w-3 mr-1" />
+                                      <span>Submit for Review</span>
+                                    </Button>
+                                  )}
+                                </div>
                               )}
 
                               {tender.status === 'awaiting_approval' && (
@@ -1538,10 +1578,10 @@ export default function TendersPage() {
                                     setApprovalDecision('approved');
                                     setIsApproveOpen(true);
                                   }}
-                                  title="Authorised Signoff"
+                                  title="Review Decision & Endorse as Management"
                                 >
                                   <ShieldCheck className="h-3 w-3 mr-1" />
-                                  <span>Signoff</span>
+                                  <span>Review as Management</span>
                                 </Button>
                               )}
 
@@ -2412,8 +2452,16 @@ export default function TendersPage() {
                       <p className="text-[11px] text-[#5E6A7C] mt-0.5">{t.department}</p>
                       <p className="text-[10px] text-[#A15C07] font-semibold mt-1">Status: Awaiting Management Decision</p>
                     </div>
-                    <Button size="xs" variant="cyber" onClick={() => openTenderDetails(t)}>
-                      Review Signoff
+                    <Button
+                      size="xs"
+                      variant="cyber"
+                      onClick={() => {
+                        setSelectedTender(t);
+                        setApprovalDecision('approved');
+                        setIsApproveOpen(true);
+                      }}
+                    >
+                      Review as Management
                     </Button>
                   </div>
                 ))}
@@ -2909,12 +2957,14 @@ export default function TendersPage() {
                     </div>
                   </div>
 
-                  {selectedTender.status === 'awaiting_approval' ? (
+                  {selectedTender.status === 'awaiting_approval' || selectedTender.status === 'identified' ? (
                     <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-3">
                       <div className="flex items-center gap-2">
                         <AlertTriangle className="h-5 w-5 text-amber-600" />
                         <span className="font-bold text-xs text-amber-900">
-                          This tender requires formal management endorsement before bid preparation can begin.
+                          {selectedTender.status === 'identified'
+                            ? 'This tender is in Identified stage. Executive management can directly review, endorse participation, and mobilize bid preparation.'
+                            : 'This tender requires formal management endorsement before bid preparation can begin.'}
                         </span>
                       </div>
 

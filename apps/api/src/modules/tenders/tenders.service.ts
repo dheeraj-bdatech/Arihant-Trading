@@ -447,15 +447,34 @@ export class TendersService {
     if (query.state) baseQuery = baseQuery.where('tenders.state', '=', query.state);
 
     if (query.status) {
-      const norm = this.workflowService.normalizeStatus(query.status);
-      const leg = this.workflowService.toLegacyStatus(query.status);
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          eb('tenders.status', '=', norm.toLowerCase() as any),
-          eb('tenders.status', '=', leg as any),
-          eb(sql`upper(tenders.status)`, '=', norm),
-        ]),
-      );
+      const statusRaw = query.status.toLowerCase().trim();
+      if (statusRaw === 'results') {
+        baseQuery = baseQuery.where('tenders.status', 'in', [
+          'won',
+          'lost',
+          'technical_eval',
+          'commercial_eval',
+        ]);
+      } else if (statusRaw === 'under_preparation') {
+        baseQuery = baseQuery.where('tenders.status', 'in', [
+          'under_preparation',
+          'pq_submitted',
+          'pq_qualified',
+        ]);
+      } else if (statusRaw.includes(',')) {
+        const statuses = statusRaw.split(',').map((s) => s.trim()).filter(Boolean);
+        baseQuery = baseQuery.where('tenders.status', 'in', statuses as any);
+      } else {
+        const norm = this.workflowService.normalizeStatus(query.status);
+        const leg = this.workflowService.toLegacyStatus(query.status);
+        baseQuery = baseQuery.where((eb) =>
+          eb.or([
+            eb('tenders.status', '=', norm.toLowerCase() as any),
+            eb('tenders.status', '=', leg as any),
+            eb(sql`upper(tenders.status)`, '=', norm),
+          ]),
+        );
+      }
     }
 
     if (query.category) {
@@ -545,23 +564,27 @@ export class TendersService {
     const sortField = query.sortBy || 'submission_deadline';
     const sortDirection = (query.sortOrder || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc';
 
-    let orderQuery = baseQuery.orderBy(
-      sql`case when tenders.submission_deadline is null then 1 else 0 end`,
-      'asc',
-    );
+    let orderQuery = baseQuery;
 
-    if (sortField === 'tender_number' || sortField === 'tender_no') {
+    if (sortField === 'created_at') {
+      orderQuery = orderQuery.orderBy('tenders.created_at', sortDirection);
+    } else if (sortField === 'tender_number' || sortField === 'tender_no') {
       orderQuery = orderQuery.orderBy('tenders.tender_no', sortDirection);
     } else if (sortField === 'publication_date' || sortField === 'publish_date') {
-      orderQuery = orderQuery.orderBy('tenders.publication_date', sortDirection);
-    } else if (sortField === 'created_at') {
-      orderQuery = orderQuery.orderBy('tenders.created_at', sortDirection);
+      orderQuery = orderQuery
+        .orderBy(sql`case when tenders.publication_date is null then 1 else 0 end`, 'asc')
+        .orderBy('tenders.publication_date', sortDirection);
     } else if (sortField === 'updated_at' || sortField === 'last_activity_at') {
       orderQuery = orderQuery.orderBy('tenders.last_activity_at', sortDirection);
     } else if (sortField === 'estimated_value') {
-      orderQuery = orderQuery.orderBy('tenders.estimated_value', sortDirection);
+      orderQuery = orderQuery.orderBy(
+        sql`coalesce(tenders.estimated_value_lakh * 100000, tenders.estimated_value, 0)`,
+        sortDirection,
+      );
     } else {
-      orderQuery = orderQuery.orderBy('tenders.submission_deadline', sortDirection);
+      orderQuery = orderQuery
+        .orderBy(sql`case when tenders.submission_deadline is null then 1 else 0 end`, 'asc')
+        .orderBy('tenders.submission_deadline', sortDirection);
     }
 
     const items = await orderQuery
@@ -1189,6 +1212,7 @@ export class TendersService {
         category_requires_pq: categoryRequiresPq,
         submission_deadline: existing.submission_deadline,
         assigned_to: existing.assigned_to,
+        created_by: existing.created_by,
         tender_owner_id: existing.tender_owner_id || existing.owner,
         version: existing.version,
       },
@@ -1203,7 +1227,9 @@ export class TendersService {
         loss_reason: dto.loss_reason,
         isApproverUser,
         allowSelfApproval: settings?.allow_self_approval,
-        requestedBy: existing.approvals?.[0]?.requested_by,
+        requestedBy:
+          existing.approvals?.find((a: any) => a.status === 'PENDING')?.requested_by ||
+          existing.approvals?.[0]?.requested_by,
       },
     );
 
@@ -1456,10 +1482,18 @@ export class TendersService {
     const existing = await this.findOne(id);
     const normStatus = this.workflowService.normalizeStatus(existing.status);
 
-    if (normStatus !== 'AWAITING_INTERNAL_APPROVAL') {
+    if (normStatus !== 'AWAITING_INTERNAL_APPROVAL' && normStatus !== 'IDENTIFIED') {
       throw new BadRequestException(
-        `Approval decisions can only be made while tender is in "Awaiting Internal Approval" stage (currently "${this.workflowService.getStatusLabel(normStatus)}").`,
+        `Approval decisions can only be made while tender is in "Awaiting Internal Approval" or "Identified" stage (currently "${this.workflowService.getStatusLabel(normStatus)}").`,
       );
+    }
+
+    if (!existing.assigned_to && user.id) {
+      await this.db
+        .updateTable('tenders')
+        .set({ assigned_to: user.id })
+        .where('id', '=', id)
+        .execute();
     }
 
     const decision = dto.decision.toLowerCase().trim();
@@ -2321,6 +2355,12 @@ export class TendersService {
     const metrics = await baseQuery
       .select([
         sql<number>`count(tenders.id)::int`.as('total_tenders'),
+        sql<number>`count(case when tenders.status in ('identified') then 1 end)::int`.as('identified'),
+        sql<number>`count(case when tenders.status in ('awaiting_approval') then 1 end)::int`.as('awaiting_approval'),
+        sql<number>`count(case when tenders.status in ('rejected_internally') then 1 end)::int`.as('rejected_internally'),
+        sql<number>`count(case when tenders.status in ('under_preparation', 'pq_submitted', 'pq_qualified') then 1 end)::int`.as('under_preparation'),
+        sql<number>`count(case when tenders.status in ('submitted') then 1 end)::int`.as('submitted'),
+        sql<number>`count(case when tenders.status in ('won', 'lost', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('result_tracking'),
         sql<number>`count(case when tenders.category::text ilike 'pq%' then 1 end)::int`.as('pq_tenders'),
         sql<number>`count(case when tenders.category::text ilike 'general%' then 1 end)::int`.as('general_mha_tenders'),
         sql<number>`count(case when tenders.category::text not ilike 'pq%' and tenders.category::text not ilike 'general%' then 1 end)::int`.as('other_tenders'),
@@ -2351,17 +2391,37 @@ export class TendersService {
     const winRate = totalDecided > 0 ? Number(((won / totalDecided) * 100).toFixed(1)) : 0;
 
     return {
+      total: metrics?.total_tenders || 0,
       total_tenders: metrics?.total_tenders || 0,
+      pq_count: metrics?.pq_tenders || 0,
       pq_tenders: metrics?.pq_tenders || 0,
+      general_mha_count: metrics?.general_mha_tenders || 0,
       general_mha_tenders: metrics?.general_mha_tenders || 0,
+      other_count: metrics?.other_tenders || 0,
       other_tenders: metrics?.other_tenders || 0,
       worked_upon: metrics?.worked_upon || 0,
-      tenders_submitted: metrics?.tenders_submitted || 0,
+      // 6-stage lifecycle counts
+      identified: metrics?.identified || 0,
+      stage_1_identified: metrics?.identified || 0,
+      pending_approvals: metrics?.awaiting_approval || 0,
+      awaiting_approval: metrics?.awaiting_approval || 0,
+      stage_2_review: metrics?.awaiting_approval || 0,
+      rejected_internally: metrics?.rejected_internally || 0,
+      stage_3_decision: metrics?.rejected_internally || 0,
+      under_preparation: metrics?.under_preparation || 0,
+      stage_4_prep: metrics?.under_preparation || 0,
+      submitted: metrics?.submitted || 0,
+      tenders_submitted: metrics?.submitted || 0,
+      stage_5_submitted: metrics?.submitted || 0,
+      result_tracking: metrics?.result_tracking || 0,
+      stage_6_results: metrics?.result_tracking || 0,
       tenders_won: won,
+      won: won,
       tenders_lost: lost,
+      lost: lost,
+      pending: metrics?.pending_tenders || 0,
       pending_tenders: metrics?.pending_tenders || 0,
       on_hold_tenders: metrics?.on_hold_tenders || 0,
-      pending_approvals: metrics?.pending_approvals || 0,
       incomplete_preparation: metrics?.incomplete_preparation || 0,
       upcoming_deadlines: metrics?.upcoming_deadlines || 0,
       urgent_deadlines: metrics?.urgent_deadlines || 0,

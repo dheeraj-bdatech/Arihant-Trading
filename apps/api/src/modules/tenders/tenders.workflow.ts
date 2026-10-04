@@ -101,7 +101,12 @@ export class TendersWorkflowService {
    * From -> Allowed Target Statuses
    */
   private readonly allowedTransitions: Record<StandardTenderStatus, StandardTenderStatus[]> = {
-    IDENTIFIED: ['AWAITING_INTERNAL_APPROVAL', 'CANCELLED'],
+    IDENTIFIED: [
+      'AWAITING_INTERNAL_APPROVAL',
+      'UNDER_PREPARATION',
+      'REJECTED_INTERNALLY',
+      'CANCELLED',
+    ],
     AWAITING_INTERNAL_APPROVAL: [
       'UNDER_PREPARATION',
       'REJECTED_INTERNALLY',
@@ -159,6 +164,7 @@ export class TendersWorkflowService {
       category_requires_pq?: boolean | null;
       submission_deadline?: Date | string | null;
       assigned_to?: string | null;
+      created_by?: string | null;
       tender_owner_id?: string | null;
       version?: number;
     },
@@ -256,12 +262,31 @@ export class TendersWorkflowService {
         );
       }
 
-      // Check self-approval
+      // Check self-approval (Dual-control rule)
       if (options?.allowSelfApproval === false && options?.requestedBy) {
-        if (options.requestedBy === user.id) {
-          throw new ForbiddenException(
-            'Self-approval is disallowed. You cannot approve or reject your own approval request.',
-          );
+        const isRequester = options.requestedBy === user.id;
+        const isCreator = Boolean(tender.created_by && tender.created_by === user.id);
+        const isAssignee = Boolean(tender.assigned_to && tender.assigned_to === user.id);
+        const isOwner = Boolean(tender.tender_owner_id && tender.tender_owner_id === user.id);
+
+        if (user.role === 'admin') {
+          // Platform admin always permitted to approve
+        } else if (user.role === 'management') {
+          // Executive Management can approve any opportunity created/assigned to someone else.
+          // Only block if management themselves specifically created AND is assigned to this opportunity alone
+          if (isRequester && isCreator && isAssignee) {
+            throw new ForbiddenException(
+              'Self-approval is disallowed. You cannot approve or reject your own approval request.',
+            );
+          }
+        } else {
+          // For sales, tender_team, or regional_manager:
+          // Disallow if they requested it AND it is their own opportunity (created, assigned, or owned)
+          if (isRequester && (isCreator || isAssignee || isOwner)) {
+            throw new ForbiddenException(
+              'Self-approval is disallowed. You cannot approve or reject your own approval request.',
+            );
+          }
         }
       }
 
