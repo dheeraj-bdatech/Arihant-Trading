@@ -49,6 +49,46 @@ import {
   ImportProposalSheetDto,
 } from './proposals.dto.js';
 
+export const DEFAULT_PROPOSAL_SETTINGS = {
+  id: 1,
+  business_timezone: 'Asia/Kolkata',
+  default_follow_up_days: 3,
+  no_follow_up_after_days: 7,
+  escalate_after_overdue_days: 3,
+  stale_requested_days: 2,
+  stale_preparation_days: 7,
+  stale_review_days: 2,
+  stale_approved_days: 2,
+  stale_followup_days: 21,
+  required_date_warning_days: 2,
+  urgent_days: 1,
+  max_follow_up_horizon_days: 90,
+  max_postpones_before_flag: 3,
+  suggest_closure_after_days: 60,
+  duplicate_window_days: 30,
+  reopen_window_days: 30,
+  allow_self_approval: false,
+  allow_fast_track: false,
+  digest_time: '09:00',
+  proposal_number_format: 'PRP-YYYY-NNNNN',
+  lost_reason_codes: [
+    'Price Too High',
+    'Competitor Chosen',
+    'Specification Mismatch',
+    'Customer Budget Withdrawn',
+    'Procurement Delayed',
+    'Other',
+  ],
+  closure_reason_codes: [
+    'Cancelled by Requester',
+    'Customer Withdrew Enquiry',
+    'Duplicate',
+    'No Response / Expired',
+    'Superseded by New Proposal',
+    'Other',
+  ],
+};
+
 @Injectable()
 export class ProposalsService {
   private readonly logger = new Logger(ProposalsService.name);
@@ -96,25 +136,35 @@ export class ProposalsService {
    * Fetch current system settings for proposals
    */
   async getSettings(): Promise<any> {
-    let settings = await this.db
-      .selectFrom('proposal_settings')
-      .selectAll()
-      .where('id', '=', 1)
-      .executeTakeFirst();
-
-    if (!settings) {
-      await this.db
-        .insertInto('proposal_settings')
-        .values({ id: 1 })
-        .onConflict((oc) => oc.column('id').doNothing())
-        .execute();
-      settings = await this.db
+    try {
+      let settings = await this.db
         .selectFrom('proposal_settings')
         .selectAll()
         .where('id', '=', 1)
         .executeTakeFirst();
+
+      if (!settings) {
+        await this.db
+          .insertInto('proposal_settings')
+          .values({ id: 1 })
+          .onConflict((oc) => oc.column('id').doNothing())
+          .execute();
+        settings = await this.db
+          .selectFrom('proposal_settings')
+          .selectAll()
+          .where('id', '=', 1)
+          .executeTakeFirst();
+      }
+      return settings || DEFAULT_PROPOSAL_SETTINGS;
+    } catch (err: any) {
+      if (err?.code === '42P01' || err?.message?.includes('proposal_settings')) {
+        this.logger.warn(
+          'Table "proposal_settings" does not exist in database yet. Returning default system configuration.',
+        );
+        return DEFAULT_PROPOSAL_SETTINGS;
+      }
+      throw err;
     }
-    return settings;
   }
 
   /**

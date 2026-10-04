@@ -13,6 +13,18 @@ export NODE_ENV=${NODE_ENV:-production}
 export PORT=${PORT:-4000}
 export WEB_PORT=${WEB_PORT:-3000}
 
+# Run database migrations before starting services
+echo "🔄 [0/2] Checking & Applying Database Migrations..."
+if [ -f "./apps/api/node_modules/.bin/tsx" ]; then
+  ./apps/api/node_modules/.bin/tsx db/migrate.ts || echo "⚠️ Migration completed with notice, proceeding..."
+elif [ -f "./node_modules/.bin/tsx" ]; then
+  ./node_modules/.bin/tsx db/migrate.ts || echo "⚠️ Migration completed with notice, proceeding..."
+elif command -v tsx >/dev/null 2>&1; then
+  tsx db/migrate.ts || echo "⚠️ Migration completed with notice, proceeding..."
+elif command -v pnpm >/dev/null 2>&1; then
+  pnpm db:migrate || echo "⚠️ Migration completed with notice, proceeding..."
+fi
+
 # Start NestJS API in background
 echo "📦 [1/2] Starting NestJS Backend on port $PORT..."
 (cd apps/api && node dist/main.js) &

@@ -11,20 +11,35 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
-// Load environment variables from apps/api/.env
-const envPath = path.join(rootDir, 'apps/api/.env');
-if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
-}
+// Support --prod flag to target production database directly
+const isProdTarget = process.argv.includes('--prod') || process.env.MIGRATE_PROD === 'true';
 
-const connectionString =
-  process.env.DATABASE_URL ||
+const prodConnectionString =
+  process.env.PROD_DATABASE_URL ||
   'postgresql://postgres.eolmveanrgghqzayqtby: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@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres';
 
-console.log('🚀 Starting Arihant BOS Database Migration to Supabase...');
-console.log(`Connecting to: ${connectionString.split('@')[1] || connectionString}`);
+let connectionString: string;
+
+if (isProdTarget) {
+  connectionString = prodConnectionString;
+} else if (process.env.DATABASE_URL) {
+  connectionString = process.env.DATABASE_URL;
+} else {
+  const envPath = path.join(rootDir, 'apps/api/.env');
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+  }
+  connectionString = process.env.DATABASE_URL || prodConnectionString;
+}
 
 const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
+const targetEnv = isProdTarget || !isLocal ? 'PRODUCTION (Supabase)' : 'DEVELOPMENT (Local)';
+const maskedConnection = connectionString.replace(/:[^:@]*@/, ':****@');
+
+console.log('====================================================');
+console.log(`🚀 Arihant BOS Database Migration [${targetEnv}]`);
+console.log(`Connecting to: ${maskedConnection}`);
+console.log('====================================================');
 const ssl =
   process.env.DATABASE_SSL === 'true' ||
   ((connectionString.includes('supabase') || process.env.NODE_ENV === 'production') && !isLocal)
@@ -38,120 +53,71 @@ const client = new Client({
 
 async function runMigration() {
   await client.connect();
-  console.log('✅ Connected to Supabase PostgreSQL database.');
+  console.log('✅ Connected to PostgreSQL database.');
 
   try {
     await client.query('BEGIN');
+
+    // 0. Ensure schema migration ledger exists
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        name text PRIMARY KEY,
+        executed_at timestamptz NOT NULL DEFAULT now()
+      );
+    `);
 
     // 1. Core Schema (Check if already initialized)
     const checkTable = await client.query(
       "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users';",
     );
     if (checkTable.rows.length === 0) {
-      console.log('📜 [1/5] Executing db/schema.sql...');
+      console.log('📜 [1/4] Executing db/schema.sql...');
       const schemaSql = fs.readFileSync(path.join(rootDir, 'db/schema.sql'), 'utf8');
       await client.query(schemaSql);
+      await client.query(
+        "INSERT INTO _schema_migrations (name) VALUES ('000_schema.sql') ON CONFLICT (name) DO NOTHING;",
+      );
       console.log('   ✓ db/schema.sql executed successfully.');
     } else {
-      console.log('📜 [1/5] Core tables already exist. Skipping db/schema.sql creation.');
+      console.log('📜 [1/4] Core tables already exist. Skipping db/schema.sql creation.');
     }
 
-    // 2. Migration 001 - Local Auth & UUID default
-    console.log('📜 [2/5] Executing db/migrations/001_local_auth.sql...');
-    const m1Sql = fs.readFileSync(path.join(rootDir, 'db/migrations/001_local_auth.sql'), 'utf8');
-    await client.query(m1Sql);
-    console.log('   ✓ db/migrations/001_local_auth.sql executed successfully.');
+    // 2. Fetch already executed migrations
+    const executedRes = await client.query('SELECT name FROM _schema_migrations;');
+    const executedSet = new Set<string>(executedRes.rows.map((r: { name: string }) => r.name));
 
-    // 3. Migration 002 - Stage 0 Foundation (Departments, RBAC matrix, Views, RLS)
-    console.log('📜 [3/5] Executing db/migrations/002_stage0_foundation.sql...');
-    const m2Sql = fs.readFileSync(path.join(rootDir, 'db/migrations/002_stage0_foundation.sql'), 'utf8');
-    await client.query(m2Sql);
-    console.log('   ✓ db/migrations/002_stage0_foundation.sql executed successfully.');
+    // 3. Discover and execute all migrations in sorted numerical order
+    const migrationsDir = path.join(rootDir, 'db/migrations');
+    const migrationFiles = fs
+      .readdirSync(migrationsDir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
 
-    // 3.5. Migration 003 - Module 2 Trips, Employee Activities & Visits Enhancement
-    console.log('📜 [3.5/5] Executing db/migrations/003_module2_trips_and_activities.sql...');
-    const m3Sql = fs.readFileSync(path.join(rootDir, 'db/migrations/003_module2_trips_and_activities.sql'), 'utf8');
-    await client.query(m3Sql);
-    console.log('   ✓ db/migrations/003_module2_trips_and_activities.sql executed successfully.');
+    console.log(`📜 [2/4] Discovered ${migrationFiles.length} migration files in db/migrations/`);
 
-    // 3.6. Migration 004 - Module 2 Contact Person
-    const m4Path = path.join(rootDir, 'db/migrations/004_visit_contact_person.sql');
-    if (fs.existsSync(m4Path)) {
-      console.log('📜 [3.6/5] Executing db/migrations/004_visit_contact_person.sql...');
-      const m4Sql = fs.readFileSync(m4Path, 'utf8');
-      await client.query(m4Sql);
-      console.log('   ✓ db/migrations/004_visit_contact_person.sql executed successfully.');
-    }
-
-    // 3.7. Migration 005 - Module 3 Demo Management
-    const m5Path = path.join(rootDir, 'db/migrations/005_module3_demo_management.sql');
-    if (fs.existsSync(m5Path)) {
-      console.log('📜 [3.7/5] Executing db/migrations/005_module3_demo_management.sql...');
-      const m5Sql = fs.readFileSync(m5Path, 'utf8');
-      await client.query(m5Sql);
-      console.log('   ✓ db/migrations/005_module3_demo_management.sql executed successfully.');
-    }
-
-    // 3.8. Migration 006 - Module 5 Proposal Management
-    const m6Path = path.join(rootDir, 'db/migrations/006_proposal_management.sql');
-    if (fs.existsSync(m6Path)) {
-      console.log('📜 [3.8/5] Executing db/migrations/006_proposal_management.sql...');
-      const m6Sql = fs.readFileSync(m6Path, 'utf8');
-      await client.query(m6Sql);
-      console.log('   ✓ db/migrations/006_proposal_management.sql executed successfully.');
-    }
-
-    // 3.9. Migration 007 - Module 4 Tender Management EDA
-    const m7Path = path.join(rootDir, 'db/migrations/007_tender_management_eda.sql');
-    if (fs.existsSync(m7Path)) {
-      console.log('📜 [3.9/5] Executing db/migrations/007_tender_management_eda.sql...');
-      const m7Sql = fs.readFileSync(m7Path, 'utf8');
-      await client.query(m7Sql);
-      console.log('   ✓ db/migrations/007_tender_management_eda.sql executed successfully.');
-    }
-
-    // 3.10. Migration 008 - Module 1 Lead & Customer Management EDA
-    const m8Path = path.join(rootDir, 'db/migrations/008_lead_and_customer_eda.sql');
-    if (fs.existsSync(m8Path)) {
-      console.log('📜 [3.10/5] Executing db/migrations/008_lead_and_customer_eda.sql...');
-      const m8Sql = fs.readFileSync(m8Path, 'utf8');
-      await client.query(m8Sql);
-      console.log('   ✓ db/migrations/008_lead_and_customer_eda.sql executed successfully.');
-    }
-
-    // 3.11. Migration 009 - Module 4 Tender Compatibility Columns & Triggers
-    const m9Path = path.join(rootDir, 'db/migrations/009_tender_compatibility_columns.sql');
-    if (fs.existsSync(m9Path)) {
-      console.log('📜 [3.11/5] Executing db/migrations/009_tender_compatibility_columns.sql...');
-      const m9Sql = fs.readFileSync(m9Path, 'utf8');
-      await client.query(m9Sql);
-      console.log('   ✓ db/migrations/009_tender_compatibility_columns.sql executed successfully.');
-    }
-
-    // 3.12. Migrations 010 to 015
-    const additionalMigrations = [
-      '010_tender_win_loss_issues.sql',
-      '011_tender_management_specification.sql',
-      '012_tender_portal_issues_alignment.sql',
-      '013_lead_and_org_department.sql',
-      '014_lead_category_new_lead.sql',
-      '015_proposal_management_specification.sql',
-      '016_operational_blueprint_alignments.sql',
-      '017_delivery_management.sql',
-      '018_service_management_enterprise.sql',
-    ];
-    for (const mName of additionalMigrations) {
-      const mPath = path.join(rootDir, 'db/migrations', mName);
-      if (fs.existsSync(mPath)) {
-        console.log(`📜 Executing db/migrations/${mName}...`);
-        const mSql = fs.readFileSync(mPath, 'utf8');
-        await client.query(mSql);
-        console.log(`   ✓ db/migrations/${mName} executed successfully.`);
+    let appliedCount = 0;
+    for (const mName of migrationFiles) {
+      if (executedSet.has(mName)) {
+        console.log(`   ⏩ [skip] ${mName} (already recorded in _schema_migrations)`);
+        continue;
       }
+
+      console.log(`📜 Executing db/migrations/${mName}...`);
+      const mPath = path.join(migrationsDir, mName);
+      const mSql = fs.readFileSync(mPath, 'utf8');
+      await client.query(mSql);
+      await client.query(
+        'INSERT INTO _schema_migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING;',
+        [mName],
+      );
+      console.log(`   ✓ db/migrations/${mName} executed successfully.`);
+      appliedCount++;
     }
+
+    console.log(`   ✓ ${appliedCount} new migrations applied (${migrationFiles.length - appliedCount} were already up to date).`);
 
     // 4. Baseline Zones & Regions (Essential Master References)
-    console.log('🌍 [4/5] Seeding baseline Zones & Regions masters...');
+    console.log('🌍 [3/4] Seeding baseline Zones & Regions masters...');
     const zonesRes = await client.query(`
       INSERT INTO zones (code, name) VALUES
         ('N', 'North'),
@@ -212,7 +178,7 @@ async function runMigration() {
     console.log('   ✓ Baseline Zones & Regions configured.');
 
     // 5. Initial System User Accounts (Authentication Bootstrap)
-    console.log('👤 [5/5] Provisioning initial role accounts for authentication...');
+    console.log('👤 [4/4] Provisioning initial role accounts for authentication...');
     const passwordHash = bcrypt.hashSync('password123', 10);
 
     const initialUsers = [
@@ -280,16 +246,15 @@ async function runMigration() {
         VALUES ('${u.full_name}', '${u.email}', '${u.phone}', '${u.role}', ${u.zone_id ? `'${u.zone_id}'` : 'NULL'}, '${passwordHash}', true)
         ON CONFLICT (email) DO UPDATE SET
           full_name = excluded.full_name,
-          password_hash = excluded.password_hash,
           is_active = true;
       `);
     }
-    console.log('   ✓ Initial role accounts provisioned (Password: password123).');
+    console.log('   ✓ Initial role accounts verified.');
 
     await client.query('COMMIT');
-    console.log('\n🎉 ALL MIGRATIONS PUSHED TO SUPABASE SUCCESSFULLY!');
+    console.log('\n🎉 ALL MIGRATIONS EXECUTED AND RECORDED SUCCESSFULLY!');
     console.log('   Zero mock tenders, leads, visits, expenses, or tasks were inserted.');
-    console.log('   Database is clean and ready for production operations.');
+    console.log('   Database is clean and ready for operations.');
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('❌ Migration failed, rolled back changes:', err);

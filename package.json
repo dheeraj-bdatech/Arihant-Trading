@@ -20,7 +20,8 @@
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:init": "docker exec -i arihant_bos_db psql -U postgres -d postgres < db/schema.sql && docker exec -i arihant_bos_db psql -U postgres -d postgres < db/migrations/001_local_auth.sql",
-    "db:migrate": "pnpm --filter @arihant/api migrate"
+    "db:migrate": "pnpm --filter @arihant/api migrate",
+    "db:migrate:prod": "pnpm --filter @arihant/api migrate:prod"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

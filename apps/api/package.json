@@ -12,6 +12,7 @@
     "seed:module4": "tsx ../../db/seed/seed_module4_tenders.ts",
     "seed:module5": "tsx ../../db/seed/seed_module5_proposals.ts",
     "migrate": "tsx ../../db/migrate.ts",
+    "migrate:prod": "tsx ../../db/migrate.ts --prod",
     "test:e2e": "jest --config test/jest-e2e.json --runInBand --forceExit"
   },
   "dependencies": {

@@ -35,11 +35,20 @@ export class ProposalsSchedulerService {
 
     try {
       // 2. Fetch current proposal settings
-      const settings = await this.db
-        .selectFrom('proposal_settings')
-        .selectAll()
-        .where('id', '=', 1)
-        .executeTakeFirst();
+      let settings: any = null;
+      try {
+        settings = await this.db
+          .selectFrom('proposal_settings')
+          .selectAll()
+          .where('id', '=', 1)
+          .executeTakeFirst();
+      } catch (err: any) {
+        if (err?.code === '42P01' || err?.message?.includes('proposal_settings')) {
+          this.logger.warn('proposal_settings table not available. Using default configuration.');
+        } else {
+          throw err;
+        }
+      }
 
       const tz = settings?.business_timezone || 'Asia/Kolkata';
       const businessDate = this.getBusinessDate(tz);
@@ -404,11 +413,20 @@ export class ProposalsSchedulerService {
   async triggerDailyDigest(): Promise<{ digestSentUsers: number }> {
     this.logger.log('Compiling proposal daily digest...');
 
-    const settings = await this.db
-      .selectFrom('proposal_settings')
-      .selectAll()
-      .where('id', '=', 1)
-      .executeTakeFirst();
+    let settings: any = null;
+    try {
+      settings = await this.db
+        .selectFrom('proposal_settings')
+        .selectAll()
+        .where('id', '=', 1)
+        .executeTakeFirst();
+    } catch (err: any) {
+      if (err?.code === '42P01' || err?.message?.includes('proposal_settings')) {
+        this.logger.warn('proposal_settings table not available. Using default configuration.');
+      } else {
+        throw err;
+      }
+    }
 
     const tz = settings?.business_timezone || 'Asia/Kolkata';
     const businessDate = this.getBusinessDate(tz);

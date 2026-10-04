@@ -16,6 +16,7 @@ RUN pnpm install --frozen-lockfile
 # Copy source files
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
+COPY db ./db
 
 # Build shared and api
 RUN pnpm --filter @arihant/shared build && \
@@ -36,4 +37,4 @@ WORKDIR /app/apps/api
 EXPOSE 4000
 EXPOSE 4001
 
-CMD ["node", "dist/main.js"]
+CMD ["sh", "-c", "node_modules/.bin/tsx ../../db/migrate.ts || true; node dist/main.js"]

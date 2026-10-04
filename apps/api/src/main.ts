@@ -3,6 +3,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module.js';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
+import { runAutoMigrations } from './common/database/auto-migrate.js';
 
 async function bootstrap() {
   const logger = new Logger('ArihantBOS-API');
@@ -11,6 +12,9 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT') || 4000;
   const corsOrigins = configService.get<string>('CORS_ORIGINS') || 'http://localhost:3000';
+
+  // Automatically ensure database schema is up-to-date on deployment / startup
+  await runAutoMigrations(configService, logger);
 
   app.setGlobalPrefix('api');
 
