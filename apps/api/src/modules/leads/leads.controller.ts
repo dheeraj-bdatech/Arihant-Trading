@@ -160,7 +160,7 @@ export class LeadsController {
     return this.leadsService.assign(id, dto, user);
   }
 
-  @Post(':id/product-interests')
+  @Post([':id/product-interests', ':id/products'])
   @Roles('management', 'regional_manager', 'sales', 'admin')
   async addProductInterest(
     @Param('id') id: string,
@@ -170,7 +170,7 @@ export class LeadsController {
     return this.leadsService.addProductInterest(id, dto.product_id, user);
   }
 
-  @Delete(':id/product-interests/:productId')
+  @Delete([':id/product-interests/:productId', ':id/products/:productId'])
   @Roles('management', 'regional_manager', 'sales', 'admin')
   async removeProductInterest(
     @Param('id') id: string,

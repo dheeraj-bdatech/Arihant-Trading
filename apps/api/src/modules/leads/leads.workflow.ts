@@ -13,17 +13,17 @@ export class LeadWorkflowService {
    * Allowed state transitions for Arihant BOS Lead Lifecycle
    */
   private readonly ALLOWED_TRANSITIONS: Record<string, string[]> = {
-    new: ['contacted', 'qualified', 'lost', 'on_hold'],
-    contacted: ['qualified', 'follow_up', 'demo', 'proposal', 'tender_discussion', 'lost', 'on_hold'],
-    qualified: ['follow_up', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'lost', 'on_hold'],
+    new: ['contacted', 'qualified', 'follow_up', 'demo', 'proposal', 'tender_discussion', 'lost', 'on_hold'],
+    contacted: ['qualified', 'follow_up', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'lost', 'on_hold'],
+    qualified: ['contacted', 'follow_up', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'lost', 'on_hold'],
     follow_up: ['contacted', 'qualified', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'converted', 'lost', 'on_hold'],
-    demo: ['follow_up', 'proposal', 'tender_discussion', 'negotiation', 'converted', 'lost', 'on_hold'],
-    proposal: ['follow_up', 'negotiation', 'converted', 'lost', 'on_hold'],
-    tender_discussion: ['follow_up', 'negotiation', 'converted', 'lost', 'on_hold'],
-    negotiation: ['follow_up', 'converted', 'lost', 'on_hold'],
-    on_hold: ['contacted', 'qualified', 'follow_up', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'lost'],
-    lost: ['contacted', 'qualified', 'follow_up'], // Allowed to re-activate/re-approach
-    converted: ['negotiation'], // Terminal; reactivation restricted to management
+    demo: ['follow_up', 'qualified', 'proposal', 'tender_discussion', 'negotiation', 'converted', 'lost', 'on_hold'],
+    proposal: ['follow_up', 'demo', 'tender_discussion', 'negotiation', 'converted', 'lost', 'on_hold'],
+    tender_discussion: ['follow_up', 'proposal', 'negotiation', 'converted', 'lost', 'on_hold'],
+    negotiation: ['follow_up', 'proposal', 'converted', 'lost', 'on_hold'],
+    on_hold: ['new', 'contacted', 'qualified', 'follow_up', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'lost'],
+    lost: ['new', 'contacted', 'qualified', 'follow_up', 'on_hold'], // Allowed to re-activate/re-approach
+    converted: ['negotiation', 'follow_up'], // Reactivation restricted
     // Backward compatibility with legacy statuses in database
     open: ['contacted', 'qualified', 'follow_up', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'converted', 'lost', 'on_hold', 'quoted', 'won', 'dropped'],
     quoted: ['negotiation', 'converted', 'lost', 'on_hold', 'won', 'dropped'],

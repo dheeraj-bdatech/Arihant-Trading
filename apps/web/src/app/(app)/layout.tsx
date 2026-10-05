@@ -20,7 +20,7 @@ const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] }[] = [
   { path: '/proposals', name: 'Commercial Proposals', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'admin'] },
   { path: '/deliveries', name: 'Equipment Logistics & Delivery Register', roles: ['management', 'regional_manager', 'sales', 'service_team', 'admin'] },
   { path: '/service', name: 'Service Desk & Spares', roles: ['management', 'regional_manager', 'service_team', 'admin'] },
-  { path: '/expenses', name: 'Travel & Expense Reimbursements', roles: ['management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'accounts', 'admin'] },
+  { path: '/expenses', name: 'Travel & Expense Reimbursements', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/tasks', name: 'Task & Productivity Management', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/reports', name: 'Consolidated Reporting & Exports', roles: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'] },
   { path: '/admin', name: 'Administration & System Audit', roles: ['management', 'admin'] },
@@ -79,11 +79,11 @@ export default function AppLayout({
 
   return (
     <SidebarProvider>
-      <div className="h-screen bg-[#F7F8FA] flex flex-row text-[#152235] overflow-hidden">
+      <div className="h-screen bg-[#F6F5F1] flex flex-row text-[#152235] overflow-hidden">
         <Sidebar />
         <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
           <Navbar onOpenCommand={() => setIsCommandOpen(true)} />
-          <main className="flex-1 overflow-y-auto p-6 lg:p-8 bg-[#F7F8FA] custom-scrollbar">
+          <main className="flex-1 overflow-y-auto p-6 lg:p-8 bg-[#F6F5F1] custom-scrollbar">
             {isUnauthorized ? (
               <div className="max-w-2xl mx-auto my-12 bg-white border border-[#E3E7ED] rounded-[10px] p-8 shadow-xs text-center space-y-5">
                 <div className="h-14 w-14 rounded-[10px] bg-[#FBEBDD] border border-[#9A3412]/30 flex items-center justify-center mx-auto text-[#7C2D12]">

@@ -43,6 +43,7 @@ import {
   UserCheck,
   CalendarDays,
   CheckCircle2,
+  Bell,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -126,6 +127,67 @@ const INTERACTION_TYPE_OPTIONS = [
   { value: 'other', label: 'Other Touchpoint' },
 ];
 
+// Specific Demo Kit standard accessories mapping
+const getStandardKitAccessories = (productName?: string, category?: string) => {
+  const p = (productName || '').toLowerCase();
+  const c = (category || '').toLowerCase();
+
+  if (p.includes('metal detector') || p.includes('hhmd') || p.includes('dfmd') || c.includes('metal')) {
+    return [
+      'Rugged flight case with custom high-density EVA foam',
+      '2x Rechargeable NiMH battery packs + desktop cradle charger',
+      'Standard MHA test calibration piece & test knife sample',
+      'Ballistic nylon belt holster & safety wrist lanyard',
+      'Factory sensitivity verification & calibration certificate',
+    ];
+  }
+  if (p.includes('thermal') || p.includes('ti-') || p.includes('infrared') || c.includes('thermal')) {
+    return [
+      'Hermetic waterproof IP67 hard carrying case',
+      '2x High-capacity Li-ion batteries + AC/DC field charger',
+      'High-speed HDMI / Video-out cable for command viewing',
+      'Optical microfiber lens cleaning kit & protective cap',
+      'Field survey tripod with quick-release mounting plate',
+      'Thermal resolution test target & calibration report',
+    ];
+  }
+  if (p.includes('night vision') || p.includes('monocular') || p.includes('nvm') || c.includes('night vision')) {
+    return [
+      'Mil-spec Pelican protective case with desiccants',
+      'Combat helmet mount shroud & skull crusher harness',
+      'Sacrificial protective objective window & demist shield',
+      'Dual AA battery adapter cartridge & lens cleaning pen',
+      'Infrared (IR) covert test target card',
+      'OEM optical resolution test & FOM certification dossier',
+    ];
+  }
+  if (p.includes('breath') || p.includes('alco') || c.includes('analyser')) {
+    return [
+      'Hard carrying case with molded foam insert',
+      '100x Individually wrapped sterile sampling mouthpieces',
+      'Wireless Bluetooth mobile receipt printer + 5 paper rolls',
+      'Rechargeable battery pack & vehicle 12V auxiliary charger',
+      'Gas sensor calibration & verification test certificate',
+    ];
+  }
+  if (p.includes('barrier') || p.includes('boom') || p.includes('bollard') || c.includes('barrier')) {
+    return [
+      'Skid-mounted live demonstration barrier unit',
+      'Electro-hydraulic power unit (HPU) demo control console',
+      'Dual optical safety photocell sensor kit',
+      'Remote RF transmitter key fob controller (2 units)',
+      'Crash rating structural impact dossier & wiring schematic',
+    ];
+  }
+  return [
+    'Original ruggedized transit & deployment case',
+    'Standard AC power supply adapter (230V / 50Hz)',
+    'Full accessory connection wiring & interface harness',
+    'Certified demonstration verification sample kit',
+    'OEM operational manual and calibration compliance card',
+  ];
+};
+
 export default function LeadsPage() {
   const { user, hasRole, switchRole } = useAuth();
   const canReassign = hasRole(['management', 'regional_manager', 'admin']);
@@ -153,12 +215,16 @@ export default function LeadsPage() {
   const [usersList, setUsersList] = useState<any[]>([]);
   const [zonesList, setZonesList] = useState<any[]>([]);
   const [regionsList, setRegionsList] = useState<any[]>([]);
+  const [demoEquipmentList, setDemoEquipmentList] = useState<any[]>([]);
+  const [leadDemoTeamAvailability, setLeadDemoTeamAvailability] = useState<any[]>([]);
+  const [isLoadingLeadTeamAvailability, setIsLoadingLeadTeamAvailability] = useState(false);
   const [organisationsList, setOrganisationsList] = useState<any[]>([]);
 
   // 1. Leads State
   const [leads, setLeads] = useState<any[]>([]);
   const [leadsTotal, setLeadsTotal] = useState(0);
   const [leadsPage, setLeadsPage] = useState(1);
+  const [leadsLimit, setLeadsLimit] = useState(50);
   const [leadsTotalPages, setLeadsTotalPages] = useState(1);
   const [leadsLoading, setLeadsLoading] = useState(true);
   const [leadFilters, setLeadFilters] = useState({
@@ -343,6 +409,186 @@ export default function LeadsPage() {
   const [scheduleNextFollowup, setScheduleNextFollowup] = useState(false);
   const [nextFollowupDueDate, setNextFollowupDueDate] = useState('');
 
+  // Action Success Toast
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
+  // Demo Transition Modal State
+  const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
+  const [demoForm, setDemoForm] = useState({
+    requested_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+    requested_time: '11:00',
+    product_id: '',
+    assigned_to: '',
+    location: '',
+    purpose: 'Live equipment demonstration & spec validation',
+    expected_audience: 'Procurement Committee & Technical Officers',
+    equipment_required: '',
+    custom_accessories: '',
+    auto_remind: true,
+    reminder_notes: 'Please bring calibrated demonstration unit and client sign-off sheet.',
+  });
+
+  // Active selected equipment unit for Leads Demo Modal
+  const selectedLeadEquipUnit = useMemo(() => {
+    if (!demoForm.equipment_required || demoForm.equipment_required === 'custom') return null;
+    return (demoEquipmentList || []).find(
+      (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === demoForm.equipment_required
+        || item.serial_no === demoForm.equipment_required
+        || item.id === demoForm.equipment_required
+    ) || null;
+  }, [demoEquipmentList, demoForm.equipment_required]);
+
+  // Active product fleet availability breakdown for Leads Demo Modal
+  const activeLeadDemoFleet = useMemo(() => {
+    const pId = demoForm.product_id;
+    if (!pId) return null;
+    const productUnits = (demoEquipmentList || []).filter((e) => e.product_id === pId);
+    const available = productUnits.filter((e) => e.availability_status === 'available');
+    const reserved = productUnits.filter((e) => e.availability_status === 'reserved' || e.availability_status === 'in_use');
+    const maintenance = productUnits.filter((e) => e.availability_status === 'maintenance');
+    const locations = Array.from(new Set(available.map((e) => e.current_location).filter(Boolean)));
+
+    return {
+      total: productUnits.length,
+      availableCount: available.length,
+      reservedCount: reserved.length,
+      maintenanceCount: maintenance.length,
+      availableUnits: available,
+      locations,
+      units: productUnits,
+    };
+  }, [demoEquipmentList, demoForm.product_id]);
+
+  // Options for registered demo equipment models for Leads Demo Modal
+  const leadRegisteredEquipmentOptions = useMemo(() => {
+    const list = demoEquipmentList || [];
+    const activeProductId = demoForm.product_id;
+
+    const matched = activeProductId ? list.filter((e) => e.product_id === activeProductId) : [];
+    const others = activeProductId ? list.filter((e) => e.product_id !== activeProductId) : list;
+
+    const opts: { value: string; label: string }[] = [
+      { value: '', label: '-- Choose Registered Demo Model & Serial --' },
+    ];
+
+    const formatOptLabel = (e: any, isStar = false) => {
+      const isAvail = e.availability_status === 'available';
+      const isReserved = e.availability_status === 'reserved' || e.availability_status === 'in_use';
+      const isMaint = e.availability_status === 'maintenance';
+
+      const statusTag = isAvail
+        ? '🟢 [AVAILABLE]'
+        : isReserved
+        ? `🟡 [RESERVED${e.reserved_until ? ` to ${new Date(e.reserved_until).toLocaleDateString()}` : ''}]`
+        : isMaint
+        ? '🔴 [MAINTENANCE]'
+        : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
+
+      const cond = e.condition ? ` • ${e.condition}` : '';
+      return `${isStar ? '★ ' : ''}${statusTag} S/N: ${e.serial_no} — ${e.model} (${e.current_location} Depot${cond})`;
+    };
+
+    if (matched.length > 0) {
+      opts.push(
+        ...matched.map((e) => ({
+          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
+          label: formatOptLabel(e, true),
+        }))
+      );
+    }
+
+    if (others.length > 0) {
+      opts.push(
+        ...others.map((e) => ({
+          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
+          label: formatOptLabel(e, false),
+        }))
+      );
+    }
+
+    opts.push({
+      value: 'custom',
+      label: '✎ Other / Custom Demo Model or Equipment Kit',
+    });
+
+    return opts;
+  }, [demoEquipmentList, demoForm.product_id]);
+
+  // Helper to fetch demo team availability for specified date
+  const fetchLeadDemoTeamAvailability = async (dateStr: string) => {
+    if (!dateStr) return;
+    try {
+      setIsLoadingLeadTeamAvailability(true);
+      const res = await api.get('/demos/team/availability', { date: dateStr });
+      if (Array.isArray(res)) {
+        setLeadDemoTeamAvailability(res);
+      }
+    } catch (err) {
+      console.warn('Could not fetch lead demo team availability:', err);
+    } finally {
+      setIsLoadingLeadTeamAvailability(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isDemoModalOpen && demoForm.requested_date) {
+      fetchLeadDemoTeamAvailability(demoForm.requested_date);
+    }
+  }, [isDemoModalOpen, demoForm.requested_date]);
+
+  // Selected demo team member object for leads demo modal
+  const selectedLeadDemoMember = useMemo(() => {
+    if (!demoForm.assigned_to) return null;
+    return (
+      (leadDemoTeamAvailability.length > 0 ? leadDemoTeamAvailability : usersList).find(
+        (u) => u.id === demoForm.assigned_to
+      ) || null
+    );
+  }, [leadDemoTeamAvailability, usersList, demoForm.assigned_to]);
+
+  // Demo team options with availability status tags for leads demo modal
+  const leadDemoTeamOptions = useMemo(() => {
+    const roster = leadDemoTeamAvailability.length > 0
+      ? leadDemoTeamAvailability
+      : usersList.filter((u) => ['demo_team', 'service_team', 'sales'].includes(u.role));
+
+    return roster.map((m) => {
+      const isAvail = m.is_available ?? true;
+      const tag = isAvail
+        ? '🟢 [AVAILABLE]'
+        : `🟡 [BOOKED: ${m.active_demo?.demo_no || 'Another Trial'}]`;
+      const roleTitle = m.role === 'demo_team' ? 'Demo Team Specialist' : m.role.replace(/_/g, ' ');
+      return {
+        value: m.id,
+        label: `${tag} ${m.full_name} (${roleTitle})`,
+      };
+    });
+  }, [leadDemoTeamAvailability, usersList]);
+
+  // Proposal Transition Modal State
+  const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
+  const [proposalForm, setProposalForm] = useState({
+    required_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+    responsible_person_id: '',
+    deal_value: '' as string | number,
+    reference: '',
+    remarks: 'Commercial and technical proposal formulation as per buyer specifications.',
+    auto_remind: true,
+  });
+
+  // Discussion / Follow-Up Transition Modal State ("if discuss then when , all this")
+  const [isDiscussionModalOpen, setIsDiscussionModalOpen] = useState(false);
+  const [discussionStage, setDiscussionStage] = useState<'tender_discussion' | 'follow_up'>('tender_discussion');
+  const [discussionForm, setDiscussionForm] = useState({
+    discussion_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+    discussion_time: '14:30',
+    mode: 'in_person',
+    venue: '',
+    assigned_to: '',
+    agenda: 'Clause-by-clause tender specification compliance, pricing schedule, and delivery milestones.',
+    auto_remind: true,
+  });
+
   // Follow-up Reschedule Form
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleRemarks, setRescheduleRemarks] = useState('');
@@ -351,13 +597,14 @@ export default function LeadsPage() {
   useEffect(() => {
     const loadMasters = async () => {
       try {
-        const [prodRes, secRes, usrRes, znRes, regRes, orgRes] = await Promise.allSettled([
+        const [prodRes, secRes, usrRes, znRes, regRes, orgRes, deRes] = await Promise.allSettled([
           api.get('/masters/products'),
           api.get('/masters/sectors'),
           api.get('/users'),
           api.get('/masters/zones'),
           api.get('/masters/regions'),
           api.get('/organisations', { limit: 200 }),
+          api.get('/demos/equipment'),
         ]);
 
         if (prodRes.status === 'fulfilled') setProductsList(prodRes.value.data || prodRes.value || []);
@@ -365,6 +612,7 @@ export default function LeadsPage() {
         if (usrRes.status === 'fulfilled') setUsersList(usrRes.value.data || usrRes.value || []);
         if (znRes.status === 'fulfilled') setZonesList(znRes.value.data || znRes.value || []);
         if (regRes.status === 'fulfilled') setRegionsList(regRes.value.data || regRes.value || []);
+        if (deRes.status === 'fulfilled') setDemoEquipmentList(Array.isArray(deRes.value) ? deRes.value : (deRes.value?.data || []));
         if (orgRes.status === 'fulfilled') {
           const orgList = orgRes.value.data || orgRes.value || [];
           setOrganisationsList(orgList);
@@ -428,7 +676,7 @@ export default function LeadsPage() {
       setLeadsLoading(true);
       const res = await api.get('/leads', {
         page: leadsPage,
-        limit: 15,
+        limit: leadsLimit,
         search: leadFilters.search || undefined,
         lead_status: leadFilters.lead_status || undefined,
         lead_type: leadFilters.lead_type || undefined,
@@ -446,7 +694,7 @@ export default function LeadsPage() {
     } finally {
       setLeadsLoading(false);
     }
-  }, [leadsPage, leadFilters]);
+  }, [leadsPage, leadsLimit, leadFilters]);
 
   // Fetch Customers Register
   const fetchCustomers = useCallback(async () => {
@@ -819,6 +1067,7 @@ export default function LeadsPage() {
   // Add Product Interest to Selected Lead
   const handleAddProductInterest = async (productId: string) => {
     if (!selectedLead) return;
+    setFormError(null);
     try {
       await api.post(`/leads/${selectedLead.id}/products`, { product_id: productId });
       const updated = await api.get(`/leads/${selectedLead.id}`);
@@ -826,13 +1075,14 @@ export default function LeadsPage() {
       fetchLeads();
       fetchDashboardStats();
     } catch (err: any) {
-      alert(err.message || 'Failed to attach product.');
+      setFormError(err.message || 'Failed to attach product.');
     }
   };
 
   // Remove Product Interest from Selected Lead
   const handleRemoveProductInterest = async (productId: string) => {
     if (!selectedLead) return;
+    setFormError(null);
     try {
       await api.delete(`/leads/${selectedLead.id}/products/${productId}`);
       const updated = await api.get(`/leads/${selectedLead.id}`);
@@ -840,7 +1090,312 @@ export default function LeadsPage() {
       fetchLeads();
       fetchDashboardStats();
     } catch (err: any) {
-      alert(err.message || 'Failed to remove product.');
+      setFormError(err.message || 'Failed to remove product.');
+    }
+  };
+
+  // Open Demo Modal with prepopulated values
+  const handleOpenDemoModal = () => {
+    if (!selectedLead) return;
+    const defaultProdId = selectedLead.product_id || selectedLead.product_interests?.[0]?.product_id || (productsList[0]?.id || '');
+    const defaultDemoUser = usersList.find((u) => u.role === 'demo_team')?.id || selectedLead.assigned_to || user?.id || '';
+    const loc = `${selectedLead.city || ''}${selectedLead.city && selectedLead.state ? ', ' : ''}${selectedLead.state || ''}`.trim() || selectedLead.organisation_name || 'Client Site / Field';
+    const prodName = selectedLead.product_name || selectedLead.product_interests?.[0]?.product_name || 'Equipment';
+
+    setDemoForm({
+      requested_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      requested_time: '11:00',
+      product_id: defaultProdId,
+      assigned_to: defaultDemoUser,
+      location: loc,
+      purpose: `Live demonstration & specification validation for ${selectedLead.organisation_name}`,
+      expected_audience: 'Procurement Committee & Commanding Officers',
+      equipment_required: `${prodName} Demo Unit, test accessories, and calibration certificate`,
+      custom_accessories: '',
+      auto_remind: true,
+      reminder_notes: 'Verify kit packing and transport permits before field deployment.',
+    });
+    setFormError(null);
+    setIsDemoModalOpen(true);
+  };
+
+  // Open Proposal Modal with prepopulated values
+  const handleOpenProposalModal = () => {
+    if (!selectedLead) return;
+    const defaultTenderUser = usersList.find((u) => u.role === 'tender_team')?.id || selectedLead.assigned_to || user?.id || '';
+    const cleanOrg = (selectedLead.organisation_name || 'LEAD').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase();
+    const ref = `PROP-${cleanOrg}-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`;
+
+    setProposalForm({
+      required_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+      responsible_person_id: defaultTenderUser,
+      deal_value: selectedLead.estimated_value_lakh || selectedLead.value_lakh || '',
+      reference: ref,
+      remarks: `Commercial proposal & technical bid preparation for ${selectedLead.organisation_name}. Include delivery SLA and 3-year warranty terms.`,
+      auto_remind: true,
+    });
+    setFormError(null);
+    setIsProposalModalOpen(true);
+  };
+
+  // Open Discussion Modal with prepopulated values ("when")
+  const handleOpenDiscussionModal = (stage: 'tender_discussion' | 'follow_up') => {
+    if (!selectedLead) return;
+    setDiscussionStage(stage);
+    const defaultUser = selectedLead.assigned_to || usersList.find((u) => u.role === (stage === 'tender_discussion' ? 'tender_team' : 'sales'))?.id || user?.id || '';
+    const venue = selectedLead.city ? `${selectedLead.organisation_name}, ${selectedLead.city}` : 'Client HQ / Virtual Conference';
+
+    setDiscussionForm({
+      discussion_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      discussion_time: '14:30',
+      mode: stage === 'tender_discussion' ? 'tender_committee' : 'in_person',
+      venue: venue,
+      assigned_to: defaultUser,
+      agenda: stage === 'tender_discussion'
+        ? 'Clause-by-clause tender terms review, RFP alignment, commercial pricing schedule, and earnest money deposit.'
+        : 'Comprehensive follow-up on technical evaluation, buyer timeline, and next procurement stage.',
+      auto_remind: true,
+    });
+    setFormError(null);
+    setIsDiscussionModalOpen(true);
+  };
+
+  // Lifecycle Stage Advance Router
+  const handleDirectAdvanceStatus = async (nextSt: string) => {
+    if (!selectedLead) return;
+    if (nextSt === 'lost') {
+      setTargetStatus('lost');
+      setIsStatusModalOpen(true);
+      return;
+    }
+    if (nextSt === 'demo') {
+      handleOpenDemoModal();
+      return;
+    }
+    if (nextSt === 'proposal') {
+      handleOpenProposalModal();
+      return;
+    }
+    if (nextSt === 'tender_discussion' || nextSt === 'follow_up') {
+      handleOpenDiscussionModal(nextSt as any);
+      return;
+    }
+
+    setActionLoading(true);
+    setFormError(null);
+    try {
+      await api.patch(`/leads/${selectedLead.id}/status`, { status: nextSt });
+      const updated = await api.get(`/leads/${selectedLead.id}`);
+      setSelectedLead(updated);
+      setActionSuccess(`Lifecycle stage advanced to ${nextSt.toUpperCase()} successfully!`);
+      fetchLeads();
+      fetchDashboardStats();
+    } catch (err: any) {
+      setFormError(err.message || `Failed to advance status to ${nextSt}.`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Submit Demo Transition
+  const handleSubmitDemoTransition = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedLead) return;
+    setActionLoading(true);
+    setFormError(null);
+
+    try {
+      // 1. Create official Demo record
+      await api.post('/demos', {
+        organisation_id: selectedLead.organisation_id,
+        lead_id: selectedLead.id,
+        product_id: demoForm.product_id || undefined,
+        requested_date: demoForm.requested_date,
+        location: demoForm.location,
+        purpose: demoForm.purpose,
+        expected_audience: demoForm.expected_audience,
+        equipment_required: demoForm.equipment_required,
+        assigned_to: demoForm.assigned_to || undefined,
+        remarks: demoForm.reminder_notes,
+      });
+
+      // 2. Advance Lead Lifecycle to DEMO
+      await api.patch(`/leads/${selectedLead.id}/status`, {
+        status: 'demo',
+        remarks: `Demonstration scheduled for ${demoForm.requested_date} at ${demoForm.requested_time} (${demoForm.location}). Assigned specialist: ${usersList.find((u) => u.id === demoForm.assigned_to)?.full_name || 'Demo Team'}.`,
+      });
+
+      // 3. Auto-remind: Create high-priority task for assigned member
+      if (demoForm.auto_remind && demoForm.assigned_to) {
+        const prodName = productsList.find((p) => p.id === demoForm.product_id)?.name || selectedLead.product_name || 'Equipment';
+
+        await api.post('/tasks', {
+          title: `Conduct Demo: ${prodName} (${selectedLead.organisation_name})`,
+          description: `Demo scheduled on ${demoForm.requested_date} at ${demoForm.requested_time}.\nLocation: ${demoForm.location}\nAudience: ${demoForm.expected_audience}\nEquipment: ${demoForm.equipment_required}\nNotes: ${demoForm.reminder_notes}`,
+          assigned_to: demoForm.assigned_to,
+          department: 'Demo Team',
+          priority: 'urgent',
+          task_type: 'one_time',
+          deadline: demoForm.requested_date,
+          start_date: new Date().toISOString().split('T')[0],
+          related_entity_type: 'lead',
+          related_entity_id: selectedLead.id,
+          expected_outcome: 'Field trial executed and signed demo trial certificate obtained',
+        });
+
+        await api.post('/notifications', {
+          userId: demoForm.assigned_to,
+          type: 'demo_assigned',
+          title: `🎯 Demo Assigned: ${selectedLead.organisation_name}`,
+          body: `You are assigned for product demonstration on ${demoForm.requested_date} at ${demoForm.requested_time} (${demoForm.location}).`,
+          entityType: 'lead',
+          entityId: selectedLead.id,
+        });
+      }
+
+      const updated = await api.get(`/leads/${selectedLead.id}`);
+      setSelectedLead(updated);
+      setIsDemoModalOpen(false);
+      setActionSuccess(`Demo scheduled successfully! Demo Team coordinators and assigned specialist have been notified.`);
+      fetchLeads();
+      fetchDashboardStats();
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to schedule demo and update status.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Submit Proposal Transition
+  const handleSubmitProposalTransition = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedLead) return;
+    setActionLoading(true);
+    setFormError(null);
+
+    try {
+      // 1. Create Proposal record
+      await api.post('/proposals', {
+        customer_id: selectedLead.organisation_id,
+        organisation_id: selectedLead.organisation_id,
+        lead_id: selectedLead.id,
+        product_id: selectedLead.product_id || (selectedLead.product_interests?.[0]?.product_id) || undefined,
+        required_date: proposalForm.required_date,
+        reference: proposalForm.reference,
+        responsible_person_id: proposalForm.responsible_person_id || undefined,
+        remarks: proposalForm.remarks,
+      });
+
+      // 2. Advance Lead Lifecycle to PROPOSAL
+      await api.patch(`/leads/${selectedLead.id}/status`, {
+        status: 'proposal',
+        remarks: `Proposal initiated (Ref: ${proposalForm.reference}). Submission deadline: ${proposalForm.required_date}. Lead specialist: ${usersList.find((u) => u.id === proposalForm.responsible_person_id)?.full_name || 'Tender Team'}.`,
+      });
+
+      // 3. Auto-remind: Create high-priority task for assigned proposal specialist
+      if (proposalForm.auto_remind && proposalForm.responsible_person_id) {
+        await api.post('/tasks', {
+          title: `Draft Proposal: ${proposalForm.reference} (${selectedLead.organisation_name})`,
+          description: `Formulate technical bid and commercial quotation.\nSubmission Deadline: ${proposalForm.required_date}\nScope: ${proposalForm.remarks}`,
+          assigned_to: proposalForm.responsible_person_id,
+          department: 'Tender Team',
+          priority: 'high',
+          task_type: 'one_time',
+          deadline: proposalForm.required_date,
+          start_date: new Date().toISOString().split('T')[0],
+          related_entity_type: 'lead',
+          related_entity_id: selectedLead.id,
+          expected_outcome: 'Proposal formulated and ready for managerial pricing review',
+        });
+
+        await api.post('/notifications', {
+          userId: proposalForm.responsible_person_id,
+          type: 'proposal_assigned',
+          title: `📄 Proposal Assigned: ${proposalForm.reference}`,
+          body: `You are responsible for proposal drafting for ${selectedLead.organisation_name} due by ${proposalForm.required_date}.`,
+          entityType: 'lead',
+          entityId: selectedLead.id,
+        });
+      }
+
+      const updated = await api.get(`/leads/${selectedLead.id}`);
+      setSelectedLead(updated);
+      setIsProposalModalOpen(false);
+      setActionSuccess(`Proposal registered and delegated! Tender Team and assigned specialist notified.`);
+      fetchLeads();
+      fetchDashboardStats();
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to create proposal and update status.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Submit Discussion Transition ("when")
+  const handleSubmitDiscussionTransition = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedLead) return;
+    setActionLoading(true);
+    setFormError(null);
+
+    const stageLabel = discussionStage === 'tender_discussion' ? 'TENDER DISCUSSION' : 'FOLLOW UP';
+    const assignedMember = usersList.find((u) => u.id === discussionForm.assigned_to);
+
+    try {
+      // 1. Advance Lead Lifecycle
+      await api.patch(`/leads/${selectedLead.id}/status`, {
+        status: discussionStage,
+        remarks: `${stageLabel} scheduled for ${discussionForm.discussion_date} at ${discussionForm.discussion_time} (${discussionForm.mode}). Venue: ${discussionForm.venue}. Assigned: ${assignedMember?.full_name || 'Team'}.`,
+      });
+
+      // 2. Log Interaction / Touchpoint
+      await api.post('/interactions', {
+        lead_id: selectedLead.id,
+        organisation_id: selectedLead.organisation_id,
+        contact_id: selectedLead.primary_contact_id || undefined,
+        type: 'meeting',
+        occurred_on: discussionForm.discussion_date,
+        remarks: `[${stageLabel}] Scheduled at ${discussionForm.discussion_time} (${discussionForm.mode}). Venue: ${discussionForm.venue}. Agenda: ${discussionForm.agenda}`,
+        outcome: `${stageLabel} Touchpoint Scheduled`,
+        next_followup_date: discussionForm.discussion_date,
+      });
+
+      // 3. Auto-remind: Create calendar task for assigned member
+      if (discussionForm.auto_remind && discussionForm.assigned_to) {
+        await api.post('/tasks', {
+          title: `${stageLabel}: ${selectedLead.organisation_name} (${discussionForm.mode.toUpperCase()})`,
+          description: `When: ${discussionForm.discussion_date} at ${discussionForm.discussion_time}\nVenue / Link: ${discussionForm.venue}\nAgenda: ${discussionForm.agenda}`,
+          assigned_to: discussionForm.assigned_to,
+          department: discussionStage === 'tender_discussion' ? 'Tender Team' : 'Sales',
+          priority: 'urgent',
+          task_type: 'meeting',
+          deadline: discussionForm.discussion_date,
+          start_date: new Date().toISOString().split('T')[0],
+          related_entity_type: 'lead',
+          related_entity_id: selectedLead.id,
+          expected_outcome: 'Discussion minutes documented and buyer commitments captured',
+        });
+
+        await api.post('/notifications', {
+          userId: discussionForm.assigned_to,
+          type: 'meeting_scheduled',
+          title: `🤝 Discussion Scheduled: ${selectedLead.organisation_name}`,
+          body: `You are scheduled for a discussion on ${discussionForm.discussion_date} at ${discussionForm.discussion_time} (${discussionForm.venue}).`,
+          entityType: 'lead',
+          entityId: selectedLead.id,
+        });
+      }
+
+      const updated = await api.get(`/leads/${selectedLead.id}`);
+      setSelectedLead(updated);
+      setIsDiscussionModalOpen(false);
+      setActionSuccess(`${stageLabel} scheduled on ${discussionForm.discussion_date}! Auto-reminder and task dispatched to ${assignedMember?.full_name || 'assigned member'}.`);
+      fetchLeads();
+      fetchDashboardStats();
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to schedule discussion.');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -1204,8 +1759,27 @@ export default function LeadsPage() {
               </select>
             </div>
 
-            <div className="text-xs text-[#4A5568] font-medium">
-              Showing {leads.length} of {leadsTotal} opportunities
+            <div className="flex flex-wrap items-center justify-between sm:justify-start gap-3 text-xs text-[#4A5568]">
+              <span>
+                Showing <strong className="text-[#14213D]">{leads.length}</strong> of{' '}
+                <strong className="text-[#14213D]">{leadsTotal}</strong> opportunities
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-[#4A5568]">Rows:</span>
+                <select
+                  value={leadsLimit}
+                  onChange={(e) => {
+                    setLeadsLimit(Number(e.target.value));
+                    setLeadsPage(1);
+                  }}
+                  className="px-2 py-1 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:outline-none focus:border-[#0F5E63]"
+                >
+                  <option value={15}>15</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -2684,6 +3258,22 @@ export default function LeadsPage() {
                 </span>
               </div>
 
+              {actionSuccess && (
+                <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-[#0F5E63] text-xs font-semibold flex items-center justify-between animate-in fade-in">
+                  <div className="flex items-center gap-1.5">
+                    <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />
+                    <span>{actionSuccess}</span>
+                  </div>
+                  <button type="button" onClick={() => setActionSuccess(null)} className="text-[#0F5E63] hover:opacity-70 font-bold ml-2">×</button>
+                </div>
+              )}
+
+              {formError && (
+                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
+                  {formError}
+                </div>
+              )}
+
               {selectedLead.allowed_transitions && selectedLead.allowed_transitions.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2">
                   {selectedLead.allowed_transitions.map((nextSt: string) => (
@@ -2691,10 +3281,8 @@ export default function LeadsPage() {
                       key={nextSt}
                       size="xs"
                       variant={nextSt === 'converted' ? 'success' : nextSt === 'lost' ? 'danger' : 'outline'}
-                      onClick={() => {
-                        setTargetStatus(nextSt);
-                        setIsStatusModalOpen(true);
-                      }}
+                      isLoading={actionLoading && targetStatus === nextSt}
+                      onClick={() => handleDirectAdvanceStatus(nextSt)}
                     >
                       Advance to: {nextSt.toUpperCase()}
                     </Button>
@@ -3017,6 +3605,783 @@ export default function LeadsPage() {
                 Reassign & Dispatch Event
               </Button>
             </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL 5A: DEMO REQUEST & FIELD TEAM COORDINATION                          */}
+      {/* ========================================================================= */}
+      <Modal
+        isOpen={isDemoModalOpen}
+        onClose={() => setIsDemoModalOpen(false)}
+        title="🎯 Schedule Product Demonstration"
+        description={`Coordinates field demonstration for ${selectedLead?.organisation_name || 'Client'}. Dispatches auto-reminders and tasks to the assigned demo specialist.`}
+        maxWidth="4xl"
+        zIndex={60}
+      >
+        <form onSubmit={handleSubmitDemoTransition} className="space-y-4 text-xs">
+          {formError && (
+            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+              {formError}
+            </div>
+          )}
+
+          {/* Context Strip: Customer, Location, Requested Date, Salesperson */}
+          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div>
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Customer:</span>
+              <span className="font-semibold text-[#14213D] truncate block">
+                🏢 {selectedLead?.organisation_name}
+              </span>
+            </div>
+            <div>
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Location:</span>
+              <span className="font-semibold text-[#14213D] truncate block">
+                📍 {demoForm.location || selectedLead?.city || 'Client Site / Field'}
+              </span>
+            </div>
+            <div>
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Requested Date:</span>
+              <span className="font-semibold text-[#14213D] block font-mono">
+                📅 {demoForm.requested_date ? new Date(demoForm.requested_date).toLocaleDateString() : 'Pending'}
+              </span>
+            </div>
+            <div>
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Lead Salesperson:</span>
+              <span className="font-semibold text-[#14213D] truncate block">
+                👤 {usersList.find((u) => u.id === selectedLead?.assigned_to)?.full_name || selectedLead?.assigned_to_user?.full_name || user?.full_name || 'Assigned Officer'}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              type="date"
+              label="Demo Date *"
+              required
+              value={demoForm.requested_date}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, requested_date: e.target.value }))}
+            />
+            <Input
+              type="time"
+              label="Scheduled Time"
+              value={demoForm.requested_time}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, requested_time: e.target.value }))}
+            />
+          </div>
+
+          {/* Equipment & Specific Kit Selection (Row 1: Two Selects, Below: Full-width Details) */}
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+              <Select
+                label="Equipment / Product for Demo *"
+                required
+                value={demoForm.product_id}
+                onChange={(e) => {
+                  const pId = e.target.value;
+                  setDemoForm((prev) => ({ ...prev, product_id: pId }));
+                }}
+                options={[
+                  { value: '', label: 'Select Product / Equipment' },
+                  ...productsList.map((p) => {
+                    const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
+                    const avail = pUnits.filter((e) => e.availability_status === 'available');
+                    let statusTag = '';
+                    if (avail.length > 0) {
+                      const locs = Array.from(new Set(avail.map((u) => u.current_location).filter(Boolean)));
+                      statusTag = `[AVAILABLE: ${avail.length} of ${pUnits.length} in ${locs.join(', ')}]`;
+                    } else if (pUnits.length > 0) {
+                      statusTag = `[RESERVED / IN USE: ${pUnits.length} Units]`;
+                    } else {
+                      statusTag = `[NO DEMO FLEET UNIT]`;
+                    }
+                    return {
+                      value: p.id,
+                      label: `${statusTag} ${p.name}`,
+                    };
+                  }),
+                ]}
+              />
+
+              <Select
+                label="Specific Demo Kit / Serial / Accessories Needed"
+                value={
+                  leadRegisteredEquipmentOptions.some((o) => o.value === demoForm.equipment_required)
+                    ? demoForm.equipment_required
+                    : demoForm.equipment_required
+                    ? 'custom'
+                    : ''
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'custom') {
+                    setDemoForm((prev) => ({ ...prev, equipment_required: 'custom' }));
+                  } else {
+                    const matchedEquip = (demoEquipmentList || []).find(
+                      (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === val
+                        || item.serial_no === val
+                        || item.id === val
+                    );
+                    setDemoForm((prev) => ({
+                      ...prev,
+                      equipment_required: val,
+                      product_id: matchedEquip?.product_id || prev.product_id,
+                    }));
+                  }
+                }}
+                options={leadRegisteredEquipmentOptions}
+              />
+            </div>
+
+            {/* Fleet Availability Overview by Product (when no product is selected yet) - Full Width */}
+            {!activeLeadDemoFleet && (
+              <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                    Demo Equipment Fleet Availability & Status:
+                  </span>
+                  <span className="text-[10px] text-[#0F5E63] font-medium">Click to select equipment</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  {productsList.slice(0, 9).map((p) => {
+                    const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
+                    const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
+                    const total = pUnits.length;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          setDemoForm((prev) => ({ ...prev, product_id: p.id }));
+                        }}
+                        className="flex items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                      >
+                        <span className="font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
+                          {p.name}
+                        </span>
+                        <span
+                          className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
+                            availCount > 0
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : total > 0
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}
+                        >
+                          {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Live Product Fleet Availability & Status HUD - Full Width */}
+            {activeLeadDemoFleet && (
+              <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
+                <div className="flex flex-wrap items-center justify-between gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                      Live Product Fleet Availability:
+                    </span>
+                    <span className="font-bold text-xs text-[#14213D]">
+                      {productsList.find((p) => p.id === demoForm.product_id)?.name || 'Selected Equipment'}
+                    </span>
+                  </div>
+                  {activeLeadDemoFleet.availableCount > 0 ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                      AVAILABLE ({activeLeadDemoFleet.availableCount} Ready)
+                    </span>
+                  ) : activeLeadDemoFleet.total > 0 ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
+                      RESERVED ({activeLeadDemoFleet.total} in Fleet)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                      No Fleet Unit
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-[#ECE9E2]">
+                  <span className="text-[#4A5568]">
+                    {activeLeadDemoFleet.availableCount > 0
+                      ? `Stationed at: ${activeLeadDemoFleet.locations.join(', ')} Depot`
+                      : activeLeadDemoFleet.total > 0
+                      ? `All units currently deployed or reserved.`
+                      : `Custom requisition required.`}
+                  </span>
+                  <div className="flex items-center gap-2 font-mono text-[10px]">
+                    <span>Fleet: <b>{activeLeadDemoFleet.total}</b></span>
+                    <span className="text-emerald-700">Ready: <b>{activeLeadDemoFleet.availableCount}</b></span>
+                    <span className="text-amber-700">In-Trial: <b>{activeLeadDemoFleet.reservedCount}</b></span>
+                    {activeLeadDemoFleet.maintenanceCount > 0 && (
+                      <span className="text-red-700">Maint: <b>{activeLeadDemoFleet.maintenanceCount}</b></span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) - Full Width */}
+            {!selectedLeadEquipUnit && activeLeadDemoFleet && activeLeadDemoFleet.units.length > 0 && (
+              <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                    Available Demo Kits in Fleet ({activeLeadDemoFleet.units.length}):
+                  </span>
+                  <span className="text-[10px] text-[#0F5E63] font-medium">Click any kit below to assign</span>
+                </div>
+                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                  {activeLeadDemoFleet.units.map((u) => {
+                    const isReady = u.availability_status === 'available';
+                    const isReserved = u.availability_status === 'reserved' || u.availability_status === 'in_use';
+                    return (
+                      <div
+                        key={u.id}
+                        onClick={() => {
+                          const val = `${u.model} | S/N: ${u.serial_no} (${u.current_location} Depot)`;
+                          setDemoForm((prev) => ({
+                            ...prev,
+                            equipment_required: val,
+                            product_id: u.product_id || prev.product_id,
+                          }));
+                        }}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-all hover:shadow-xs group gap-2"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-[#14213D] text-[11px] group-hover:text-[#0F5E63]">{u.model}</span>
+                            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
+                              S/N: {u.serial_no}
+                            </span>
+                            <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
+                            {isReady ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                🟢 Ready
+                              </span>
+                            ) : isReserved ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                🟡 Reserved
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                🔴 Maint
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-[#4A5568]">
+                            📦 Kit includes: Flight case, dual Li-ion batteries, charger & calibration block
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-xs text-[#0F5E63] font-bold group-hover:underline">Select Kit →</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Specific Demo Kit / Serial / Accessories Detail Card - FULL WIDTH, NOT SPLIT IN HALF */}
+            {selectedLeadEquipUnit && (
+              <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
+                <div className="flex flex-wrap items-center justify-between gap-1 pb-2 border-b border-[#ECE9E2]">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-sm text-[#14213D]">{selectedLeadEquipUnit.model}</span>
+                    <span className="font-mono text-xs px-2 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#14213D] font-bold">
+                      S/N: {selectedLeadEquipUnit.serial_no}
+                    </span>
+                    <span className="text-xs text-[#4A5568]">📍 {selectedLeadEquipUnit.current_location} Depot</span>
+                  </div>
+                  <div>
+                    {selectedLeadEquipUnit.availability_status === 'available' ? (
+                      <Badge variant="success">● READY & AVAILABLE</Badge>
+                    ) : selectedLeadEquipUnit.availability_status === 'reserved' || selectedLeadEquipUnit.availability_status === 'in_use' ? (
+                      <Badge variant="warning">
+                        ○ RESERVED {selectedLeadEquipUnit.reserved_until ? `UNTIL ${new Date(selectedLeadEquipUnit.reserved_until).toLocaleDateString()}` : ''}
+                      </Badge>
+                    ) : (
+                      <Badge variant="danger">▲ MAINTENANCE: {selectedLeadEquipUnit.condition || 'Service Needed'}</Badge>
+                    )}
+                  </div>
+                </div>
+
+                {/* 4-Column Metadata Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div>
+                    <span className="text-[10px] text-[#4A5568] block">Operational Condition:</span>
+                    <span className="font-semibold text-[#14213D]">{selectedLeadEquipUnit.condition || 'Operational'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#4A5568] block">Fleet Custodian:</span>
+                    <span className="font-semibold text-[#14213D]">{selectedLeadEquipUnit.responsible_person_name || 'Demo Team Coordinator'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#4A5568] block">Depot Base:</span>
+                    <span className="font-semibold text-[#14213D]">{selectedLeadEquipUnit.current_location} Depot</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#4A5568] block">Unit Serial:</span>
+                    <span className="font-mono font-bold text-[#14213D]">{selectedLeadEquipUnit.serial_no}</span>
+                  </div>
+                </div>
+
+                {/* Included Standard Demo Kit Accessories - Full Width Grid */}
+                <div className="pt-2 border-t border-[#ECE9E2]">
+                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block mb-1.5">
+                    📦 Specific Demo Kit / Included Accessories & Calibration Items:
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
+                    {getStandardKitAccessories(selectedLeadEquipUnit.product_name, selectedLeadEquipUnit.product_category).map((item, idx) => (
+                      <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
+                        <CheckCircle className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                        <span className="truncate text-[11px]">{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Status Note Callout */}
+                {selectedLeadEquipUnit.availability_status === 'available' ? (
+                  <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                    <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedLeadEquipUnit.current_location} Depot.</span>
+                  </div>
+                ) : selectedLeadEquipUnit.availability_status === 'reserved' || selectedLeadEquipUnit.availability_status === 'in_use' ? (
+                  <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                    <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
+                  </div>
+                ) : (
+                  <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-700 shrink-0" />
+                    <span>Unit marked under maintenance ({selectedLeadEquipUnit.condition}). You may select another serial or custom kit.</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <Input
+            label="Location (Demo Venue / Department / Base) *"
+            required
+            value={demoForm.location}
+            onChange={(e) => setDemoForm((prev) => ({ ...prev, location: e.target.value }))}
+            placeholder="e.g. Tactical Range, Ordnance Factory Jodhpur"
+            helperText="Auto-populated from account/trip location. Edit if field site differs."
+          />
+
+          {/* Assigned Demo Team Specialist Allocation & Live Availability */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-[#14213D]">
+                Assigned Demo Team Specialist *
+              </label>
+              {isLoadingLeadTeamAvailability ? (
+                <span className="text-[10px] text-[#0F5E63] flex items-center gap-1">
+                  <RefreshCw className="h-3 w-3 animate-spin" /> Checking Team Availability...
+                </span>
+              ) : (
+                <span className="text-[10px] text-[#4A5568]">
+                  Availability for {new Date(demoForm.requested_date).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+
+            <Select
+              value={demoForm.assigned_to}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, assigned_to: e.target.value }))}
+              options={[
+                { value: '', label: '-- Select Demo Team Member / Specialist --' },
+                ...leadDemoTeamOptions,
+              ]}
+            />
+
+            {/* Pre-selection Demo Team Member Roster (when none selected yet) */}
+            {!selectedLeadDemoMember && (
+              <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                    Demo Team Availability on {new Date(demoForm.requested_date).toLocaleDateString()}:
+                  </span>
+                  <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  {(leadDemoTeamAvailability.length > 0 ? leadDemoTeamAvailability : usersList.filter((u) => ['demo_team', 'service_team', 'sales'].includes(u.role))).map((m) => {
+                    const isAvail = m.is_available ?? true;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setDemoForm((prev) => ({ ...prev, assigned_to: m.id }))}
+                        className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                      >
+                        <div className="space-y-0.5 truncate pr-1">
+                          <span className="font-semibold text-[#14213D] text-[11px] block truncate group-hover:text-[#0F5E63]">
+                            {m.full_name}
+                          </span>
+                          <span className="text-[10px] text-[#4A5568] block truncate">
+                            {m.role === 'demo_team' ? 'Demo Specialist' : m.role.replace(/_/g, ' ')} {m.phone ? `• ${m.phone}` : ''}
+                          </span>
+                        </div>
+                        <span
+                          className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
+                            isAvail ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {isAvail ? '🟢 Available' : '🟡 Booked'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Selected Demo Team Member Live Availability & Notification Card */}
+            {selectedLeadDemoMember && (
+              <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
+                <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#ECE9E2]">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-xs text-[#14213D]">{selectedLeadDemoMember.full_name}</span>
+                    <Badge variant="cyber" className="text-[10px] py-0">
+                      {selectedLeadDemoMember.role === 'demo_team' ? 'DEMO SPECIALIST' : selectedLeadDemoMember.role.replace(/_/g, ' ').toUpperCase()}
+                    </Badge>
+                    {selectedLeadDemoMember.phone && (
+                      <span className="text-[10px] text-[#4A5568]">📞 {selectedLeadDemoMember.phone}</span>
+                    )}
+                  </div>
+                  <div>
+                    {selectedLeadDemoMember.is_available ?? true ? (
+                      <Badge variant="success">● AVAILABLE ON {new Date(demoForm.requested_date).toLocaleDateString()}</Badge>
+                    ) : (
+                      <Badge variant="warning">
+                        ▲ BUSY ON {selectedLeadDemoMember.active_demo?.demo_no || 'ANOTHER TRIAL'}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-[#4A5568]">
+                  {selectedLeadDemoMember.is_available ?? true ? (
+                    <div className="flex items-center gap-1.5 text-emerald-800">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                      <span>Specialist has zero trial schedule conflicts on this date and is cleared for field demonstration.</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-amber-800">
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                      <span>Specialist has active trial booking for <strong>{selectedLeadDemoMember.active_demo?.organisation_name || 'Client'}</strong>. Booking will flag a schedule overlap notice.</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Auto-Notification Callout */}
+                <div className="p-2 rounded-lg bg-[#E3EFEE]/70 border border-[#0F5E63]/20 text-[#0F5E63] text-[11px] flex items-center gap-2">
+                  <Bell className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
+                  <span>
+                    <strong>Auto-Notification & Calendar Sync:</strong> Submitting this demo will instantly alert <strong>{selectedLeadDemoMember.full_name}</strong> and list this trial under their <strong>"My Demos"</strong> dashboard.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Purpose / Demonstration Objective *"
+              required
+              value={demoForm.purpose}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, purpose: e.target.value }))}
+              placeholder="e.g. Live range trials & ballistic validation"
+            />
+            <Input
+              label="Expected Audience / Evaluation Committee *"
+              required
+              value={demoForm.expected_audience}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, expected_audience: e.target.value }))}
+              placeholder="e.g. Technical Evaluation Committee & Board Officers"
+            />
+          </div>
+
+          <Input
+            label="Additional Custom Accessories / Test Samples Needed (Optional)"
+            value={demoForm.custom_accessories}
+            onChange={(e) => setDemoForm((prev) => ({ ...prev, custom_accessories: e.target.value }))}
+            placeholder={
+              demoForm.equipment_required === 'custom'
+                ? "Enter custom model name, serial number and accessories..."
+                : "e.g. Test calibration pieces, knife sample, spare batteries, vehicle gate pass"
+            }
+          />
+
+          <Textarea
+            label="Special Requirements & Field Deployment Instructions"
+            value={demoForm.reminder_notes}
+            onChange={(e) => setDemoForm((prev) => ({ ...prev, reminder_notes: e.target.value }))}
+            rows={2}
+            placeholder="e.g. Gate pass required at security entry. 230V power needed. Carry identity documentation."
+          />
+
+          {/* Auto Remind Card */}
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={demoForm.auto_remind}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, auto_remind: e.target.checked }))}
+              className="mt-0.5 rounded text-[#0F5E63] focus:ring-[#0F5E63]"
+            />
+            <div>
+              <span className="text-xs font-bold text-[#0F5E63] block">
+                Auto-remind assigned member & register task on their dashboard
+              </span>
+              <span className="text-[11px] text-[#4A5568]">
+                Dispatches an instant notification to their notification center and assigns a high-priority action task on their dashboard.
+              </span>
+            </div>
+          </label>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setIsDemoModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
+              Schedule Demo & Advance Lifecycle
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL 5B: COMMERCIAL & TECHNICAL PROPOSAL DRAFTING                        */}
+      {/* ========================================================================= */}
+      <Modal
+        isOpen={isProposalModalOpen}
+        onClose={() => setIsProposalModalOpen(false)}
+        title="📄 Prepare Commercial & Technical Proposal"
+        description={`Transitions opportunity to PROPOSAL, notifies the Tender Team, and delegates proposal drafting to the responsible specialist.`}
+        maxWidth="2xl"
+        zIndex={60}
+      >
+        <form onSubmit={handleSubmitProposalTransition} className="space-y-4 text-xs">
+          {formError && (
+            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+              {formError}
+            </div>
+          )}
+
+          {/* Account context strip */}
+          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between">
+            <div>
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Opportunity Account</span>
+              <span className="text-xs font-bold text-[#14213D]">{selectedLead?.organisation_name}</span>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Current Stage</span>
+              <span className="text-xs font-bold text-[#0F5E63]">{selectedLead?.lead_status?.toUpperCase()}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Proposal Reference / RFP No. *"
+              required
+              value={proposalForm.reference}
+              onChange={(e) => setProposalForm((prev) => ({ ...prev, reference: e.target.value }))}
+              placeholder="e.g. RFP-ORD-2026-0042"
+            />
+            <Input
+              type="date"
+              label="Submission Deadline Date *"
+              required
+              value={proposalForm.required_date}
+              onChange={(e) => setProposalForm((prev) => ({ ...prev, required_date: e.target.value }))}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              type="number"
+              label="Estimated Deal Value (₹ Lakh)"
+              value={proposalForm.deal_value}
+              onChange={(e) => setProposalForm((prev) => ({ ...prev, deal_value: e.target.value }))}
+              placeholder="e.g. 78.00"
+            />
+            <Select
+              label="Responsible Bid / Proposal Specialist *"
+              required
+              value={proposalForm.responsible_person_id}
+              onChange={(e) => setProposalForm((prev) => ({ ...prev, responsible_person_id: e.target.value }))}
+              options={[
+                { value: '', label: 'Select Specialist' },
+                ...usersList.map((u) => ({
+                  value: u.id,
+                  label: `${u.full_name} (${u.role.replace('_', ' ').toUpperCase()})`,
+                })),
+              ]}
+            />
+          </div>
+
+          <Textarea
+            label="Proposal Scope, Technical Specs & Clauses"
+            value={proposalForm.remarks}
+            onChange={(e) => setProposalForm((prev) => ({ ...prev, remarks: e.target.value }))}
+            rows={3}
+            placeholder="e.g. Supply of tactical communication units with 3-year OEM warranty, on-site commissioning, and compliance certification."
+          />
+
+          {/* Auto Remind Card */}
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={proposalForm.auto_remind}
+              onChange={(e) => setProposalForm((prev) => ({ ...prev, auto_remind: e.target.checked }))}
+              className="mt-0.5 rounded text-[#0F5E63] focus:ring-[#0F5E63]"
+            />
+            <div>
+              <span className="text-xs font-bold text-[#0F5E63] block">
+                Auto-remind proposal specialist & register deadline task on their dashboard
+              </span>
+              <span className="text-[11px] text-[#4A5568]">
+                Dispatches a notification to the assigned specialist and creates a high-priority deadline task in their accountability queue.
+              </span>
+            </div>
+          </label>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setIsProposalModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
+              Generate Proposal Task & Advance Lifecycle
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* MODAL 5C: TENDER DISCUSSION & TOUCHPOINT SCHEDULING ("WHEN")               */}
+      {/* ========================================================================= */}
+      <Modal
+        isOpen={isDiscussionModalOpen}
+        onClose={() => setIsDiscussionModalOpen(false)}
+        title={discussionStage === 'tender_discussion' ? "🤝 Schedule Tender Discussion" : "📅 Schedule Strategic Follow-Up"}
+        description="Coordinates meeting timing, sets calendar touchpoint, and auto-reminds the designated team member."
+        maxWidth="2xl"
+        zIndex={60}
+      >
+        <form onSubmit={handleSubmitDiscussionTransition} className="space-y-4 text-xs">
+          {formError && (
+            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+              {formError}
+            </div>
+          )}
+
+          {/* Account context strip */}
+          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between">
+            <div>
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Opportunity Account</span>
+              <span className="text-xs font-bold text-[#14213D]">{selectedLead?.organisation_name}</span>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Touchpoint Type</span>
+              <span className="text-xs font-bold text-[#0F5E63]">{discussionStage === 'tender_discussion' ? 'TENDER DISCUSSION' : 'FOLLOW UP'}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              type="date"
+              label="Discussion Date (When) *"
+              required
+              value={discussionForm.discussion_date}
+              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, discussion_date: e.target.value }))}
+            />
+            <Input
+              type="time"
+              label="Discussion Time (When) *"
+              required
+              value={discussionForm.discussion_time}
+              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, discussion_time: e.target.value }))}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Select
+              label="Meeting Format / Mode *"
+              required
+              value={discussionForm.mode}
+              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, mode: e.target.value }))}
+              options={[
+                { value: 'in_person', label: 'In-Person Executive Meeting' },
+                { value: 'tender_committee', label: 'Tender Committee Session' },
+                { value: 'video_call', label: 'Video Conference (VC / Teams / Meet)' },
+                { value: 'telephonic', label: 'Telephonic Briefing' },
+                { value: 'site_visit', label: 'Site / Facility Inspection' },
+              ]}
+            />
+            <Select
+              label="Assigned Discussion Lead / Member *"
+              required
+              value={discussionForm.assigned_to}
+              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, assigned_to: e.target.value }))}
+              options={[
+                { value: '', label: 'Select Team Member' },
+                ...usersList.map((u) => ({
+                  value: u.id,
+                  label: `${u.full_name} (${u.role.replace('_', ' ').toUpperCase()})`,
+                })),
+              ]}
+            />
+          </div>
+
+          <Input
+            label="Meeting Venue / Video Link *"
+            required
+            value={discussionForm.venue}
+            onChange={(e) => setDiscussionForm((prev) => ({ ...prev, venue: e.target.value }))}
+            placeholder="e.g. Conference Room B, HQ Jodhpur or https://meet.google.com/xyz"
+          />
+
+          <Textarea
+            label="Meeting Agenda & Tender Discussion Topics"
+            value={discussionForm.agenda}
+            onChange={(e) => setDiscussionForm((prev) => ({ ...prev, agenda: e.target.value }))}
+            rows={3}
+            placeholder="e.g. Review specification compliance, tender clauses, earnest money deposit terms, and delivery milestones."
+          />
+
+          {/* Auto Remind Card */}
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={discussionForm.auto_remind}
+              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, auto_remind: e.target.checked }))}
+              className="mt-0.5 rounded text-[#0F5E63] focus:ring-[#0F5E63]"
+            />
+            <div>
+              <span className="text-xs font-bold text-[#0F5E63] block">
+                Auto-remind team member & register calendar task on their side
+              </span>
+              <span className="text-[11px] text-[#4A5568]">
+                Sends an instant reminder and logs an urgent meeting task on the designated team member's personal dashboard.
+              </span>
+            </div>
+          </label>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setIsDiscussionModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
+              Schedule Touchpoint & Advance Lifecycle
+            </Button>
           </div>
         </form>
       </Modal>

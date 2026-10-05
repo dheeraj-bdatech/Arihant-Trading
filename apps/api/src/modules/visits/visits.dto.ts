@@ -84,6 +84,11 @@ export class CreateVisitDto {
   @IsOptional()
   demo_required?: boolean;
 
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
+  @IsOptional()
+  demo_assigned_to?: string;
+
   @IsBoolean()
   @IsOptional()
   travel_required?: boolean;

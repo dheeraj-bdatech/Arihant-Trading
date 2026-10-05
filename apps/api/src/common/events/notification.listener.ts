@@ -1264,18 +1264,121 @@ export class NotificationListener {
       lossReason?: string;
       assignedTo?: string;
       regionalManagerId?: string;
+      actorId?: string;
     }>(eventInput);
 
     if (eventId && (await this.outboxService.isEventProcessed(eventId, 'NotificationListener.leadStatusChanged'))) {
       return;
     }
 
-    if (payload.assignedTo) {
+    // Resolve organisation name for professional notification context
+    let orgName = 'Account';
+    if (payload.organisationId) {
+      try {
+        const org = await this.db
+          .selectFrom('organisations')
+          .select('name')
+          .where('id', '=', payload.organisationId)
+          .executeTakeFirst();
+        if (org?.name) orgName = org.name;
+      } catch (err: any) {
+        // Continue with default
+      }
+    }
+
+    const stageUpper = payload.toStatus.toUpperCase();
+
+    // 1. Notify Demo Team if stage advanced to DEMO
+    if (payload.toStatus === 'demo') {
+      const demoUsers = await this.db
+        .selectFrom('users')
+        .select('id')
+        .where('role', 'in', ['demo_team', 'management'])
+        .where('is_active', '=', true)
+        .execute();
+
+      for (const u of demoUsers) {
+        if (u.id !== payload.actorId) {
+          await this.createAndPushNotification({
+            userId: u.id,
+            type: 'demo_required',
+            title: `🎯 Demo Stage: Action Required`,
+            body: `Opportunity for ${orgName} advanced to DEMO stage. Equipment coordination and field demo team required.`,
+            entityType: 'lead',
+            entityId: payload.leadId,
+          });
+        }
+      }
+      this.eventsGateway.sendToRole('demo_team', 'lead:status_changed', payload);
+    }
+
+    // 2. Notify Tender/Proposal Team if stage advanced to PROPOSAL
+    if (payload.toStatus === 'proposal') {
+      const tenderUsers = await this.db
+        .selectFrom('users')
+        .select('id')
+        .where('role', 'in', ['tender_team', 'management'])
+        .where('is_active', '=', true)
+        .execute();
+
+      for (const u of tenderUsers) {
+        if (u.id !== payload.actorId) {
+          await this.createAndPushNotification({
+            userId: u.id,
+            type: 'proposal_required',
+            title: `📄 Proposal Stage: Action Required`,
+            body: `Opportunity for ${orgName} advanced to PROPOSAL stage. Tender & commercial proposal structuring requested.`,
+            entityType: 'lead',
+            entityId: payload.leadId,
+          });
+        }
+      }
+      this.eventsGateway.sendToRole('tender_team', 'lead:status_changed', payload);
+    }
+
+    // 3. Notify Tender Team if stage moved to TENDER_DISCUSSION
+    if (payload.toStatus === 'tender_discussion') {
+      const tenderUsers = await this.db
+        .selectFrom('users')
+        .select('id')
+        .where('role', 'in', ['tender_team', 'management'])
+        .where('is_active', '=', true)
+        .execute();
+
+      for (const u of tenderUsers) {
+        if (u.id !== payload.actorId) {
+          await this.createAndPushNotification({
+            userId: u.id,
+            type: 'tender_discussion',
+            title: `🤝 Tender Discussion Scheduled`,
+            body: `Opportunity for ${orgName} is now in TENDER DISCUSSION stage. Review technical clauses and buyer requirements.`,
+            entityType: 'lead',
+            entityId: payload.leadId,
+          });
+        }
+      }
+      this.eventsGateway.sendToRole('tender_team', 'lead:status_changed', payload);
+    }
+
+    // 4. Notify Regional Manager
+    if (payload.regionalManagerId && payload.regionalManagerId !== payload.actorId && payload.regionalManagerId !== payload.assignedTo) {
+      await this.createAndPushNotification({
+        userId: payload.regionalManagerId,
+        type: 'lead_status',
+        title: `Lead Pipeline Progress: ${stageUpper}`,
+        body: `Opportunity for ${orgName} progressed from ${payload.fromStatus} to ${payload.toStatus}.`,
+        entityType: 'lead',
+        entityId: payload.leadId,
+      });
+    }
+
+    // 5. Always notify assigned salesperson (if not the actor)
+    if (payload.assignedTo && payload.assignedTo !== payload.actorId) {
       await this.createAndPushNotification({
         userId: payload.assignedTo,
         type: 'lead_status',
-        title: `Lead Pipeline Stage: ${payload.toStatus.toUpperCase()}`,
-        body: `Lead progressed from ${payload.fromStatus} to ${payload.toStatus}.`,
+        title: `Lead Pipeline Stage: ${stageUpper}`,
+        body: `Opportunity for ${orgName} progressed from ${payload.fromStatus} to ${payload.toStatus}.`,
         entityType: 'lead',
         entityId: payload.leadId,
       });

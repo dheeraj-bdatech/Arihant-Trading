@@ -519,14 +519,15 @@ export class VisitsService {
 
     // Auto-create linked demo requisition in Demo Fleet Matrix (Module 3)
     if (dto.demo_required) {
-      await this.db
+      const demoAssignedTo = dto.demo_assigned_to || assignedTo;
+      const demoRecord = await this.db
         .insertInto('demos')
         .values({
           organisation_id: dto.organisation_id,
           product_id: dto.product_id || null,
           visit_id: visit.id,
           requested_by: user.id,
-          assigned_to: assignedTo,
+          assigned_to: demoAssignedTo,
           location: dto.location || org.city || null,
           requested_date: dto.planned_date,
           purpose: dto.purpose ? `Live demo for: ${dto.purpose}` : 'Field visit live demonstration',
@@ -537,10 +538,33 @@ export class VisitsService {
           travel_date: dto.planned_date,
           version: 1,
         })
-        .execute()
+        .returning(['id', 'demo_no'])
+        .executeTakeFirst()
         .catch((err: any) => {
           this.logger.warn(`Could not auto-create linked demo for visit ${visit.id}: ${err.message}`);
+          return null;
         });
+
+      if (demoRecord) {
+        this.eventEmitter.emit(AppEvents.DEMO_REQUESTED, {
+          demoId: demoRecord.id,
+          demoNo: demoRecord.demo_no,
+          organisationName: org.name,
+          location: dto.location || org.city,
+          requestedByName: user.full_name,
+        });
+
+        if (demoAssignedTo) {
+          this.eventEmitter.emit(AppEvents.DEMO_TEAM_ASSIGNED, {
+            demoId: demoRecord.id,
+            demoNo: demoRecord.demo_no,
+            assignedToId: demoAssignedTo,
+            organisationName: org.name,
+            demoDate: dto.planned_date,
+            location: dto.location || org.city,
+          });
+        }
+      }
     }
 
     // Auto-create linked outstation tour program in trips if none assigned

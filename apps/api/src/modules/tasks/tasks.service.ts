@@ -191,6 +191,26 @@ export class TasksService {
       newValue: task,
     });
 
+    // Auto-remind & notify the assigned team member so it pops up immediately on their side
+    if (assignedTo && assignedTo !== user.id) {
+      try {
+        await this.db
+          .insertInto('notifications')
+          .values({
+            user_id: assignedTo,
+            type: 'task_assigned',
+            title: `📌 Task Assigned: ${task.title}`,
+            body: `You have been assigned a task${task.deadline ? ` (Due: ${task.deadline})` : ''} by ${user.full_name || 'Team'}.`,
+            entity_type: 'task',
+            entity_id: task.id,
+            is_read: false,
+          })
+          .execute();
+      } catch (err: any) {
+        // Silently continue if notification table insert has any non-fatal issue
+      }
+    }
+
     return task;
   }
 

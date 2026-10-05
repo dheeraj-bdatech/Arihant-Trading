@@ -349,7 +349,9 @@ export class LeadsService {
     }
 
     if (user.role === 'regional_manager') {
-      assertRegionScope(user, lead.region_id, lead.zone_id);
+      if (lead.regional_manager_id !== user.id && lead.assigned_to !== user.id) {
+        assertRegionScope(user, lead.region_id, lead.zone_id);
+      }
     }
 
     // Fallback if primary contact details were not joined
@@ -918,6 +920,7 @@ export class LeadsService {
           lossReason: dto.loss_reason,
           assignedTo: lead.assigned_to,
           regionalManagerId: lead.regional_manager_id,
+          actorId: user.id,
         },
       });
 

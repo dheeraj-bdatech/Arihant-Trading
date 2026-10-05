@@ -91,5 +91,30 @@ export class NotificationsService {
 
     return { success: true, count: 0, unreadCount: 0 };
   }
+
+  async create(data: {
+    userId: string;
+    type?: string;
+    title: string;
+    body: string;
+    entityType?: string;
+    entityId?: string;
+  }) {
+    const res = await this.db
+      .insertInto('notifications')
+      .values({
+        user_id: data.userId,
+        type: data.type || 'system',
+        title: data.title,
+        body: data.body,
+        entity_type: data.entityType || null,
+        entity_id: data.entityId || null,
+        is_read: false,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    return res;
+  }
 }
 

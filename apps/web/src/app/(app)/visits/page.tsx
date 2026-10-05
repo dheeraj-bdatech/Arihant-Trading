@@ -11,6 +11,7 @@ import {
   Clock,
   AlertCircle,
   FileEdit,
+  CheckCircle,
   CheckCircle2,
   XCircle,
   Sparkles,
@@ -36,6 +37,7 @@ import {
   Plane,
   Hotel,
   Zap,
+  Bell,
 } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
@@ -58,6 +60,67 @@ import {
   Tabs,
   Checkbox,
 } from '@/components/ui';
+
+// Specific Demo Kit standard accessories mapping
+const getStandardKitAccessories = (productName?: string, category?: string) => {
+  const p = (productName || '').toLowerCase();
+  const c = (category || '').toLowerCase();
+
+  if (p.includes('metal detector') || p.includes('hhmd') || p.includes('dfmd') || c.includes('metal')) {
+    return [
+      'Rugged flight case with custom high-density EVA foam',
+      '2x Rechargeable NiMH battery packs + desktop cradle charger',
+      'Standard MHA test calibration piece & test knife sample',
+      'Ballistic nylon belt holster & safety wrist lanyard',
+      'Factory sensitivity verification & calibration certificate',
+    ];
+  }
+  if (p.includes('thermal') || p.includes('ti-') || p.includes('infrared') || c.includes('thermal')) {
+    return [
+      'Hermetic waterproof IP67 hard carrying case',
+      '2x High-capacity Li-ion batteries + AC/DC field charger',
+      'High-speed HDMI / Video-out cable for command viewing',
+      'Optical microfiber lens cleaning kit & protective cap',
+      'Field survey tripod with quick-release mounting plate',
+      'Thermal resolution test target & calibration report',
+    ];
+  }
+  if (p.includes('night vision') || p.includes('monocular') || p.includes('nvm') || c.includes('night vision')) {
+    return [
+      'Mil-spec Pelican protective case with desiccants',
+      'Combat helmet mount shroud & skull crusher harness',
+      'Sacrificial protective objective window & demist shield',
+      'Dual AA battery adapter cartridge & lens cleaning pen',
+      'Infrared (IR) covert test target card',
+      'OEM optical resolution test & FOM certification dossier',
+    ];
+  }
+  if (p.includes('breath') || p.includes('alco') || c.includes('analyser')) {
+    return [
+      'Hard carrying case with molded foam insert',
+      '100x Individually wrapped sterile sampling mouthpieces',
+      'Wireless Bluetooth mobile receipt printer + 5 paper rolls',
+      'Rechargeable battery pack & vehicle 12V auxiliary charger',
+      'Gas sensor calibration & verification test certificate',
+    ];
+  }
+  if (p.includes('barrier') || p.includes('boom') || p.includes('bollard') || c.includes('barrier')) {
+    return [
+      'Skid-mounted live demonstration barrier unit',
+      'Electro-hydraulic power unit (HPU) demo control console',
+      'Dual optical safety photocell sensor kit',
+      'Remote RF transmitter key fob controller (2 units)',
+      'Crash rating structural impact dossier & wiring schematic',
+    ];
+  }
+  return [
+    'Original ruggedized transit & deployment case',
+    'Standard AC power supply adapter (230V / 50Hz)',
+    'Full accessory connection wiring & interface harness',
+    'Certified demonstration verification sample kit',
+    'OEM operational manual and calibration compliance card',
+  ];
+};
 
 export default function VisitsPage() {
   const { user, hasRole } = useAuth();
@@ -126,6 +189,7 @@ export default function VisitsPage() {
 
   // Demo and Travel requisition details for dynamic form expansion
   const [demoDetails, setDemoDetails] = useState({
+    demo_assigned_to: '',
     product_id: '',
     equipment_required: '',
     custom_accessories: '',
@@ -135,6 +199,8 @@ export default function VisitsPage() {
     night_trial: false,
     gate_pass_required: true,
   });
+  const [demoTeamAvailability, setDemoTeamAvailability] = useState<any[]>([]);
+  const [isLoadingTeamAvailability, setIsLoadingTeamAvailability] = useState(false);
 
   const [travelDetails, setTravelDetails] = useState({
     travel_from: 'Delhi NCR (HQ Base)',
@@ -143,6 +209,38 @@ export default function VisitsPage() {
     lodging_required: false,
     stay_nights: '1',
   });
+
+  // Options for registered demo equipment models from fleet matrix
+  // Active selected equipment unit object
+  const selectedEquipUnit = useMemo(() => {
+    if (!demoDetails.equipment_required || demoDetails.equipment_required === 'custom') return null;
+    return (demoEquipmentList || []).find(
+      (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === demoDetails.equipment_required
+        || item.serial_no === demoDetails.equipment_required
+        || item.id === demoDetails.equipment_required
+    ) || null;
+  }, [demoEquipmentList, demoDetails.equipment_required]);
+
+  // Active product fleet availability breakdown
+  const activeProductFleet = useMemo(() => {
+    const pId = demoDetails.product_id || newVisit.product_id;
+    if (!pId) return null;
+    const productUnits = (demoEquipmentList || []).filter((e) => e.product_id === pId);
+    const available = productUnits.filter((e) => e.availability_status === 'available');
+    const reserved = productUnits.filter((e) => e.availability_status === 'reserved' || e.availability_status === 'in_use');
+    const maintenance = productUnits.filter((e) => e.availability_status === 'maintenance');
+    const locations = Array.from(new Set(available.map((e) => e.current_location).filter(Boolean)));
+
+    return {
+      total: productUnits.length,
+      availableCount: available.length,
+      reservedCount: reserved.length,
+      maintenanceCount: maintenance.length,
+      availableUnits: available,
+      locations,
+      units: productUnits,
+    };
+  }, [demoEquipmentList, demoDetails.product_id, newVisit.product_id]);
 
   // Options for registered demo equipment models from fleet matrix
   const registeredEquipmentOptions = useMemo(() => {
@@ -157,11 +255,28 @@ export default function VisitsPage() {
       { value: '', label: '-- Choose Registered Demo Model & Serial --' },
     ];
 
+    const formatOptLabel = (e: any, isStar = false) => {
+      const isAvail = e.availability_status === 'available';
+      const isReserved = e.availability_status === 'reserved' || e.availability_status === 'in_use';
+      const isMaint = e.availability_status === 'maintenance';
+
+      const statusTag = isAvail
+        ? '🟢 [AVAILABLE]'
+        : isReserved
+        ? `🟡 [RESERVED${e.reserved_until ? ` to ${new Date(e.reserved_until).toLocaleDateString()}` : ''}]`
+        : isMaint
+        ? '🔴 [MAINTENANCE]'
+        : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
+
+      const cond = e.condition ? ` • ${e.condition}` : '';
+      return `${isStar ? '★ ' : ''}${statusTag} S/N: ${e.serial_no} — ${e.model} (${e.current_location} Depot${cond})`;
+    };
+
     if (matched.length > 0) {
       opts.push(
         ...matched.map((e) => ({
           value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: `★ [${e.model}] S/N: ${e.serial_no} — ${e.product_name || 'Equipment'} (${e.current_location} Depot • ${e.availability_status})`,
+          label: formatOptLabel(e, true),
         }))
       );
     }
@@ -170,7 +285,7 @@ export default function VisitsPage() {
       opts.push(
         ...others.map((e) => ({
           value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: `[${e.model}] S/N: ${e.serial_no} — ${e.product_name || 'Equipment'} (${e.current_location} Depot • ${e.availability_status})`,
+          label: formatOptLabel(e, false),
         }))
       );
     }
@@ -182,6 +297,69 @@ export default function VisitsPage() {
 
     return opts;
   }, [demoEquipmentList, demoDetails.product_id, newVisit.product_id]);
+
+  // Helper to fetch demo team availability for specified date
+  const fetchDemoTeamAvailability = async (dateStr: string) => {
+    if (!dateStr) return;
+    try {
+      setIsLoadingTeamAvailability(true);
+      const res = await api.get('/demos/team/availability', { date: dateStr });
+      if (Array.isArray(res)) {
+        setDemoTeamAvailability(res);
+      }
+    } catch (err) {
+      console.warn('Could not fetch demo team availability:', err);
+    } finally {
+      setIsLoadingTeamAvailability(false);
+    }
+  };
+
+  useEffect(() => {
+    if (newVisit.demo_required && newVisit.planned_date) {
+      fetchDemoTeamAvailability(newVisit.planned_date);
+    }
+  }, [newVisit.demo_required, newVisit.planned_date]);
+
+  // Selected demo team member object
+  const selectedDemoMember = useMemo(() => {
+    if (!demoDetails.demo_assigned_to) return null;
+    return (
+      (demoTeamAvailability.length > 0 ? demoTeamAvailability : usersList).find(
+        (u) => u.id === demoDetails.demo_assigned_to
+      ) || null
+    );
+  }, [demoTeamAvailability, usersList, demoDetails.demo_assigned_to]);
+
+  // Demo team options with availability status tags
+  const demoTeamOptions = useMemo(() => {
+    const roster = demoTeamAvailability.length > 0
+      ? demoTeamAvailability
+      : usersList.filter((u) => ['demo_team', 'service_team', 'sales'].includes(u.role));
+
+    return roster.map((m) => {
+      const isAvail = m.is_available ?? true;
+      const tag = isAvail
+        ? '🟢 [AVAILABLE]'
+        : `🟡 [BOOKED: ${m.active_demo?.demo_no || 'Another Trial'}]`;
+      const roleTitle = m.role === 'demo_team' ? 'Demo Team Specialist' : m.role.replace(/_/g, ' ');
+      return {
+        value: m.id,
+        label: `${tag} ${m.full_name} (${roleTitle})`,
+      };
+    });
+  }, [demoTeamAvailability, usersList]);
+
+  // Derived effective demo location (same as trip or visit location)
+  const effectiveDemoLocation = useMemo(() => {
+    if (newVisit.location) return newVisit.location;
+    if (newVisit.trip_id) {
+      const trip = trips.find((t) => t.id === newVisit.trip_id);
+      if (trip?.base_location) return trip.base_location;
+    }
+    if (travelDetails.travel_to) return travelDetails.travel_to;
+    const org = organisations.find((o) => o.id === newVisit.organisation_id);
+    return org?.city || 'Client Site / Field';
+  }, [newVisit.location, newVisit.trip_id, travelDetails.travel_to, newVisit.organisation_id, trips, organisations]);
 
   // 2. Create Trip Form
   const [newTrip, setNewTrip] = useState({
@@ -410,6 +588,7 @@ export default function VisitsPage() {
         contact_person: newVisit.contact_person?.trim() || undefined,
         product_id: validProductId,
         demo_required: newVisit.demo_required,
+        demo_assigned_to: newVisit.demo_required && demoDetails.demo_assigned_to ? demoDetails.demo_assigned_to : undefined,
         travel_required: newVisit.travel_required,
         expected_outcome: newVisit.expected_outcome?.trim() || undefined,
         remarks: payloadRemarks,
@@ -437,6 +616,7 @@ export default function VisitsPage() {
         trip_id: '',
       });
       setDemoDetails({
+        demo_assigned_to: '',
         product_id: '',
         equipment_required: '',
         custom_accessories: '',
@@ -1803,7 +1983,7 @@ export default function VisitsPage() {
         onClose={() => setIsScheduleOpen(false)}
         title="Plan Client Field Visit"
         description="Schedule upcoming procurement meetings and product demonstrations."
-        maxWidth="lg"
+        maxWidth="4xl"
       >
         <form onSubmit={handleScheduleVisit} className="space-y-4">
           {actionError && (
@@ -1967,7 +2147,7 @@ export default function VisitsPage() {
               <label
                 className={twMerge(
                   "flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors bg-white",
-                  newVisit.demo_required ? "border-[#0F5E63] bg-[#FBFAF7]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
+                  newVisit.demo_required ? "border-[#0F5E63] bg-[#E3EFEE]/40 text-[#0F5E63] ring-1 ring-[#0F5E63]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
                 )}
               >
                 <input
@@ -1976,9 +2156,19 @@ export default function VisitsPage() {
                   onChange={(e) => setNewVisit({ ...newVisit, demo_required: e.target.checked })}
                   className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
                 />
-                <span className="text-xs font-semibold text-[#14213D]">
-                  Demo Requirement (Live Trials)
-                </span>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#14213D]">
+                      A. Live Demonstration Setup Details
+                    </span>
+                    <span className="text-[10px] text-[#0F5E63] font-semibold">
+                      {newVisit.demo_required ? 'Configuring ▼' : 'Click to Setup ▶'}
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-[#4A5568] block mt-0.5">
+                    Equipment Fleet Availability & Specific Demo Kit Selection
+                  </span>
+                </div>
               </label>
 
               <label
@@ -1999,64 +2189,480 @@ export default function VisitsPage() {
               </label>
             </div>
 
-            {/* 4A. Live Demonstration Setup Details */}
+            {/* A. Live Demonstration Setup Details */}
             {newVisit.demo_required && (
               <div className="p-3.5 bg-white rounded-xl border border-[#DCD8CE] space-y-3 animate-in fade-in duration-150">
-                <div className="pb-1.5 border-b border-[#ECE9E2]">
-                  <span className="text-xs font-bold text-[#14213D]">
-                    4A. Live Demonstration Setup Details
+                <div className="pb-1.5 border-b border-[#ECE9E2] flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-[#14213D]">
+                      A. Live Demonstration Setup Details
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
+                      Live Fleet Sync
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-[#4A5568]">
+                    Depot Inventory & Calibration Status
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* 1. Demo Form Context Bar (Customer, Location, Requested Date, Salesperson, Purpose) */}
+                <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] space-y-2 text-xs">
+                  <div className="flex items-center justify-between pb-1.5 border-b border-[#ECE9E2]">
+                    <span className="font-bold text-[#14213D] uppercase tracking-wider text-[10px]">
+                      Live Demonstration Trial Specification
+                    </span>
+                    <span className="text-[10px] text-[#0F5E63] font-medium">
+                      ✓ Auto-synced with Visit & Tour Program
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px]">Customer / Client:</span>
+                      <span className="font-semibold text-[#14213D] truncate block">
+                        {organisations.find((o) => o.id === newVisit.organisation_id)?.name || 'Select Customer in Form'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px]">Trial Location:</span>
+                      <span className="font-semibold text-[#14213D] truncate block">
+                        📍 {effectiveDemoLocation}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px]">Requested Date:</span>
+                      <span className="font-semibold text-[#14213D] block font-mono">
+                        📅 {new Date(newVisit.planned_date).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px]">Lead Salesperson:</span>
+                      <span className="font-semibold text-[#14213D] truncate block">
+                        👤 {usersList.find((u) => u.id === newVisit.assigned_to)?.full_name || user?.full_name || 'Assigned Officer'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Demo Team Specialist Allocation & Live Availability */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-[#14213D]">
+                      Assigned Demo Team Specialist *
+                    </label>
+                    {isLoadingTeamAvailability ? (
+                      <span className="text-[10px] text-[#0F5E63] flex items-center gap-1">
+                        <RefreshCw className="h-3 w-3 animate-spin" /> Checking Team Availability...
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-[#4A5568]">
+                        Availability for {new Date(newVisit.planned_date).toLocaleDateString()}
+                      </span>
+                    )}
+                  </div>
+
                   <Select
-                    label="Equipment / Product Required for Demo"
-                    value={demoDetails.product_id || newVisit.product_id}
-                    onChange={(e) => {
-                      const pId = e.target.value;
-                      setDemoDetails({ ...demoDetails, product_id: pId });
-                      if (pId && !newVisit.product_id) {
-                        setNewVisit((prev) => ({ ...prev, product_id: pId }));
-                      }
-                    }}
+                    value={demoDetails.demo_assigned_to}
+                    onChange={(e) => setDemoDetails({ ...demoDetails, demo_assigned_to: e.target.value })}
                     options={[
-                      { value: '', label: '-- Select Equipment Category / Product --' },
-                      ...products.map((p) => ({
-                        value: p.id,
-                        label: `${p.name} (${p.category || 'Security'})`,
-                      })),
+                      { value: '', label: '-- Select Demo Team Member / Specialist --' },
+                      ...demoTeamOptions,
                     ]}
                   />
 
-                  <Select
-                    label="Specific Demo Kit / Serial / Accessories Needed"
-                    value={
-                      registeredEquipmentOptions.some((o) => o.value === demoDetails.equipment_required)
-                        ? demoDetails.equipment_required
-                        : demoDetails.equipment_required
-                        ? 'custom'
-                        : ''
-                    }
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val === 'custom') {
-                        setDemoDetails({ ...demoDetails, equipment_required: 'custom' });
-                      } else {
-                        const matchedEquip = demoEquipmentList.find(
-                          (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === val
-                        );
-                        setDemoDetails({
-                          ...demoDetails,
-                          equipment_required: val,
-                          product_id: matchedEquip?.product_id || demoDetails.product_id,
-                        });
-                        if (matchedEquip?.product_id && !newVisit.product_id) {
-                          setNewVisit((prev) => ({ ...prev, product_id: matchedEquip.product_id }));
+                  {/* Pre-selection Demo Team Member Roster (when none selected yet) */}
+                  {!selectedDemoMember && (
+                    <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                          Demo Team Availability on {new Date(newVisit.planned_date).toLocaleDateString()}:
+                        </span>
+                        <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {(demoTeamAvailability.length > 0 ? demoTeamAvailability : usersList.filter((u) => ['demo_team', 'service_team', 'sales'].includes(u.role))).map((m) => {
+                          const isAvail = m.is_available ?? true;
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setDemoDetails((prev) => ({ ...prev, demo_assigned_to: m.id }))}
+                              className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                            >
+                              <div className="space-y-0.5 truncate pr-1">
+                                <span className="font-semibold text-[#14213D] text-[11px] block truncate group-hover:text-[#0F5E63]">
+                                  {m.full_name}
+                                </span>
+                                <span className="text-[10px] text-[#4A5568] block truncate">
+                                  {m.role === 'demo_team' ? 'Demo Specialist' : m.role.replace(/_/g, ' ')} {m.phone ? `• ${m.phone}` : ''}
+                                </span>
+                              </div>
+                              <span
+                                className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
+                                  isAvail ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {isAvail ? '🟢 Available' : '🟡 Booked'}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Selected Demo Team Member Live Availability & Notification Card */}
+                  {selectedDemoMember && (
+                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
+                      <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#ECE9E2]">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-xs text-[#14213D]">{selectedDemoMember.full_name}</span>
+                          <Badge variant="cyber" className="text-[10px] py-0">
+                            {selectedDemoMember.role === 'demo_team' ? 'DEMO SPECIALIST' : selectedDemoMember.role.replace(/_/g, ' ').toUpperCase()}
+                          </Badge>
+                          {selectedDemoMember.phone && (
+                            <span className="text-[10px] text-[#4A5568]">📞 {selectedDemoMember.phone}</span>
+                          )}
+                        </div>
+                        <div>
+                          {selectedDemoMember.is_available ?? true ? (
+                            <Badge variant="success">● AVAILABLE ON {new Date(newVisit.planned_date).toLocaleDateString()}</Badge>
+                          ) : (
+                            <Badge variant="warning">
+                              ▲ BUSY ON {selectedDemoMember.active_demo?.demo_no || 'ANOTHER TRIAL'}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-[#4A5568]">
+                        {selectedDemoMember.is_available ?? true ? (
+                          <div className="flex items-center gap-1.5 text-emerald-800">
+                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                            <span>Specialist has zero trial schedule conflicts on this date and is cleared for field demonstration.</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-amber-800">
+                            <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                            <span>Specialist has active trial booking for <strong>{selectedDemoMember.active_demo?.organisation_name || 'Client'}</strong>. Booking will flag a schedule overlap notice.</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Auto-Notification Callout */}
+                      <div className="p-2 rounded-lg bg-[#E3EFEE]/70 border border-[#0F5E63]/20 text-[#0F5E63] text-[11px] flex items-center gap-2">
+                        <Bell className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
+                        <span>
+                          <strong>Auto-Notification & Calendar Sync:</strong> Submitting this visit will instantly alert <strong>{selectedDemoMember.full_name}</strong> and list this trial under their <strong>"My Demos"</strong> dashboard.
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Equipment & Specific Kit Selection (Row 1: Two Selects, Below: Full-width Details) */}
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                    <Select
+                      label="Equipment / Product Required for Demo *"
+                      value={demoDetails.product_id || newVisit.product_id}
+                      onChange={(e) => {
+                        const pId = e.target.value;
+                        setDemoDetails({ ...demoDetails, product_id: pId });
+                        if (pId && !newVisit.product_id) {
+                          setNewVisit((prev) => ({ ...prev, product_id: pId }));
                         }
+                      }}
+                      options={[
+                        { value: '', label: '-- Select Equipment Category / Product --' },
+                        ...products.map((p) => {
+                          const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
+                          const avail = pUnits.filter((e) => e.availability_status === 'available');
+                          let statusTag = '';
+                          if (avail.length > 0) {
+                            const locs = Array.from(new Set(avail.map((u) => u.current_location).filter(Boolean)));
+                            statusTag = `[AVAILABLE: ${avail.length} of ${pUnits.length} in ${locs.join(', ')}]`;
+                          } else if (pUnits.length > 0) {
+                            statusTag = `[RESERVED / IN USE: ${pUnits.length} Units]`;
+                          } else {
+                            statusTag = `[NO DEMO FLEET UNIT]`;
+                          }
+                          return {
+                            value: p.id,
+                            label: `${statusTag} ${p.name} (${p.category || 'Security'})`,
+                          };
+                        }),
+                      ]}
+                    />
+
+                    <Select
+                      label="Specific Demo Kit / Serial / Accessories Needed"
+                      value={
+                        registeredEquipmentOptions.some((o) => o.value === demoDetails.equipment_required)
+                          ? demoDetails.equipment_required
+                          : demoDetails.equipment_required
+                          ? 'custom'
+                          : ''
                       }
-                    }}
-                    options={registeredEquipmentOptions}
-                  />
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'custom') {
+                          setDemoDetails({ ...demoDetails, equipment_required: 'custom' });
+                        } else {
+                          const matchedEquip = (demoEquipmentList || []).find(
+                            (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === val
+                              || item.serial_no === val
+                              || item.id === val
+                          );
+                          setDemoDetails({
+                            ...demoDetails,
+                            equipment_required: val,
+                            product_id: matchedEquip?.product_id || demoDetails.product_id,
+                          });
+                          if (matchedEquip?.product_id && !newVisit.product_id) {
+                            setNewVisit((prev) => ({ ...prev, product_id: matchedEquip.product_id }));
+                          }
+                        }
+                      }}
+                      options={registeredEquipmentOptions}
+                    />
+                  </div>
+
+                  {/* Fleet Availability Overview by Product (when no product is selected yet) - Full Width */}
+                  {!activeProductFleet && (
+                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                          Demo Equipment Fleet Availability & Status:
+                        </span>
+                        <span className="text-[10px] text-[#0F5E63] font-medium">Click to select equipment</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                        {products.slice(0, 9).map((p) => {
+                          const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
+                          const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
+                          const total = pUnits.length;
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => {
+                                setDemoDetails((prev) => ({ ...prev, product_id: p.id }));
+                                if (!newVisit.product_id) setNewVisit((prev) => ({ ...prev, product_id: p.id }));
+                              }}
+                              className="flex items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                            >
+                              <span className="font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
+                                {p.name}
+                              </span>
+                              <span
+                                className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
+                                  availCount > 0
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : total > 0
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-gray-100 text-gray-600'
+                                }`}
+                              >
+                                {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Live Product Fleet Availability & Status HUD - Full Width */}
+                  {activeProductFleet && (
+                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
+                      <div className="flex flex-wrap items-center justify-between gap-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                            Live Product Fleet Availability:
+                          </span>
+                          <span className="font-bold text-xs text-[#14213D]">
+                            {products.find((p) => p.id === (demoDetails.product_id || newVisit.product_id))?.name || 'Selected Equipment'}
+                          </span>
+                        </div>
+                        {activeProductFleet.availableCount > 0 ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                            AVAILABLE ({activeProductFleet.availableCount} Ready)
+                          </span>
+                        ) : activeProductFleet.total > 0 ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
+                            RESERVED ({activeProductFleet.total} in Fleet)
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                            No Fleet Unit
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-[#ECE9E2]">
+                        <span className="text-[#4A5568]">
+                          {activeProductFleet.availableCount > 0
+                            ? `Stationed at: ${activeProductFleet.locations.join(', ')} Depot`
+                            : activeProductFleet.total > 0
+                            ? `All units currently deployed or reserved.`
+                            : `Custom requisition required.`}
+                        </span>
+                        <div className="flex items-center gap-2 font-mono text-[10px]">
+                          <span>Fleet: <b>{activeProductFleet.total}</b></span>
+                          <span className="text-emerald-700">Ready: <b>{activeProductFleet.availableCount}</b></span>
+                          <span className="text-amber-700">In-Trial: <b>{activeProductFleet.reservedCount}</b></span>
+                          {activeProductFleet.maintenanceCount > 0 && (
+                            <span className="text-red-700">Maint: <b>{activeProductFleet.maintenanceCount}</b></span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) - Full Width */}
+                  {!selectedEquipUnit && activeProductFleet && activeProductFleet.units.length > 0 && (
+                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                          Available Demo Kits in Fleet ({activeProductFleet.units.length}):
+                        </span>
+                        <span className="text-[10px] text-[#0F5E63] font-medium">Click any kit below to assign</span>
+                      </div>
+                      <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                        {activeProductFleet.units.map((u) => {
+                          const isReady = u.availability_status === 'available';
+                          const isReserved = u.availability_status === 'reserved' || u.availability_status === 'in_use';
+                          return (
+                            <div
+                              key={u.id}
+                              onClick={() => {
+                                const val = `${u.model} | S/N: ${u.serial_no} (${u.current_location} Depot)`;
+                                setDemoDetails((prev) => ({
+                                  ...prev,
+                                  equipment_required: val,
+                                  product_id: u.product_id || prev.product_id,
+                                }));
+                              }}
+                              className="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-all hover:shadow-xs group gap-2"
+                            >
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-bold text-[#14213D] text-[11px] group-hover:text-[#0F5E63]">{u.model}</span>
+                                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
+                                    S/N: {u.serial_no}
+                                  </span>
+                                  <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
+                                  {isReady ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                      🟢 Ready
+                                    </span>
+                                  ) : isReserved ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                      🟡 Reserved
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                      🔴 Maint
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-[#4A5568]">
+                                  📦 Kit includes: Flight case, dual Li-ion batteries, charger & calibration block
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-xs text-[#0F5E63] font-bold group-hover:underline">Select Kit →</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Specific Demo Kit / Serial / Accessories Detail Card - FULL WIDTH, NOT SPLIT IN HALF */}
+                  {selectedEquipUnit && (
+                    <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
+                      <div className="flex flex-wrap items-center justify-between gap-1 pb-2 border-b border-[#ECE9E2]">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-sm text-[#14213D]">{selectedEquipUnit.model}</span>
+                          <span className="font-mono text-xs px-2 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#14213D] font-bold">
+                            S/N: {selectedEquipUnit.serial_no}
+                          </span>
+                          <span className="text-xs text-[#4A5568]">📍 {selectedEquipUnit.current_location} Depot</span>
+                        </div>
+                        <div>
+                          {selectedEquipUnit.availability_status === 'available' ? (
+                            <Badge variant="success">● READY & AVAILABLE</Badge>
+                          ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
+                            <Badge variant="warning">
+                              ○ RESERVED {selectedEquipUnit.reserved_until ? `UNTIL ${new Date(selectedEquipUnit.reserved_until).toLocaleDateString()}` : ''}
+                            </Badge>
+                          ) : (
+                            <Badge variant="danger">▲ MAINTENANCE: {selectedEquipUnit.condition || 'Service Needed'}</Badge>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 4-Column Metadata Grid */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                        <div>
+                          <span className="text-[10px] text-[#4A5568] block">Operational Condition:</span>
+                          <span className="font-semibold text-[#14213D]">{selectedEquipUnit.condition || 'Operational'}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-[#4A5568] block">Fleet Custodian:</span>
+                          <span className="font-semibold text-[#14213D]">{selectedEquipUnit.responsible_person_name || 'Demo Team Coordinator'}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-[#4A5568] block">Depot Base:</span>
+                          <span className="font-semibold text-[#14213D]">{selectedEquipUnit.current_location} Depot</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-[#4A5568] block">Unit Serial:</span>
+                          <span className="font-mono font-bold text-[#14213D]">{selectedEquipUnit.serial_no}</span>
+                        </div>
+                      </div>
+
+                      {/* Included Standard Demo Kit Accessories - Full Width Grid */}
+                      <div className="pt-2 border-t border-[#ECE9E2]">
+                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block mb-1.5">
+                          📦 Specific Demo Kit / Included Accessories & Calibration Items:
+                        </span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
+                          {getStandardKitAccessories(selectedEquipUnit.product_name, selectedEquipUnit.product_category).map((item, idx) => (
+                            <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
+                              <CheckCircle className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                              <span className="truncate text-[11px]">{item}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Status Note Callout */}
+                      {selectedEquipUnit.availability_status === 'available' ? (
+                        <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
+                          <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                          <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedEquipUnit.current_location} Depot.</span>
+                        </div>
+                      ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
+                        <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                          <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
+                        </div>
+                      ) : (
+                        <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-center gap-2">
+                          <AlertCircle className="h-4 w-4 text-red-700 shrink-0" />
+                          <span>Unit marked under maintenance ({selectedEquipUnit.condition}). You may select another serial or custom kit.</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
