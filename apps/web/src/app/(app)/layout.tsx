@@ -19,7 +19,7 @@ const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] }[] = [
   { path: '/demos', name: 'Demo Fleet Matrix', roles: ['management', 'regional_manager', 'sales', 'demo_team', 'admin'] },
   { path: '/proposals', name: 'Commercial Proposals', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'admin'] },
   { path: '/deliveries', name: 'Equipment Logistics & Delivery Register', roles: ['management', 'regional_manager', 'sales', 'service_team', 'admin'] },
-  { path: '/service', name: 'Service Desk & Spares', roles: ['management', 'regional_manager', 'service_team', 'admin'] },
+  { path: '/service', name: 'Service Desk & Spares', roles: ['management', 'regional_manager', 'service_team', 'sales', 'admin'] },
   { path: '/expenses', name: 'Travel & Expense Reimbursements', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/tasks', name: 'Task & Productivity Management', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/reports', name: 'Consolidated Reporting & Exports', roles: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'] },

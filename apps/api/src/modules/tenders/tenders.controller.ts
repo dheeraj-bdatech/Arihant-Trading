@@ -369,8 +369,8 @@ export class TendersController {
 
   @Get(':id')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
-  async findOne(@Param('id') id: string) {
-    return this.tendersService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.findOne(id, user);
   }
 
   @Put(':id')

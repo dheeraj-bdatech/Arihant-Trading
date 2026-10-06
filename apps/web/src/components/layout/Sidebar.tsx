@@ -18,11 +18,11 @@ import {
   Compass,
   Activity,
   Shield,
+  ShieldCheck,
   PanelLeftClose,
   PanelLeftOpen,
   X,
   Truck,
-  Package,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useSidebar } from '@/lib/sidebar-context';
@@ -32,7 +32,7 @@ interface NavItem {
   label: string;
   href: string;
   icon: React.ElementType;
-  moduleKey: BosModuleKey | 'reports' | 'products';
+  moduleKey: BosModuleKey | 'reports';
   badge?: string;
   badgeVariant?: 'urgent' | 'cyber' | 'warning' | 'neutral';
 }
@@ -50,80 +50,88 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     case 'sales':
       return [
         {
-          title: 'Workspace',
+          title: 'MY SALES WORKSPACE',
           items: [
             {
-              label: 'Dashboard',
+              label: 'Sales Field Desk',
               href: '/dashboard',
               icon: Target,
               moduleKey: 'dashboard',
+              badge: 'My Deals',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Leads',
+              label: 'My Leads & Accounts',
               href: '/leads',
               icon: Target,
               moduleKey: 'leads',
+              badge: 'Active Funnel',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Tenders',
+              label: 'My Assigned Tenders',
               href: '/tenders?scope=my_tenders',
               icon: FileText,
               moduleKey: 'tenders',
+              badge: 'Bids',
+              badgeVariant: 'urgent',
             },
             {
-              label: 'Proposals',
+              label: 'Commercial Price Quotes',
               href: '/proposals',
               icon: FileSpreadsheet,
               moduleKey: 'proposals',
             },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
-            },
           ],
         },
         {
-          title: 'Field Operations',
+          title: 'FIELD TOURS & DEMOS',
           items: [
             {
-              label: 'Visits',
+              label: 'Client Tour Planner',
               href: '/visits',
               icon: Calendar,
               moduleKey: 'visits',
+              badge: 'Tour Plan',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Demos',
+              label: 'Demo Equipment Requests',
               href: '/demos',
               icon: Box,
               moduleKey: 'demos',
+              badge: 'Trials',
+              badgeVariant: 'neutral',
             },
             {
-              label: 'Deliveries',
+              label: 'Deliveries & Logistics',
               href: '/deliveries',
               icon: Truck,
               moduleKey: 'deliveries',
+              badge: 'Consignments',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Claims & Tasks',
+          title: 'CLAIMS & PRODUCTIVITY',
           items: [
             {
-              label: 'Expenses',
+              label: 'Travel Expense Claims',
               href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
+              badge: 'My Claims',
+              badgeVariant: 'warning',
             },
             {
-              label: 'Tasks',
+              label: 'My Tasks & Milestones',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Notifications',
+              label: 'Client Directives & Alerts',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -135,59 +143,61 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     case 'tender_team':
       return [
         {
-          title: 'Tender Operations',
+          title: 'BID CELL & GeM OPS',
           items: [
             {
-              label: 'Dashboard',
+              label: 'Tender War Room',
               href: '/dashboard',
               icon: FileText,
               moduleKey: 'dashboard',
-            },
-            {
-              label: 'Tenders',
-              href: '/tenders',
-              icon: FileText,
-              moduleKey: 'tenders',
               badge: 'Live Bids',
               badgeVariant: 'urgent',
             },
             {
-              label: 'Proposals',
+              label: 'GeM Defence Tenders',
+              href: '/tenders',
+              icon: FileText,
+              moduleKey: 'tenders',
+              badge: '≤7d Closing',
+              badgeVariant: 'urgent',
+            },
+            {
+              label: 'Commercial Bid Proposals',
               href: '/proposals',
               icon: FileSpreadsheet,
               moduleKey: 'proposals',
+              badge: 'PQ Docs',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Reports',
+              label: 'Tender Win/Loss Reports',
               href: '/reports',
               icon: FileSpreadsheet,
               moduleKey: 'reports',
-            },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
+              badge: 'L1 Audits',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Operations & Claims',
+          title: 'OPERATIONAL CONTROL',
           items: [
             {
-              label: 'Expenses',
+              label: 'Tender Expenses & EMDs',
               href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
+              badge: 'EMD/Claims',
+              badgeVariant: 'warning',
             },
             {
-              label: 'Tasks',
+              label: 'Bid Milestones & Tasks',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Notifications',
+              label: 'Corrigenda & Bid Alerts',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -199,51 +209,53 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     case 'demo_team':
       return [
         {
-          title: 'Depot Fleet',
+          title: 'DEPOT & TRIALS FLEET',
           items: [
             {
-              label: 'Dashboard',
+              label: 'Demo Fleet Hub',
               href: '/dashboard',
               icon: Box,
               moduleKey: 'dashboard',
+              badge: 'Delhi Depot',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Demos',
+              label: 'Demo Equipment Matrix',
               href: '/demos',
               icon: Box,
               moduleKey: 'demos',
+              badge: 'Depot Fleet',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Visits',
+              label: 'Field Trial Visits',
               href: '/visits',
               icon: Calendar,
               moduleKey: 'visits',
-            },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
+              badge: 'Trials Tour',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Operations & Claims',
+          title: 'FIELD DESK & CLAIMS',
           items: [
             {
-              label: 'Expenses',
+              label: 'Transit & Freight Expenses',
               href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
+              badge: 'Freight',
+              badgeVariant: 'warning',
             },
             {
-              label: 'Tasks',
+              label: 'Depot Tasks & Handover Logs',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Notifications',
+              label: 'Dispatch Alerts & Directives',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -255,59 +267,61 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     case 'service_team':
       return [
         {
-          title: 'Service & Maintenance',
+          title: 'SERVICE & MAINTENANCE',
           items: [
             {
-              label: 'Dashboard',
+              label: 'Service Support Desk',
               href: '/dashboard',
               icon: Wrench,
               moduleKey: 'dashboard',
-            },
-            {
-              label: 'Service',
-              href: '/service',
-              icon: Wrench,
-              moduleKey: 'service',
-              badge: 'Tickets',
+              badge: 'SLA Triage',
               badgeVariant: 'urgent',
             },
             {
-              label: 'Visits',
+              label: 'Breakdown Tickets & AMC',
+              href: '/service',
+              icon: Wrench,
+              moduleKey: 'service',
+              badge: 'Emergency',
+              badgeVariant: 'urgent',
+            },
+            {
+              label: 'On-site Field Visits',
               href: '/visits',
               icon: Calendar,
               moduleKey: 'visits',
+              badge: 'Repair Tour',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Deliveries',
+              label: 'Deliveries & Installations',
               href: '/deliveries',
               icon: Truck,
               moduleKey: 'deliveries',
-            },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
+              badge: 'Commissioning',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Operations & Claims',
+          title: 'CLAIMS & WORKFLOW',
           items: [
             {
-              label: 'Expenses',
+              label: 'Spares & Travel Expenses',
               href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
+              badge: 'Spares/Claims',
+              badgeVariant: 'warning',
             },
             {
-              label: 'Tasks',
+              label: 'Repair Tasks & Preventive AMC',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Notifications',
+              label: 'Service Alerts & Escalations',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -319,47 +333,45 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     case 'accounts':
       return [
         {
-          title: 'Finance & Audit',
+          title: 'FINANCE & AUDIT',
           items: [
             {
-              label: 'Dashboard',
+              label: 'Finance & Audit Desk',
               href: '/dashboard',
               icon: Receipt,
               moduleKey: 'dashboard',
-            },
-            {
-              label: 'Expenses',
-              href: '/expenses',
-              icon: Receipt,
-              moduleKey: 'expenses',
-              badge: 'Audit',
+              badge: 'Stage-2 Audit',
               badgeVariant: 'warning',
             },
             {
-              label: 'Reports',
+              label: 'Expense Claims & Payouts',
+              href: '/expenses',
+              icon: Receipt,
+              moduleKey: 'expenses',
+              badge: 'Payout Audit',
+              badgeVariant: 'warning',
+            },
+            {
+              label: 'Financial & Tax Reports',
               href: '/reports',
               icon: FileSpreadsheet,
               moduleKey: 'reports',
-            },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
+              badge: 'GST / Vouchers',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Compliance & Tasks',
+          title: 'FINANCIAL COMPLIANCE',
           items: [
             {
-              label: 'Tasks',
+              label: 'Audit Tasks & Vouchers',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Notifications',
+              label: 'Disbursement Directives',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -371,100 +383,111 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     case 'regional_manager':
       return [
         {
-          title: 'Territory Command',
+          title: 'TERRITORY COMMAND',
           items: [
             {
-              label: 'Dashboard',
+              label: 'Territory Operations Hub',
               href: '/dashboard',
               icon: Compass,
               moduleKey: 'dashboard',
+              badge: 'North Zone',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Regional Hub',
+              label: 'Zonal Command & Scorecard',
               href: '/regional',
-              icon: Compass,
+              icon: Target,
               moduleKey: 'regional',
+              badge: 'Directives',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Leads',
+              label: 'Regional Performance Reports',
+              href: '/reports',
+              icon: FileSpreadsheet,
+              moduleKey: 'reports',
+              badge: 'Exports',
+              badgeVariant: 'cyber',
+            },
+          ],
+        },
+        {
+          title: 'ZONAL PIPELINE',
+          items: [
+            {
+              label: 'Regional GeM Tenders',
+              href: '/tenders',
+              icon: FileText,
+              moduleKey: 'tenders',
+              badge: 'Zonal Bids',
+              badgeVariant: 'urgent',
+            },
+            {
+              label: 'Territory Leads & CRM',
               href: '/leads',
               icon: Target,
               moduleKey: 'leads',
             },
             {
-              label: 'Tenders',
-              href: '/tenders',
-              icon: FileText,
-              moduleKey: 'tenders',
-            },
-            {
-              label: 'Proposals',
+              label: 'Commercial Proposals',
               href: '/proposals',
               icon: FileSpreadsheet,
               moduleKey: 'proposals',
             },
-            {
-              label: 'Reports',
-              href: '/reports',
-              icon: FileSpreadsheet,
-              moduleKey: 'reports',
-            },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
-            },
           ],
         },
         {
-          title: 'Field Operations',
+          title: 'FIELD DEPLOYMENT',
           items: [
             {
-              label: 'Visits',
+              label: 'Client Tour Planner',
               href: '/visits',
               icon: Calendar,
               moduleKey: 'visits',
+              badge: 'Also-Meet',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Demos',
+              label: 'Demo Fleet Matrix',
               href: '/demos',
               icon: Box,
               moduleKey: 'demos',
             },
             {
-              label: 'Service',
+              label: 'Service Support & Spares',
               href: '/service',
               icon: Wrench,
               moduleKey: 'service',
             },
             {
-              label: 'Deliveries',
+              label: 'Logistics & Deliveries',
               href: '/deliveries',
               icon: Truck,
               moduleKey: 'deliveries',
+              badge: 'Consignments',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Approvals & Tasks',
+          title: 'APPROVALS & DIRECTIVES',
           items: [
             {
-              label: 'Expenses',
+              label: 'Expense Endorsements',
               href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
-              badge: 'Stage 1',
+              badge: 'Stage 1 RM',
               badgeVariant: 'warning',
             },
             {
-              label: 'Tasks',
+              label: 'Tasks & Blocker Escalations',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Notifications',
+              label: 'Zonal Alerts & Directives',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -476,16 +499,18 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     case 'admin':
       return [
         {
-          title: 'System',
+          title: 'SYSTEM ADMINISTRATION',
           items: [
             {
-              label: 'Dashboard',
+              label: 'System Admin Console',
               href: '/dashboard',
               icon: Settings,
               moduleKey: 'dashboard',
+              badge: 'Masters',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Admin',
+              label: 'Users & Security Audit',
               href: '/admin',
               icon: Settings,
               moduleKey: 'admin',
@@ -493,66 +518,64 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               badgeVariant: 'urgent',
             },
             {
-              label: 'Reports',
+              label: 'Consolidated Audit Reports',
               href: '/reports',
               icon: FileSpreadsheet,
               moduleKey: 'reports',
-            },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
+              badge: 'System Logs',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Operations',
+          title: 'OPERATIONAL REGISTRY',
           items: [
             {
-              label: 'Regional Hub',
+              label: 'Regional Command Hub',
               href: '/regional',
               icon: Compass,
               moduleKey: 'regional',
             },
             {
-              label: 'Tenders',
+              label: 'GeM Defence Tenders',
               href: '/tenders',
               icon: FileText,
               moduleKey: 'tenders',
+              badge: '30 Live',
+              badgeVariant: 'urgent',
             },
             {
-              label: 'Leads',
+              label: 'Leads & CRM Registry',
               href: '/leads',
               icon: Target,
               moduleKey: 'leads',
             },
             {
-              label: 'Visits',
+              label: 'Field Tour Matrix',
               href: '/visits',
               icon: Calendar,
               moduleKey: 'visits',
             },
             {
-              label: 'Demos',
+              label: 'Demo Fleet Matrix',
               href: '/demos',
               icon: Box,
               moduleKey: 'demos',
             },
             {
-              label: 'Proposals',
+              label: 'Commercial Proposals',
               href: '/proposals',
               icon: FileSpreadsheet,
               moduleKey: 'proposals',
             },
             {
-              label: 'Service',
+              label: 'Service & Maintenance',
               href: '/service',
               icon: Wrench,
               moduleKey: 'service',
             },
             {
-              label: 'Deliveries',
+              label: 'Logistics & Deliveries',
               href: '/deliveries',
               icon: Truck,
               moduleKey: 'deliveries',
@@ -560,22 +583,22 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
           ],
         },
         {
-          title: 'Governance',
+          title: 'GOVERNANCE & AUDIT',
           items: [
             {
-              label: 'Expenses',
+              label: 'Two-Stage Expenses',
               href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
             },
             {
-              label: 'Tasks',
+              label: 'Tasks & System Blockers',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Notifications',
+              label: 'System Alerts & Broadcasts',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -588,108 +611,117 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
     default:
       return [
         {
-          title: 'Executive',
+          title: 'ENTERPRISE COMMAND',
           items: [
             {
-              label: 'Dashboard',
+              label: 'Executive Command Deck',
               href: '/dashboard',
               icon: Activity,
               moduleKey: 'dashboard',
+              badge: 'All India',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Regional Hub',
+              label: 'Regional Territory Command',
               href: '/regional',
               icon: Compass,
               moduleKey: 'regional',
+              badge: '4 Zones',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Reports',
+              label: 'Consolidated Reports & Exports',
               href: '/reports',
               icon: FileSpreadsheet,
               moduleKey: 'reports',
-            },
-            {
-              label: 'Products',
-              href: '/products',
-              icon: Package,
-              moduleKey: 'products',
+              badge: 'Audits',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Commercial & Operations',
+          title: 'COMMERCIAL & TENDERS',
           items: [
             {
-              label: 'Tenders',
+              label: 'GeM Defence Tenders',
               href: '/tenders',
               icon: FileText,
               moduleKey: 'tenders',
-              badge: 'Live Bids',
+              badge: '30 Live',
               badgeVariant: 'urgent',
             },
             {
-              label: 'Leads',
+              label: 'Enterprise Leads & Accounts',
               href: '/leads',
               icon: Target,
               moduleKey: 'leads',
             },
             {
-              label: 'Proposals',
+              label: 'Commercial Proposals & Bids',
               href: '/proposals',
               icon: FileSpreadsheet,
               moduleKey: 'proposals',
             },
+          ],
+        },
+        {
+          title: 'FIELD OPERATIONS & ASSETS',
+          items: [
             {
-              label: 'Visits',
+              label: 'Client Tour Planner',
               href: '/visits',
               icon: Calendar,
               moduleKey: 'visits',
             },
             {
-              label: 'Demos',
+              label: 'Demo Fleet Matrix',
               href: '/demos',
               icon: Box,
               moduleKey: 'demos',
             },
             {
-              label: 'Service',
+              label: 'Service Desk & Spares',
               href: '/service',
               icon: Wrench,
               moduleKey: 'service',
             },
             {
-              label: 'Deliveries',
+              label: 'Logistics & Deliveries',
               href: '/deliveries',
               icon: Truck,
               moduleKey: 'deliveries',
+              badge: 'Consignments',
+              badgeVariant: 'cyber',
             },
           ],
         },
         {
-          title: 'Governance',
+          title: 'GOVERNANCE & AUDIT',
           items: [
             {
-              label: 'Expenses',
+              label: 'Expense Claims & Sign-offs',
               href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
-              badge: 'Sign-offs',
+              badge: 'Stage 1 & 2',
               badgeVariant: 'warning',
             },
             {
-              label: 'Tasks',
+              label: 'Tasks & Milestone Blockers',
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
             },
             {
-              label: 'Admin',
+              label: 'Administration & Masters',
               href: '/admin',
               icon: Settings,
               moduleKey: 'admin',
+              badge: 'System',
+              badgeVariant: 'cyber',
             },
             {
-              label: 'Notifications',
+              label: 'Directives & Broadcasts',
               href: '/notifications',
               icon: Bell,
               moduleKey: 'notifications',
@@ -698,6 +730,12 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
         },
       ];
   }
+}
+
+function toSentenceCase(str: string): string {
+  if (!str) return '';
+  const lower = str.toLowerCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
 }
 
 export const Sidebar: React.FC = () => {
@@ -710,11 +748,8 @@ export const Sidebar: React.FC = () => {
   const navGroups = getRoleNavGroups(role);
 
   // RBAC clearance validation
-  const isModuleAllowed = (moduleKey: BosModuleKey | 'reports' | 'products') => {
+  const isModuleAllowed = (moduleKey: BosModuleKey | 'reports') => {
     if (!user) return false;
-    if (moduleKey === 'products' || moduleKey === 'dashboard') {
-      return true;
-    }
     if (moduleKey === 'reports') {
       return ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'].includes(user.role);
     }
@@ -725,18 +760,26 @@ export const Sidebar: React.FC = () => {
   };
 
   const renderNavContent = (isCompact: boolean, onNavigate?: () => void) => (
-    <nav className={`px-2.5 py-3 ${isCompact ? 'space-y-3' : 'space-y-4'} overflow-y-auto custom-scrollbar flex-1 min-h-0`}>
+    <nav className={`px-2 py-2 ${isCompact ? 'space-y-3' : 'space-y-4'} overflow-y-auto custom-scrollbar flex-1 min-h-0`}>
+      {!isCompact && user && (
+        <div className="mx-1 mb-3 p-3 rounded-[10px] bg-white border border-[#E3E7ED] border-l-[3px] border-l-[#16917A] flex flex-col gap-0.5 select-none">
+          <span className="text-[10px] tracking-wider text-[#84928C] uppercase font-semibold">Active clearance</span>
+          <span className="text-[#132822] text-xs font-bold truncate">{roleProfile?.title || role.replace('_', ' ')}</span>
+          <span className="text-[11px] text-[#5E6A7C] truncate">{(user as any)?.territory || roleProfile?.territorialScope || 'All India Operations'}</span>
+        </div>
+      )}
+
       {navGroups.map((group, gIdx) => {
         const visibleItems = group.items.filter((item) => isModuleAllowed(item.moduleKey));
         if (visibleItems.length === 0) return null;
 
         return (
-          <div key={group.title} className="space-y-1">
+          <div key={group.title} className="space-y-0.5">
             {isCompact ? (
-              gIdx > 0 && <div className="h-px bg-[#ECE9E2] my-2 mx-1" />
+              gIdx > 0 && <div className="h-px bg-[#E3E7ED] my-2 mx-1" />
             ) : (
-              <div className="px-2.5 text-[10px] font-bold text-[#8C827A] uppercase tracking-wider mb-1 select-none">
-                {group.title}
+              <div className="px-3 text-[11px] font-semibold text-[#84928C] normal-case tracking-normal mb-1.5">
+                {toSentenceCase(group.title)}
               </div>
             )}
             {visibleItems.map((item) => {
@@ -752,19 +795,19 @@ export const Sidebar: React.FC = () => {
                     href={item.href}
                     onClick={onNavigate}
                     title={item.label + (item.badge ? ` (${item.badge})` : '')}
-                    className={`relative w-10 h-10 mx-auto flex items-center justify-center rounded-xl transition-all cursor-pointer group ${
+                    className={`relative w-10 h-10 mx-auto flex items-center justify-center rounded-[8px] transition-all cursor-pointer group ${
                       isActive
-                        ? 'bg-[#0F5E63] text-white shadow-xs font-semibold'
-                        : 'text-[#4A5568] hover:bg-[#F6F5F1] hover:text-[#14213D]'
+                        ? 'bg-[#E9F6F2] text-[#132822] font-semibold border-l-[3px] border-l-[#16917A] rounded-l-none'
+                        : 'text-[#35463F] hover:bg-[#F1F7F5] hover:text-[#132822] border border-transparent'
                     }`}
                   >
                     <Icon
-                      className={`w-4 h-4 transition-transform group-hover:scale-105 ${
-                        isActive ? 'text-white' : 'text-[#4A5568]'
+                      className={`w-4 h-4 transition-transform group-hover:scale-110 ${
+                        isActive ? 'text-[#0F5E4E]' : 'text-[#84928C]'
                       }`}
                     />
                     {item.badge && (
-                      <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#9A3412]" />
+                      <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#16917A]" />
                     )}
                   </Link>
                 );
@@ -775,16 +818,16 @@ export const Sidebar: React.FC = () => {
                   key={item.href + item.label}
                   href={item.href}
                   onClick={onNavigate}
-                  className={`flex items-center justify-between h-9 text-[13px] font-medium transition-all rounded-xl px-2.5 min-w-0 max-w-full group ${
+                  className={`flex items-center justify-between py-2 text-[13px] transition-colors rounded-[8px] px-3 min-w-0 max-w-full ${
                     isActive
-                      ? 'bg-[#0F5E63] text-white shadow-xs font-semibold'
-                      : 'text-[#4A5568] hover:bg-[#F6F5F1] hover:text-[#14213D]'
+                      ? 'bg-[#E9F6F2] text-[#132822] font-semibold border-l-[3px] border-l-[#16917A] rounded-l-none pl-2.5'
+                      : 'text-[#35463F] hover:bg-[#F1F7F5] hover:text-[#132822]'
                   }`}
                 >
                   <div className="flex items-center space-x-2.5 min-w-0 flex-1 mr-1.5">
                     <Icon
-                      className={`w-4 h-4 shrink-0 transition-colors ${
-                        isActive ? 'text-white' : 'text-[#71717A] group-hover:text-[#14213D]'
+                      className={`w-4 h-4 shrink-0 ${
+                        isActive ? 'text-[#0F5E4E]' : 'text-[#84928C]'
                       }`}
                     />
                     <span className="truncate">{item.label}</span>
@@ -792,17 +835,7 @@ export const Sidebar: React.FC = () => {
 
                   <div className="flex items-center space-x-1 shrink-0">
                     {item.badge && (
-                      <span
-                        className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full shrink-0 ${
-                          isActive
-                            ? 'bg-white/20 text-white'
-                            : item.badgeVariant === 'urgent'
-                            ? 'bg-[#FBEBDD] text-[#9A3412] border border-[#9A3412]/30'
-                            : item.badgeVariant === 'warning'
-                            ? 'bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30'
-                            : 'bg-[#E3EFEE] text-[#0F5E63]'
-                        }`}
-                      >
+                      <span className="font-mono text-[11px] font-semibold text-[#0F5E4E] shrink-0 bg-transparent">
                         {item.badge}
                       </span>
                     )}
@@ -819,55 +852,63 @@ export const Sidebar: React.FC = () => {
   return (
     <>
       {/* ========================================================================= */}
-      {/* DESKTOP SIDEBAR                                                           */}
+      {/* DESKTOP SIDEBAR (Sidebar bg matching page background #F7F8FA)              */}
       {/* ========================================================================= */}
       <aside
-        className={`hidden lg:flex flex-col justify-between shrink-0 z-20 select-none bg-white border-r border-[#DCD8CE] transition-all duration-300 ease-in-out h-screen max-h-screen ${
-          isCollapsed ? 'w-[72px]' : 'w-64'
+        className={`hidden lg:flex flex-col justify-between shrink-0 z-20 select-none shadow-xs text-[#35463F] bg-[#F7F8FA] border-r border-[#E3E7ED] transition-all duration-300 ease-in-out h-screen max-h-screen ${
+          isCollapsed ? 'w-[72px]' : 'w-72'
         }`}
       >
         <div className="flex flex-col flex-1 min-h-0">
-          {/* Header */}
+          {/* Header with Open/Close Buttons */}
           {isCollapsed ? (
-            <div className="h-16 px-2 border-b border-[#DCD8CE] flex items-center justify-center bg-white shrink-0">
+            <div className="h-[64px] px-2 border-b border-[#E3E7ED] flex items-center justify-center bg-[#F7F8FA] shrink-0">
+              {/* OPEN BUTTON IN SIDEBAR */}
               <button
                 type="button"
                 onClick={toggleCollapse}
-                className="h-9 w-9 rounded-lg hover:bg-[#F6F5F1] text-[#4A5568] hover:text-[#14213D] flex items-center justify-center transition-all cursor-pointer"
-                title="Expand sidebar [Ctrl+B]"
-                aria-label="Expand sidebar"
+                className="h-10 w-10 rounded-[8px] bg-white hover:bg-[#F1F7F5] border border-[#E3E7ED] text-[#5E6A7C] hover:text-[#0F5E4E] flex items-center justify-center transition-all cursor-pointer group"
+                title="Open sidebar (Expand) [Ctrl+B]"
+                aria-label="Open sidebar"
               >
-                <PanelLeftOpen className="w-4 h-4" />
+                <PanelLeftOpen className="w-4 h-4 transition-transform group-hover:scale-110" />
               </button>
             </div>
           ) : (
-            <div className="h-16 px-4 border-b border-[#DCD8CE] flex items-center justify-between bg-white shrink-0">
+            <div className="h-[64px] px-4 border-b border-[#E3E7ED] flex items-center justify-between bg-[#F7F8FA] shrink-0">
               <div className="flex items-center space-x-2.5 min-w-0">
-                <div className="h-9 w-9 rounded-xl bg-[#0F5E63] flex items-center justify-center text-white shadow-xs shrink-0">
-                  <Shield className="h-4.5 w-4.5" />
+                <div className="h-9 w-9 rounded-[8px] bg-[#0F5E4E] flex items-center justify-center text-white shadow-xs shrink-0">
+                  <Shield className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <div className="font-serif font-bold text-[#14213D] text-[15px] tracking-tight flex items-center gap-1.5">
+                  <div className="font-serif font-bold text-[#132822] text-sm tracking-tight flex items-center gap-1.5">
                     <span>ARIHANT</span>
-                    <span className="font-sans font-bold text-[9px] px-1.5 py-0.5 rounded-md bg-[#E3EFEE] text-[#0F5E63] tracking-wide">
+                    <span className="font-sans font-bold text-[10px] px-1.5 py-0.5 rounded bg-[#E9F6F2] text-[#0F5E4E]">
                       BOS
                     </span>
                   </div>
-                  <div className="text-[10px] text-[#4A5568] font-medium tracking-wide">
+                  <div className="text-[10px] text-[#84928C] font-medium truncate">
                     Defence &amp; Security ERP
                   </div>
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={toggleCollapse}
-                className="p-1.5 rounded-lg text-[#4A5568] hover:text-[#14213D] hover:bg-[#F6F5F1] transition-all cursor-pointer shrink-0 ml-1"
-                title="Collapse sidebar [Ctrl+B]"
-                aria-label="Collapse sidebar"
-              >
-                <PanelLeftClose className="w-4 h-4" />
-              </button>
+              <div className="flex items-center space-x-1 shrink-0">
+                <span className="hidden xl:inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-[#EAF6F0] text-[#1F7A55] border border-[#1F7A55]/30">
+                  <ShieldCheck className="w-2.5 h-2.5 mr-0.5" />
+                  Verified
+                </span>
+                {/* CLOSE BUTTON IN SIDEBAR */}
+                <button
+                  type="button"
+                  onClick={toggleCollapse}
+                  className="p-1.5 rounded-[8px] text-[#84928C] hover:text-[#132822] hover:bg-[#F1F7F5] border border-transparent transition-all cursor-pointer shrink-0 ml-1 group"
+                  title="Close sidebar (Collapse) [Ctrl+B]"
+                  aria-label="Close sidebar"
+                >
+                  <PanelLeftClose className="w-4 h-4 transition-transform group-hover:scale-105" />
+                </button>
+              </div>
             </div>
           )}
 
@@ -875,66 +916,69 @@ export const Sidebar: React.FC = () => {
           {renderNavContent(isCollapsed)}
         </div>
 
-        {/* Footer / User Card / Logout */}
+        {/* Footer / Status / Logout */}
         {isCollapsed ? (
-          <div className="p-2 border-t border-[#DCD8CE] bg-[#FBFAF7] flex flex-col items-center space-y-2 shrink-0">
+          <div className="p-2 border-t border-[#E3E7ED] bg-[#F7F8FA] flex flex-col items-center space-y-2 shrink-0">
+            <div
+              className="h-2 w-2 rounded-full bg-[#1F7A55] animate-pulse my-1"
+              title="GeM Gateway: Online & Connected"
+            />
             {user && (
               <div
-                className="h-8 w-8 rounded-lg bg-[#0F5E63] text-white flex items-center justify-center text-xs font-bold shrink-0 relative cursor-default"
-                title={`${user.full_name} • ${roleProfile?.title || user.role.replace('_', ' ')}`}
+                className="h-8 w-8 rounded-[8px] bg-[#0F5E4E] text-white flex items-center justify-center text-xs font-bold shrink-0 cursor-default"
+                title={`${user.full_name} (${user.role.replace('_', ' ')})`}
               >
-                {user.full_name ? user.full_name[0].toUpperCase() : 'A'}
-                <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white" />
+                {user.full_name ? user.full_name[0].toUpperCase() : 'U'}
               </div>
             )}
             <button
               onClick={logout}
               title="Sign Out"
               aria-label="Sign Out"
-              className="h-8 w-8 flex items-center justify-center rounded-lg text-[#4A5568] hover:text-[#9A3412] hover:bg-[#FBEBDD] transition-colors cursor-pointer"
+              className="h-8 w-8 flex items-center justify-center rounded-[8px] text-[#5E6A7C] hover:text-[#B42318] bg-white hover:bg-[#FEF1EF] border border-[#E3E7ED] transition-colors cursor-pointer"
             >
-              <LogOut className="h-4 w-4" />
+              <LogOut className="h-3.5 w-3.5" />
             </button>
           </div>
         ) : (
-          <div className="p-3 border-t border-[#DCD8CE] bg-[#FBFAF7] shrink-0">
+          <div className="p-3 border-t border-[#E3E7ED] bg-[#F7F8FA] space-y-2 shrink-0">
+            <div className="flex items-center justify-between text-[11px] text-[#1F7A55] px-1 font-medium">
+              <div className="flex items-center space-x-1.5">
+                <span className="h-2 w-2 rounded-full bg-[#1F7A55] animate-pulse" />
+                <span className="font-semibold text-[#1F7A55]">GeM Gateway: Online</span>
+              </div>
+              <span className="text-[10px] text-[#1F7A55] font-semibold bg-[#EAF6F0] px-1.5 py-0.2 rounded border border-[#1F7A55]/30">
+                Connected
+              </span>
+            </div>
+
             {user && (
-              <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-white border border-[#DCD8CE] shadow-xs">
-                <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                  <div className="h-8 w-8 rounded-lg bg-[#0F5E63] text-white flex items-center justify-center text-xs font-bold shrink-0 relative">
-                    {user.full_name ? user.full_name[0].toUpperCase() : 'A'}
-                    <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-[#14213D] truncate">{user.full_name}</div>
-                    <div className="text-[10px] text-[#4A5568] truncate font-medium">
-                      {roleProfile?.title || user.role.replace('_', ' ')}
-                    </div>
+              <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-[8px] bg-white border border-[#E3E7ED]">
+                <div className="h-6 w-6 rounded-md bg-[#0F5E4E] text-white flex items-center justify-center text-[11px] font-bold shrink-0">
+                  {user.full_name ? user.full_name[0].toUpperCase() : 'U'}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-bold text-[#132822] truncate">{user.full_name}</div>
+                  <div className="text-[9px] text-[#84928C] font-semibold uppercase tracking-wider truncate">
+                    {user.role.replace('_', ' ')}
                   </div>
                 </div>
-                <button
-                  onClick={logout}
-                  title="Sign Out"
-                  aria-label="Sign Out"
-                  className="p-1.5 rounded-lg text-[#4A5568] hover:text-[#9A3412] hover:bg-[#FBEBDD] transition-colors cursor-pointer shrink-0"
-                >
-                  <LogOut className="h-4 w-4" />
-                </button>
               </div>
             )}
-            <div className="mt-2 flex items-center justify-between px-1 text-[10px] text-[#4A5568]">
-              <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <span>GeM Portal Active</span>
-              </span>
-              <span className="font-mono text-[9px] text-[#8C827A]">v2.4.0</span>
-            </div>
+
+            <button
+              onClick={logout}
+              className="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-[8px] text-xs font-semibold text-[#152235] hover:text-[#B42318] bg-white hover:bg-[#FEF1EF] border border-[#E3E7ED] hover:border-[#F6CFC9] transition-colors min-w-0 truncate cursor-pointer shadow-2xs group"
+            >
+              <LogOut className="h-3.5 w-3.5 shrink-0 text-[#5E6A7C] group-hover:text-[#B42318] transition-colors" />
+              <span className="truncate">Sign Out</span>
+            </button>
           </div>
         )}
       </aside>
 
       {/* ========================================================================= */}
-      {/* MOBILE DRAWER                                                             */}
+      {/* MOBILE DRAWER (With Backdrop and Close button)                            */}
       {/* ========================================================================= */}
       {isOpenMobile && (
         <div className="fixed inset-0 z-50 lg:hidden">
@@ -945,31 +989,32 @@ export const Sidebar: React.FC = () => {
           />
 
           {/* Drawer Panel */}
-          <aside className="fixed top-0 left-0 bottom-0 w-72 max-w-[85vw] bg-white z-50 shadow-2xl flex flex-col justify-between select-none text-[#35463F] border-r border-[#DCD8CE] animate-in slide-in-from-left duration-200">
+          <aside className="fixed top-0 left-0 bottom-0 w-72 max-w-[85vw] bg-[#F7F8FA] z-50 shadow-2xl flex flex-col justify-between select-none text-[#35463F] border-r border-[#E3E7ED] animate-in slide-in-from-left duration-200">
             <div className="flex flex-col flex-1 min-h-0">
               {/* Header with Close Button */}
-              <div className="h-16 px-4 border-b border-[#DCD8CE] flex items-center justify-between bg-white shrink-0">
+              <div className="h-[64px] px-4 border-b border-[#E3E7ED] flex items-center justify-between bg-[#F7F8FA] shrink-0">
                 <div className="flex items-center space-x-2.5 min-w-0">
-                  <div className="h-9 w-9 rounded-xl bg-[#0F5E63] flex items-center justify-center text-white shadow-xs shrink-0">
-                    <Shield className="h-4.5 w-4.5" />
+                  <div className="h-9 w-9 rounded-[8px] bg-[#0F5E4E] flex items-center justify-center text-white shadow-xs shrink-0">
+                    <Shield className="h-5 w-5" />
                   </div>
                   <div className="min-w-0">
-                    <div className="font-serif font-bold text-[#14213D] text-[15px] tracking-tight flex items-center gap-1.5">
+                    <div className="font-serif font-bold text-[#132822] text-sm tracking-tight flex items-center gap-1.5">
                       <span>ARIHANT</span>
-                      <span className="font-sans font-bold text-[9px] px-1.5 py-0.5 rounded-md bg-[#E3EFEE] text-[#0F5E63] tracking-wide">
+                      <span className="font-sans font-bold text-[10px] px-1.5 py-0.5 rounded bg-[#E9F6F2] text-[#0F5E4E]">
                         BOS
                       </span>
                     </div>
-                    <div className="text-[10px] text-[#4A5568] font-medium tracking-wide">
+                    <div className="text-[10px] text-[#84928C] font-medium truncate">
                       Defence &amp; Security ERP
                     </div>
                   </div>
                 </div>
 
+                {/* CLOSE BUTTON IN MOBILE DRAWER */}
                 <button
                   type="button"
                   onClick={closeMobile}
-                  className="p-1.5 rounded-lg text-[#4A5568] hover:text-[#14213D] hover:bg-[#F6F5F1] transition-colors cursor-pointer"
+                  className="p-1.5 rounded-[8px] text-[#84928C] hover:text-[#132822] hover:bg-[#F1F7F5] transition-colors cursor-pointer"
                   title="Close sidebar drawer"
                   aria-label="Close sidebar drawer"
                 >
@@ -982,41 +1027,31 @@ export const Sidebar: React.FC = () => {
             </div>
 
             {/* Mobile Footer */}
-            <div className="p-3 border-t border-[#DCD8CE] bg-[#FBFAF7] shrink-0">
+            <div className="p-3 border-t border-[#E3E7ED] bg-[#F7F8FA] space-y-2 shrink-0">
               {user && (
-                <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-white border border-[#DCD8CE] shadow-xs">
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <div className="h-8 w-8 rounded-lg bg-[#0F5E63] text-white flex items-center justify-center text-xs font-bold shrink-0 relative">
-                      {user.full_name ? user.full_name[0].toUpperCase() : 'A'}
-                      <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-semibold text-[#14213D] truncate">{user.full_name}</div>
-                      <div className="text-[10px] text-[#4A5568] truncate font-medium">
-                        {roleProfile?.title || user.role.replace('_', ' ')}
-                      </div>
+                <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-[8px] bg-white border border-[#E3E7ED]">
+                  <div className="h-6 w-6 rounded-md bg-[#0F5E4E] text-white flex items-center justify-center text-[11px] font-bold shrink-0">
+                    {user.full_name ? user.full_name[0].toUpperCase() : 'U'}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-bold text-[#132822] truncate">{user.full_name}</div>
+                    <div className="text-[9px] text-[#84928C] font-semibold uppercase tracking-wider truncate">
+                      {user.role.replace('_', ' ')}
                     </div>
                   </div>
-                  <button
-                    onClick={() => {
-                      closeMobile();
-                      logout();
-                    }}
-                    title="Sign Out"
-                    aria-label="Sign Out"
-                    className="p-1.5 rounded-lg text-[#4A5568] hover:text-[#9A3412] hover:bg-[#FBEBDD] transition-colors cursor-pointer shrink-0"
-                  >
-                    <LogOut className="h-4 w-4" />
-                  </button>
                 </div>
               )}
-              <div className="mt-2 flex items-center justify-between px-1 text-[10px] text-[#4A5568]">
-                <span className="flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>GeM Portal Active</span>
-                </span>
-                <span className="font-mono text-[9px] text-[#8C827A]">v2.4.0</span>
-              </div>
+
+              <button
+                onClick={() => {
+                  closeMobile();
+                  logout();
+                }}
+                className="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-[8px] text-xs font-semibold text-[#152235] hover:text-[#B42318] bg-white hover:bg-[#FEF1EF] border border-[#E3E7ED] hover:border-[#F6CFC9] transition-colors min-w-0 truncate cursor-pointer shadow-2xs"
+              >
+                <LogOut className="h-3.5 w-3.5 shrink-0 text-[#5E6A7C]" />
+                <span className="truncate">Sign Out</span>
+              </button>
             </div>
           </aside>
         </div>

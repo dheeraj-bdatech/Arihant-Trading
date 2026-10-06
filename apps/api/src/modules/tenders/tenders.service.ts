@@ -425,13 +425,13 @@ export class TendersService {
     // Territorial scoping
     if (user.role === 'regional_manager' && user.zone_id) {
       baseQuery = baseQuery.where('tenders.zone_id', '=', user.zone_id);
-    } else if (user.role === 'sales' && user.region_id) {
+    } else if (user.role === 'sales') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
-          eb('tenders.region_id', '=', user.region_id),
           eb('tenders.assigned_to', '=', user.id),
           eb('tenders.owner', '=', user.id),
           eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
         ]),
       );
     }
@@ -689,7 +689,7 @@ export class TendersService {
     return buildPaginatedResult(mapped, total, page, limit);
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, user?: AuthUser) {
     const tender = await this.db
       .selectFrom('tenders')
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
@@ -719,6 +719,17 @@ export class TendersService {
 
     if (!tender) {
       throw new NotFoundException(`Tender with ID ${id} not found`);
+    }
+
+    if (
+      user &&
+      user.role === 'sales' &&
+      tender.assigned_to !== user.id &&
+      tender.owner !== user.id &&
+      tender.tender_owner_id !== user.id &&
+      tender.created_by !== user.id
+    ) {
+      throw new ForbiddenException('You only have access to tenders assigned to you');
     }
 
     // Parallel child queries
@@ -2215,11 +2226,15 @@ export class TendersService {
 
     if (user.role === 'regional_manager' && user.zone_id) {
       q = q.where('tenders.zone_id', '=', user.zone_id);
-    } else if (user.role === 'sales' && user.region_id) {
+    } else if (user.role === 'sales') {
       q = q.where((eb) =>
         eb.or([
-          eb('tenders.region_id', '=', user.region_id),
           eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
+          eb('tender_portal_issues.reported_by', '=', user.id),
+          eb('tender_portal_issues.responsible_person_id', '=', user.id),
         ]),
       );
     }
@@ -2601,11 +2616,13 @@ export class TendersService {
 
     if (user.role === 'regional_manager' && user.zone_id) {
       baseQuery = baseQuery.where('tenders.zone_id', '=', user.zone_id);
-    } else if (user.role === 'sales' && user.region_id) {
+    } else if (user.role === 'sales') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
-          eb('tenders.region_id', '=', user.region_id),
           eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
         ]),
       );
     }
@@ -2637,11 +2654,28 @@ export class TendersService {
       ])
       .executeTakeFirst();
 
-    const portalIssuesCount = await this.db
+    let portalIssuesQuery = this.db
       .selectFrom('tender_portal_issues')
-      .select(sql<number>`count(id)::int`.as('count'))
-      .where('resolution_status', 'in', ['OPEN', 'ESCALATED'])
-      .executeTakeFirst();
+      .leftJoin('tenders', 'tender_portal_issues.tender_id', 'tenders.id')
+      .select(sql<number>`count(tender_portal_issues.id)::int`.as('count'))
+      .where('tender_portal_issues.resolution_status', 'in', ['OPEN', 'ESCALATED']);
+
+    if (user.role === 'regional_manager' && user.zone_id) {
+      portalIssuesQuery = portalIssuesQuery.where('tenders.zone_id', '=', user.zone_id);
+    } else if (user.role === 'sales') {
+      portalIssuesQuery = portalIssuesQuery.where((eb) =>
+        eb.or([
+          eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
+          eb('tender_portal_issues.reported_by', '=', user.id),
+          eb('tender_portal_issues.responsible_person_id', '=', user.id),
+        ]),
+      );
+    }
+
+    const portalIssuesCount = await portalIssuesQuery.executeTakeFirst();
 
     const won = metrics?.tenders_won || 0;
     const lost = metrics?.tenders_lost || 0;
@@ -2940,11 +2974,13 @@ export class TendersService {
 
     if (user.role === 'regional_manager' && user.zone_id) {
       query = query.where('tenders.zone_id', '=', user.zone_id);
-    } else if (user.role === 'sales' && user.region_id) {
+    } else if (user.role === 'sales') {
       query = query.where((eb) =>
         eb.or([
-          eb('tenders.region_id', '=', user.region_id),
           eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
         ]),
       );
     }
@@ -4322,7 +4358,14 @@ export class TendersService {
     if (user.role === 'regional_manager' && user.region_id) {
       baseQuery = baseQuery.where('tenders.region_id', '=', user.region_id);
     } else if (user.role === 'sales') {
-      baseQuery = baseQuery.where('tenders.assigned_to', '=', user.id);
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
+        ]),
+      );
     }
 
     const allActive = await baseQuery.execute();
@@ -4424,7 +4467,14 @@ export class TendersService {
     if (user.role === 'regional_manager' && user.region_id) {
       q = q.where('tenders.region_id', '=', user.region_id);
     } else if (user.role === 'sales') {
-      q = q.where('tenders.assigned_to', '=', user.id);
+      q = q.where((eb) =>
+        eb.or([
+          eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
+        ]),
+      );
     }
 
     const tenders = await q.execute();
