@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { Kysely } from 'kysely';
+import { Database as DB } from '@arihant/shared';
 
 jest.setTimeout(60000);
 

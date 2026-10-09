@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { 
   X, 
   ShieldCheck, 
@@ -24,10 +25,10 @@ interface ProductDossierModalProps {
 export function ProductDossierModal({ product, onClose }: ProductDossierModalProps) {
   if (!product) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2B1A12]/50 backdrop-blur-[3px] animate-in fade-in duration-200">
       <div 
-        className="relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl border border-[#DCD8CE] shadow-2xl p-6 lg:p-8 space-y-6"
+        className="mt-popup relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl border border-[#DCD8CE] shadow-2xl p-6 lg:p-8 space-y-6"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close Button */}
@@ -175,6 +176,7 @@ export function ProductDossierModal({ product, onClose }: ProductDossierModalPro
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

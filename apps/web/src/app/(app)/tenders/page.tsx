@@ -72,8 +72,7 @@ import {
   StatGrid,
   EmptyState,
   InfoCallout,
-  Tabs,
-} from '@/components/ui';
+  Tabs, Spinner, ToolbarBox, ToolbarSlot, FilterMenu } from '@/components/ui';
 import { formatINR } from '@arihant/shared';
 
 // Lifecycle states and display labels
@@ -920,74 +919,9 @@ export default function TendersPage() {
     setPage(1);
   };
 
-  return (
-    <PageContainer>
-      {/* 1. Page Header */}
-      <PageHeader
-        title={user?.role === 'sales' ? 'My Assigned Tenders & Bids' : 'Tender Pipeline & Bids Command'}
-        description={
-          user?.role === 'sales'
-            ? `Your personalized defence & GeM bidding workbench. Showing tenders assigned to ${user?.full_name || 'you'}.`
-            : 'National defence & paramilitary bidding engine, GeM/CPPP portal issue tracking, dual-control signoffs, and executive win/loss analytics.'
-        }
-        icon={
-          <div className="p-2.5 rounded-xl bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 shadow-2xs">
-            <FileText className="h-6 w-6 text-[#0F5E63]" />
-          </div>
-        }
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                fetchTenders(true);
-                fetchDashboardStats();
-                if (user?.role !== 'sales') fetchReports();
-              }}
-              leftIcon={<RefreshCw className={`h-3.5 w-3.5 text-[#4A5568] ${isRefreshing ? 'animate-spin text-[#0F5E63]' : ''}`} />}
-            >
-              <span>Sync</span>
-            </Button>
-            {hasRole(['management', 'tender_team', 'admin']) && (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsImportOpen(true)}
-                  leftIcon={<Upload className="h-3.5 w-3.5 text-[#4A5568]" />}
-                >
-                  <span>Bulk Import</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsSettingsOpen(true)}
-                  leftIcon={<Settings className="h-3.5 w-3.5 text-[#4A5568]" />}
-                >
-                  <span>SLAs & Settings</span>
-                </Button>
-              </>
-            )}
-            {hasRole(['management', 'regional_manager', 'tender_team', 'admin']) && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => {
-                  setActionError(null);
-                  setIsCreateOpen(true);
-                }}
-                leftIcon={<Plus className="h-4 w-4" />}
-              >
-                <span>Register New Tender</span>
-              </Button>
-            )}
-          </div>
-        }
-      />
-
-      {/* 2. Top-Level Executive Navigation Tabs */}
-      <div className="border-b border-[#DCD8CE] pb-1">
+  // KPI cards lead the pipeline view; every other tab keeps the toolbar on top
+  const toolbarNode = (
+      <ToolbarBox>
         <Tabs
           activeTab={activeTab}
           onChange={(tabId) => {
@@ -1054,7 +988,73 @@ export default function TendersPage() {
               : []),
           ]}
         />
-      </div>
+      </ToolbarBox>
+  );
+
+  return (
+    <PageContainer>
+      {/* 1. Page Header */}
+      <PageHeader
+        title={user?.role === 'sales' ? 'My Assigned Tenders & Bids' : 'Tender Pipeline & Bids Command'}
+        icon={
+          <div className="p-2.5 rounded-xl bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 shadow-2xs">
+            <FileText className="h-6 w-6 text-[#0F5E63]" />
+          </div>
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                fetchTenders(true);
+                fetchDashboardStats();
+                if (user?.role !== 'sales') fetchReports();
+              }}
+              leftIcon={<RefreshCw className={`h-3.5 w-3.5 text-[#4A5568] ${isRefreshing ? 'animate-spin text-[#0F5E63]' : ''}`} />}
+            >
+              <span>Sync</span>
+            </Button>
+            {hasRole(['management', 'tender_team', 'admin']) && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsImportOpen(true)}
+                  leftIcon={<Upload className="h-3.5 w-3.5 text-[#4A5568]" />}
+                >
+                  <span>Bulk Import</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsSettingsOpen(true)}
+                  leftIcon={<Settings className="h-3.5 w-3.5 text-[#4A5568]" />}
+                >
+                  <span>SLAs & Settings</span>
+                </Button>
+              </>
+            )}
+            {hasRole(['management', 'regional_manager', 'tender_team', 'admin']) && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setActionError(null);
+                  setIsCreateOpen(true);
+                }}
+                leftIcon={<Plus className="h-4 w-4" />}
+              >
+                <span>Register New Tender</span>
+              </Button>
+            )}
+          </div>
+        }
+      />
+
+
+      {/* 2. Top-Level Executive Navigation Tabs */}
+      {activeTab !== 'pipeline' && toolbarNode}
 
       {/* ========================================================================= */}
       {/* TAB 1: OPERATIONAL PIPELINE & BIDS */}
@@ -1136,114 +1136,23 @@ export default function TendersPage() {
               />
             </div>
 
+            {toolbarNode}
+
             {/* Operational Urgency & Stage Quick-Filter Strip */}
-            <div className="bg-white rounded-xl border border-[#DCD8CE] p-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] font-bold text-[#4A5568] uppercase tracking-wider px-2 py-1 flex items-center gap-1">
-                  <Flame className="h-3.5 w-3.5 text-[#9A3412]" />
-                  <span>Command Filter:</span>
-                </span>
-
-                {/* Urgent <= 48h */}
-                <button
-                  type="button"
-                  onClick={() => handleHudClick('urgent_deadlines', 'urgent_48h')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border ${
-                    deadlineFilter === 'urgent_48h'
-                      ? 'bg-[#9A3412] text-white border-[#9A3412] shadow-xs'
-                      : (dashboardStats.urgent_deadlines || 0) > 0
-                        ? 'bg-[#FBEBDD] text-[#7C2D12] border-amber-300 hover:bg-[#FBEBDD]/80'
-                        : 'bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE] hover:bg-white'
-                  }`}
-                >
-                  <Zap className="h-3 w-3" />
-                  <span>Closing ≤ 48h</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${deadlineFilter === 'urgent_48h' ? 'bg-white/20 text-white' : 'bg-white text-[#9A3412]'}`}>
-                    {dashboardStats.urgent_deadlines || 0}
-                  </span>
-                </button>
-
-                {/* Upcoming <= 7d */}
-                <button
-                  type="button"
-                  onClick={() => handleHudClick('upcoming_deadlines', 'upcoming_7d')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border ${
-                    deadlineFilter === 'upcoming_7d'
-                      ? 'bg-[#0F5E63] text-white border-[#0F5E63] shadow-xs'
-                      : 'bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE] hover:bg-white'
-                  }`}
-                >
-                  <Clock className="h-3 w-3" />
-                  <span>Due ≤ 7 Days</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${deadlineFilter === 'upcoming_7d' ? 'bg-white/20 text-white' : 'bg-white text-[#0F5E63]'}`}>
-                    {dashboardStats.upcoming_deadlines || 0}
-                  </span>
-                </button>
-
-                {/* Under Preparation */}
-                <button
-                  type="button"
-                  onClick={() => handleHudClick('under_preparation', 'under_preparation')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border ${
-                    statusFilter === 'under_preparation'
-                      ? 'bg-[#0F5E63] text-white border-[#0F5E63] shadow-xs'
-                      : 'bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE] hover:bg-white'
-                  }`}
-                >
-                  <FileCheck className="h-3 w-3" />
-                  <span>In Preparation</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${statusFilter === 'under_preparation' ? 'bg-white/20 text-white' : 'bg-white text-[#14213D]'}`}>
-                    {dashboardStats.under_preparation || 0}
-                  </span>
-                </button>
-
-                {/* Submitted */}
-                <button
-                  type="button"
-                  onClick={() => handleHudClick('submitted', 'submitted')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border ${
-                    statusFilter === 'submitted'
-                      ? 'bg-[#0F5E63] text-white border-[#0F5E63] shadow-xs'
-                      : 'bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE] hover:bg-white'
-                  }`}
-                >
-                  <Send className="h-3 w-3" />
-                  <span>Submitted</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${statusFilter === 'submitted' ? 'bg-white/20 text-white' : 'bg-white text-[#14213D]'}`}>
-                    {dashboardStats.submitted || dashboardStats.tenders_submitted || 0}
-                  </span>
-                </button>
-
-                {/* Lost */}
-                <button
-                  type="button"
-                  onClick={() => handleHudClick('lost', 'lost')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border ${
-                    statusFilter === 'lost'
-                      ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
-                      : 'bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE] hover:bg-white'
-                  }`}
-                >
-                  <XCircle className="h-3 w-3" />
-                  <span>Lost Bids</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${statusFilter === 'lost' ? 'bg-white/20 text-white' : 'bg-white text-rose-700]'}`}>
-                    {dashboardStats.lost || dashboardStats.tenders_lost || 0}
-                  </span>
-                </button>
-
-                {/* Portal Issues Jump */}
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('portal_issues')}
-                  className="px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE] hover:bg-white"
-                >
-                  <AlertCircle className="h-3 w-3 text-amber-600" />
-                  <span>Portal Issues</span>
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                    {dashboardStats.open_portal_issues || globalPortalIssues.length}
-                  </span>
-                </button>
-              </div>
+            <ToolbarSlot><div className="bg-white rounded-xl border border-[#DCD8CE] p-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-2 text-xs">
+              <FilterMenu
+                label="Alerts & stages"
+                icon={<Flame className="h-3.5 w-3.5" />}
+                neutralKeys={['portal']}
+                options={[
+                  { key: 'urgent', label: 'Closing ≤ 48h', icon: <Zap />, count: dashboardStats.urgent_deadlines || 0, urgent: true, active: deadlineFilter === 'urgent_48h', onSelect: () => handleHudClick('urgent_deadlines', 'urgent_48h') },
+                  { key: 'upcoming', label: 'Due ≤ 7 days', icon: <Clock />, count: dashboardStats.upcoming_deadlines || 0, active: deadlineFilter === 'upcoming_7d', onSelect: () => handleHudClick('upcoming_deadlines', 'upcoming_7d') },
+                  { key: 'prep', label: 'In preparation', icon: <FileCheck />, count: dashboardStats.under_preparation || 0, active: statusFilter === 'under_preparation', onSelect: () => handleHudClick('under_preparation', 'under_preparation') },
+                  { key: 'submitted', label: 'Submitted', icon: <Send />, count: dashboardStats.submitted || dashboardStats.tenders_submitted || 0, active: statusFilter === 'submitted', onSelect: () => handleHudClick('submitted', 'submitted') },
+                  { key: 'lost', label: 'Lost bids', icon: <XCircle />, count: dashboardStats.lost || dashboardStats.tenders_lost || 0, active: statusFilter === 'lost', onSelect: () => handleHudClick('lost', 'lost') },
+                  { key: 'portal', label: 'Portal issues (open tab)', icon: <AlertCircle />, count: dashboardStats.open_portal_issues || globalPortalIssues.length, active: false, onSelect: () => setActiveTab('portal_issues') },
+                ]}
+              />
 
               {hasActiveFilters && (
                 <button
@@ -1255,125 +1164,13 @@ export default function TendersPage() {
                   <span>Reset All Filters</span>
                 </button>
               )}
-            </div>
-          </div>
-
-          {/* ========================================================================= */}
-          {/* Arihant Tender Lifecycle Pipeline Stepper (§19-§26) */}
-          {/* ========================================================================= */}
-          <div className="bg-white rounded-xl border border-[#DCD8CE] p-3.5 shadow-2xs space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 rounded-lg bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
-                  <Sparkles className="h-4 w-4" />
-                </span>
-                <div>
-                  <h3 className="text-xs font-bold text-[#14213D]">Arihant Operational Tender Lifecycle</h3>
-                  <p className="text-[11px] text-[#4A5568]">
-                    Governed 6-stage workflow: Identified → Internal Review → Authorisation → Preparation → Submitted → Result Tracking
-                  </p>
-                </div>
-              </div>
-              {statusFilter && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStatusFilter('');
-                    setPage(1);
-                  }}
-                  className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/30 hover:bg-[#E3EFEE]/80 flex items-center gap-1 transition-all"
-                >
-                  <X className="h-3 w-3" />
-                  <span>Clear Stage: {statusFilter.replace(/_/g, ' ')}</span>
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-0.5">
-              {[
-                {
-                  key: 'identified',
-                  stageNum: '1',
-                  name: 'Tender Identified',
-                  desc: 'New requirement logged',
-                  active: statusFilter === 'identified',
-                  count: dashboardStats.identified ?? dashboardStats.stage_1_identified ?? 0,
-                },
-                {
-                  key: 'awaiting_approval',
-                  stageNum: '2',
-                  name: 'Submitted for Review',
-                  desc: 'Awaiting Mgmt signoff',
-                  active: statusFilter === 'awaiting_approval',
-                  count: dashboardStats.pending_approvals ?? dashboardStats.awaiting_approval ?? 0,
-                },
-                {
-                  key: 'rejected_internally',
-                  stageNum: '3',
-                  name: 'Authorised Decision',
-                  desc: 'Approved / rejected by Mgmt',
-                  active: statusFilter === 'rejected_internally',
-                  count: dashboardStats.rejected_internally ?? dashboardStats.stage_3_decision ?? 0,
-                },
-                {
-                  key: 'under_preparation',
-                  stageNum: '4',
-                  name: 'Tender Preparation',
-                  desc: 'Bidding & PQ packets',
-                  active: statusFilter === 'under_preparation',
-                  count: dashboardStats.under_preparation ?? dashboardStats.stage_4_prep ?? 0,
-                },
-                {
-                  key: 'submitted',
-                  stageNum: '5',
-                  name: 'Tender Submitted',
-                  desc: 'Bids filed on GeM/portal',
-                  active: statusFilter === 'submitted',
-                  count: dashboardStats.submitted ?? dashboardStats.tenders_submitted ?? 0,
-                },
-                {
-                  key: 'results',
-                  stageNum: '6',
-                  name: 'Result Tracking',
-                  desc: 'Technical & outcome',
-                  active: ['won', 'lost', 'technical_eval', 'commercial_eval', 'results'].includes(statusFilter),
-                  count: dashboardStats.result_tracking ?? ((dashboardStats.won || 0) + (dashboardStats.lost || 0)),
-                },
-              ].map((st) => (
-                <div
-                  key={st.key}
-                  onClick={() => {
-                    setStatusFilter(statusFilter === st.key ? '' : st.key);
-                    setActiveHudFilter(null);
-                    setPage(1);
-                  }}
-                  className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
-                    st.active
-                      ? 'bg-[#E3EFEE] border-[#0F5E63] shadow-xs ring-1 ring-[#0F5E63]'
-                      : 'bg-[#FBFAF7] border-[#DCD8CE] hover:border-[#0F5E63] hover:bg-white'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] text-[#4A5568] font-semibold mb-1">
-                    <span className="font-bold text-[#0F5E63]">Step {st.stageNum}</span>
-                    <span className="font-bold text-[#14213D] bg-white px-1.5 py-0.5 rounded border border-[#DCD8CE]">
-                      {st.count}
-                    </span>
-                  </div>
-                  <div className="text-xs font-bold text-[#14213D] leading-tight truncate">
-                    {st.name}
-                  </div>
-                  <div className="text-[10px] text-[#4A5568] truncate mt-0.5">
-                    {st.desc}
-                  </div>
-                </div>
-              ))}
-            </div>
+            </div></ToolbarSlot>
           </div>
 
           {/* ========================================================================= */}
           {/* Search, Filter & Scope Command Bar (Compact Aligned Layout) */}
           {/* ========================================================================= */}
-          <div className="bg-white rounded-[14px] border border-[#DCD8CE] p-3 shadow-2xs space-y-3">
+          <ToolbarSlot><div className="bg-white rounded-[14px] border border-[#DCD8CE] p-3 shadow-2xs space-y-3">
             {/* Row 1: Scope Switcher + Search Input + Sort Dropdown */}
             <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
               {/* Scope Segmented Pill Switcher */}
@@ -1570,7 +1367,7 @@ export default function TendersPage() {
                 <option value="overdue">Overdue Submissions</option>
               </select>
             </div>
-          </div>
+          </div></ToolbarSlot>
 
           {/* ========================================================================= */}
           {/* Tenders Data Table & List View */}
@@ -1594,7 +1391,7 @@ export default function TendersPage() {
                   {isLoading ? (
                     <tr>
                       <td colSpan={8} className="p-12 text-center text-xs text-[#4A5568]">
-                        <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-[#0F5E63]" />
+                        <Spinner size="md" className="mx-auto mb-2" />
                         <span className="font-medium text-[#14213D]">Loading bidding opportunities...</span>
                       </td>
                     </tr>

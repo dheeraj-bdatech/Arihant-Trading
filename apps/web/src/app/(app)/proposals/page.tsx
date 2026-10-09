@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useTransition, useCallback } from 'react';
 import {
+  Bell,
   FileSpreadsheet,
   Plus,
   Search,
@@ -58,8 +59,7 @@ import {
   TableHead,
   TableRow,
   TableCell,
-  Tabs,
-} from '@/components/ui';
+  Tabs, Spinner, ToolbarBox, ToolbarSlot, FilterMenu } from '@/components/ui';
 import {
   PROPOSAL_STATUS_LABELS,
   PROPOSAL_LOST_REASONS,
@@ -726,7 +726,6 @@ export default function ProposalsPage() {
       {/* 1. Page Header */}
       <PageHeader
         title="Commercial Proposal Register"
-        description="Centralized tracker and lifecycle management for tender quotations, commercial bids, and customer follow-up actions."
         icon={<FileSpreadsheet className="h-6 w-6 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2">
@@ -876,7 +875,8 @@ export default function ProposalsPage() {
       </StatGrid>
 
       {/* 3. Filter & Search Controls */}
-      <Card padding="sm" className="bg-white border-[#DCD8CE] shadow-xs space-y-2.5">
+      <ToolbarBox defaultOpen>
+<ToolbarSlot><Card padding="sm" className="bg-white border-[#DCD8CE] shadow-xs space-y-2.5 filter-oneline">
         <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-center justify-between">
           <div className="flex flex-1 flex-wrap items-center gap-2.5">
             {/* Search Box */}
@@ -1023,31 +1023,27 @@ export default function ProposalsPage() {
 
           {/* Follow-up Condition Quick Buttons */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[11px] font-semibold text-[#4A5568] mr-1">Alerts:</span>
-            {[
-              { key: 'all', label: 'All' },
-              { key: 'due_today', label: 'Due Today' },
-              { key: 'overdue', label: 'Overdue' },
-              { key: 'upcoming', label: 'Upcoming' },
-              { key: 'no_followup', label: 'No Follow-up' },
-              { key: 'old_inactivity', label: 'Inactive 7d+' },
-            ].map((f) => (
-              <button
-                key={f.key}
-                onClick={() => {
+            <FilterMenu
+              label="Alerts"
+              icon={<Bell className="h-3.5 w-3.5" />}
+              options={[
+                { key: 'all', label: 'All proposals' },
+                { key: 'due_today', label: 'Due today' },
+                { key: 'overdue', label: 'Overdue' },
+                { key: 'upcoming', label: 'Upcoming' },
+                { key: 'no_followup', label: 'No follow-up' },
+                { key: 'old_inactivity', label: 'Inactive 7d+' },
+              ].map((f) => ({
+                ...f,
+                active: selectedFollowupCondition === f.key,
+                urgent: f.key === 'overdue',
+                onSelect: () => {
                   setSelectedFollowupCondition(f.key);
                   setActiveHudCard(null);
                   setPage(1);
-                }}
-                className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
-                  selectedFollowupCondition === f.key
-                    ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#FBFAF7] border border-[#DCD8CE] text-[#4A5568] hover:text-[#14213D] hover:bg-[#E3EFEE]'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
+                },
+              }))}
+            />
 
             {(search ||
               selectedStatus !== 'all' ||
@@ -1126,7 +1122,8 @@ export default function ProposalsPage() {
             )}
           </div>
         )}
-      </Card>
+      </Card></ToolbarSlot>
+</ToolbarBox>
 
       {/* 4. Commercial Price Quotes Table */}
       <div className="flex items-center justify-between pt-1 pb-0.5">
@@ -1210,7 +1207,7 @@ export default function ProposalsPage() {
             {isLoading ? (
               <TableRow>
                 <TableCell colSpan={15} className="py-12 text-center text-xs text-[#4A5568]">
-                  <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2 text-[#0F5E63]" />
+                  <Spinner size="md" className="mx-auto mb-2" />
                   Loading proposal register...
                 </TableCell>
               </TableRow>

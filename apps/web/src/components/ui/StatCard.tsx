@@ -1,10 +1,11 @@
 import React from 'react';
+import { useCountUp } from './CountUp';
 import { twMerge } from 'tailwind-merge';
 
 export interface StatCardProps extends React.HTMLAttributes<HTMLDivElement> {
   label?: string;
   title?: string;
-  value: string | number;
+  value: string | number | null | undefined;
   subtext?: string;
   icon?: React.ReactNode;
   valueColor?: 'default' | 'primary' | 'emerald' | 'amber' | 'rose';
@@ -28,6 +29,7 @@ export const StatCard: React.FC<StatCardProps> = ({
   className,
   ...props
 }) => {
+  const animatedValue = useCountUp(value);
   const displayLabel = label || title || '';
   const effectiveColor = valueColor || variant;
 
@@ -49,19 +51,20 @@ export const StatCard: React.FC<StatCardProps> = ({
   return (
     <div
       className={twMerge(
-        'p-4 bg-white border border-[#DCD8CE] rounded-[14px] shadow-2xs hover:border-[#0F5E63] transition-all duration-150 flex flex-col justify-between relative overflow-hidden',
+        'tilt-3d glare edge kpi-tile',
+        'p-3 sm:p-4 bg-white border border-[#DCD8CE] rounded-[14px] shadow-2xs hover:border-[#0F5E63] transition-all duration-150 flex flex-col justify-between relative overflow-hidden',
         className,
       )}
       {...props}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
-        <span className="text-xs font-semibold uppercase tracking-wider text-[#4A5568] line-clamp-1">
+        <span className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-[#4A5568] line-clamp-2 leading-tight">
           {displayLabel}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
           {badge}
           {icon && (
-            <span className="p-1.5 rounded-[8px] bg-[#FBFAF7] border border-[#DCD8CE] text-[#0F5E63]">
+            <span className="kpi-icon p-1.5 rounded-[8px] bg-[#FBFAF7] border border-[#DCD8CE] text-[#0F5E63]">
               {icon}
             </span>
           )}
@@ -69,14 +72,14 @@ export const StatCard: React.FC<StatCardProps> = ({
       </div>
 
       <div>
-        <div className={twMerge('text-2xl font-mono font-bold tracking-tight', valueColorCls)}>
-          {value}
+        <div className={twMerge('text-xl sm:text-2xl font-mono font-bold tracking-tight', valueColorCls)}>
+          {animatedValue}
         </div>
 
         {progress !== undefined && (
           <div className="w-full bg-[#ECE9E2] h-1.5 rounded-full mt-2 overflow-hidden">
             <div
-              className={twMerge('h-full rounded-full transition-all duration-300', progressColorCls)}
+              className={twMerge('h-full rounded-full transition-all duration-300 bar-grow', progressColorCls)}
               style={{ width: `${Math.min(Math.max(progress, 0), 100)}%` }}
             />
           </div>
@@ -109,8 +112,8 @@ export const StatGrid: React.FC<StatGridProps> = ({
   const colCls = {
     2: 'grid grid-cols-1 sm:grid-cols-2 gap-4',
     3: 'grid grid-cols-1 md:grid-cols-3 gap-4',
-    4: 'grid grid-cols-2 md:grid-cols-4 gap-4',
-    5: 'grid grid-cols-2 md:grid-cols-5 gap-4',
+    4: 'grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-4',
+    5: 'grid grid-cols-2 md:grid-cols-5 gap-2.5 sm:gap-4',
   }[effectiveCols] || 'grid grid-cols-2 md:grid-cols-4 gap-4';
 
   return (

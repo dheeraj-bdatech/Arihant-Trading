@@ -41,6 +41,14 @@ export function Equipment3DViewer({ product, className = '' }: Equipment3DViewer
     const container = mountRef.current;
     if (!container) return;
 
+    // Devices without WebGL (GPU disabled / blocked) get a quiet fallback instead of a crash
+    const probe = document.createElement('canvas');
+    if (!(probe.getContext('webgl2') || probe.getContext('webgl'))) {
+      container.innerHTML =
+        '<div style="height:100%;min-height:240px;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:#4A5568;font-size:12px;font-weight:600">3D preview is unavailable on this device (WebGL is disabled). Specifications and telemetry below are unaffected.</div>';
+      return;
+    }
+
     // Scene
     const scene = new THREE.Scene();
     sceneRef.current = scene;

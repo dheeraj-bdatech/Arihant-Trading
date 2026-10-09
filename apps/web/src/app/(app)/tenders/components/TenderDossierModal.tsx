@@ -16,8 +16,7 @@ import {
   TableRow,
   TableCell,
   InfoCallout,
-  EmptyState,
-} from '@/components/ui';
+  EmptyState, Spinner } from '@/components/ui';
 import {
   FileText,
   Calendar,
@@ -744,7 +743,7 @@ export function TenderDossierModal({
     >
       {loading ? (
         <div className="py-20 flex flex-col items-center justify-center space-y-3">
-          <RefreshCw className="h-8 w-8 text-[#0F5E63] animate-spin" />
+          <Spinner size="md" />
           <p className="text-sm font-medium text-[#4A5568]">Loading comprehensive tender dossier...</p>
         </div>
       ) : tender ? (

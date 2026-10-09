@@ -24,14 +24,14 @@ import {
   Tabs,
   PageContainer,
   PageHeader,
-  EmptyState,
-} from '@/components/ui';
+  EmptyState, PageLoader, ToolbarBox } from '@/components/ui';
 
 export default function TasksPage() {
   const { user, hasRole } = useAuth();
   const [tasks, setTasks] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
+
 
   // Modals
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -188,9 +188,7 @@ export default function TasksPage() {
     <PageContainer>
       {/* Top Header */}
       <PageHeader
-        badge="Task Execution Hub"
         title="Action Deliverables & Blocker Management"
-        subtitle="Track operational milestones, bid submissions, and unblock cross-functional dependencies."
         icon={<CheckSquare className="h-5 w-5 text-[#0F5E63]" />}
         actions={
           <Button
@@ -205,6 +203,7 @@ export default function TasksPage() {
       />
 
       {/* Tabs */}
+      <ToolbarBox>
       <Tabs
         tabs={[
           { id: 'all', label: 'All Tasks' },
@@ -215,11 +214,12 @@ export default function TasksPage() {
         activeTab={activeTab}
         onChange={setActiveTab}
       />
+      </ToolbarBox>
 
       {/* Task List */}
       <div className="space-y-3">
         {isLoading ? (
-          <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">Loading tasks...</div>
+          <PageLoader label="Loading tasks" />
         ) : tasks.length === 0 ? (
           <EmptyState
             icon={CheckSquare}

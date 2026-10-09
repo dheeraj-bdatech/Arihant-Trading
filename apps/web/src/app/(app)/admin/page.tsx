@@ -28,6 +28,10 @@ import {
   Lock,
   Save,
   Compass,
+  RefreshCw,
+  Database as DatabaseIcon,
+  MapPin,
+  History,
 } from 'lucide-react';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -46,6 +50,11 @@ import {
   TableRow,
   TableHead,
   TableCell,
+  ToolbarBox,
+  ToolbarSlot,
+  PageLoader,
+  InfoCallout,
+  EmptyState, StatGrid, StatCard, RowMenu,
 } from '@/components/ui';
 import { ROLE_PROFILES, USER_ROLES, type UserRole, type RolePermissionProfile } from '@arihant/shared';
 
@@ -103,6 +112,14 @@ const CAPABILITY_LABELS: Record<keyof RolePermissionProfile['capabilities'], { l
   },
 };
 
+const asRows = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : Array.isArray(res?.items) ? res.items : []);
+const show = (v: unknown, fallback = '—'): string =>
+  v === undefined || v === null || v === '' || String(v) === 'undefined' || String(v) === 'null' ? fallback : String(v);
+const fmtStamp = (v: unknown): string => {
+  const d = v ? new Date(v as string) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+};
+
 export default function AdminPage() {
   const { user, hasRole } = useAuth();
   const [activeTab, setActiveTab] = useState('permissions');
@@ -126,26 +143,30 @@ export default function AdminPage() {
     return initial;
   });
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const fetchAdminData = async () => {
-    try {
-      setIsLoading(true);
-      const [usersRes, productsRes, zonesRes, auditRes] = await Promise.all([
-        api.get('/users', { limit: 100 }),
-        api.get('/masters/products'),
-        api.get('/masters/zones'),
-        api.get('/audit', { limit: 50 }),
-      ]);
-
-      setUsersList(usersRes.data || []);
-      setProductsList(productsRes || []);
-      setZonesList(zonesRes || []);
-      setAuditLogs(auditRes.data || []);
-    } catch (err) {
-      console.error('Failed to load admin data:', err);
-    } finally {
-      setIsLoading(false);
-    }
+    setIsLoading(true);
+    const bad: string[] = [];
+    const load = (label: string, call: Promise<any>) =>
+      call.catch((err: any) => {
+        console.error(`Admin: ${label} failed`, err);
+        bad.push(label);
+        return null;
+      });
+    const [usersRes, productsRes, zonesRes, auditRes] = await Promise.all([
+      load('Users', api.get('/users', { limit: 100 })),
+      load('Equipment masters', api.get('/masters/products')),
+      load('Zones', api.get('/masters/zones')),
+      load('Audit log', api.get('/audit', { limit: 50 })),
+    ]);
+    setUsersList(asRows(usersRes));
+    setProductsList(asRows(productsRes));
+    setZonesList(asRows(zonesRes));
+    setAuditLogs(asRows(auditRes));
+    setFailed(bad);
+    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -215,6 +236,7 @@ export default function AdminPage() {
 
   const handleToggleUserActive = async (userId: string, currentStatus: boolean) => {
     try {
+      setActionError(null);
       await api.patch(`/users/${userId}`, {
         is_active: !currentStatus,
       });
@@ -222,7 +244,7 @@ export default function AdminPage() {
         prev.map((u) => (u.id === userId ? { ...u, is_active: !currentStatus } : u)),
       );
     } catch (err: any) {
-      alert(err.message || 'Failed to update user status');
+      setActionError(err?.message || 'Failed to update user status');
     }
   };
 
@@ -237,14 +259,28 @@ export default function AdminPage() {
   };
 
   const handleSavePermissions = () => {
-    setSaveFeedback(`Permissions baseline saved for ${ROLE_PROFILES[selectedRoleForConfig].title}. Changes applied across active sessions.`);
+    setSaveFeedback(`Draft for ${ROLE_PROFILES[selectedRoleForConfig].title} applied to this view only. Live access is still enforced by the backend RBAC guards.`);
     setTimeout(() => setSaveFeedback(null), 4000);
   };
 
+  const filteredUsers = usersList.filter((u) => {
+    const matchesSearch =
+      !search ||
+      (u.full_name || '').toLowerCase().includes(search.toLowerCase()) ||
+      (u.email || '').toLowerCase().includes(search.toLowerCase()) ||
+      (u.role || '').toLowerCase().includes(search.toLowerCase());
+    const matchesDept = selectedDept === 'all' || u.role === selectedDept;
+    return matchesSearch && matchesDept;
+  });
+
+
+
+
+
   if (!hasRole(['management', 'admin'])) {
     return (
-      <div className="p-12 text-center text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl space-y-3 shadow-xs">
-        <ShieldAlert className="h-12 w-12 text-red-500 mx-auto" />
+      <div className="mx-auto my-12 max-w-xl p-8 text-center text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl space-y-3 shadow-xs">
+        <ShieldAlert className="h-12 w-12 text-[#9A3412] mx-auto" />
         <h2 className="text-lg font-bold text-[#14213D]">Access Restricted</h2>
         <p className="text-xs">
           Only Top Management and System Administrators have permission to access master configurations, user administration, and role security policies.
@@ -253,29 +289,49 @@ export default function AdminPage() {
     );
   }
 
-  const filteredUsers = usersList.filter((u) => {
-    const matchesSearch =
-      !search ||
-      u.full_name.toLowerCase().includes(search.toLowerCase()) ||
-      u.email.toLowerCase().includes(search.toLowerCase()) ||
-      u.role.toLowerCase().includes(search.toLowerCase());
-    const matchesDept = selectedDept === 'all' || u.role === selectedDept;
-    return matchesSearch && matchesDept;
-  });
-
   const activeRoleProfile = ROLE_PROFILES[selectedRoleForConfig];
   const activeRoleCaps = permissionsState[selectedRoleForConfig];
 
+  if (isLoading && usersList.length === 0) {
+    return (
+      <PageContainer>
+        <PageLoader label="Loading administration data" rows={4} />
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer>
-      {/* ── HEADER ── */}
+      {/* ── HEADER (title hidden by design; actions dock into the toolbar) ── */}
       <PageHeader
-        badge="Master Administration & Security Controls"
         title="Enterprise Administration & System Masters"
-        subtitle="Role-Based Access Control (RBAC), personnel directory by department, equipment & MHA QRs, zones, and immutable security audit trails."
         icon={<Settings className="h-5 w-5 text-[#0F5E63]" />}
+        actions={
+          <Button variant="outline" size="sm" onClick={fetchAdminData} isLoading={isLoading} leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
+            Reload
+          </Button>
+        }
       />
 
+      {failed.length > 0 && (
+        <InfoCallout variant="danger" title="Some administration data could not be loaded">
+          {failed.join(', ')} did not respond. Your role may not be allowed to read them, or the API is unreachable. Use Reload to retry.
+        </InfoCallout>
+      )}
+      {actionError && (
+        <InfoCallout variant="danger" title="Action failed" onClose={() => setActionError(null)}>
+          {actionError}
+        </InfoCallout>
+      )}
+
+      <StatGrid cols={4}>
+        <StatCard title="Personnel" value={usersList.length} icon={<Users size={16} />} variant="primary" subtext={`${usersList.filter((u) => u.is_active).length} active`} />
+        <StatCard title="Roles" value={USER_ROLES.length} icon={<Shield size={16} />} variant="emerald" subtext="RBAC personas" />
+        <StatCard title="Zones" value={zonesList.length} icon={<MapPin size={16} />} variant="amber" subtext={`${productsList.length} equipment masters`} />
+        <StatCard title="Audit Entries" value={auditLogs.length} icon={<History size={16} />} variant="rose" subtext="Latest security trail" />
+      </StatGrid>
+
+      <ToolbarBox>
       <Tabs
         tabs={[
           { id: 'permissions', label: 'Role Permissions & Scope Matrix' },
@@ -287,6 +343,7 @@ export default function AdminPage() {
         activeTab={activeTab}
         onChange={setActiveTab}
       />
+      </ToolbarBox>
 
       {/* ── TAB 1: ROLE PERMISSIONS & SCOPE MATRIX ── */}
       {activeTab === 'permissions' && (
@@ -440,12 +497,12 @@ export default function AdminPage() {
                       <span>Configurable Capabilities Matrix: {activeRoleProfile.title}</span>
                     </h3>
                     <p className="text-xs text-[#4A5568] mt-0.5">
-                      Toggle operational and financial permissions for this persona. Changes are verified against backend RBAC guards.
+                      Preview operational and financial permissions for this persona. This is a draft view; the backend RBAC guards remain the source of truth.
                     </p>
                   </div>
                   <Button size="sm" variant="primary" onClick={handleSavePermissions} className="shrink-0">
                     <Save className="w-3.5 h-3.5 mr-1.5" />
-                    <span>Save Baseline</span>
+                    <span>Apply Draft</span>
                   </Button>
                 </div>
 
@@ -478,6 +535,9 @@ export default function AdminPage() {
 
                         <button
                           type="button"
+                          role="switch"
+                          aria-checked={!!isEnabled}
+                          aria-label={`${info.label}: ${isEnabled ? 'permitted' : 'restricted'}`}
                           onClick={() => handleToggleCapability(capKey)}
                           className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
                             isEnabled ? 'bg-[#0F5E63]' : 'bg-gray-300'
@@ -555,6 +615,7 @@ export default function AdminPage() {
       {/* ── TAB 2: USERS & DEPARTMENTS ── */}
       {activeTab === 'users' && (
         <div className="space-y-4">
+          <ToolbarSlot>
           {/* Department Breakdown Chips */}
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -582,6 +643,7 @@ export default function AdminPage() {
               );
             })}
           </div>
+          </ToolbarSlot>
 
           <Card>
             <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -613,12 +675,19 @@ export default function AdminPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {filteredUsers.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={8} className="py-10 text-center text-xs text-[#4A5568]">
+                      {usersList.length === 0 ? 'No personnel records were returned.' : 'No personnel match this filter.'}
+                    </TableCell>
+                  </TableRow>
+                )}
                 {filteredUsers.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
-                      {u.full_name}
+                      {show(u.full_name)}
                       <div className="text-[10px] text-[#4A5568] font-mono font-normal">
-                        {u.email}
+                        {show(u.email)}
                       </div>
                     </TableCell>
                     <TableCell className="text-[#14213D] whitespace-nowrap font-medium">
@@ -626,7 +695,7 @@ export default function AdminPage() {
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       <Badge variant="outline" size="sm" className="uppercase font-bold">
-                        {u.role.replace('_', ' ')}
+                        {show(u.role).replace(/_/g, ' ')}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-[#4A5568] font-mono whitespace-nowrap">
@@ -676,7 +745,7 @@ export default function AdminPage() {
               <div>
                 <div className="flex items-start justify-between gap-2">
                   <span className="font-bold text-[#14213D] text-xs leading-tight">
-                    {p.name}
+                    {show(p.name)}
                   </span>
                   {p.is_mha_qr && (
                     <Badge variant="urgent" size="sm" className="text-[10px] shrink-0">
@@ -685,7 +754,7 @@ export default function AdminPage() {
                   )}
                 </div>
                 <div className="mt-2 text-xs text-[#4A5568]">
-                  Category: <strong className="text-[#14213D]">{p.category}</strong>
+                  Category: <strong className="text-[#14213D]">{show(p.category)}</strong>
                 </div>
                 <div className="text-xs text-[#4A5568]">
                   Make / OEM: <strong className="text-[#14213D]">{p.make || 'Arihant Partner'}</strong>
@@ -712,8 +781,8 @@ export default function AdminPage() {
               className="space-y-2"
             >
               <div className="flex items-center justify-between">
-                <span className="font-bold text-[#14213D] text-sm">{z.name} Zone</span>
-                <span className="font-mono text-xs text-[#0F5E63] uppercase font-bold">{z.code}</span>
+                <span className="font-bold text-[#14213D] text-sm">{show(z.name)} Zone</span>
+                <span className="font-mono text-xs text-[#0F5E63] uppercase font-bold">{show(z.code)}</span>
               </div>
               <p className="text-xs text-[#4A5568]">
                 Strategic defence & law enforcement operational theater.
@@ -732,6 +801,9 @@ export default function AdminPage() {
             </span>
           </div>
 
+          {auditLogs.length === 0 ? (
+            <EmptyState icon={History} title="No audit entries" description="The security audit trail returned no records for your role." />
+          ) : (
           <div className="max-h-[600px] overflow-y-auto">
             <Table>
               <TableHeader>
@@ -747,7 +819,7 @@ export default function AdminPage() {
                 {auditLogs.map((log) => (
                   <TableRow key={log.id}>
                     <TableCell className="text-[#4A5568] font-mono text-[11px] whitespace-nowrap">
-                      {new Date(log.created_at).toLocaleString('en-IN')}
+                      {fmtStamp(log.created_at)}
                     </TableCell>
                     <TableCell className="text-[#14213D] font-sans font-semibold whitespace-nowrap">
                       {log.actor_name || 'System Engine'}
@@ -766,8 +838,10 @@ export default function AdminPage() {
               </TableBody>
             </Table>
           </div>
+          )}
         </Card>
       )}
+
     </PageContainer>
   );
 }

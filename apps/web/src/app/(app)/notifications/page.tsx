@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Bell,
   CheckCircle2,
@@ -32,8 +33,7 @@ import {
   PageHeader,
   EmptyState,
   Tabs,
-  Input,
-} from '@/components/ui';
+  Input, PageLoader, ToolbarBox, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, RowMenu } from '@/components/ui';
 
 interface NotificationItem {
   id: string;
@@ -50,6 +50,7 @@ interface NotificationItem {
 
 export default function NotificationsPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -155,6 +156,7 @@ export default function NotificationsPage() {
     });
   }, [notifications, activeTab, searchQuery]);
 
+
   const getEntityLink = (entityType?: string | null, entityId?: string | null) => {
     if (!entityType) return null;
     const type = entityType.toLowerCase();
@@ -206,9 +208,7 @@ export default function NotificationsPage() {
   return (
     <PageContainer>
       <PageHeader
-        badge="System Updates"
         title="Alerts, Directives & Notifications"
-        subtitle="Real-time system events, GeM bid closing alerts, and executive broadcasts."
         icon={<Bell className="h-5 w-5 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2">
@@ -235,7 +235,7 @@ export default function NotificationsPage() {
       />
 
       {/* Tabs & Search Filter Controls */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      <ToolbarBox row>
         <Tabs
           tabs={[
             { id: 'all', label: 'All Alerts', count: counts.all },
@@ -254,7 +254,7 @@ export default function NotificationsPage() {
         />
 
         <div className="w-full sm:w-72 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#5E6A7C] pointer-events-none" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#4A5568] pointer-events-none" />
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -262,7 +262,7 @@ export default function NotificationsPage() {
             className="pl-9 h-9"
           />
         </div>
-      </div>
+      </ToolbarBox>
 
       {/* Notifications List */}
       <div className="space-y-3 pt-1">
@@ -404,4 +404,3 @@ export default function NotificationsPage() {
     </PageContainer>
   );
 }
-

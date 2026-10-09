@@ -753,25 +753,6 @@ export class NotificationListener {
     });
   }
 
-  @OnEvent(AppEvents.SERVICE_CREATED)
-  async handleServiceCreated(payload: { ticketId: string; ticketNo: string; complaint: string; assignedTo?: string }) {
-    if (payload.assignedTo) {
-      await this.createAndPushNotification({
-        userId: payload.assignedTo,
-        type: 'service_ticket',
-        title: `Service Breakdown Ticket ${payload.ticketNo}`,
-        body: `Assigned breakdown complaint: ${payload.complaint}`,
-        entityType: 'service_ticket',
-        entityId: payload.ticketId,
-      });
-    }
-  }
-
-  @OnEvent(AppEvents.SERVICE_RESOLVED)
-  async handleServiceResolved(payload: { ticketId: string; ticketNo: string; actorId: string }) {
-    this.eventsGateway.sendToRole('service_team', 'service:resolved', payload);
-  }
-
   @OnEvent(AppEvents.TENDER_DEADLINE_SOON)
   async handleTenderDeadlineSoon(payload: { tenderId: string; tenderNo: string; daysLeft: number; ownerId?: string }) {
     if (payload.ownerId) {
@@ -951,6 +932,157 @@ export class NotificationListener {
   }) {
     this.eventsGateway.sendToRole('demo_team', 'demo:completed', payload);
     this.eventsGateway.sendToRole('management', 'demo:completed', payload);
+  }
+
+  @OnEvent(AppEvents.DEMO_SERVICE_ESCORT_REQUESTED)
+  async handleDemoServiceEscortRequested(payload: {
+    demoId: string;
+    demoNo: string;
+    organisationName: string;
+    location?: string;
+    requestedDate: string;
+    requestedById: string;
+    requestedByName: string;
+    serviceEngineerId?: string;
+    regionId?: string;
+    zoneId?: string;
+  }) {
+    // Notify all 5 stakeholders:
+    // 1. Management
+    // 2. Demo Team
+    // 3. Service Team (including assigned engineer)
+    // 4. Salesperson
+    // 5. Regional Team (RM of that area)
+    const targetUserIds = new Set<string>();
+
+    const mgmtAndDemoUsers = await this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', 'in', ['management', 'demo_team', 'admin'])
+      .where('is_active', '=', true)
+      .execute();
+    mgmtAndDemoUsers.forEach((u) => targetUserIds.add(u.id));
+
+    if (payload.serviceEngineerId) {
+      targetUserIds.add(payload.serviceEngineerId);
+    }
+    const serviceEngineers = await this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', '=', 'service_team')
+      .where('is_active', '=', true)
+      .execute();
+    serviceEngineers.forEach((u) => targetUserIds.add(u.id));
+
+    if (payload.requestedById) {
+      targetUserIds.add(payload.requestedById);
+    }
+
+    let rmQuery = this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', '=', 'regional_manager')
+      .where('is_active', '=', true);
+    if (payload.regionId || payload.zoneId) {
+      rmQuery = rmQuery.where((eb) => {
+        const conds = [];
+        if (payload.regionId) conds.push(eb('region_id', '=', payload.regionId));
+        if (payload.zoneId) conds.push(eb('zone_id', '=', payload.zoneId));
+        return eb.or(conds);
+      });
+    }
+    const rmUsers = await rmQuery.execute();
+    rmUsers.forEach((u) => targetUserIds.add(u.id));
+
+    for (const userId of targetUserIds) {
+      await this.createAndPushNotification({
+        userId,
+        type: 'demo_service_escort_requested',
+        title: `Service Escort Requested: Demo ${payload.demoNo}`,
+        body: `${payload.requestedByName} requested Service Team escort for live demo trial at ${payload.organisationName} (${payload.location || 'Site'}) on ${payload.requestedDate}.`,
+        entityType: 'demo',
+        entityId: payload.demoId,
+      });
+    }
+
+    this.eventsGateway.broadcast('demo:service_escort_requested', payload);
+  }
+
+  @OnEvent(AppEvents.DEMO_TECHNICAL_FAILURE)
+  async handleDemoTechnicalFailure(payload: {
+    demoId: string;
+    demoNo: string;
+    organisationName: string;
+    location?: string;
+    ticketId: string;
+    ticketNo: string;
+    failureReason: string;
+    actorId: string;
+    actorName: string;
+    requestedById?: string;
+    serviceEngineerId?: string;
+    regionId?: string;
+    zoneId?: string;
+  }) {
+    // Notify all 5 stakeholders:
+    // 1. Management
+    // 2. Demo Team
+    // 3. Service Team (including assigned engineer)
+    // 4. Salesperson
+    // 5. Regional Team (RM of that area)
+    const targetUserIds = new Set<string>();
+
+    const mgmtAndDemoUsers = await this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', 'in', ['management', 'demo_team', 'admin'])
+      .where('is_active', '=', true)
+      .execute();
+    mgmtAndDemoUsers.forEach((u) => targetUserIds.add(u.id));
+
+    if (payload.serviceEngineerId) {
+      targetUserIds.add(payload.serviceEngineerId);
+    }
+    const serviceEngineers = await this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', '=', 'service_team')
+      .where('is_active', '=', true)
+      .execute();
+    serviceEngineers.forEach((u) => targetUserIds.add(u.id));
+
+    if (payload.requestedById) {
+      targetUserIds.add(payload.requestedById);
+    }
+
+    let rmQuery = this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', '=', 'regional_manager')
+      .where('is_active', '=', true);
+    if (payload.regionId || payload.zoneId) {
+      rmQuery = rmQuery.where((eb) => {
+        const conds = [];
+        if (payload.regionId) conds.push(eb('region_id', '=', payload.regionId));
+        if (payload.zoneId) conds.push(eb('zone_id', '=', payload.zoneId));
+        return eb.or(conds);
+      });
+    }
+    const rmUsers = await rmQuery.execute();
+    rmUsers.forEach((u) => targetUserIds.add(u.id));
+
+    for (const userId of targetUserIds) {
+      await this.createAndPushNotification({
+        userId,
+        type: 'demo_technical_failure',
+        title: `⚠️ Live Demo Breakdown: ${payload.demoNo} -> ${payload.ticketNo}`,
+        body: `Hardware failure during trial at ${payload.organisationName}. Breakdown Ticket ${payload.ticketNo} generated and equipment quarantined to maintenance.`,
+        entityType: 'service_ticket',
+        entityId: payload.ticketId,
+      });
+    }
+
+    this.eventsGateway.broadcast('demo:technical_failure', payload);
   }
 
   // =========================================================================
@@ -1546,6 +1678,232 @@ export class NotificationListener {
 
     if (eventId) {
       await this.outboxService.markEventProcessed(eventId, 'NotificationListener.followUpOverdue');
+    }
+  }
+
+  // =======================================================================
+  // Module 6 — Service & After-Sales
+  // =======================================================================
+  private async activeUserIds(role: UserRole, zoneId?: string | null, includeNoZone = false): Promise<string[]> {
+    let q = this.db.selectFrom('users').select('id').where('role', '=', role).where('is_active', '=', true);
+    if (zoneId) {
+      q = includeNoZone
+        ? q.where((eb) => eb.or([eb('zone_id', '=', zoneId), eb('zone_id', 'is', null)]))
+        : q.where('zone_id', '=', zoneId);
+    }
+    return (await q.execute()).map((r) => r.id);
+  }
+
+  private async serviceAudience(p: { zoneId?: string | null; organisationId?: string; creatorId?: string | null }) {
+    const management = await this.activeUserIds('management');
+    let regionalManagers = p.zoneId ? await this.activeUserIds('regional_manager', p.zoneId) : [];
+    if (regionalManagers.length === 0) regionalManagers = management; // nobody owns the zone → management sees it
+    const serviceTeam = await this.activeUserIds('service_team', p.zoneId, true);
+
+    const sales = new Set<string>();
+    if (p.organisationId) {
+      const owners = await this.db
+        .selectFrom('leads')
+        .select('assigned_to')
+        .where('organisation_id', '=', p.organisationId)
+        .where('assigned_to', 'is not', null)
+        .distinct()
+        .execute();
+      owners.forEach((o) => o.assigned_to && sales.add(o.assigned_to));
+    }
+    if (p.creatorId) {
+      const c = await this.db.selectFrom('users').select(['id', 'role']).where('id', '=', p.creatorId).executeTakeFirst();
+      if (c?.role === 'sales') sales.add(c.id);
+    }
+    return { management, regionalManagers, serviceTeam, sales: [...sales] };
+  }
+
+  private async notifyUsers(
+    groups: (string | null | undefined)[][],
+    exceptIds: (string | null | undefined)[],
+    data: { type: string; title: string; body: string; entityType?: string; entityId: string },
+  ) {
+    const skip = new Set(exceptIds.filter(Boolean) as string[]);
+    const targets = new Set<string>();
+    for (const g of groups) for (const id of g) if (id && !skip.has(id)) targets.add(id);
+    for (const userId of targets) {
+      await this.createAndPushNotification({ userId, entityType: 'service_ticket', ...data });
+    }
+  }
+
+  @OnEvent(AppEvents.SERVICE_CREATED)
+  async handleServiceCreated(p: any) {
+    if (p.portal) return; // portal submissions get the richer SERVICE_PORTAL_REQUEST alert
+    const a = await this.serviceAudience(p);
+    const loud = p.priority === 'critical' || p.isRepeat || p.unverified;
+    await this.notifyUsers(
+      [a.serviceTeam, a.regionalManagers, a.sales, loud ? a.management : []],
+      [p.actorId, p.assignedTo],
+      {
+        type: 'service_ticket_created',
+        title: `${p.priority === 'critical' ? '🚨 CRITICAL ' : ''}New service ticket ${p.ticketNo}`,
+        body: `${p.organisationName || 'Customer'} reported a ${p.priority} priority fault${p.isRepeat ? ' (REPEAT complaint)' : ''}.`,
+        entityId: p.ticketId,
+      },
+    );
+    this.eventsGateway.sendToRole('service_team', 'service:ticket_created', p);
+  }
+
+  @OnEvent(AppEvents.SERVICE_PORTAL_REQUEST)
+  async handleServicePortalRequest(p: any) {
+    const a = await this.serviceAudience(p);
+    const loud = p.priority === 'critical' || p.isRepeat || !p.verified;
+    await this.notifyUsers([a.serviceTeam, a.regionalManagers, a.sales, loud ? a.management : []], [p.assignedTo], {
+      type: 'service_portal_request',
+      title: `${p.priority === 'critical' ? '🚨 CRITICAL ' : ''}Customer portal request ${p.ticketNo}`,
+      body: `${p.claimedOrganisation} (${p.contactName}, ${p.contactPhone}) raised a ${p.priority} fault${p.verified ? '' : ' — customer NOT verified, please link the account'}${p.isRepeat ? ' · repeat complaint' : ''}.`,
+      entityId: p.ticketId,
+    });
+    this.eventsGateway.sendToRole('service_team', 'service:portal_request', p);
+    this.eventsGateway.sendToRole('regional_manager', 'service:portal_request', p);
+  }
+
+  @OnEvent(AppEvents.SERVICE_ASSIGNED)
+  async handleServiceAssigned(p: any) {
+    if (p.engineerId && p.engineerId !== p.actorId) {
+      await this.createAndPushNotification({
+        userId: p.engineerId,
+        type: 'service_ticket_assigned',
+        title: `Service ticket assigned: ${p.ticketNo}`,
+        body: `${p.organisationName || 'Customer'} — ${p.priority} priority. Open the ticket to schedule your visit.`,
+        entityType: 'service_ticket',
+        entityId: p.ticketId,
+      });
+    }
+    if (p.previousEngineerId && p.previousEngineerId !== p.actorId && p.previousEngineerId !== p.engineerId) {
+      await this.createAndPushNotification({
+        userId: p.previousEngineerId,
+        type: 'service_ticket_reassigned',
+        title: `Ticket ${p.ticketNo} reassigned`,
+        body: 'This ticket has been moved to another engineer.',
+        entityType: 'service_ticket',
+        entityId: p.ticketId,
+      });
+    }
+  }
+
+  @OnEvent(AppEvents.SERVICE_STATUS_CHANGED)
+  async handleServiceStatusChanged(p: any) {
+    const a = await this.serviceAudience(p);
+    const to = String(p.to);
+    if (to === 'resolved') this.eventsGateway.sendToRole('service_team', 'service:resolved', p);
+    const managerFacing = ['awaiting_part', 'awaiting_customer', 'on_hold', 'revisit_required', 'resolved', 'report_submitted', 'cancelled'].includes(to);
+    const salesFacing = ['resolved', 'report_submitted', 'cancelled'].includes(to);
+    await this.notifyUsers(
+      [[p.assignedTo], [p.creatorId], managerFacing ? a.regionalManagers : [], salesFacing ? a.sales : []],
+      [p.actorId],
+      {
+        type: 'service_status_changed',
+        title: `Ticket ${p.ticketNo}: ${to.replace(/_/g, ' ')}`,
+        body: `${p.organisationName || 'Customer'} — moved from ${String(p.from).replace(/_/g, ' ')} to ${to.replace(/_/g, ' ')}${p.reason ? `. ${String(p.reason).slice(0, 140)}` : ''}`,
+        entityId: p.ticketId,
+      },
+    );
+  }
+
+  @OnEvent(AppEvents.SERVICE_ESCALATED)
+  async handleServiceEscalated(p: any) {
+    const a = await this.serviceAudience(p);
+    await this.notifyUsers([a.management, a.regionalManagers], [p.actorId], {
+      type: 'service_escalated',
+      title: `🚨 Escalated: ${p.ticketNo}`,
+      body: `${p.organisationName || 'Customer'} (${p.priority}) needs senior attention.${p.reason ? ` ${String(p.reason).slice(0, 160)}` : ''}`,
+      entityId: p.ticketId,
+    });
+  }
+
+  @OnEvent(AppEvents.SERVICE_REPORT_SUBMITTED)
+  async handleServiceReportSubmitted(p: any) {
+    const a = await this.serviceAudience(p);
+    await this.notifyUsers([a.regionalManagers, a.sales], [p.actorId], {
+      type: 'service_report_submitted',
+      title: `Service report filed: ${p.ticketNo}`,
+      body: p.furtherWork
+        ? `${p.organisationName || 'Customer'} — further work required, revisit pending.`
+        : `${p.organisationName || 'Customer'} — report awaiting your approval and closure.`,
+      entityId: p.ticketId,
+    });
+  }
+
+  @OnEvent(AppEvents.SERVICE_CLOSED)
+  async handleServiceClosed(p: any) {
+    const a = await this.serviceAudience(p);
+    await this.notifyUsers([a.sales, [p.creatorId], [p.assignedTo]], [p.actorId], {
+      type: 'service_closed',
+      title: `Ticket closed: ${p.ticketNo}`,
+      body: `${p.organisationName || 'Customer'} — service ticket closed and signed off.`,
+      entityId: p.ticketId,
+    });
+  }
+
+  @OnEvent(AppEvents.SERVICE_REOPENED)
+  async handleServiceReopened(p: any) {
+    const a = await this.serviceAudience(p);
+    await this.notifyUsers([a.management, a.regionalManagers, [p.assignedTo]], [p.actorId], {
+      type: 'service_reopened',
+      title: `Ticket reopened: ${p.ticketNo}`,
+      body: `${p.organisationName || 'Customer'} — reopened.${p.reason ? ` ${String(p.reason).slice(0, 160)}` : ''}`,
+      entityId: p.ticketId,
+    });
+  }
+
+  @OnEvent(AppEvents.SERVICE_SLA_BREACHED)
+  async handleServiceSlaBreached(p: any) {
+    const a = await this.serviceAudience(p);
+    await this.notifyUsers([[p.assignedTo], a.regionalManagers, a.management, p.priority === 'critical' ? a.serviceTeam : []], [], {
+      type: 'service_sla_breached',
+      title: `⏱ SLA ${p.kind === 'response' ? 'response' : 'resolution'} breached: ${p.ticketNo}`,
+      body: `${p.organisationName || 'Customer'} (${p.priority}) has passed its ${p.kind} deadline${p.priority === 'critical' ? ' — Liquidated Damages risk' : ''}.`,
+      entityId: p.ticketId,
+    });
+  }
+
+  @OnEvent(AppEvents.SERVICE_PART_ISSUED)
+  async handleServicePartIssued(p: any) {
+    if (!p.assignedTo || p.assignedTo === p.actorId) return;
+    await this.createAndPushNotification({
+      userId: p.assignedTo,
+      type: 'service_part_issued',
+      title: `Spare issued for ${p.ticketNo}`,
+      body: `${p.quantity} × ${p.partName} issued from stores.`,
+      entityType: 'service_ticket',
+      entityId: p.ticketId,
+    });
+  }
+
+  @OnEvent(AppEvents.SERVICE_CUSTOMER_COMMENT)
+  async handleServiceCustomerComment(p: any) {
+    const a = await this.serviceAudience(p);
+    await this.notifyUsers([p.assignedTo ? [p.assignedTo] : a.serviceTeam, a.regionalManagers], [], {
+      type: 'service_customer_comment',
+      title: `Customer message on ${p.ticketNo}`,
+      body: `${p.contactName || 'Customer'}: “${p.excerpt || ''}”`,
+      entityId: p.ticketId,
+    });
+  }
+
+  @OnEvent(AppEvents.SERVICE_CUSTOMER_FEEDBACK)
+  async handleServiceCustomerFeedback(p: any) {
+    const a = await this.serviceAudience(p);
+    if (p.action === 'confirm_resolved') {
+      await this.notifyUsers([a.regionalManagers, [p.assignedTo]], [], {
+        type: 'service_customer_confirmed',
+        title: `Customer confirmed fix: ${p.ticketNo}`,
+        body: `${p.contactName || 'Customer'} confirmed resolution${p.rating ? ` (${p.rating}/5)` : ''}. Approve the report and close the ticket.`,
+        entityId: p.ticketId,
+      });
+    } else {
+      await this.notifyUsers([[p.assignedTo], a.regionalManagers, a.management], [], {
+        type: 'service_customer_unresolved',
+        title: `🚨 Customer says NOT fixed: ${p.ticketNo}`,
+        body: `${p.contactName || 'Customer'}: ${String(p.remarks || '').slice(0, 160)}`,
+        entityId: p.ticketId,
+      });
     }
   }
 }

@@ -10,7 +10,7 @@ describe('Scope Utility — Cross-Region Access & IDOR Rules', () => {
     role: 'tender_team',
     zone_id: null,
     region_id: null,
-    department: 'Tenders',
+    reporting_manager_id: null,
     is_active: true,
   };
 
@@ -21,7 +21,7 @@ describe('Scope Utility — Cross-Region Access & IDOR Rules', () => {
     role: 'management',
     zone_id: null,
     region_id: null,
-    department: 'Executive',
+    reporting_manager_id: null,
     is_active: true,
   };
 
@@ -32,7 +32,7 @@ describe('Scope Utility — Cross-Region Access & IDOR Rules', () => {
     role: 'sales',
     zone_id: 'zone-north',
     region_id: 'reg-delhi',
-    department: 'Sales',
+    reporting_manager_id: null,
     is_active: true,
   };
 

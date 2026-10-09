@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Shield,
@@ -11,12 +11,18 @@ import {
   Lock,
 } from 'lucide-react';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
-import { Button, Input } from '@/components/ui';
+import { Button, Input, MithilaDecor } from '@/components/ui';
 import type { UserRole } from '@arihant/shared';
 
 export default function LoginPage() {
   const { login } = useAuth();
   const router = useRouter();
+
+  // the sign-in screen sits outside the app shell, so switch the Mithila theme on here too
+  useEffect(() => {
+    document.body.classList.add('mithila');
+    return () => document.body.classList.remove('mithila');
+  }, []);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -45,22 +51,23 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F6F5F1] grid grid-cols-1 lg:grid-cols-12 select-none text-[#14213D]">
+    <div className="relative min-h-screen bg-[#F6F5F1] grid grid-cols-1 lg:grid-cols-12 select-none text-[#14213D]">
       {/* Left Column: Brand Hero (matches ui-kit .auth__brand) */}
-      <section className="lg:col-span-5 bg-[#14213D] text-[#E8EAF0] p-8 lg:p-14 flex flex-col justify-between gap-8 border-r border-[#3A4A70]">
+      <MithilaDecor />
+      <section className="mt-login-hero relative z-10 lg:col-span-5 bg-[#FBE9D0] text-[#14213D] p-8 lg:p-14 flex flex-col justify-between gap-8 border-r-[1.5px] border-[#9A3412] overflow-hidden">
         <div className="space-y-2">
           <div className="flex items-center gap-2.5">
-            <div className="h-10 w-10 rounded-[8px] bg-[#0F5E63] flex items-center justify-center text-white shadow-xs">
-              <Shield className="h-5 w-5" />
+            <div className="h-10 w-10 rounded-[8px] mt-logo bg-[#9A3412] flex items-center justify-center text-white shadow-xs">
+              <img src="/mithila/lotus.svg" alt="" className="h-8 w-8" />
             </div>
             <div>
-              <div className="font-serif text-2xl font-bold text-white tracking-tight flex items-center gap-1.5">
+              <div className="font-serif text-2xl font-bold text-[#14213D] tracking-tight flex items-center gap-1.5">
                 <span>Arihant</span>
-                <span className="font-sans font-bold text-xs px-1.5 py-0.2 rounded bg-[#0F5E63] text-white">
+                <span className="font-sans font-bold text-xs px-1.5 py-0.2 rounded bg-[#9A3412] text-white">
                   BOS
                 </span>
               </div>
-              <p className="text-xs text-[#B8BFCC] font-medium">
+              <p className="text-xs text-[#4A5568] font-medium">
                 Defence &amp; Security GeM Enterprise ERP
               </p>
             </div>
@@ -68,46 +75,46 @@ export default function LoginPage() {
         </div>
 
         <div className="space-y-6 my-auto py-8">
-          <h1 className="font-serif text-3xl lg:text-4xl leading-tight font-bold text-white">
+          <h1 className="font-serif text-3xl lg:text-4xl leading-tight font-bold text-[#14213D]">
             Every stage of defence procurement, on one audited record.
           </h1>
-          <p className="text-sm text-[#B8BFCC] leading-relaxed">
+          <p className="text-sm text-[#4A5568] leading-relaxed">
             From PQ qualification, dual-control internal reviews, and GeM external portal dispatch to live reverse auctions and L1 win/loss post-mortems.
           </p>
           <div className="flex flex-wrap gap-2 pt-2">
-            <span className="px-2.5 py-1 rounded-full border border-[#3A4A70] text-xs font-mono text-[#E8EAF0]">
+            <span className="px-2.5 py-1 rounded-full border border-[#D9B98A] text-xs font-mono text-[#14213D]">
               PQ Qualification
             </span>
-            <span className="px-2.5 py-1 rounded-full border border-[#3A4A70] text-xs font-mono text-[#E8EAF0]">
+            <span className="px-2.5 py-1 rounded-full border border-[#D9B98A] text-xs font-mono text-[#14213D]">
               Internal Review
             </span>
-            <span className="px-2.5 py-1 rounded-full border border-[#3A4A70] text-xs font-mono text-[#E8EAF0]">
+            <span className="px-2.5 py-1 rounded-full border border-[#D9B98A] text-xs font-mono text-[#14213D]">
               GeM Submission
             </span>
-            <span className="px-2.5 py-1 rounded-full border border-[#F2B872] text-[#F2B872] text-xs font-mono font-bold bg-[#F2B872]/10">
+            <span className="px-2.5 py-1 rounded-full border border-[#9A3412] text-[#9A3412] text-xs font-mono font-bold bg-[#9A3412]/10">
               Live Reverse Auction
             </span>
-            <span className="px-2.5 py-1 rounded-full border border-[#3A4A70] text-xs font-mono text-[#E8EAF0]">
+            <span className="px-2.5 py-1 rounded-full border border-[#D9B98A] text-xs font-mono text-[#14213D]">
               L1 Post-Mortem
             </span>
           </div>
         </div>
 
-        <div className="p-4 rounded-[10px] bg-[#1F2E52] border border-[#3A4A70] space-y-1">
-          <span className="text-[10px] tracking-wider text-[#B8BFCC] uppercase font-bold">
+        <div className="p-4 rounded-[10px] bg-[#FFFCF5] border border-[#D9B98A] space-y-1">
+          <span className="text-[10px] tracking-wider text-[#4A5568] uppercase font-bold">
             GeM Gateway Status
           </span>
-          <p className="text-xs text-[#E8EAF0] leading-relaxed">
+          <p className="text-xs text-[#14213D] leading-relaxed">
             Official GeM Portal Bridge connected. All bids signed with registered DSC and territorial clearance.
           </p>
-          <span className="text-[11px] text-[#F2B872] font-mono block pt-1">
+          <span className="text-[11px] text-[#9A3412] font-mono block pt-1">
             Production Release v2.4 · Delhi HQ
           </span>
         </div>
       </section>
 
       {/* Right Column: Sign In & Role Picker (matches ui-kit .auth__form) */}
-      <main className="lg:col-span-7 p-6 sm:p-10 lg:p-14 flex items-center justify-center bg-[#F6F5F1]">
+      <main className="relative z-10 lg:col-span-7 p-6 sm:p-10 lg:p-14 flex items-center justify-center bg-[#F6F5F1]">
         <div className="w-full max-w-2xl space-y-8">
           <div>
             <span className="text-xs font-semibold text-[#4A5568] uppercase tracking-wider">
@@ -123,7 +130,7 @@ export default function LoginPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
             {/* Credentials Card */}
-            <div className="md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-6 shadow-2xs space-y-4">
+            <div className="edge md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-6 shadow-2xs space-y-4">
               <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
                   Credentials
@@ -180,7 +187,7 @@ export default function LoginPage() {
             </div>
 
             {/* Persona Switcher (8 Roles) */}
-            <div className="md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-5 shadow-2xs space-y-3">
+            <div className="edge md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-5 shadow-2xs space-y-3">
               <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
                 <div className="flex items-center space-x-1.5">
                   <UserCheck className="h-4 w-4 text-[#0F5E63]" />
@@ -234,6 +241,13 @@ export default function LoginPage() {
               </div>
             </div>
           </div>
+
+          <a
+            href="/service-request"
+            className="flex min-h-[44px] items-center justify-center rounded-lg border border-[#C9C4B8] bg-white px-4 text-center text-sm font-semibold text-[#0F5E63] hover:bg-[#E3EFEE]"
+          >
+            Raise or track a service request — no login needed
+          </a>
         </div>
       </main>
     </div>

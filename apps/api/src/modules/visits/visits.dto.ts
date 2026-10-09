@@ -91,6 +91,15 @@ export class CreateVisitDto {
 
   @IsBoolean()
   @IsOptional()
+  service_escort_required?: boolean;
+
+  @Transform(sanitizeUuid)
+  @IsPostgresUUID()
+  @IsOptional()
+  service_engineer_id?: string;
+
+  @IsBoolean()
+  @IsOptional()
   travel_required?: boolean;
 
   @IsString()

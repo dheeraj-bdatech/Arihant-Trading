@@ -36,8 +36,7 @@ import {
   PageHeader,
   EmptyState,
   StatCard,
-  StatGrid,
-} from '@/components/ui';
+  StatGrid, PageLoader, ToolbarBox, ToolbarSlot, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, RowMenu } from '@/components/ui';
 import { formatINR } from '@arihant/shared';
 
 export default function ExpensesPage() {
@@ -52,6 +51,7 @@ export default function ExpensesPage() {
   const [activeTab, setActiveTab] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+
 
   // Modals
   const [isSubmitOpen, setIsSubmitOpen] = useState(false);
@@ -223,9 +223,7 @@ export default function ExpensesPage() {
     <PageContainer>
       {/* Top Header */}
       <PageHeader
-        badge="Travel & Reimbursements"
         title="Two-Stage Expense Reimbursements"
-        subtitle="Stage 1: Regional Manager verification • Stage 2: Corporate Accounts disbursement."
         icon={<Receipt className="h-5 w-5 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2.5">
@@ -282,7 +280,8 @@ export default function ExpensesPage() {
       </StatGrid>
 
       {/* Category & Search Filter Bar */}
-      <div className="flex flex-col sm:flex-row gap-3 items-center justify-between p-3.5 bg-white border border-[#DCD8CE] rounded-[14px]">
+      <ToolbarBox>
+      <ToolbarSlot><div className="flex flex-col sm:flex-row gap-3 items-center justify-between p-3.5 bg-white border border-[#DCD8CE] rounded-[14px]">
         <div className="flex-1 w-full sm:w-auto">
           <Input
             placeholder="Search claims by purpose, employee, or customer..."
@@ -319,7 +318,7 @@ export default function ExpensesPage() {
             Apply Filter
           </Button>
         </div>
-      </div>
+      </div></ToolbarSlot>
 
       {/* Tabs */}
       <Tabs
@@ -332,6 +331,7 @@ export default function ExpensesPage() {
         activeTab={activeTab}
         onChange={setActiveTab}
       />
+      </ToolbarBox>
 
       {/* Claims Grid */}
       <div className="space-y-3">

@@ -297,7 +297,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         {isOpen && (
           <div
             className={twMerge(
-              'absolute z-50 left-0 right-0 w-full min-w-[200px] rounded-[10px] border border-[#DCD8CE] bg-white shadow-xl animate-in fade-in-50 zoom-in-95 duration-100 overflow-hidden',
+              'mt-select-panel absolute z-50 left-0 right-0 w-full min-w-[200px] rounded-[10px] border border-[#DCD8CE] bg-white shadow-xl animate-in fade-in-50 zoom-in-95 duration-100 overflow-hidden',
               dropUp ? 'bottom-full mb-1' : 'top-full mt-1',
             )}
           >
@@ -356,6 +356,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
                       key={opt.value || `empty-${idx}`}
                       role="option"
                       aria-selected={isSelected}
+                      style={{ ['--n' as string]: Math.min(idx, 12) }}
                       onClick={() => handleSelect(opt)}
                       onMouseEnter={() => setHighlightedIndex(idx)}
                       className={twMerge(

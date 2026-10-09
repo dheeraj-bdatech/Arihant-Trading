@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { advanceTicket, validReport } from './helpers/service-flow';
 
 jest.setTimeout(60000);
 
@@ -420,6 +421,13 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
     });
 
     it('E23: successfully marks ticket as resolved after rectification', async () => {
+      // an escalated ticket can only be de-escalated by a manager, then worked to resolution
+      const back = await request(app.getHttpServer())
+        .patch(`/api/service/tickets/${lifecycleTicketId}/status`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ status: 'in_progress', remarks: 'OEM specialist resolved the firmware fault remotely' });
+      expect(back.status).toBe(200);
+
       const res = await request(app.getHttpServer())
         .patch(`/api/service/tickets/${lifecycleTicketId}/status`)
         .set('Authorization', `Bearer ${serviceToken}`)
@@ -438,6 +446,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
   // =========================================================================
   describe('Group 4: Service Reports & Equipment History (E24 - E29)', () => {
     let reportTicketId: string;
+    let firstReportId: string;
 
     beforeAll(async () => {
       const res = await request(app.getHttpServer())
@@ -448,6 +457,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           complaint: 'Testing service report submission and history',
         });
       reportTicketId = res.body.id;
+      await advanceTicket(app, reportTicketId, mgmtToken, serviceUserId, 'in_progress');
     });
 
     it('E24: rejects report submission if problem_identified is missing (400)', async () => {
@@ -482,11 +492,13 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           problem_identified: 'Thermal paste dried up between detector array and heat sink',
           action_taken: 'Cleaned surface and reapplied silver thermal compound',
           customer_confirmation: true,
+          customer_name_signed: 'Maj. A. Singh, Security Officer',
           further_work_required: false,
         });
 
       expect(res.status).toBe(201);
       expect(res.body.id).toBeDefined();
+      firstReportId = res.body.id;
 
       const ticket = await request(app.getHttpServer())
         .get(`/api/service/tickets/${reportTicketId}`)
@@ -503,6 +515,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           organisation_id: testOrgId,
           complaint: 'Secondary display flickers intermittently',
         });
+      await advanceTicket(app, revisitTicket.body.id, mgmtToken, serviceUserId, 'in_progress');
 
       const nextVisit = new Date(Date.now() + 86400000 * 4).toISOString().split('T')[0];
       const res = await request(app.getHttpServer())
@@ -511,7 +524,9 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .send({
           problem_identified: 'LVDS cable shielding fractured inside hinge',
           action_taken: 'Patched temporary shielding with copper tape',
+          customer_name_signed: 'Maj. A. Singh, Security Officer',
           further_work_required: true,
+          further_work_description: 'Replace the LVDS cable assembly',
           next_visit_date: nextVisit,
         });
 
@@ -532,6 +547,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           organisation_id: testOrgId,
           complaint: 'Testing timeline interaction entry creation',
         });
+      await advanceTicket(app, timelineTicket.body.id, mgmtToken, serviceUserId, 'in_progress');
 
       await request(app.getHttpServer())
         .post(`/api/service/tickets/${timelineTicket.body.id}/report`)
@@ -540,6 +556,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           problem_identified: 'Dust accumulation in intake filters',
           action_taken: 'Vacuumed and compressed-air cleaned all filter meshes',
           customer_confirmation: true,
+          customer_name_signed: 'Maj. A. Singh, Security Officer',
           further_work_required: false,
         });
 
@@ -555,7 +572,13 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
     });
 
     it('E29: allows multiple service reports for a single ticket across repeat visits, preserving full history', async () => {
-      // Add 2nd report to reportTicketId
+      // The manager returns the first report, the engineer works again and files a second one
+      const ret = await request(app.getHttpServer())
+        .post(`/api/service/tickets/${reportTicketId}/reports/${firstReportId}/review`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ approved: false, return_reason: 'Attach the radiation survey reading' });
+      expect(ret.status).toBe(201);
+
       const res2 = await request(app.getHttpServer())
         .post(`/api/service/tickets/${reportTicketId}/report`)
         .set('Authorization', `Bearer ${serviceToken}`)
@@ -563,6 +586,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           problem_identified: 'Follow-up radiation leakage inspection',
           action_taken: 'Survey meter confirmed 0.05 uSv/hr baseline at 5cm distance',
           customer_confirmation: true,
+          customer_name_signed: 'Maj. A. Singh, Security Officer',
           further_work_required: false,
         });
 
@@ -591,6 +615,12 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           complaint: 'Ticket for testing closure immutability rules',
         });
       closedTicketId = res.body.id;
+      await advanceTicket(app, closedTicketId, mgmtToken, serviceUserId, 'in_progress');
+      const rep = await request(app.getHttpServer())
+        .post(`/api/service/tickets/${closedTicketId}/report`)
+        .set('Authorization', `Bearer ${serviceToken}`)
+        .send(validReport());
+      if (rep.status !== 201) throw new Error(`setup report failed: ${JSON.stringify(rep.body)}`);
     });
 
     it('E30: closes a ticket upon management / admin sign-off', async () => {
@@ -641,12 +671,12 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .patch(`/api/service/tickets/${closedTicketId}/status`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          status: 'received',
+          status: 'reopened',
           remarks: 'Customer reported issue persists; reopening incident',
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.status).toBe('received');
+      expect(res.body.status).toBe('reopened');
     });
   });
 

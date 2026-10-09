@@ -5,9 +5,11 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
+import { Tilt3D } from '@/components/layout/Tilt3D';
+import { MithilaFrame } from '@/components/layout/MithilaFrame';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 import { Shield, ShieldAlert, ArrowLeft, UserCheck } from 'lucide-react';
-import { Button } from '@/components/ui';
+import { Button, Spinner, MithilaDecor } from '@/components/ui';
 import { SidebarProvider } from '@/lib/sidebar-context';
 import type { UserRole } from '@arihant/shared';
 
@@ -19,7 +21,7 @@ const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] }[] = [
   { path: '/demos', name: 'Demo Fleet Matrix', roles: ['management', 'regional_manager', 'sales', 'demo_team', 'admin'] },
   { path: '/proposals', name: 'Commercial Proposals', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'admin'] },
   { path: '/deliveries', name: 'Equipment Logistics & Delivery Register', roles: ['management', 'regional_manager', 'sales', 'service_team', 'admin'] },
-  { path: '/service', name: 'Service Desk & Spares', roles: ['management', 'regional_manager', 'service_team', 'sales', 'admin'] },
+  { path: '/service', name: 'Service Desk & Spares', roles: ['management', 'regional_manager', 'service_team', 'sales', 'demo_team', 'tender_team', 'admin'] },
   { path: '/expenses', name: 'Travel & Expense Reimbursements', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/tasks', name: 'Task & Productivity Management', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/reports', name: 'Consolidated Reporting & Exports', roles: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'] },
@@ -55,12 +57,10 @@ export default function AppLayout({
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#F7F8FA] flex flex-col items-center justify-center space-y-3">
-        <div className="h-12 w-12 rounded-[10px] bg-[#0F5E4E] flex items-center justify-center shadow-md animate-pulse">
-          <Shield className="h-6 w-6 text-white" />
-        </div>
-        <p className="text-xs font-semibold text-[#5E6A7C] tracking-wider uppercase">
-          Loading Arihant BOS...
+      <div className="min-h-screen bg-[#F6F5F1] flex flex-col items-center justify-center gap-4">
+        <Spinner size="lg" />
+        <p className="font-mono text-[11px] font-semibold text-[#4A5568] tracking-[0.2em] uppercase">
+          Securing session<span className="loader-dots" aria-hidden />
         </p>
       </div>
     );
@@ -79,13 +79,18 @@ export default function AppLayout({
 
   return (
     <SidebarProvider>
-      <div className="h-screen bg-[#F6F5F1] flex flex-row text-[#152235] overflow-hidden">
+      <div className="h-screen bg-[#F6F5F1] flex flex-row text-[#14213D] overflow-hidden">
+        <Tilt3D />
+        <MithilaFrame />
         <Sidebar />
         <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
           <Navbar onOpenCommand={() => setIsCommandOpen(true)} />
-          <main className="flex-1 overflow-y-auto p-6 lg:p-8 bg-[#F6F5F1] custom-scrollbar">
+          <div className="relative flex-1 min-h-0">
+            <MithilaDecor />
+            <main key={pathname} className="route-3d mithila-page absolute inset-0 z-10 overflow-y-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-6 custom-scrollbar">
+              <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-5">
             {isUnauthorized ? (
-              <div className="max-w-2xl mx-auto my-12 bg-white border border-[#E3E7ED] rounded-[10px] p-8 shadow-xs text-center space-y-5">
+              <div className="max-w-2xl mx-auto my-12 bg-white border border-[#DCD8CE] rounded-[10px] p-8 shadow-xs text-center space-y-5">
                 <div className="h-14 w-14 rounded-[10px] bg-[#FBEBDD] border border-[#9A3412]/30 flex items-center justify-center mx-auto text-[#7C2D12]">
                   <ShieldAlert className="h-7 w-7" />
                 </div>
@@ -156,7 +161,9 @@ export default function AppLayout({
             ) : (
               children
             )}
-          </main>
+              </div>
+            </main>
+          </div>
         </div>
         <CommandPalette
           isOpen={isCommandOpen}

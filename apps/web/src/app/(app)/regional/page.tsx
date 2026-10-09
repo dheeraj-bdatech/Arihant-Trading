@@ -47,9 +47,9 @@ import {
   TableBody,
   TableCell,
   PageContainer,
+  PageHeader,
   StatCard,
-  StatGrid,
-} from '@/components/ui';
+  StatGrid, ToolbarBox, ToolbarSlot, PageLoader } from '@/components/ui';
 import { formatLakh, formatINR } from '@arihant/shared';
 
 const formatLeadCategory = (category?: string) => {
@@ -75,6 +75,8 @@ export default function RegionalPage() {
   const [data, setData] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('team');
+  const [tenderPage, setTenderPage] = useState(1);
+  const TENDER_PAGE_SIZE = 15;
   const [selectedZoneId, setSelectedZoneId] = useState<string>('');
   const [searchEmployee, setSearchEmployee] = useState('');
 
@@ -153,32 +155,27 @@ export default function RegionalPage() {
   const zoneName = data?.zone?.name || 'North';
   const zoneCode = data?.zone?.code || 'N';
 
+  if (isLoading && !data) {
+    return (
+      <PageContainer>
+        <PageLoader label="Loading territory command" rows={4} />
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer>
-      {/* ── TOP HERO BANNER (CoachAssist Modern Header) ── */}
-      <div className="relative overflow-hidden rounded-2xl bg-white border border-[#DCD8CE] p-6 lg:p-8 shadow-xs">
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#E3EFEE] border border-[#DCD8CE] text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider">
-              <Compass className="h-3.5 w-3.5" />
-              <span>{zoneName.toUpperCase()} ZONE COMMAND &bull; CODE {zoneCode}</span>
-            </div>
-            <h1 className="text-2xl lg:text-3xl font-extrabold text-[#14213D] tracking-tight flex items-center gap-2.5">
-              <span>Regional Territory Performance Hub</span>
-            </h1>
-            <p className="text-xs lg:text-sm text-[#4A5568] font-normal max-w-2xl leading-relaxed">
-              Consolidated command of sales leads, field tour execution, live GeM defense tenders, and employee accountability across {zoneName} Zone.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
+      <PageHeader
+        title={`${zoneName} Zone`}
+        actions={
+          <>
             {/* Zone Switcher for Management / Admin */}
             {hasRole(['management', 'admin']) && data?.availableZones && (
               <div className="flex items-center space-x-2 bg-[#FBFAF7] border border-[#DCD8CE] px-3 py-1 rounded-lg text-xs">
                 <span className="text-[10px] font-bold uppercase text-[#4A5568]">Territory:</span>
                 <Select
                   value={selectedZoneId}
-                  onChange={(e) => setSelectedZoneId(e.target.value)}
+                  onChange={(e) => { setSelectedZoneId(e.target.value); setTenderPage(1); }}
                   className="h-8 border-0 bg-transparent text-xs font-bold text-[#0F5E63] focus:ring-0 p-0"
                 >
                   {data.availableZones.map((z: any) => (
@@ -191,21 +188,21 @@ export default function RegionalPage() {
             )}
 
             <Link href="/visits">
-              <Button variant="secondary" size="md" className="shadow-xs">
+              <Button variant="secondary" size="sm">
                 <Calendar className="mr-2 h-4 w-4 text-[#0F5E63]" />
                 <span>Tour Planner</span>
               </Button>
             </Link>
 
             <Link href="/tasks">
-              <Button variant="primary" size="md" className="shadow-xs">
+              <Button variant="primary" size="sm">
                 <Plus className="mr-2 h-4 w-4" />
                 <span>Assign Task</span>
               </Button>
             </Link>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* ── 4 KEY ACCENT METRIC HUD CARDS ── */}
       <StatGrid cols={4}>
@@ -240,6 +237,7 @@ export default function RegionalPage() {
       </StatGrid>
 
       {/* ── 4 TABS NAVIGATION ── */}
+      <ToolbarBox>
       <Tabs
         tabs={[
           { id: 'team', label: `Team Accountability (${data?.teamPerformance?.length || 0})` },
@@ -250,11 +248,12 @@ export default function RegionalPage() {
         activeTab={activeTab}
         onChange={setActiveTab}
       />
+      </ToolbarBox>
 
       {/* ── TAB 1: EMPLOYEE ACCOUNTABILITY & PERFORMANCE ── */}
       {activeTab === 'team' && (
         <div className="space-y-4">
-          <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <ToolbarSlot><div className="p-4 rounded-xl bg-white border border-[#DCD8CE] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
             <div className="flex items-center space-x-2">
               <Users className="h-4 w-4 text-[#0F5E63]" />
               <span className="text-xs font-bold text-[#14213D]">
@@ -270,7 +269,7 @@ export default function RegionalPage() {
                 className="w-64 h-9"
               />
             </div>
-          </div>
+          </div></ToolbarSlot>
 
           <Card>
             <Table>
@@ -614,7 +613,7 @@ export default function RegionalPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data?.tenders?.regionalTendersList?.map((t: any) => {
+                {(data?.tenders?.regionalTendersList ?? []).slice((tenderPage - 1) * TENDER_PAGE_SIZE, tenderPage * TENDER_PAGE_SIZE).map((t: any) => {
                   const closing = t.bid_closing_date ? new Date(t.bid_closing_date) : null;
                   const diffDays = closing
                     ? Math.ceil((closing.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
@@ -672,6 +671,24 @@ export default function RegionalPage() {
                 })}
               </TableBody>
             </Table>
+            {(() => {
+              const list = data?.tenders?.regionalTendersList ?? [];
+              const pages = Math.max(1, Math.ceil(list.length / TENDER_PAGE_SIZE));
+              return (
+                <div className="flex items-center justify-between gap-3 border-t border-[#ECE9E2] px-4 py-3 text-xs text-[#4A5568]">
+                  <span>
+                    Showing {list.length === 0 ? 0 : (tenderPage - 1) * TENDER_PAGE_SIZE + 1}–
+                    {Math.min(tenderPage * TENDER_PAGE_SIZE, list.length)} of {data?.tenders?.total ?? list.length}
+                    {(data?.tenders?.total ?? 0) > list.length ? ` (first ${list.length} loaded)` : ''}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button size="xs" variant="secondary" disabled={tenderPage <= 1} onClick={() => setTenderPage((p) => p - 1)}>Prev</Button>
+                    <span className="font-mono">{tenderPage} / {pages}</span>
+                    <Button size="xs" variant="secondary" disabled={tenderPage >= pages} onClick={() => setTenderPage((p) => p + 1)}>Next</Button>
+                  </div>
+                </div>
+              );
+            })()}
           </Card>
         </div>
       )}

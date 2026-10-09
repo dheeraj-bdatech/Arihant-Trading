@@ -228,6 +228,8 @@ export interface VisitsTable {
   end_time: string | null;
   purpose: string | null;
   demo_required: Generated<boolean>;
+  service_escort_required?: Generated<boolean>;
+  service_engineer_id?: string | null;
   travel_required: Generated<boolean>;
   expected_outcome: string | null;
   status: Generated<VisitStatus>;
@@ -320,6 +322,9 @@ export interface DemosTable {
   travel_to: string | null;
   travel_date: string | null;
   travel_remarks: string | null;
+  service_escort_required?: Generated<boolean>;
+  service_engineer_id?: string | null;
+  service_ticket_id?: string | null;
   version: Generated<number>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
@@ -355,6 +360,7 @@ export interface DemoOutcomesTable {
   failure_reason: string | null;
   remarks: string | null;
   submitted_by: string | null;
+  service_ticket_id?: string | null;
   created_at: Generated<Date>;
 }
 
@@ -1105,6 +1111,50 @@ export interface ServiceTicketsTable {
   updated_by?: string | null;
   version?: Generated<number>;
   deleted_at?: Date | string | null;
+  intake_request_id?: string | null;
+  claimed_organisation_name?: string | null;
+  sla_pause_started_at?: Date | string | null;
+  sla_breach_notified_at?: Date | string | null;
+  sla_response_breach_notified_at?: Date | string | null;
+  sla_resolution_breach_notified_at?: Date | string | null;
+  auto_escalated_at?: Date | string | null;
+  reopened_count?: Generated<number>;
+  reopened_at?: Date | string | null;
+  cancelled_at?: Date | string | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface ServiceIntakeRequestsTable {
+  id: Generated<string>;
+  reference: string;
+  ticket_id: string | null;
+  organisation_id: string | null;
+  match_method: Generated<string>;
+  match_confidence: Generated<number>;
+  claimed_organisation: string;
+  claimed_department: string | null;
+  claimed_city: string | null;
+  claimed_state: string | null;
+  location: string | null;
+  contact_name: string;
+  contact_designation: string | null;
+  contact_phone: string;
+  contact_email: string | null;
+  product_id: string | null;
+  product_text: string | null;
+  equipment_serial: string | null;
+  problem_category: Generated<string>;
+  complaint: string;
+  urgency: string;
+  preferred_visit_date: string | null;
+  site_access_notes: string | null;
+  consent: Generated<boolean>;
+  status: Generated<string>;
+  duplicate_of: string | null;
+  tracking_token_hash: string;
+  ip_hash: string | null;
+  user_agent: string | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
 }
@@ -1444,6 +1494,7 @@ export interface Database {
   service_tickets: ServiceTicketsTable;
   service_reports: ServiceReportsTable;
   service_visits: ServiceVisitsTable;
+  service_intake_requests: ServiceIntakeRequestsTable;
   ticket_status_history: TicketStatusHistoryTable;
   ticket_assignment_history: TicketAssignmentHistoryTable;
   ticket_comments: TicketCommentsTable;

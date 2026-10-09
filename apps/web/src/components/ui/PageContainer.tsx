@@ -11,7 +11,7 @@ export const PageContainer = React.forwardRef<HTMLDivElement, PageContainerProps
       <div
         ref={ref}
         className={twMerge(
-          'space-y-6 pb-12 animate-in fade-in duration-200 max-w-full',
+          'page-stagger relative space-y-5 pb-12 max-w-full',
           className,
         )}
         {...props}

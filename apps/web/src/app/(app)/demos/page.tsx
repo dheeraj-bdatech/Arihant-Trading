@@ -2,17 +2,20 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import { useSearchParams, useRouter } from 'next/navigation';
 import {
   Box,
   Plus,
   MapPin,
   Calendar,
+  ChevronRight,
   CheckCircle,
   CheckCircle2,
   XCircle,
   AlertTriangle,
   Clock,
   ShieldCheck,
+  ShieldAlert,
   Send,
   Sparkles,
   Users,
@@ -25,13 +28,14 @@ import {
   BarChart3,
   History,
   Plane,
-  ChevronRight,
   Info,
   Check,
   X,
   TrendingUp,
   AlertCircle,
   Package,
+  ExternalLink,
+  FileText,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -51,8 +55,8 @@ import {
   EmptyState,
   InfoCallout,
   Tabs,
-  Checkbox,
-} from '@/components/ui';
+  Checkbox, Spinner, PageLoader, ToolbarBox,
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu } from '@/components/ui';
 
 // =========================================================================
 // STRUCTURED FAILURE TAXONOMY METADATA (§17 & §18)
@@ -197,13 +201,37 @@ const getStandardKitAccessories = (productName?: string, category?: string) => {
   ];
 };
 
-export default function DemosPage() {
+function DemosPageContent() {
   const { user, hasRole } = useAuth();
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get('tab');
 
   // Primary active tab
   const [activeTab, setActiveTab] = useState<
-    'pipeline' | 'my_demos' | 'coordinator' | 'fleet' | 'analytics' | 'history'
+    'pipeline' | 'my_demos' | 'coordinator' | 'fleet' | 'analytics' | 'history' | 'failures'
   >(user?.role === 'demo_team' ? 'my_demos' : 'pipeline');
+
+  // Sync URL search param ?tab=failures (and the other tab ids)
+  useEffect(() => {
+    if (
+      tabParam &&
+      ['pipeline', 'my_demos', 'coordinator', 'fleet', 'analytics', 'history', 'failures'].includes(tabParam)
+    ) {
+      setActiveTab(tabParam as any);
+    }
+  }, [tabParam]);
+
+  // Expanded table rows (detail panels)
+  const router = useRouter();
+
+  // Dedicated Failures Tab Filter & Modal States
+  const [failSearchQuery, setFailSearchQuery] = useState('');
+  const [failReasonFilter, setFailReasonFilter] = useState('all');
+  const [failEscortFilter, setFailEscortFilter] = useState('all');
+  const [failServiceTicketFilter, setFailServiceTicketFilter] = useState('all');
+  const [expandedFailId, setExpandedFailId] = useState<string | null>(null);
+  const [selectedFailureDetail, setSelectedFailureDetail] = useState<any | null>(null);
+  const [isFailureDetailModalOpen, setIsFailureDetailModalOpen] = useState(false);
 
   // Core Data States
   const [demos, setDemos] = useState<any[]>([]);
@@ -211,6 +239,7 @@ export default function DemosPage() {
   const [organisations, setOrganisations] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
   const [analyticsData, setAnalyticsData] = useState<any | null>(null);
   const [customerHistoryDemos, setCustomerHistoryDemos] = useState<any[]>([]);
 
@@ -219,6 +248,61 @@ export default function DemosPage() {
     if (!user?.id) return [];
     return demos.filter((d) => d.assigned_to === user.id);
   }, [demos, user?.id]);
+
+  // Comprehensive Failed Demos & Technical Breakdowns List
+  const failedDemos = useMemo(() => {
+    return demos.filter(
+      (d) =>
+        d.outcome?.result === 'fail' ||
+        d.status === 'failed' ||
+        d.outcome?.failure_reason ||
+        d.service_ticket_id ||
+        d.outcome?.service_ticket_id,
+    );
+  }, [demos]);
+
+  // Filtered Failures for Management Incident Audit
+  const displayedFailures = useMemo(() => {
+    return failedDemos.filter((d) => {
+      // Reason filter
+      if (failReasonFilter !== 'all' && d.outcome?.failure_reason !== failReasonFilter) {
+        return false;
+      }
+      // Escort filter
+      if (failEscortFilter === 'escorted' && !d.service_escort_required) return false;
+      if (failEscortFilter === 'unescorted' && d.service_escort_required) return false;
+
+      // Service ticket filter
+      const hasTicket = Boolean(d.service_ticket_id || d.outcome?.service_ticket_id);
+      if (failServiceTicketFilter === 'ticket_logged' && !hasTicket) return false;
+      if (failServiceTicketFilter === 'no_ticket' && hasTicket) return false;
+
+      // Text search
+      if (failSearchQuery) {
+        const q = failSearchQuery.toLowerCase();
+        const orgName = (d.organisation_name || '').toLowerCase();
+        const prodName = (d.product_name || '').toLowerCase();
+        const loc = (d.location || '').toLowerCase();
+        const demoNo = (d.demo_no || '').toLowerCase();
+        const reason = (d.outcome?.failure_reason || '').toLowerCase();
+        const ticketNo = (d.service_ticket_no || d.service_ticket_id || '').toLowerCase();
+        const remarks = (d.outcome?.remarks || d.outcome?.notes || '').toLowerCase();
+        if (
+          !orgName.includes(q) &&
+          !prodName.includes(q) &&
+          !loc.includes(q) &&
+          !demoNo.includes(q) &&
+          !reason.includes(q) &&
+          !ticketNo.includes(q) &&
+          !remarks.includes(q)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [failedDemos, failReasonFilter, failEscortFilter, failServiceTicketFilter, failSearchQuery]);
+
   const [selectedHistoryOrgId, setSelectedHistoryOrgId] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
 
@@ -284,6 +368,8 @@ export default function DemosPage() {
     travel_to: '',
     travel_date: '',
     travel_remarks: '',
+    service_escort_required: false,
+    service_engineer_id: '',
   });
 
   // Selected demo equipment unit for Create New Demo Modal
@@ -472,6 +558,7 @@ export default function DemosPage() {
         productsRes,
         analyticsRes,
         teamRes,
+        serviceRes,
       ] = await Promise.all([
         api.get('/demos', { limit: 100 }),
         api.get('/demos/equipment'),
@@ -479,6 +566,7 @@ export default function DemosPage() {
         api.get('/masters/products'),
         api.get('/demos/analytics').catch(() => null),
         api.get('/demos/team/availability').catch(() => []),
+        api.get('/users', { role: 'service_team' }).catch(() => ({ data: [] })),
       ]);
 
       setDemos(demosRes.data || []);
@@ -486,6 +574,7 @@ export default function DemosPage() {
       setOrganisations(orgsRes.data || orgsRes || []);
       setProducts(productsRes || []);
       setTeamMembers(teamRes || []);
+      setServiceEngineers(serviceRes.data || serviceRes || []);
       if (analyticsRes) setAnalyticsData(analyticsRes);
     } catch (err: any) {
       console.error('Failed to load demo data:', err);
@@ -591,6 +680,15 @@ export default function DemosPage() {
     filterSearch,
   ]);
 
+
+  const coordinatorDemos = demos.filter((d) =>
+    ['requested', 'under_planning', 'team_assigned', 'equipment_reserved'].includes(d.status),
+  );
+
+
+
+
+
   // =========================================================================
   // ACTIONS & HANDLERS
   // =========================================================================
@@ -607,6 +705,8 @@ export default function DemosPage() {
         product_id: newDemo.product_id || undefined,
         assigned_to: newDemo.assigned_to || undefined,
         visit_id: newDemo.visit_id || undefined,
+        service_escort_required: newDemo.service_escort_required || false,
+        service_engineer_id: newDemo.service_escort_required && newDemo.service_engineer_id ? newDemo.service_engineer_id : undefined,
         travel_from: newDemo.travel_required ? newDemo.travel_from : undefined,
         travel_to: newDemo.travel_required ? newDemo.travel_to : undefined,
         travel_date: newDemo.travel_required ? newDemo.travel_date : undefined,
@@ -640,6 +740,8 @@ export default function DemosPage() {
         travel_to: '',
         travel_date: '',
         travel_remarks: '',
+        service_escort_required: false,
+        service_engineer_id: '',
       });
       await fetchDemosData();
     } catch (err: any) {
@@ -1097,6 +1199,30 @@ export default function DemosPage() {
     }
   };
 
+  const openConfirmDate = (demo: any) => {
+    setSelectedDemo(demo);
+    setConfirmForm({
+      confirmed_date: demo.confirmed_date || demo.requested_date || new Date().toISOString().split('T')[0],
+      remarks: demo.remarks || '',
+    });
+    setIsConfirmDateOpen(true);
+  };
+
+  const openRescheduleDemo = (demo: any) => {
+    setSelectedDemo(demo);
+    setRescheduleForm({
+      new_date: demo.confirmed_date || demo.requested_date || new Date().toISOString().split('T')[0],
+      reason: '',
+    });
+    setIsRescheduleOpen(true);
+  };
+
+  const openCancelDemo = (demo: any) => {
+    setSelectedDemo(demo);
+    setCancelForm({ cancellation_reason: 'customer_cancelled', remarks: '' });
+    setIsCancelOpen(true);
+  };
+
   // Unified, high-fidelity Demonstration Card for both "Demo Pipeline & Requests" and "My Demos"
   const renderDemoCard = (demo: any) => (
     <Card
@@ -1460,109 +1586,184 @@ export default function DemosPage() {
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Coordinator / Planning actions */}
-          {demo.status !== 'completed' && demo.status !== 'cancelled' && (
-            <>
-              {hasRole(['demo_team', 'management', 'regional_manager', 'admin']) && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleOpenAssignTeam(demo)}
-                  className="text-xs border-[#DCD8CE] text-indigo-700 hover:bg-indigo-50"
-                >
-                  <Users className="h-3.5 w-3.5 mr-1 text-indigo-600" />
-                  Assign Team
-                </Button>
-              )}
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleOpenReserve(demo)}
-                className="text-xs border-[#DCD8CE] text-amber-700 hover:bg-amber-50"
-              >
-                <Package className="h-3.5 w-3.5 mr-1 text-amber-600" />
-                {demo.reservations && demo.reservations.length > 0
-                  ? 'Manage Kit & Serials'
-                  : 'Reserve Unit'}
-              </Button>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setSelectedDemo(demo);
-                  setConfirmForm({
-                    confirmed_date:
-                      demo.confirmed_date ||
-                      demo.requested_date ||
-                      new Date().toISOString().split('T')[0],
-                    remarks: demo.remarks || '',
-                  });
-                  setIsConfirmDateOpen(true);
-                }}
-                className="text-xs border-[#DCD8CE] text-teal-700 hover:bg-teal-50"
-              >
-                <CheckCircle2 className="h-3.5 w-3.5 mr-1 text-teal-600" />
-                Confirm Date
-              </Button>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setSelectedDemo(demo);
-                  setRescheduleForm({
-                    new_date:
-                      demo.confirmed_date ||
-                      demo.requested_date ||
-                      new Date().toISOString().split('T')[0],
-                    reason: '',
-                  });
-                  setIsRescheduleOpen(true);
-                }}
-                className="text-xs border-[#DCD8CE] text-purple-700 hover:bg-purple-50"
-              >
-                <Clock className="h-3.5 w-3.5 mr-1 text-purple-600" />
-                Reschedule
-              </Button>
-            </>
-          )}
-
-          {/* Outcome execution */}
-          {demo.status !== 'completed' && demo.status !== 'cancelled' && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => handleOpenOutcome(demo)}
-              className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-            >
-              <ShieldCheck className="h-3.5 w-3.5 mr-1" />
-              Record Outcome
-            </Button>
-          )}
-
-          {/* Cancel demo */}
-          {demo.status !== 'completed' && demo.status !== 'cancelled' && (
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => {
-                setSelectedDemo(demo);
-                setCancelForm({ cancellation_reason: 'customer_cancelled', remarks: '' });
-                setIsCancelOpen(true);
-              }}
-              className="text-xs"
-            >
-              <X className="h-3.5 w-3.5 mr-1" />
-              Cancel
-            </Button>
-          )}
-        </div>
+        {(() => {
+          const open = demo.status !== 'completed' && demo.status !== 'cancelled';
+          return (
+            <RowMenu
+              buttonLabel="Actions"
+              label="Demo actions"
+              items={[
+                {
+                  key: 'assign',
+                  label: demo.assigned_to ? 'Change Team' : 'Assign Team',
+                  icon: <Users />,
+                  hidden: !(open && hasRole(['demo_team', 'management', 'regional_manager', 'admin'])),
+                  onSelect: () => handleOpenAssignTeam(demo),
+                },
+                {
+                  key: 'reserve',
+                  label: demo.reservations && demo.reservations.length > 0 ? 'Manage Kit & Serials' : 'Reserve Unit',
+                  icon: <Package />,
+                  hidden: !open,
+                  onSelect: () => handleOpenReserve(demo),
+                },
+                { key: 'confirm', label: 'Confirm Date', icon: <CheckCircle2 />, hidden: !open, onSelect: () => openConfirmDate(demo) },
+                { key: 'resched', label: 'Reschedule', icon: <Clock />, hidden: !open, onSelect: () => openRescheduleDemo(demo) },
+                { key: 'outcome', label: 'Record Outcome', icon: <ShieldCheck />, hidden: !open, onSelect: () => handleOpenOutcome(demo) },
+                { key: 'cancel', label: 'Cancel Demo', icon: <X />, danger: true, hidden: !open, onSelect: () => openCancelDemo(demo) },
+              ]}
+            />
+          );
+        })()}
       </div>
     </Card>
   );
+
+  const renderCoordinatorCard = (demo: any) => (
+    <Card key={demo.id} className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-bold text-[#0F5E63] px-2 py-0.5 rounded bg-[#E3EFEE] border border-[#DCD8CE]">
+              {demo.demo_no}
+            </span>
+            <h4 className="font-bold text-[#14213D]">{demo.organisation_name}</h4>
+            {renderStatusBadge(demo.status)}
+          </div>
+          <div className="text-xs text-[#4A5568] mt-2 space-y-1">
+            <p>
+              <strong className="text-[#14213D]">Site Location:</strong> {demo.location || 'Client Proving Ground'}
+            </p>
+            <p>
+              <strong className="text-[#14213D]">Product:</strong> {demo.product_name || 'Security Scanning Unit'}
+            </p>
+            <p>
+              <strong className="text-[#14213D]">Requested Date:</strong> {formatDemoDate(demo.requested_date)}
+            </p>
+            <p>
+              <strong className="text-[#14213D]">Purpose:</strong> {demo.purpose || 'Qualify tender criteria'}
+            </p>
+          </div>
+        </div>
+  
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleOpenAssignTeam(demo)}
+            className="text-xs border-[#DCD8CE] text-indigo-700 hover:bg-indigo-50"
+          >
+            <Users className="h-3.5 w-3.5 mr-1 text-indigo-600" />
+            {demo.assigned_to ? 'Change Team' : 'Assign Team'}
+          </Button>
+  
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleOpenReserve(demo)}
+            className="text-xs border-[#DCD8CE] text-amber-700 hover:bg-amber-50"
+          >
+            <Package className="h-3.5 w-3.5 mr-1 text-amber-600" />
+            Reserve Depot Unit
+          </Button>
+  
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => openConfirmDate(demo)}
+            className="text-xs"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+            Confirm Date
+          </Button>
+        </div>
+      </div>
+  
+      {/* Coordinator View of Reservations (§16) */}
+      {demo.reservations && demo.reservations.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-[#E2ECF8] space-y-2">
+          <span className="text-xs font-bold text-[#14213D] flex items-center gap-1.5">
+            <Package className="h-3.5 w-3.5 text-[#0F5E63]" />
+            Allocated Fleet Units & Custodian Status:
+          </span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {demo.reservations.map((res: any) => (
+              <div
+                key={res.id}
+                className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] text-xs flex flex-col justify-between gap-1.5"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-[#14213D]">
+                      {res.model} ({res.serial_no || 'No Serial'})
+                    </span>
+                    {res.status === 'approved' && <Badge variant="success">APPROVED</Badge>}
+                    {res.status === 'requested' && <Badge variant="warning">PENDING APPROVAL</Badge>}
+                    {res.status === 'rejected' && <Badge variant="danger">REJECTED</Badge>}
+                    {res.status === 'allocated_alternative' && <Badge variant="info">REALLOCATED</Badge>}
+                    {res.status === 'cancelled' && <Badge variant="outline">CANCELLED</Badge>}
+                  </div>
+                  <p className="text-[11px] text-[#4A5568] mt-0.5">
+                    Depot: {res.current_location} • {formatDemoDate(res.reserved_from)} to {formatDemoDate(res.reserved_to)}
+                  </p>
+                  {res.approved_by_name && (
+                    <p className="text-[11px] text-emerald-700">Approved by: {res.approved_by_name}</p>
+                  )}
+                  {res.rejection_reason && (
+                    <p className="text-[11px] text-rose-700">Reason: {res.rejection_reason}</p>
+                  )}
+                  {res.alt_model && (
+                    <p className="text-[11px] text-indigo-700">
+                      Alternative: {res.alt_model} ({res.alt_serial_no || 'N/A'})
+                    </p>
+                  )}
+                </div>
+  
+                {res.status === 'requested' && (
+                  <div className="flex items-center gap-1.5 pt-1.5 border-t border-[#E2ECF8]">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => handleApproveReservation(res)}
+                      className="bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
+                    >
+                      <Check className="h-3 w-3 mr-1" />
+                      Approve
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => handleOpenAllocate(res, demo)}
+                      className="bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
+                    >
+                      Allocate Alt Unit
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => handleOpenReject(res, demo)}
+                      className="bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
+                    >
+                      <X className="h-3 w-3 mr-1" />
+                      Reject
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+
+  if (isLoading && demos.length === 0) {
+    return (
+      <PageContainer>
+        <PageLoader label="Loading field demonstrations" rows={4} />
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>
@@ -1570,7 +1771,6 @@ export default function DemosPage() {
       <PageHeader
         icon={<Sparkles className="h-7 w-7 text-[#0F5E63]" />}
         title="Field Demonstrations & Trials Management"
-        description="End-to-end management of client trial requests, multi-depot fleet availability, equipment reservations, date confirmation, failure analysis, and visit integration."
         actions={
           <>
             <Button
@@ -1621,6 +1821,7 @@ export default function DemosPage() {
       )}
 
       {/* Module 3 Primary Navigation Tabs */}
+      <ToolbarBox>
       <Tabs
         variant="pills"
         tabs={[
@@ -1645,6 +1846,13 @@ export default function DemosPage() {
             badgeVariant: 'warning',
           },
           {
+            id: 'failures',
+            label: 'Field Failures & Incident Log',
+            icon: <AlertTriangle className="h-4 w-4 text-[#9A3412]" />,
+            count: failedDemos.length,
+            badgeVariant: 'urgent',
+          },
+          {
             id: 'fleet',
             label: 'Depot Fleet & Live Availability',
             icon: <Package className="h-4 w-4" />,
@@ -1664,6 +1872,7 @@ export default function DemosPage() {
         activeTab={activeTab}
         onChange={(id) => setActiveTab(id as any)}
       />
+      </ToolbarBox>
 
       {/* =================================================================== */}
       {/* TAB 1: DEMO PIPELINE & REQUESTS                                    */}
@@ -1672,9 +1881,9 @@ export default function DemosPage() {
         <div className="space-y-4">
           {/* Filter Bar */}
           <FilterBar>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
-              <div className="lg:col-span-2 relative">
-                <Search className="absolute left-3 top-3 h-4 w-4 text-[#4A5568]" />
+            <div className="filter-row">
+              <div className="relative min-w-[240px] flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#4A5568]" />
                 <Input
                   placeholder="Search Demo ID, Client, Product, Assignee..."
                   value={filterSearch}
@@ -1683,74 +1892,96 @@ export default function DemosPage() {
                 />
               </div>
 
-              <Select
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
-                options={[
-                  { label: 'All Statuses', value: '' },
-                  { label: 'Requested', value: 'requested' },
-                  { label: 'Under Planning', value: 'under_planning' },
-                  { label: 'Team Assigned', value: 'team_assigned' },
-                  { label: 'Equipment Reserved', value: 'equipment_reserved' },
-                  { label: 'Confirmed', value: 'confirmed' },
-                  { label: 'Completed', value: 'completed' },
-                  { label: 'Rescheduled', value: 'rescheduled' },
-                  { label: 'Cancelled', value: 'cancelled' },
-                ]}
-              />
-
-              <Select
-                value={filterProduct}
-                onChange={(e) => setFilterProduct(e.target.value)}
-                options={[
-                  { label: 'All Products', value: '' },
-                  ...products.map((p) => ({ label: p.name, value: p.id })),
-                ]}
-              />
-
-              <Input
-                placeholder="Filter Location (Delhi/Patna...)"
-                value={filterLocation}
-                onChange={(e) => setFilterLocation(e.target.value)}
-              />
-
-              <Select
-                value={filterResult}
-                onChange={(e) => {
-                  setFilterResult(e.target.value);
-                  if (e.target.value !== 'fail') setFilterFailureReason('');
-                }}
-                options={[
-                  { label: 'All Outcomes', value: '' },
-                  { label: 'Successful Pass Only', value: 'success' },
-                  { label: 'Unsuccessful / Fail Only', value: 'fail' },
-                  { label: 'Partial Trials', value: 'partial' },
-                ]}
-              />
-
-              {filterResult === 'fail' && (
+              <div className="w-[140px] shrink-0">
                 <Select
-                  value={filterFailureReason}
-                  onChange={(e) => setFilterFailureReason(e.target.value)}
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
                   options={[
-                    { label: 'All 9 Failure Reasons', value: '' },
-                    ...Object.entries(FAILURE_REASON_METADATA).map(([key, meta]) => ({
-                      label: `${meta.label}`,
-                      value: key,
-                    })),
+                    { label: 'All Statuses', value: '' },
+                    { label: 'Requested', value: 'requested' },
+                    { label: 'Under Planning', value: 'under_planning' },
+                    { label: 'Team Assigned', value: 'team_assigned' },
+                    { label: 'Equipment Reserved', value: 'equipment_reserved' },
+                    { label: 'Confirmed', value: 'confirmed' },
+                    { label: 'Completed', value: 'completed' },
+                    { label: 'Rescheduled', value: 'rescheduled' },
+                    { label: 'Cancelled', value: 'cancelled' },
                   ]}
                 />
+              </div>
+
+              <div className="w-[150px] shrink-0">
+                <Select
+                  value={filterProduct}
+                  onChange={(e) => setFilterProduct(e.target.value)}
+                  options={[
+                    { label: 'All Products', value: '' },
+                    ...products.map((p) => ({ label: p.name, value: p.id })),
+                  ]}
+                />
+              </div>
+
+              <div className="w-[120px] shrink-0">
+                <Input
+                  placeholder="Location"
+                  value={filterLocation}
+                  onChange={(e) => setFilterLocation(e.target.value)}
+                />
+              </div>
+
+              <div className="w-[140px] shrink-0">
+                <Select
+                  value={filterResult}
+                  onChange={(e) => {
+                    setFilterResult(e.target.value);
+                    if (e.target.value !== 'fail') setFilterFailureReason('');
+                  }}
+                  options={[
+                    { label: 'All Outcomes', value: '' },
+                    { label: 'Successful Pass Only', value: 'success' },
+                    { label: 'Unsuccessful / Fail Only', value: 'fail' },
+                    { label: 'Partial Trials', value: 'partial' },
+                  ]}
+                />
+              </div>
+
+              {filterResult === 'fail' && (
+                <div className="w-[180px] shrink-0">
+                  <Select
+                    value={filterFailureReason}
+                    onChange={(e) => setFilterFailureReason(e.target.value)}
+                    options={[
+                      { label: 'All Failure Reasons', value: '' },
+                      ...Object.entries(FAILURE_REASON_METADATA).map(([key, meta]) => ({
+                        label: `${meta.label}`,
+                        value: key,
+                      })),
+                    ]}
+                  />
+                </div>
               )}
 
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-1.5">
                 <Input
                   type="date"
                   value={filterDateFrom}
                   onChange={(e) => setFilterDateFrom(e.target.value)}
-                  title="From Date"
+                  title="From date"
+                  className="w-[128px]"
                 />
+                <span className="text-xs text-[#4A5568]">to</span>
+                <Input
+                  type="date"
+                  value={filterDateTo}
+                  onChange={(e) => setFilterDateTo(e.target.value)}
+                  title="To date"
+                  className="w-[128px]"
+                />
+              </div>
+
+              {(filterSearch || filterStatus || filterProduct || filterLocation || filterDateFrom || filterDateTo || filterResult || filterFailureReason) && (
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   onClick={() => {
                     setFilterSearch('');
@@ -1762,15 +1993,15 @@ export default function DemosPage() {
                     setFilterResult('');
                     setFilterFailureReason('');
                   }}
-                  className="text-xs px-2"
+                  className="text-xs"
                 >
                   Reset
                 </Button>
-              </div>
+              )}
             </div>
           </FilterBar>
 
-          {/* Demos List / Cards */}
+          {/* Demos Table */}
           {filteredDemos.length === 0 ? (
             <EmptyState
               icon={<Box className="h-6 w-6" />}
@@ -1783,9 +2014,11 @@ export default function DemosPage() {
               }
             />
           ) : (
+            (
             <div className="grid grid-cols-1 gap-4">
               {filteredDemos.map((demo) => renderDemoCard(demo))}
             </div>
+          )
           )}
         </div>
       )}
@@ -1819,9 +2052,11 @@ export default function DemosPage() {
               description="When the sales team or demo coordinator schedules a client trial with you as the demo specialist, it will appear here with live notifications."
             />
           ) : (
+            (
             <div className="grid grid-cols-1 gap-4">
               {myDemosList.map((demo) => renderDemoCard(demo))}
             </div>
+          )
           )}
         </div>
       )}
@@ -1850,159 +2085,19 @@ export default function DemosPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4">
-            {demos
-              .filter((d) =>
-                ['requested', 'under_planning', 'team_assigned', 'equipment_reserved'].includes(d.status),
-              )
-              .map((demo) => (
-                <Card key={demo.id} className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-bold text-[#0F5E63] px-2 py-0.5 rounded bg-[#E3EFEE] border border-[#DCD8CE]">
-                          {demo.demo_no}
-                        </span>
-                        <h4 className="font-bold text-[#14213D]">{demo.organisation_name}</h4>
-                        {renderStatusBadge(demo.status)}
-                      </div>
-                      <div className="text-xs text-[#4A5568] mt-2 space-y-1">
-                        <p>
-                          <strong className="text-[#14213D]">Site Location:</strong> {demo.location || 'Client Proving Ground'}
-                        </p>
-                        <p>
-                          <strong className="text-[#14213D]">Product:</strong> {demo.product_name || 'Security Scanning Unit'}
-                        </p>
-                        <p>
-                          <strong className="text-[#14213D]">Requested Date:</strong> {formatDemoDate(demo.requested_date)}
-                        </p>
-                        <p>
-                          <strong className="text-[#14213D]">Purpose:</strong> {demo.purpose || 'Qualify tender criteria'}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleOpenAssignTeam(demo)}
-                        className="text-xs border-[#DCD8CE] text-indigo-700 hover:bg-indigo-50"
-                      >
-                        <Users className="h-3.5 w-3.5 mr-1 text-indigo-600" />
-                        {demo.assigned_to ? 'Change Team' : 'Assign Team'}
-                      </Button>
-
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleOpenReserve(demo)}
-                        className="text-xs border-[#DCD8CE] text-amber-700 hover:bg-amber-50"
-                      >
-                        <Package className="h-3.5 w-3.5 mr-1 text-amber-600" />
-                        Reserve Depot Unit
-                      </Button>
-
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={() => {
-                          setSelectedDemo(demo);
-                          setConfirmForm({
-                            confirmed_date:
-                              demo.confirmed_date ||
-                              demo.requested_date ||
-                              new Date().toISOString().split('T')[0],
-                            remarks: demo.remarks || '',
-                          });
-                          setIsConfirmDateOpen(true);
-                        }}
-                        className="text-xs"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                        Confirm Date
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Coordinator View of Reservations (§16) */}
-                  {demo.reservations && demo.reservations.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-[#E2ECF8] space-y-2">
-                      <span className="text-xs font-bold text-[#14213D] flex items-center gap-1.5">
-                        <Package className="h-3.5 w-3.5 text-[#0F5E63]" />
-                        Allocated Fleet Units & Custodian Status:
-                      </span>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                        {demo.reservations.map((res: any) => (
-                          <div
-                            key={res.id}
-                            className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] text-xs flex flex-col justify-between gap-1.5"
-                          >
-                            <div>
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-semibold text-[#14213D]">
-                                  {res.model} ({res.serial_no || 'No Serial'})
-                                </span>
-                                {res.status === 'approved' && <Badge variant="success">APPROVED</Badge>}
-                                {res.status === 'requested' && <Badge variant="warning">PENDING APPROVAL</Badge>}
-                                {res.status === 'rejected' && <Badge variant="danger">REJECTED</Badge>}
-                                {res.status === 'allocated_alternative' && <Badge variant="info">REALLOCATED</Badge>}
-                                {res.status === 'cancelled' && <Badge variant="outline">CANCELLED</Badge>}
-                              </div>
-                              <p className="text-[11px] text-[#4A5568] mt-0.5">
-                                Depot: {res.current_location} • {formatDemoDate(res.reserved_from)} to {formatDemoDate(res.reserved_to)}
-                              </p>
-                              {res.approved_by_name && (
-                                <p className="text-[11px] text-emerald-700">Approved by: {res.approved_by_name}</p>
-                              )}
-                              {res.rejection_reason && (
-                                <p className="text-[11px] text-rose-700">Reason: {res.rejection_reason}</p>
-                              )}
-                              {res.alt_model && (
-                                <p className="text-[11px] text-indigo-700">
-                                  Alternative: {res.alt_model} ({res.alt_serial_no || 'N/A'})
-                                </p>
-                              )}
-                            </div>
-
-                            {res.status === 'requested' && (
-                              <div className="flex items-center gap-1.5 pt-1.5 border-t border-[#E2ECF8]">
-                                <Button
-                                  variant="outline"
-                                  size="xs"
-                                  onClick={() => handleApproveReservation(res)}
-                                  className="bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
-                                >
-                                  <Check className="h-3 w-3 mr-1" />
-                                  Approve
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="xs"
-                                  onClick={() => handleOpenAllocate(res, demo)}
-                                  className="bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
-                                >
-                                  Allocate Alt Unit
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="xs"
-                                  onClick={() => handleOpenReject(res, demo)}
-                                  className="bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
-                                >
-                                  <X className="h-3 w-3 mr-1" />
-                                  Reject
-                                </Button>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </Card>
-              ))}
-          </div>
+          {coordinatorDemos.length === 0 ? (
+            <EmptyState
+              icon={<CheckCircle2 className="h-6 w-6" />}
+              title="Planning Queue Is Clear"
+              description="No demonstrations are currently awaiting planning, team assignment or equipment reservation."
+            />
+          ) : (
+            (
+            <div className="grid grid-cols-1 gap-4">
+              {coordinatorDemos.map((demo) => renderCoordinatorCard(demo))}
+            </div>
+          )
+          )}
         </div>
       )}
 
@@ -2309,31 +2404,31 @@ export default function DemosPage() {
                         </span>
                       </div>
 
-                      <div className="overflow-x-auto rounded-xl border border-[#DCD8CE]">
-                        <table className="w-full text-left text-xs">
-                          <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
-                            <tr>
-                              <th className="py-2.5 px-3">Failure Reason</th>
-                              <th className="py-2.5 px-2">Severity</th>
-                              <th className="py-2.5 px-2 text-center">Occurrences</th>
-                              <th className="py-2.5 px-3">Typical Root Cause Pattern</th>
-                              <th className="py-2.5 px-3">Recommended Management Countermeasure</th>
-                              <th className="py-2.5 px-2 text-right">Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-[#DCD8CE]">
+                      <div>
+                        <Table className="w-full text-left text-xs">
+                          <TableHeader className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
+                            <TableRow>
+                              <TableHead className="py-2.5 px-3">Failure Reason</TableHead>
+                              <TableHead className="py-2.5 px-2">Severity</TableHead>
+                              <TableHead className="py-2.5 px-2 text-center">Occurrences</TableHead>
+                              <TableHead className="py-2.5 px-3">Typical Root Cause Pattern</TableHead>
+                              <TableHead className="py-2.5 px-3">Recommended Management Countermeasure</TableHead>
+                              <TableHead className="py-2.5 px-2 text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody className="divide-y divide-[#DCD8CE]">
                             {Object.entries(FAILURE_REASON_METADATA).map(([key, meta]) => {
                               const found = analyticsData.failure_analysis.find((f: any) => f.reason === key);
                               const count = found?.count || 0;
                               const pct = found?.percentage || 0;
 
                               return (
-                                <tr key={key} className={count > 0 ? 'bg-rose-50/20' : 'hover:bg-[#FBFAF7]'}>
-                                  <td className="py-3 px-3">
+                                <TableRow key={key} className={count > 0 ? 'bg-rose-50/20' : 'hover:bg-[#FBFAF7]'}>
+                                  <TableCell className="py-3 px-3">
                                     <div className="font-bold text-[#14213D]">{meta.label}</div>
                                     <div className="text-[11px] text-[#4A5568]">{meta.description}</div>
-                                  </td>
-                                  <td className="py-3 px-2">
+                                  </TableCell>
+                                  <TableCell className="py-3 px-2">
                                     <span
                                       className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ${
                                         meta.severity === 'critical'
@@ -2345,19 +2440,19 @@ export default function DemosPage() {
                                     >
                                       {meta.severity}
                                     </span>
-                                  </td>
-                                  <td className="py-3 px-2 text-center">
+                                  </TableCell>
+                                  <TableCell className="py-3 px-2 text-center">
                                     <span className={`font-mono font-bold ${count > 0 ? 'text-rose-600' : 'text-gray-400'}`}>
                                       {count} ({pct}%)
                                     </span>
-                                  </td>
-                                  <td className="py-3 px-3 text-[11px] text-gray-700">
+                                  </TableCell>
+                                  <TableCell className="py-3 px-3 text-[11px] text-gray-700">
                                     {meta.typicalRootCause}
-                                  </td>
-                                  <td className="py-3 px-3 text-[11px] text-[#0F5E63] font-medium">
+                                  </TableCell>
+                                  <TableCell className="py-3 px-3 text-[11px] text-[#0F5E63] font-medium">
                                     {meta.recommendedCountermeasure}
-                                  </td>
-                                  <td className="py-3 px-2 text-right">
+                                  </TableCell>
+                                  <TableCell className="py-3 px-2 text-right">
                                     {count > 0 && (
                                       <Button
                                         size="xs"
@@ -2371,12 +2466,12 @@ export default function DemosPage() {
                                         Filter ({count})
                                       </Button>
                                     )}
-                                  </td>
-                                </tr>
+                                  </TableCell>
+                                </TableRow>
                               );
                             })}
-                          </tbody>
-                        </table>
+                          </TableBody>
+                        </Table>
                       </div>
                     </div>
                   </>
@@ -2599,6 +2694,279 @@ export default function DemosPage() {
                   </Card>
                 ))
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* TAB 7: FIELD FAILURES & INCIDENT LOG (When / What / Where / Why)    */}
+      {/* =================================================================== */}
+      {activeTab === 'failures' && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          {/* Executive Failure Metrics HUD */}
+          <StatGrid columns={4}>
+            <StatCard
+              label="Total Trial Failures"
+              value={failedDemos.length}
+              subtext="Field deficiencies & objections"
+              valueColor="rose"
+              icon={<AlertTriangle className="h-4 w-4 text-rose-600" />}
+            />
+            <StatCard
+              label="Technical Breakdowns"
+              value={failedDemos.filter((d) => d.outcome?.failure_reason === 'TECHNICAL_FAILURE').length}
+              subtext="Hardware / calibration / defect"
+              valueColor="rose"
+              icon={<Wrench className="h-4 w-4 text-rose-600" />}
+            />
+            <StatCard
+              label="Module 6 Auto-Tickets"
+              value={failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length}
+              subtext="Breakdown tickets auto-logged"
+              valueColor="amber"
+              icon={<ShieldAlert className="h-4 w-4 text-amber-600" />}
+            />
+            <StatCard
+              label="Quarantined Fleet Units"
+              value={equipmentList.filter((e) => e.availability_status === 'maintenance').length}
+              subtext="Protected from reassignment"
+              valueColor="primary"
+              icon={<Package className="h-4 w-4 text-[#0F5E63]" />}
+            />
+          </StatGrid>
+
+          {/* Root-cause breakdown + response status (real data only) */}
+          {(() => {
+            const byReason = Object.entries(
+              failedDemos.reduce((acc: Record<string, number>, d) => {
+                const k = d.outcome?.failure_reason || 'UNSPECIFIED';
+                acc[k] = (acc[k] || 0) + 1;
+                return acc;
+              }, {}),
+            ).sort((x, y) => y[1] - x[1]);
+            const max = Math.max(1, ...byReason.map(([, n]) => n));
+            const ticketed = failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length;
+            const escorted = failedDemos.filter((d) => d.service_escort_required).length;
+            const total = Math.max(1, failedDemos.length);
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                <Card className="lg:col-span-3 p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-serif text-base font-bold text-[#14213D]">Root-cause breakdown</h3>
+                    <span className="text-[11px] text-[#4A5568]">Click a bar to filter incidents</span>
+                  </div>
+                  <div className="space-y-2">
+                    {byReason.length === 0 && <p className="text-xs text-[#4A5568]">No failures recorded.</p>}
+                    {byReason.map(([k, n]) => {
+                      const on = failReasonFilter === k;
+                      return (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => setFailReasonFilter(on ? 'all' : k)}
+                          className={`w-full text-left rounded-lg px-2 py-1.5 transition-colors ${on ? 'bg-[#FBE9D0]' : 'hover:bg-[#FBFAF7]'}`}
+                        >
+                          <div className="flex items-center justify-between text-xs mb-1">
+                            <span className="font-semibold text-[#14213D] truncate">{FAILURE_REASON_METADATA[k]?.label || k.replace(/_/g, ' ')}</span>
+                            <span className="font-mono font-bold text-[#9A3412]">{n}</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-[#ECE9E2] overflow-hidden">
+                            <div className="h-full rounded-full bg-gradient-to-r from-[#C98A1B] to-[#9A3412]" style={{ width: `${(n / max) * 100}%` }} />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Card>
+                <Card className="lg:col-span-2 p-5 space-y-4">
+                  <h3 className="font-serif text-base font-bold text-[#14213D]">Response coverage</h3>
+                  {[
+                    { label: 'Breakdown ticket logged', n: ticketed, color: '#0F5E63', hint: 'Module 6 auto-ticket' },
+                    { label: 'Service-escorted trials', n: escorted, color: '#C98A1B', hint: 'Engineer on site' },
+                    { label: 'Quarantined units', n: equipmentList.filter((e) => e.availability_status === 'maintenance').length, color: '#9A3412', hint: 'Held from reassignment' },
+                  ].map((r) => (
+                    <div key={r.label}>
+                      <div className="flex items-baseline justify-between text-xs">
+                        <span className="font-semibold text-[#14213D]">{r.label}</span>
+                        <span className="font-mono font-bold" style={{ color: r.color }}>{r.n} / {failedDemos.length}</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-[#ECE9E2] overflow-hidden mt-1">
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(100, (r.n / total) * 100)}%`, background: r.color }} />
+                      </div>
+                      <div className="text-[10px] text-[#8A8578] mt-0.5">{r.hint}</div>
+                    </div>
+                  ))}
+                </Card>
+              </div>
+            );
+          })()}
+
+          {/* One-line filter bar */}
+          <div className="flex flex-wrap items-center gap-2.5 rounded-[14px] border border-[#DCD8CE] bg-white p-3">
+            <div className="relative min-w-[220px] flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#4A5568]" />
+              <Input
+                placeholder="Search client, location, product, S/N, ticket #..."
+                value={failSearchQuery}
+                onChange={(e) => setFailSearchQuery(e.target.value)}
+                className="pl-9 text-xs"
+              />
+            </div>
+            <div className="w-[190px] shrink-0">
+              <Select
+                value={failReasonFilter}
+                onChange={(e) => setFailReasonFilter(e.target.value)}
+                className="text-xs font-semibold"
+                options={[
+                  { label: 'All failure reasons', value: 'all' },
+                  ...Object.entries(FAILURE_REASON_METADATA).map(([k, v]) => ({ label: v.label, value: k })),
+                ]}
+              />
+            </div>
+            <div className="w-[170px] shrink-0">
+              <Select
+                value={failEscortFilter}
+                onChange={(e) => setFailEscortFilter(e.target.value)}
+                className="text-xs font-semibold"
+                options={[
+                  { label: 'All escort scenarios', value: 'all' },
+                  { label: 'Service escorted', value: 'escorted' },
+                  { label: 'Unescorted (solo sales)', value: 'unescorted' },
+                ]}
+              />
+            </div>
+            <div className="w-[170px] shrink-0">
+              <Select
+                value={failServiceTicketFilter}
+                onChange={(e) => setFailServiceTicketFilter(e.target.value)}
+                className="text-xs font-semibold"
+                options={[
+                  { label: 'All ticket states', value: 'all' },
+                  { label: 'Ticket logged', value: 'ticket_logged' },
+                  { label: 'No ticket', value: 'no_ticket' },
+                ]}
+              />
+            </div>
+            {(failSearchQuery || failReasonFilter !== 'all' || failEscortFilter !== 'all' || failServiceTicketFilter !== 'all') && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  setFailSearchQuery('');
+                  setFailReasonFilter('all');
+                  setFailEscortFilter('all');
+                  setFailServiceTicketFilter('all');
+                }}
+              >
+                Reset
+              </Button>
+            )}
+            <span className="ml-auto text-[11px] text-[#4A5568]">
+              <b className="font-mono text-[#14213D]">{displayedFailures.length}</b> of {failedDemos.length} incidents
+            </span>
+          </div>
+
+          {/* Incident feed */}
+          {displayedFailures.length === 0 ? (
+            <EmptyState
+              icon={CheckCircle2}
+              title="Zero Incidents Found in Filter"
+              description="No demonstration failures match the selected search criteria or failure categories."
+            />
+          ) : (
+            <div className="space-y-3">
+              {displayedFailures.map((demo) => {
+                const outcome = demo.outcome || {};
+                const reasonMeta = outcome.failure_reason ? FAILURE_REASON_METADATA[outcome.failure_reason] : null;
+                const hasServiceTicket = Boolean(demo.service_ticket_id || outcome.service_ticket_id);
+                const ticketNo = demo.service_ticket_no || (demo.service_ticket_id ? `TCK-${demo.service_ticket_id.slice(0, 8)}` : null);
+                const serials = (demo.reservations || []).map((r: any) => r.serial_no).filter(Boolean).join(', ');
+                const when = demo.confirmed_date || demo.requested_date;
+                const open = expandedFailId === demo.id;
+                const steps = [
+                  { label: 'Trial failed', done: true },
+                  { label: hasServiceTicket ? `Ticket ${ticketNo ?? ''}`.trim() : 'No ticket', done: hasServiceTicket },
+                  { label: 'Unit quarantined', done: true },
+                  { label: demo.service_escort_required ? 'Escort on site' : 'Solo trial', done: Boolean(demo.service_escort_required) },
+                ];
+                return (
+                  <Card key={demo.id} className="p-0 overflow-hidden" style={{ borderLeft: `5px solid ${hasServiceTicket ? '#C98A1B' : '#9A3412'}` }}>
+                    <div className="p-4 sm:p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-[11px] font-bold text-[#0F5E63] px-2 py-0.5 rounded bg-[#E3EFEE]">{demo.demo_no}</span>
+                            <span className="inline-flex items-center rounded-full bg-[#FBEBDD] px-2.5 py-0.5 text-[11px] font-bold text-[#7C2D12]">
+                              {reasonMeta?.label || (outcome.failure_reason ? outcome.failure_reason.replace(/_/g, ' ') : 'Unspecified deficiency')}
+                            </span>
+                            {hasServiceTicket && <Badge variant="warning" size="sm">SERVICE TICKET</Badge>}
+                          </div>
+                          <h3 className="font-serif text-lg font-bold text-[#14213D] leading-snug">
+                            {demo.organisation_name || 'Client Agency / Command'}
+                          </h3>
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#4A5568]">
+                            <span className="inline-flex items-center gap-1"><Package className="h-3.5 w-3.5" />{demo.product_name || 'Model unspecified'}{serials ? ` · S/N ${serials}` : ''}</span>
+                            <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{demo.location || demo.city || 'Command / Depot Range'}</span>
+                            <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />{when ? new Date(when).toLocaleDateString('en-IN') : 'N/A'} · {outcome.completed ? 'executed on site' : 'cut short'}</span>
+                          </div>
+                        </div>
+                        <RowMenu
+                          buttonLabel="Actions"
+                          label="Incident actions"
+                          items={[
+                            { key: 'dossier', label: 'Incident Dossier', icon: <Info />, onSelect: () => { setSelectedFailureDetail(demo); setIsFailureDetailModalOpen(true); } },
+                            { key: 'audit', label: 'Full Audit Trail', icon: <History />, onSelect: () => handleOpenAudit(demo) },
+                            { key: 'service', label: `Open Service Desk${ticketNo ? ` (${ticketNo})` : ''}`, icon: <Wrench />, hidden: !hasServiceTicket, onSelect: () => router.push('/service') },
+                          ]}
+                        />
+                      </div>
+
+                      {/* response timeline */}
+                      <ol className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {steps.map((st, i) => (
+                          <li key={i} className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold ${st.done ? 'border-[#C98A1B]/50 bg-[#FFF6E6] text-[#7C2D12]' : 'border-dashed border-[#DCD8CE] text-[#8A8578]'}`}>
+                            <span className={`h-2 w-2 shrink-0 rounded-full ${st.done ? 'bg-[#9A3412]' : 'bg-[#DCD8CE]'}`} />
+                            <span className="truncate">{st.label}</span>
+                          </li>
+                        ))}
+                      </ol>
+
+                      <button
+                        type="button"
+                        onClick={() => setExpandedFailId(open ? null : demo.id)}
+                        className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-[#0F5E63] hover:underline"
+                      >
+                        {open ? 'Hide' : 'Show'} findings
+                        <ChevronRight className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-90' : ''}`} />
+                      </button>
+                    </div>
+
+                    {open && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-[#ECE9E2] bg-[#FBFAF7] p-4 sm:p-5 text-xs">
+                        <div>
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568]">Technical performance</div>
+                          <p className="mt-1 text-[#14213D]">{outcome.technical_performance || 'Performance parameters failed field specifications.'}</p>
+                        </div>
+                        <div>
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568]">Customer response</div>
+                          <p className="mt-1 text-[#14213D]">{outcome.customer_feedback || outcome.customer_response || 'Procurement officers cited trial deficiencies.'}</p>
+                        </div>
+                        <div>
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568]">Recovery step</div>
+                          <p className="mt-1 text-[#14213D]">{outcome.next_step || 'Re-calibration and scheduled follow-up trial required.'}</p>
+                        </div>
+                        <div className="md:col-span-3 flex flex-wrap items-center gap-2">
+                          <Badge variant={outcome.decision_maker_present ? 'success' : 'outline'} size="sm">
+                            {outcome.decision_maker_present ? 'Decision-maker attended' : 'Decision-maker absent'}
+                          </Badge>
+                          <span className="italic text-[#4A5568]">&ldquo;{outcome.remarks || outcome.notes || reasonMeta?.typicalRootCause || 'Deficiency logged on site.'}&rdquo;</span>
+                        </div>
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
             </div>
           )}
         </div>
@@ -3030,6 +3398,57 @@ export default function DemosPage() {
             )}
           </div>
 
+          {/* Service Team Escort for Live Trial Support */}
+          <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Checkbox
+                  checked={newDemo.service_escort_required}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setNewDemo({
+                      ...newDemo,
+                      service_escort_required: checked,
+                      service_engineer_id: checked ? newDemo.service_engineer_id : '',
+                    });
+                  }}
+                  label="Request Service Team Escort for Live Demo"
+                />
+                <p className="text-[11px] text-[#4A5568] mt-1 pl-6">
+                  Optional technical accompaniment. A Service Engineer will accompany the sales rep on this tour to assist with live equipment calibration, field setup, and emergency on-site troubleshooting.
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
+                <Wrench className="w-3 h-3 text-[#0F5E63]" />
+                Module 6 Sync
+              </span>
+            </div>
+
+            {newDemo.service_escort_required && (
+              <div className="pt-2.5 border-t border-[#ECE9E2] space-y-2">
+                <Select
+                  label="Select Available Service Engineer *"
+                  value={newDemo.service_engineer_id || ''}
+                  onChange={(e) => setNewDemo({ ...newDemo, service_engineer_id: e.target.value })}
+                  options={[
+                    { label: '— Select Service Engineer to Escort Tour —', value: '' },
+                    ...serviceEngineers.map((se) => ({
+                      label: `🔧 ${se.full_name} (${se.email})`,
+                      value: se.id,
+                    })),
+                  ]}
+                  required
+                />
+                <div className="p-2 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 text-[11px] flex items-center gap-2">
+                  <Info className="h-3.5 w-3.5 text-teal-700 shrink-0" />
+                  <span>
+                    <b>Note:</b> Service Engineers do not schedule independent sales tours. When requested, they are attached to the sales representative&apos;s tour program for this demonstration. Management, Demo Team, Service Team, Salesperson, and Regional Manager will receive notifications.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="flex justify-end gap-3 pt-4 border-t border-[#DCD8CE]">
             <Button variant="outline" type="button" onClick={() => setIsCreateOpen(false)}>
               Cancel
@@ -3233,7 +3652,7 @@ export default function DemosPage() {
               </label>
               {isLoadingModalEquipment && (
                 <div className="flex items-center gap-1.5 text-[11px] text-[#0F5E63]">
-                  <RefreshCw className="h-3 w-3 animate-spin" />
+                  <Spinner size="xs" />
                   <span>Checking live date calendar...</span>
                 </div>
               )}
@@ -4056,6 +4475,256 @@ export default function DemosPage() {
           </div>
         </form>
       </Modal>
+      {/* 9. Comprehensive Field Trial Incident Dossier Modal */}
+      <Modal
+        isOpen={isFailureDetailModalOpen}
+        onClose={() => setIsFailureDetailModalOpen(false)}
+        title={`Field Trial Incident Dossier — ${selectedFailureDetail?.demo_no || 'Incident Record'}`}
+        maxWidth="3xl"
+      >
+        {selectedFailureDetail && (
+          <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-1 text-xs">
+            {/* Incident Summary Banner */}
+            <div className="p-3.5 rounded-xl bg-[#FFF8F6] border border-[#FCA5A5] flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="font-bold text-sm text-[#7C2D12]">
+                  {selectedFailureDetail.organisation_name || 'Client Agency / Command'}
+                </span>
+                <div className="text-[11px] text-[#9A3412] mt-0.5">
+                  Demo #{selectedFailureDetail.demo_no} • Version {selectedFailureDetail.version || 1} •{' '}
+                  Logged{' '}
+                  {new Date(
+                    selectedFailureDetail.updated_at || selectedFailureDetail.created_at,
+                  ).toLocaleString('en-IN')}
+                </div>
+              </div>
+              <Badge variant="urgent" size="sm" className="font-bold uppercase tracking-wider">
+                FAILED TRIAL DEFICIENCY
+              </Badge>
+            </div>
+
+            {/* 4 W's Detailed Breakdown */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* WHEN & WHERE */}
+              <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2">
+                <h5 className="font-bold text-xs uppercase tracking-wider text-[#0F5E63] flex items-center gap-1.5">
+                  <Calendar className="h-3.5 w-3.5" />
+                  <span>Timeline &amp; Operational Location</span>
+                </h5>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-[#4A5568]">Trial Scheduled:</span>
+                    <span className="font-semibold text-[#14213D]">
+                      {selectedFailureDetail.confirmed_date
+                        ? new Date(selectedFailureDetail.confirmed_date).toLocaleDateString('en-IN')
+                        : selectedFailureDetail.requested_date
+                        ? new Date(selectedFailureDetail.requested_date).toLocaleDateString('en-IN')
+                        : 'Not specified'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#4A5568]">Proving Grounds:</span>
+                    <span className="font-semibold text-[#14213D]">
+                      {selectedFailureDetail.location || 'Depot'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#4A5568]">City &amp; Region:</span>
+                    <span className="font-semibold text-[#14213D]">
+                      {selectedFailureDetail.city || 'Delhi'} ({selectedFailureDetail.region_id || 'Zone'})
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#4A5568]">Execution Scope:</span>
+                    <span className="font-semibold text-[#14213D]">
+                      {selectedFailureDetail.outcome?.completed ? 'Completed on Site' : 'Aborted Early'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* WHAT */}
+              <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2">
+                <h5 className="font-bold text-xs uppercase tracking-wider text-[#0F5E63] flex items-center gap-1.5">
+                  <Package className="h-3.5 w-3.5" />
+                  <span>Equipment &amp; Quarantine Audit</span>
+                </h5>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-[#4A5568]">Product Name:</span>
+                    <span className="font-semibold text-[#14213D]">
+                      {selectedFailureDetail.product_name || 'N/A'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#4A5568]">Catalog Code:</span>
+                    <span className="font-mono text-[#14213D]">
+                      {selectedFailureDetail.product_code || 'N/A'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#4A5568]">Hardware S/N:</span>
+                    <span className="font-mono text-[#14213D]">
+                      {selectedFailureDetail.reservations
+                        ?.map((r: any) => r.serial_no)
+                        .filter(Boolean)
+                        .join(', ') || 'Assigned Fleet'}
+                    </span>
+                  </div>
+                  <div className="pt-1">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-[#FEE2E2] text-[#9A3412] border border-[#FCA5A5]">
+                      ⚠️ Hardware Quarantined in Maintenance
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* WHY: Root Cause Taxonomy */}
+            <div className="p-3.5 rounded-xl bg-white border border-[#FCA5A5] space-y-2">
+              <h5 className="font-bold text-xs uppercase tracking-wider text-[#9A3412] flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>Root Cause Analysis &amp; Taxonomy Classification</span>
+              </h5>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <div className="text-[#4A5568]">Category:</div>
+                  <div className="font-bold text-[#7C2D12]">
+                    {FAILURE_REASON_METADATA[selectedFailureDetail.outcome?.failure_reason]?.label ||
+                      selectedFailureDetail.outcome?.failure_reason ||
+                      'Unspecified'}
+                  </div>
+                  <div className="text-[11px] font-mono text-[#9A3412] mt-0.5">
+                    {selectedFailureDetail.outcome?.failure_reason}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[#4A5568]">Field Deficiency Notes:</div>
+                  <div className="text-[#14213D] font-medium italic mt-0.5">
+                    "{selectedFailureDetail.outcome?.remarks ||
+                      selectedFailureDetail.outcome?.notes ||
+                      'Deficiency recorded during live testing.'}"
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-[#ECE9E2] text-xs">
+                <div>
+                  <div className="text-[10px] uppercase font-bold text-[#4A5568]">Technical Performance</div>
+                  <div className="text-[#14213D] mt-0.5">
+                    {selectedFailureDetail.outcome?.technical_performance || 'Not compliant'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase font-bold text-[#4A5568]">Client Feedback</div>
+                  <div className="text-[#14213D] mt-0.5">
+                    {selectedFailureDetail.outcome?.customer_feedback ||
+                      selectedFailureDetail.outcome?.customer_response ||
+                      'Expressed objections'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase font-bold text-[#4A5568]">Recovery Step</div>
+                  <div className="text-[#14213D] mt-0.5">
+                    {selectedFailureDetail.outcome?.next_step || 'Service overhaul'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Crew, Logistics & Escort */}
+            <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div>
+                <span className="text-[#4A5568]">Sales Officer: </span>
+                <strong className="text-[#14213D]">
+                  {selectedFailureDetail.assignee_name ||
+                    selectedFailureDetail.created_by_name ||
+                    'Assigned Officer'}
+                </strong>
+              </div>
+              <div>
+                <span className="text-[#4A5568]">Service Escort: </span>
+                {selectedFailureDetail.service_escort_required ? (
+                  <span className="font-bold text-[#0F5E63]">
+                    🛡️ Attached ({selectedFailureDetail.service_engineer_name || 'Engineer On-Site'})
+                  </span>
+                ) : (
+                  <span className="font-medium text-[#4A5568]">⚠️ Unescorted Solo Sales</span>
+                )}
+              </div>
+              <div>
+                <span className="text-[#4A5568]">Decision-Maker: </span>
+                <strong
+                  className={
+                    selectedFailureDetail.outcome?.decision_maker_present
+                      ? 'text-emerald-700'
+                      : 'text-gray-600'
+                  }
+                >
+                  {selectedFailureDetail.outcome?.decision_maker_present ? '✓ Attended' : 'Absent'}
+                </strong>
+              </div>
+            </div>
+
+            {/* Module 6 Ticket Callout */}
+            {(selectedFailureDetail.service_ticket_id ||
+              selectedFailureDetail.outcome?.service_ticket_id) && (
+              <div className="p-3 rounded-xl bg-[#FFF8F6] border border-[#FCA5A5] flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Wrench className="h-4 w-4 text-[#9A3412]" />
+                  <div>
+                    <span className="font-bold text-xs text-[#7C2D12]">
+                      Module 6 Breakdown Ticket Auto-Logged
+                    </span>
+                    <div className="font-mono text-[11px] text-[#9A3412]">
+                      Ticket No:{' '}
+                      {selectedFailureDetail.service_ticket_no || selectedFailureDetail.service_ticket_id}
+                    </div>
+                  </div>
+                </div>
+                <Link href="/service">
+                  <Button size="sm" variant="primary" className="bg-[#9A3412] hover:bg-[#7C2D12] text-white">
+                    Open Ticket in Service Desk &rarr;
+                  </Button>
+                </Link>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex justify-between items-center pt-3 border-t border-[#DCD8CE]">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  handleOpenAudit(selectedFailureDetail);
+                }}
+              >
+                <History className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
+                Inspect Full Audit Trail
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setIsFailureDetailModalOpen(false)}
+              >
+                Close Dossier
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </PageContainer>
+  );
+}
+
+export default function DemosPage() {
+  return (
+    <React.Suspense
+      fallback={
+        <PageLoader label="Loading field demonstration command" className="m-6" />
+      }
+    >
+      <DemosPageContent />
+    </React.Suspense>
   );
 }

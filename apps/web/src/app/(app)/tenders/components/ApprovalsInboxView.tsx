@@ -10,8 +10,7 @@ import {
   Textarea,
   Modal,
   InfoCallout,
-  EmptyState,
-} from '@/components/ui';
+  EmptyState, Spinner } from '@/components/ui';
 import {
   CheckCircle2,
   XCircle,
@@ -285,7 +284,7 @@ export function ApprovalsInboxView({
       {/* Tenders List */}
       {loading ? (
         <div className="p-12 text-center text-sm text-[#4A5568] flex items-center justify-center gap-2">
-          <RefreshCw className="w-4 h-4 animate-spin text-[#0F5E63]" />
+          <Spinner size="xs" />
           Loading approval requests...
         </div>
       ) : error ? (

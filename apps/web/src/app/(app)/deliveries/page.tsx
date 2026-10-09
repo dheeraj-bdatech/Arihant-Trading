@@ -30,8 +30,7 @@ import {
   Tabs,
   PageContainer,
   PageHeader,
-  EmptyState,
-} from '@/components/ui';
+  EmptyState, PageLoader, ToolbarBox, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, StatGrid, StatCard, RowMenu } from '@/components/ui';
 
 export default function DeliveriesPage() {
   const { user } = useAuth();
@@ -42,6 +41,7 @@ export default function DeliveriesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+
 
   // Modals
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -209,7 +209,6 @@ export default function DeliveriesPage() {
     <PageContainer>
       <PageHeader
         title="Equipment Logistics & Delivery Register"
-        description="Comprehensive dispatch tracking, transit milestones, on-site installation sign-offs, and final client handover."
         actions={
           <Button
             variant="primary"
@@ -224,32 +223,15 @@ export default function DeliveriesPage() {
         }
       />
 
-      {/* Metric Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <div className="bg-white border border-[#DCD8CE] rounded-[14px] p-4 shadow-xs">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4A5568]">Total Deliveries</div>
-          <div className="text-2xl font-serif font-bold text-[#14213D] mt-1">{counts.all}</div>
-        </div>
-        <div className="bg-white border border-[#DCD8CE] rounded-[14px] p-4 shadow-xs">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[#9A3412]">Scheduled</div>
-          <div className="text-2xl font-serif font-bold text-[#9A3412] mt-1">{counts.scheduled}</div>
-        </div>
-        <div className="bg-white border border-[#DCD8CE] rounded-[14px] p-4 shadow-xs">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[#0F5E63]">In Transit</div>
-          <div className="text-2xl font-serif font-bold text-[#0F5E63] mt-1">{counts.in_transit}</div>
-        </div>
-        <div className="bg-white border border-[#DCD8CE] rounded-[14px] p-4 shadow-xs">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">Delivered</div>
-          <div className="text-2xl font-serif font-bold text-emerald-800 mt-1">{counts.delivered}</div>
-        </div>
-        <div className="bg-white border border-[#DCD8CE] rounded-[14px] p-4 shadow-xs">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Installed / Closed</div>
-          <div className="text-2xl font-serif font-bold text-indigo-900 mt-1">{counts.installed + counts.handover_completed}</div>
-        </div>
-      </div>
+      <StatGrid cols={4}>
+        <StatCard title="Total Deliveries" value={counts.all} icon={<Truck size={16} />} variant="primary" />
+        <StatCard title="Scheduled" value={counts.scheduled} icon={<Clock size={16} />} variant="amber" />
+        <StatCard title="In Transit" value={counts.in_transit} icon={<Package size={16} />} variant="rose" />
+        <StatCard title="Delivered / Closed" value={counts.delivered + counts.installed + counts.handover_completed} icon={<CheckCircle2 size={16} />} variant="emerald" />
+      </StatGrid>
 
       {/* Filter Tabs & Search Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <ToolbarBox row>
         <Tabs
           tabs={[
             { id: 'all', label: 'All Orders', count: counts.all },
@@ -273,13 +255,11 @@ export default function DeliveriesPage() {
             className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-[#C9C4B8] bg-white focus:outline-none focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]"
           />
         </div>
-      </div>
+      </ToolbarBox>
 
       {/* Delivery Cards List */}
       {isLoading ? (
-        <div className="p-12 text-center text-xs font-semibold text-[#4A5568] uppercase tracking-wider">
-          Loading Delivery Register...
-        </div>
+        <PageLoader label="Loading delivery register" />
       ) : deliveries.length === 0 ? (
         <EmptyState
           icon={Truck}

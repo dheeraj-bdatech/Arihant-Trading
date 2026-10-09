@@ -1,1077 +1,573 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import Link from 'next/link';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
-  FileText,
-  Target,
   AlertTriangle,
-  Clock,
-  ArrowUpRight,
-  TrendingUp,
-  Receipt,
-  CheckCircle2,
-  Calendar,
-  Wrench,
-  ChevronRight,
-  Radio,
-  Zap,
-  Shield,
-  Layers,
   Award,
   Box,
+  Calendar,
   CheckSquare,
   Compass,
-  Settings,
-  Users,
+  FileText,
   Key,
-  Briefcase,
-  MapPin,
-  HelpCircle,
+  Layers,
+  Receipt,
+  Settings,
+  Target,
+  TrendingUp,
   Truck,
-  Check,
+  Users,
+  Wrench,
+  Zap,
 } from 'lucide-react';
-import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
+import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { PageContainer, PageLoader } from '@/components/ui';
+import { DeadlineChip } from '@/components/tender/Countdown';
 import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-  Badge,
-  Button,
-  PageContainer,
-} from '@/components/ui';
-import { formatINR, formatLakh, ROLE_PROFILES, type UserRole } from '@arihant/shared';
+  AttentionList,
+  KpiTile,
+  Panel,
+  QuickActions,
+  RingGauge,
+  StackBar,
+  Timeline,
+  timeAgo,
+  type AttentionItem,
+  type KpiProps,
+  type QuickAction,
+  type Segment,
+  type TimelineItem,
+  type Tone,
+} from '@/components/dashboard/command/CommandDeck';
+import { formatINR, formatLakh, type UserRole } from '@arihant/shared';
 import type { DashboardMetricsDto } from '@arihant/shared';
 
+type Rows = any[];
+interface Data {
+  m: DashboardMetricsDto | null;
+  closing: Rows;
+  visits: Rows;
+  leads: Rows;
+  demos: Rows;
+  service: Rows;
+  expenses: Rows;
+  tasks: Rows;
+  totals: { visits: number; leads: number; demos: number; service: number; expenses: number; tasks: number };
+  svc: any | null;
+  admin: { users: number; products: number; audit: number } | null;
+}
+
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
+const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
+const rows = (res: any): Rows => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []);
+const totalOf = (res: any): number => num(res?.total ?? rows(res).length);
+
+/* ---------------------------------------------------------------- KPIs -- */
+function kpisFor(role: UserRole, d: Data): KpiProps[] {
+  const m = d.m;
+  const t = m?.tendersCount;
+  const l = m?.leadsCount;
+  const k = m?.tasksCount;
+  const e = m?.expensesCount;
+  const s = m?.serviceTicketsCount;
+  const v = m?.visitsCount;
+  const claimsWaiting = num(e?.pendingManager) + num(e?.pendingAccounts);
+
+  const tenders = (label: string): KpiProps => ({
+    label,
+    value: num(t?.closingSoon),
+    sub: `${num(t?.total)} bids tracked`,
+    chip: num(t?.awaitingApproval) ? `${num(t?.awaitingApproval)} to approve` : undefined,
+    href: '/tenders',
+    icon: <FileText size={15} />,
+    tone: num(t?.closingSoon) > 0 ? 'red' : 'teal',
+  });
+  const pipeline = (label: string, href = '/leads'): KpiProps => ({
+    label,
+    value: formatLakh(num(l?.totalValueLakh)),
+    sub: `${num(l?.active)} active · ${num(l?.expected)} expected`,
+    chip: num(l?.followUp) ? `${num(l?.followUp)} follow-ups` : undefined,
+    href,
+    icon: <Target size={15} />,
+    tone: 'teal',
+  });
+  const reimb: KpiProps = {
+    label: 'Pending reimbursements',
+    value: formatINR(num(e?.pendingAmount)),
+    sub: `${claimsWaiting} claims awaiting action`,
+    href: '/expenses',
+    icon: <Receipt size={15} />,
+    tone: 'ochre',
+  };
+  const service = (label: string): KpiProps => ({
+    label,
+    value: num(s?.open),
+    sub: `${num(s?.critical)} critical · ${num(s?.total)} logged`,
+    chip: num(d.svc?.slaBreached) ? `${num(d.svc?.slaBreached)} SLA breached` : undefined,
+    href: '/service',
+    icon: <Wrench size={15} />,
+    tone: num(s?.critical) > 0 ? 'red' : 'teal',
+    progress: pct(num(s?.total) - num(s?.open), num(s?.total)),
+  });
+  const tasks = (label: string): KpiProps => ({
+    label,
+    value: num(k?.pending),
+    sub: `${num(k?.blocked)} blocked · ${num(k?.overdue)} overdue`,
+    href: '/tasks',
+    icon: <CheckSquare size={15} />,
+    tone: num(k?.blocked) + num(k?.overdue) > 0 ? 'ochre' : 'teal',
+    progress: pct(num(k?.total) - num(k?.pending), num(k?.total)),
+  });
+  const visits = (label: string): KpiProps => ({
+    label,
+    value: num(v?.planned),
+    sub: `${num(v?.completed)} completed of ${num(v?.total)}`,
+    href: '/visits',
+    icon: <Calendar size={15} />,
+    tone: 'teal',
+    progress: pct(num(v?.completed), num(v?.total)),
+  });
+
+  switch (role) {
+    case 'management':
+      return [tenders('Tenders closing ≤ 7 days'), pipeline('Active pipeline'), reimb, service('Open service tickets')];
+    case 'regional_manager':
+      return [pipeline('Zone pipeline', '/regional'), tenders('Territory bids closing'), visits('Field tours planned'), tasks('Team tasks in progress')];
+    case 'sales':
+      return [
+        pipeline('My pipeline'),
+        {
+          // the metrics endpoint counts every tender; the tender list is already scoped to this salesperson
+          label: 'My bids closing',
+          value: d.closing.length,
+          sub: 'Assigned to you, closing within 7 days',
+          href: '/tenders?scope=my_tenders',
+          icon: <FileText size={15} />,
+          tone: d.closing.length > 0 ? 'red' : 'teal',
+        },
+        visits('My planned visits'),
+        tasks('My open tasks'),
+      ];
+    case 'tender_team':
+      return [
+        tenders('Closing ≤ 7 days'),
+        { label: 'Under preparation', value: num(t?.underPreparation), sub: 'Bids being drafted', href: '/tenders', icon: <Layers size={15} />, tone: 'ochre' },
+        { label: 'Awaiting approval', value: num(t?.awaitingApproval), sub: 'Pending management sign-off', href: '/tenders', icon: <Key size={15} />, tone: 'red' },
+        {
+          label: 'Win rate',
+          value: `${pct(num(t?.won), num(t?.won) + num(t?.lost))}%`,
+          sub: `${num(t?.won)} won · ${num(t?.lost)} lost`,
+          href: '/tenders',
+          icon: <Award size={15} />,
+          tone: 'green',
+          progress: pct(num(t?.won), num(t?.won) + num(t?.lost)),
+        },
+      ];
+    case 'demo_team':
+      return [
+        { label: 'Demonstrations', value: d.totals.demos, sub: 'Requests & trials on record', href: '/demos', icon: <Box size={15} />, tone: 'teal' },
+        visits('Field trials planned'),
+        {
+          label: 'Deliveries in transit',
+          value: num(m?.deliveriesCount?.inTransit),
+          sub: `${num(m?.deliveriesCount?.scheduled)} scheduled`,
+          href: '/deliveries',
+          icon: <Truck size={15} />,
+          tone: 'ochre',
+        },
+        tasks('Open tasks'),
+      ];
+    case 'service_team':
+      return [
+        service('Open tickets'),
+        { label: 'Critical (LD risk)', value: num(s?.critical), sub: 'Liquidated-damages exposure', href: '/service', icon: <AlertTriangle size={15} />, tone: num(s?.critical) ? 'red' : 'teal' },
+        { label: 'Awaiting spares', value: num(d.svc?.awaitingParts), sub: 'Parts bottleneck', href: '/service', icon: <Box size={15} />, tone: 'ochre' },
+        visits('Visits planned'),
+      ];
+    case 'accounts':
+      return [
+        { label: 'Stage 2: awaiting accounts', value: num(e?.pendingAccounts), sub: 'Manager-approved, ready to settle', href: '/expenses', icon: <Receipt size={15} />, tone: 'red' },
+        { label: 'Stage 1: with managers', value: num(e?.pendingManager), sub: 'Awaiting RM endorsement', href: '/expenses', icon: <Users size={15} />, tone: 'ochre' },
+        { label: 'Amount pending', value: formatINR(num(e?.pendingAmount)), sub: 'Across all open claims', href: '/expenses', icon: <TrendingUp size={15} />, tone: 'teal' },
+        { label: 'Settled & reconciled', value: num(e?.processed), sub: 'Processed into Tally', href: '/expenses', icon: <Award size={15} />, tone: 'green' },
+      ];
+    case 'admin':
+      return [
+        { label: 'User accounts', value: d.admin?.users ?? 0, sub: 'Across all roles', href: '/admin', icon: <Users size={15} />, tone: 'teal' },
+        { label: 'Equipment masters', value: d.admin?.products ?? 0, sub: 'Products & MHA QRs', href: '/admin', icon: <Box size={15} />, tone: 'teal' },
+        { label: 'Audit entries', value: d.admin?.audit ?? 0, sub: 'Immutable trail', href: '/admin', icon: <Key size={15} />, tone: 'ink' },
+        { label: 'Open exceptions', value: m?.recentExceptions?.length ?? 0, sub: 'Needing attention', href: '/notifications', icon: <AlertTriangle size={15} />, tone: (m?.recentExceptions?.length ?? 0) > 0 ? 'red' : 'teal' },
+      ];
+    default:
+      return [tenders('Tenders closing'), pipeline('Pipeline'), reimb, tasks('Tasks')];
+  }
+}
+
+/* ------------------------------------------------------------ attention -- */
+/** which roles act on which kind of exception (the metrics feed is organisation-wide) */
+const EXCEPTION_ROLES: Record<string, UserRole[]> = {
+  tender_deadline: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'],
+  tender_approval: ['management', 'regional_manager', 'tender_team', 'admin'],
+  expense_approval: ['management', 'regional_manager', 'accounts', 'admin'],
+  task_blocked: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'],
+  task_overdue: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'],
+};
+const EXCEPTION_HREF: Record<string, string> = {
+  tender_deadline: '/tenders',
+  tender_approval: '/tenders',
+  task_blocked: '/tasks',
+  task_overdue: '/tasks',
+  expense_approval: '/expenses',
+};
+
+function attentionFor(role: UserRole, d: Data): AttentionItem[] {
+  const out: AttentionItem[] = [];
+  const wants = (...roles: UserRole[]) => roles.includes(role);
+
+  if (wants('management', 'regional_manager', 'tender_team', 'sales', 'admin')) {
+    d.closing
+      .filter((t) => t.submission_deadline && new Date(t.submission_deadline).getTime() > Date.now()) // closed/past bids are history, not action
+      .slice(0, 5)
+      .forEach((t) =>
+      out.push({
+        id: `t-${t.id}`,
+        severity: 'critical',
+        title: t.tender_no || 'Tender',
+        detail: `${t.department || t.organisation || 'Buyer'}${t.emd_fee ? ` · EMD ${formatINR(Number(t.emd_fee))}` : ''}`,
+        href: '/tenders',
+        right: <DeadlineChip deadline={t.submission_deadline} />,
+      }),
+    );
+  }
+  if (wants('service_team', 'management', 'regional_manager', 'admin', 'sales')) {
+    d.service
+      .filter((s) => s.priority === 'critical' && !['resolved', 'report_submitted', 'closed', 'cancelled'].includes(s.status))
+      .slice(0, 4)
+      .forEach((s) =>
+        out.push({
+          id: `s-${s.id}`,
+          severity: 'critical',
+          title: `${s.ticket_no || 'Ticket'} · critical`,
+          detail: `${s.organisation_name || 'Customer'} — ${String(s.status).replace(/_/g, ' ')}`,
+          href: '/service',
+          right: s.sla_resolution_due_at ? <DeadlineChip deadline={s.sla_resolution_due_at} /> : undefined,
+        }),
+      );
+  }
+  if (wants('management', 'regional_manager', 'accounts', 'admin', 'sales')) {
+    d.expenses
+      .filter((x) => ['submitted', 'manager_approved'].includes(x.status))
+      .slice(0, 3)
+      .forEach((x) =>
+        out.push({
+          id: `e-${x.id}`,
+          severity: 'warning',
+          title: `${formatINR(Number(x.amount) || 0)} · ${String(x.category || 'claim').replace(/_/g, ' ')}`,
+          detail: `${x.employee_name || 'Employee'} — ${x.status === 'submitted' ? 'awaiting manager' : 'awaiting accounts'}`,
+          href: '/expenses',
+          when: timeAgo(x.created_at),
+        }),
+      );
+  }
+  d.tasks
+    .filter((t) => ['blocked', 'overdue'].includes(String(t.status)))
+    .slice(0, 3)
+    .forEach((t) =>
+      out.push({
+        id: `k-${t.id}`,
+        severity: t.status === 'blocked' ? 'warning' : 'critical',
+        title: t.title || 'Task',
+        detail: `${t.status === 'blocked' ? 'Blocked' : 'Overdue'}${t.assignee_name ? ` · ${t.assignee_name}` : ''}`,
+        href: '/tasks',
+        when: timeAgo(t.updated_at),
+      }),
+    );
+  (d.m?.recentExceptions || [])
+    .filter((x) => (EXCEPTION_ROLES[x.type] || []).includes(role))
+    .slice(0, 4)
+    .forEach((x) =>
+    out.push({
+      id: `x-${x.id}`,
+      severity: x.severity === 'info' ? 'info' : x.severity,
+      title: x.title,
+      detail: x.description,
+      href: EXCEPTION_HREF[x.type] || '/notifications',
+      when: timeAgo(x.timestamp),
+    }),
+  );
+
+  const rank = { critical: 0, warning: 1, info: 2 } as const;
+  const seen = new Set<string>();
+  return out
+    .filter((i) => (seen.has(i.id) ? false : (seen.add(i.id), true)))
+    .sort((a, b) => rank[a.severity] - rank[b.severity])
+    .slice(0, 8);
+}
+
+/* ---------------------------------------------------------------- health -- */
+interface Ring { key: string; label: string; sub: string; value: number; max: number; display?: string; tone: Tone }
+function ringsFor(role: UserRole, d: Data): Ring[] {
+  const m = d.m;
+  const k = m?.tasksCount;
+  const t = m?.tendersCount;
+  const v = m?.visitsCount;
+  const e = m?.expensesCount;
+  const s = m?.serviceTicketsCount;
+  const all: Record<string, Ring> = {
+    tasks: { key: 'tasks', label: 'Tasks on track', sub: `${num(k?.overdue) + num(k?.blocked)} at risk`, value: num(k?.total) - num(k?.overdue) - num(k?.blocked), max: num(k?.total), tone: 'teal' },
+    win: { key: 'win', label: 'Tender win rate', sub: `${num(t?.won)} won · ${num(t?.lost)} lost`, value: num(t?.won), max: num(t?.won) + num(t?.lost), tone: 'green' },
+    visits: { key: 'visits', label: 'Visits completed', sub: `${num(v?.completed)} of ${num(v?.total)}`, value: num(v?.completed), max: num(v?.total), tone: 'teal' },
+    claims: { key: 'claims', label: 'Claims cleared', sub: `${num(e?.processed)} processed`, value: num(e?.processed), max: num(e?.processed) + num(e?.pendingManager) + num(e?.pendingAccounts), tone: 'ochre' },
+    service: { key: 'service', label: 'Tickets resolved', sub: `${num(s?.open)} still open`, value: num(s?.total) - num(s?.open), max: num(s?.total), tone: 'red' },
+    sla: { key: 'sla', label: 'Within SLA', sub: `${num(d.svc?.slaBreached)} breached`, value: Math.max(0, num(d.svc?.pendingTickets) - num(d.svc?.slaBreached)), max: num(d.svc?.pendingTickets), tone: 'red' },
+  };
+  const pick: Record<string, string[]> = {
+    management: ['win', 'tasks', 'service'],
+    regional_manager: ['visits', 'tasks', 'win'],
+    sales: ['visits', 'tasks', 'win'],
+    tender_team: ['win', 'tasks', 'claims'],
+    demo_team: ['visits', 'tasks', 'service'],
+    service_team: ['service', 'sla', 'visits'],
+    accounts: ['claims', 'tasks', 'win'],
+    admin: ['tasks', 'service', 'win'],
+  };
+  return (pick[role] || pick.management).map((key) => all[key]);
+}
+
+function segmentsFor(role: UserRole, d: Data): { title: string; segments: Segment[] }[] {
+  const m = d.m;
+  const t = m?.tendersCount;
+  const l = m?.leadsCount;
+  const k = m?.tasksCount;
+  const e = m?.expensesCount;
+  const s = m?.serviceTicketsCount;
+  const sets: Record<string, { title: string; segments: Segment[] }> = {
+    tenders: {
+      title: 'Tender pipeline',
+      segments: [
+        { label: 'Under preparation', value: num(t?.underPreparation), tone: 'ochre' },
+        { label: 'Awaiting approval', value: num(t?.awaitingApproval), tone: 'red' },
+        { label: 'Won', value: num(t?.won), tone: 'green' },
+        { label: 'Lost', value: num(t?.lost), tone: 'ink' },
+      ],
+    },
+    leads: {
+      title: 'Lead funnel',
+      segments: [
+        { label: 'Active', value: num(l?.active), tone: 'teal' },
+        { label: 'Expected', value: num(l?.expected), tone: 'ochre' },
+        { label: 'Follow-up', value: num(l?.followUp), tone: 'red' },
+      ],
+    },
+    tasks: {
+      title: 'Task load',
+      segments: [
+        { label: 'In progress', value: Math.max(0, num(k?.pending) - num(k?.blocked)), tone: 'teal' },
+        { label: 'Blocked', value: num(k?.blocked), tone: 'ochre' },
+        { label: 'Overdue', value: num(k?.overdue), tone: 'red' },
+      ],
+    },
+    expenses: {
+      title: 'Reimbursement stages',
+      segments: [
+        { label: 'With managers', value: num(e?.pendingManager), tone: 'ochre' },
+        { label: 'With accounts', value: num(e?.pendingAccounts), tone: 'red' },
+        { label: 'Settled', value: num(e?.processed), tone: 'green' },
+      ],
+    },
+    service: {
+      title: 'Service queue',
+      segments: [
+        { label: 'Open', value: Math.max(0, num(s?.open) - num(s?.critical)), tone: 'teal' },
+        { label: 'Critical', value: num(s?.critical), tone: 'red' },
+        { label: 'Resolved', value: Math.max(0, num(s?.total) - num(s?.open)), tone: 'green' },
+      ],
+    },
+  };
+  const pick: Record<string, string[]> = {
+    management: ['tenders', 'leads'],
+    regional_manager: ['leads', 'tasks'],
+    sales: ['leads', 'tasks'],
+    tender_team: ['tenders', 'tasks'],
+    demo_team: ['tasks', 'service'],
+    service_team: ['service', 'tasks'],
+    accounts: ['expenses', 'tasks'],
+    admin: ['tenders', 'service'],
+  };
+  return (pick[role] || pick.management).map((key) => sets[key]).filter((x) => x.segments.some((s2) => s2.value > 0));
+}
+
+/* ---------------------------------------------------------------- actions -- */
+const A = (label: string, hint: string, href: string, icon: React.ReactNode): QuickAction => ({ label, hint, href, icon });
+function actionsFor(role: UserRole): QuickAction[] {
+  const map: Record<string, QuickAction[]> = {
+    management: [
+      A('Tender pipeline', 'Bids, approvals, deadlines', '/tenders', <FileText size={16} />),
+      A('Regional command', 'Zones and field teams', '/regional', <Compass size={16} />),
+      A('Reports', 'Consolidated exports', '/reports', <TrendingUp size={16} />),
+      A('Service desk', 'Tickets, SLAs, portal requests', '/service', <Wrench size={16} />),
+    ],
+    regional_manager: [
+      A('Territory command', 'Team scorecards', '/regional', <Compass size={16} />),
+      A('Approve expenses', 'Stage 1 endorsements', '/expenses', <Receipt size={16} />),
+      A('Field tours', 'Visits and directives', '/visits', <Calendar size={16} />),
+      A('Leads', 'Pipeline and follow-ups', '/leads', <Target size={16} />),
+    ],
+    sales: [
+      A('New opportunity', 'Log a lead or account', '/leads', <Target size={16} />),
+      A('Plan a visit', 'Client tour planner', '/visits', <Calendar size={16} />),
+      A('Request a demo', 'Reserve a demo unit', '/demos', <Box size={16} />),
+      A('Proposals', 'Quotes and follow-ups', '/proposals', <FileText size={16} />),
+    ],
+    tender_team: [
+      A('Tender pipeline', 'Prepare and submit bids', '/tenders', <FileText size={16} />),
+      A('Proposals', 'Commercial quotes', '/proposals', <Layers size={16} />),
+      A('Tasks', 'Blockers and milestones', '/tasks', <CheckSquare size={16} />),
+      A('Reports', 'Win/loss analytics', '/reports', <TrendingUp size={16} />),
+    ],
+    demo_team: [
+      A('Demo fleet', 'Units and availability', '/demos', <Box size={16} />),
+      A('Deliveries', 'Dispatch and handover', '/deliveries', <Truck size={16} />),
+      A('Field visits', 'Trials in the field', '/visits', <Calendar size={16} />),
+      A('Tasks', 'Outcome certificates', '/tasks', <CheckSquare size={16} />),
+    ],
+    service_team: [
+      A('Service desk', 'Open tickets and SLAs', '/service', <Wrench size={16} />),
+      A('Field visits', 'Check in and out', '/visits', <Calendar size={16} />),
+      A('Deliveries', 'Installations', '/deliveries', <Truck size={16} />),
+      A('Expense claim', 'Submit travel costs', '/expenses', <Receipt size={16} />),
+    ],
+    accounts: [
+      A('Settle claims', 'Stage 2 reimbursements', '/expenses', <Receipt size={16} />),
+      A('Reports', 'Tally export', '/reports', <TrendingUp size={16} />),
+      A('Tasks', 'Finance milestones', '/tasks', <CheckSquare size={16} />),
+      A('Notifications', 'Alerts and directives', '/notifications', <Zap size={16} />),
+    ],
+    admin: [
+      A('Administration', 'Users, roles, masters', '/admin', <Settings size={16} />),
+      A('Audit trail', 'Security log', '/admin', <Key size={16} />),
+      A('Reports', 'Consolidated records', '/reports', <TrendingUp size={16} />),
+      A('Service desk', 'Operations check', '/service', <Wrench size={16} />),
+    ],
+  };
+  return map[role] || map.management;
+}
+
+/* ------------------------------------------------------------------ page -- */
 export default function DashboardPage() {
-  const { user, hasRole } = useAuth();
-  const [metrics, setMetrics] = useState<DashboardMetricsDto | null>(null);
-  const [closingTenders, setClosingTenders] = useState<any[]>([]);
-  const [visitsList, setVisitsList] = useState<any[]>([]);
-  const [leadsList, setLeadsList] = useState<any[]>([]);
-  const [demosList, setDemosList] = useState<any[]>([]);
-  const [serviceList, setServiceList] = useState<any[]>([]);
-  const [expensesList, setExpensesList] = useState<any[]>([]);
-  const [tasksList, setTasksList] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const { user } = useAuth();
+  const role = (user?.role || 'management') as UserRole;
+  const [data, setData] = useState<Data | null>(null);
 
   useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        setIsLoading(true);
-        const [
-          metricsRes,
-          closingTendersRes,
-          visitsRes,
-          leadsRes,
-          demosRes,
-          serviceRes,
-          expensesRes,
-          tasksRes,
-        ] = await Promise.all([
-          api.get<DashboardMetricsDto>('/dashboard/metrics').catch(() => null),
-          api.get('/tenders', { closingSoonOnly: true, limit: 6 }).catch(() => ({ data: [] })),
-          api.get('/visits', { limit: 6 }).catch(() => ({ data: [] })),
-          api.get('/leads', { limit: 6 }).catch(() => ({ data: [] })),
-          api.get('/demos', { limit: 6 }).catch(() => ({ data: [] })),
-          api.get('/service', { limit: 6 }).catch(() => ({ data: [] })),
-          api.get('/expenses', { limit: 8 }).catch(() => ({ data: [] })),
-          api.get('/tasks', { limit: 6 }).catch(() => ({ data: [] })),
-        ]);
-
-        setMetrics(metricsRes);
-        setClosingTenders(closingTendersRes?.data || []);
-        setVisitsList(visitsRes?.data || []);
-        setLeadsList(leadsRes?.data || []);
-        setDemosList(demosRes?.data || []);
-        setServiceList(serviceRes?.data || []);
-        setExpensesList(expensesRes?.data || []);
-        setTasksList(tasksRes?.data || []);
-      } catch (err) {
-        console.error('Failed to load dashboard metrics:', err);
-      } finally {
-        setIsLoading(false);
-      }
+    let alive = true;
+    const run = async () => {
+      const safe = <T,>(p: Promise<T>) => p.catch(() => null as unknown as T);
+      const needsSvc = ['service_team', 'management', 'regional_manager', 'admin'].includes(role);
+      const [m, closing, visits, leads, demos, service, expenses, tasks, svc, users, products, audit] = await Promise.all([
+        safe(api.get<DashboardMetricsDto>('/dashboard/metrics')),
+        safe(api.get('/tenders', { closingSoonOnly: true, limit: 6 })),
+        safe(api.get('/visits', { limit: 6 })),
+        safe(api.get('/leads', { limit: 6 })),
+        safe(api.get('/demos', { limit: 6 })),
+        safe(api.get('/service', { limit: 20 })),
+        safe(api.get('/expenses', { limit: 8 })),
+        safe(api.get('/tasks', { limit: 8 })),
+        needsSvc ? safe(api.get('/service/stats')) : Promise.resolve(null),
+        role === 'admin' ? safe(api.get('/users', { limit: 1 })) : Promise.resolve(null),
+        role === 'admin' ? safe(api.get('/masters/products')) : Promise.resolve(null),
+        role === 'admin' ? safe(api.get('/audit', { limit: 1 })) : Promise.resolve(null),
+      ]);
+      if (!alive) return;
+      setData({
+        m: m || null,
+        closing: rows(closing),
+        visits: rows(visits),
+        leads: rows(leads),
+        demos: rows(demos),
+        service: rows(service),
+        expenses: rows(expenses),
+        tasks: rows(tasks),
+        totals: { visits: totalOf(visits), leads: totalOf(leads), demos: totalOf(demos), service: totalOf(service), expenses: totalOf(expenses), tasks: totalOf(tasks) },
+        svc: svc || null,
+        admin: role === 'admin' ? { users: totalOf(users), products: rows(products).length, audit: totalOf(audit) } : null,
+      });
     };
+    run();
+    return () => {
+      alive = false;
+    };
+  }, [role]);
 
-    fetchDashboardData();
-  }, []);
+  const view = useMemo(() => {
+    if (!data) return null;
+    return {
+      kpis: kpisFor(role, data),
+      attention: attentionFor(role, data),
+      rings: ringsFor(role, data),
+      segments: segmentsFor(role, data),
+      actions: actionsFor(role),
+      timeline: (data.m?.recentExceptions || []).filter((x) => (EXCEPTION_ROLES[x.type] || []).includes(role)).slice(0, 6).map(
+        (x): TimelineItem => ({
+          id: x.id,
+          title: x.title,
+          detail: x.description,
+          when: timeAgo(x.timestamp),
+          tone: x.severity === 'critical' ? 'red' : x.severity === 'warning' ? 'ochre' : 'teal',
+          href: EXCEPTION_HREF[x.type],
+        }),
+      ),
+    };
+  }, [data, role]);
 
-  const role = user?.role || 'management';
-  const roleProfile = ROLE_PROFILES[role];
-  const roleInfo = user ? PRESET_ROLE_USERS[role] : null;
-
-  const activePipelineValueLakh = leadsList.reduce(
-    (acc, l) => acc + (Number(l.estimated_value_lakh) || Number(l.value_lakh) || 0),
-    0,
-  );
-  const totalEmdAmount = closingTenders.reduce(
-    (acc, t) => acc + (Number(t.emd_fee) || 0),
-    0,
-  );
+  if (!view) {
+    return (
+      <PageContainer>
+        <PageLoader label="Loading command dashboard" rows={4} />
+      </PageContainer>
+    );
+  }
 
   return (
     <PageContainer>
-      {/* ── ROLE-SPECIFIC 4 KPI HUD CARDS (3PX TOP ACCENT BAR) ── */}
-      {/* 1. SALES HUD */}
-      {role === 'sales' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/leads" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-[#0F5E63]/40 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#0F5E63]" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">My Active Pipeline</span>
-                <div className="w-7 h-7 bg-[#E3EFEE] text-[#0F5E63] rounded-lg flex items-center justify-center"><Target size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{formatLakh(activePipelineValueLakh)}</div>
-              <div className="text-[11px] text-[#4A5568] pt-2 border-t border-gray-100 flex justify-between">
-                <span>Active Pipeline</span><span className="font-bold text-[#0F5E63]">{leadsList.length} Leads</span>
-              </div>
-            </div>
-          </Link>
+      <div className="dash-grid grid grid-cols-2 gap-2.5 sm:gap-4 md:grid-cols-4">
+        {view.kpis.map((k) => (
+          <KpiTile key={k.label} {...k} />
+        ))}
+      </div>
 
-          <Link href="/visits" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-blue-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-blue-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">My Planned Visits</span>
-                <div className="w-7 h-7 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center"><Calendar size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{visitsList.length} Visits</div>
-              <div className="text-[11px] text-blue-600 font-medium pt-2 border-t border-blue-50 flex justify-between">
-                <span>Field Tour Calendar</span><span className="font-bold">Active</span>
-              </div>
-            </div>
-          </Link>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <Panel className="lg:col-span-2" title="Needs your attention" icon={<Activity size={15} />} href="/notifications" hrefLabel="All alerts">
+          <AttentionList items={view.attention} />
+        </Panel>
+        <Panel title="Quick actions" icon={<Zap size={15} />}>
+          <QuickActions actions={view.actions} />
+        </Panel>
+      </div>
 
-          <Link href="/demos" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-emerald-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-emerald-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Active Demo Trials</span>
-                <div className="w-7 h-7 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center"><Box size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{demosList.length} In-Field</div>
-              <div className="text-[11px] text-emerald-600 font-medium pt-2 border-t border-emerald-50 flex justify-between">
-                <span>Client Trials</span><span className="font-bold">Hardware Reserved</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/tasks" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-amber-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-amber-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">My Milestone Tasks</span>
-                <div className="w-7 h-7 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center"><CheckSquare size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{tasksList.length} Tasks</div>
-              <div className="text-[11px] text-amber-700 font-medium pt-2 border-t border-amber-50 flex justify-between">
-                <span>Action Milestones</span><span className="font-bold">0 Blocked</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* 2. TENDER TEAM HUD */}
-      {role === 'tender_team' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/tenders" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-red-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-red-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Closing ≤ 7 Days</span>
-                <div className="w-7 h-7 bg-red-50 text-red-600 rounded-lg flex items-center justify-center"><Clock size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{metrics?.tendersCount.closingSoon ?? closingTenders.length} Urgent</div>
-              <div className="text-[11px] text-red-600 font-medium pt-2 border-t border-red-50 flex justify-between">
-                <span>Immediate Attention</span><span className="font-bold">Countdown Active</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/tenders" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-[#0F5E63]/40 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#0F5E63]" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Total Active Bids</span>
-                <div className="w-7 h-7 bg-[#E3EFEE] text-[#0F5E63] rounded-lg flex items-center justify-center"><FileText size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{metrics?.tendersCount.total ?? 0} Bids</div>
-              <div className="text-[11px] text-[#4A5568] pt-2 border-t border-gray-100 flex justify-between">
-                <span>National GeM Cell</span><span className="font-bold text-[#0F5E63]">All-India</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/proposals" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-amber-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-amber-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Awaiting Signoff</span>
-                <div className="w-7 h-7 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center"><AlertTriangle size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{tasksList.length} Milestones</div>
-              <div className="text-[11px] text-amber-700 font-medium pt-2 border-t border-amber-50 flex justify-between">
-                <span>Go/No-Go Approval</span><span className="font-bold">Pending Review</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/expenses" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-purple-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-purple-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Locked EMD Guarantees</span>
-                <div className="w-7 h-7 bg-purple-50 text-purple-600 rounded-lg flex items-center justify-center"><Shield size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{formatINR(totalEmdAmount)}</div>
-              <div className="text-[11px] text-purple-700 font-medium pt-2 border-t border-purple-50 flex justify-between">
-                <span>Bank Guarantees</span><span className="font-bold">Refund Tracking</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* 3. DEMO TEAM HUD */}
-      {role === 'demo_team' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/demos" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-emerald-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-emerald-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Depot Fleet Hardware</span>
-                <div className="w-7 h-7 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center"><Box size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">28 Units</div>
-              <div className="text-[11px] text-emerald-700 font-medium pt-2 border-t border-emerald-50 flex justify-between">
-                <span>Delhi, Patna, Kolkata</span><span className="font-bold">Active Fleet</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/demos" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-blue-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-blue-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">In-Field / Reserved</span>
-                <div className="w-7 h-7 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center"><Truck size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">12 Units</div>
-              <div className="text-[11px] text-blue-600 font-medium pt-2 border-t border-blue-50 flex justify-between">
-                <span>Client Demonstrations</span><span className="font-bold">Dispatched</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/visits" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-[#0F5E63]/40 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#0F5E63]" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Scheduled Field Trials</span>
-                <div className="w-7 h-7 bg-[#E3EFEE] text-[#0F5E63] rounded-lg flex items-center justify-center"><Calendar size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{demosList.length} Trials</div>
-              <div className="text-[11px] text-[#4A5568] pt-2 border-t border-gray-100 flex justify-between">
-                <span>Defence & Police</span><span className="font-bold text-[#0F5E63]">This Month</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/tasks" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-amber-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-amber-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Pending Outcome Certs</span>
-                <div className="w-7 h-7 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center"><CheckSquare size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">3 Pending</div>
-              <div className="text-[11px] text-amber-700 font-medium pt-2 border-t border-amber-50 flex justify-between">
-                <span>Post-Trial Clearance</span><span className="font-bold">Followup Required</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* 4. SERVICE TEAM HUD */}
-      {role === 'service_team' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/service" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-red-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-red-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Open Breakdown Tickets</span>
-                <div className="w-7 h-7 bg-red-50 text-red-600 rounded-lg flex items-center justify-center"><Wrench size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{serviceList.length || 8} Incidents</div>
-              <div className="text-[11px] text-red-600 font-medium pt-2 border-t border-red-50 flex justify-between">
-                <span>Scanner & Detector Fleet</span><span className="font-bold">Triage Active</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/service" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-amber-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-amber-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Critical Emergency Calls</span>
-                <div className="w-7 h-7 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center"><AlertTriangle size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">2 Urgent</div>
-              <div className="text-[11px] text-amber-700 font-medium pt-2 border-t border-amber-50 flex justify-between">
-                <span>SLA &lt; 24h Response</span><span className="font-bold">Airport / Checkpost</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/visits" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-blue-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-blue-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Field Visits Scheduled</span>
-                <div className="w-7 h-7 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center"><Calendar size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">4 Dispatches</div>
-              <div className="text-[11px] text-blue-600 font-medium pt-2 border-t border-blue-50 flex justify-between">
-                <span>Diagnostic Visits</span><span className="font-bold">This Week</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/tasks" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-purple-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-purple-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Spare Parts Blockers</span>
-                <div className="w-7 h-7 bg-purple-50 text-purple-600 rounded-lg flex items-center justify-center"><CheckSquare size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">2 Blocked</div>
-              <div className="text-[11px] text-purple-700 font-medium pt-2 border-t border-purple-50 flex justify-between">
-                <span>Awaiting Components</span><span className="font-bold">OEM Requisition</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* 5. ACCOUNTS TEAM HUD */}
-      {role === 'accounts' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/expenses" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-emerald-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-emerald-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Pending Stage 2 Reimbursements</span>
-                <div className="w-7 h-7 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center"><Receipt size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{formatINR(metrics?.expensesCount.pendingAmount ?? 845000)}</div>
-              <div className="text-[11px] text-emerald-700 font-medium pt-2 border-t border-emerald-50 flex justify-between">
-                <span>Finance Verification Queue</span><span className="font-bold">Awaiting Payout</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/expenses" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-blue-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-blue-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Manager-Approved Claims</span>
-                <div className="w-7 h-7 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center"><CheckCircle2 size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">
-                {(metrics?.expensesCount.pendingManager ?? 0) + (metrics?.expensesCount.pendingAccounts ?? 0)} Claims
-              </div>
-              <div className="text-[11px] text-blue-600 font-medium pt-2 border-t border-blue-50 flex justify-between">
-                <span>Stage 1 Endorsed</span><span className="font-bold">Ready for Signoff</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/expenses" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-purple-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-purple-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Tender EMD Guarantees</span>
-                <div className="w-7 h-7 bg-purple-50 text-purple-600 rounded-lg flex items-center justify-center"><Shield size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{formatINR(totalEmdAmount)}</div>
-              <div className="text-[11px] text-purple-700 font-medium pt-2 border-t border-purple-50 flex justify-between">
-                <span>Bank Guarantees</span><span className="font-bold">Active Float</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/tasks" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-amber-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-amber-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Finance Tasks</span>
-                <div className="w-7 h-7 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center"><CheckSquare size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{tasksList.length} Tasks</div>
-              <div className="text-[11px] text-amber-700 font-medium pt-2 border-t border-amber-50 flex justify-between">
-                <span>GST & Billing Milestones</span><span className="font-bold">In Progress</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* 6. REGIONAL MANAGER HUD */}
-      {role === 'regional_manager' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/regional" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-[#0F5E63]/40 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#0F5E63]" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">North Zone Pipeline</span>
-                <div className="w-7 h-7 bg-[#E3EFEE] text-[#0F5E63] rounded-lg flex items-center justify-center"><TrendingUp size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">
-                {formatLakh(metrics?.leadsCount.totalValueLakh ?? activePipelineValueLakh)}
-              </div>
-              <div className="text-[11px] text-[#4A5568] pt-2 border-t border-gray-100 flex justify-between">
-                <span>Territory Quota</span><span className="font-bold text-[#0F5E63]">{leadsList.length} Opportunities</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/tenders" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-red-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-red-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Territory GeM Bids</span>
-                <div className="w-7 h-7 bg-red-50 text-red-600 rounded-lg flex items-center justify-center"><FileText size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{metrics?.tendersCount.total ?? 0} Bids</div>
-              <div className="text-[11px] text-red-600 font-medium pt-2 border-t border-red-50 flex justify-between">
-                <span>North Zone Scrutiny</span><span className="font-bold">Closing Soon</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/visits" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-blue-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-blue-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Field Tour Completion</span>
-                <div className="w-7 h-7 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center"><Calendar size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">
-                {visitsList.length > 0 ? `${Math.round((visitsList.filter((v: any) => v.status === 'completed').length / visitsList.length) * 100)}%` : '0%'} Rate
-              </div>
-              <div className="text-[11px] text-blue-600 font-medium pt-2 border-t border-blue-50 flex justify-between">
-                <span>Also Meet Directives</span><span className="font-bold">Active Oversight</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/regional" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-purple-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-purple-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Territory Field Personnel</span>
-                <div className="w-7 h-7 bg-purple-50 text-purple-600 rounded-lg flex items-center justify-center"><Users size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">8 Active Roles</div>
-              <div className="text-[11px] text-purple-700 font-medium pt-2 border-t border-purple-50 flex justify-between">
-                <span>Performance Scorecard</span><span className="font-bold">Verified Logs</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* 7. ADMIN HUD */}
-      {role === 'admin' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/admin" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-[#0F5E63]/40 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#0F5E63]" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Active User Accounts</span>
-                <div className="w-7 h-7 bg-[#E3EFEE] text-[#0F5E63] rounded-lg flex items-center justify-center"><Users size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">8 Active Users</div>
-              <div className="text-[11px] text-[#4A5568] pt-2 border-t border-gray-100 flex justify-between">
-                <span>Personnel Directory</span><span className="font-bold text-[#0F5E63]">8 Departments</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/admin" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-emerald-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-emerald-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Enterprise Role Clearances</span>
-                <div className="w-7 h-7 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center"><Key size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">8 Roles</div>
-              <div className="text-[11px] text-emerald-700 font-medium pt-2 border-t border-emerald-50 flex justify-between">
-                <span>Permissions Matrix</span><span className="font-bold">Consistent</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/admin" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-purple-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-purple-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Equipment Masters</span>
-                <div className="w-7 h-7 bg-purple-50 text-purple-600 rounded-lg flex items-center justify-center"><Box size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">MHA QR Fleet</div>
-              <div className="text-[11px] text-purple-700 font-medium pt-2 border-t border-purple-50 flex justify-between">
-                <span>MHA Qualitative Reqs</span><span className="font-bold">Master Table</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/admin" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-amber-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-amber-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Security Audit Trail</span>
-                <div className="w-7 h-7 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center"><Shield size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">Immutable Log</div>
-              <div className="text-[11px] text-amber-700 font-medium pt-2 border-t border-amber-50 flex justify-between">
-                <span>Immutable PostgreSQL</span><span className="font-bold">Audited</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* 8. MANAGEMENT HUD (DEFAULT) */}
-      {role === 'management' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <Link href="/tenders" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-red-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-red-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Tenders Closing ≤ 7d</span>
-                <div className="w-7 h-7 bg-red-50 text-red-600 rounded-lg flex items-center justify-center"><Clock size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{metrics?.tendersCount.closingSoon ?? closingTenders.length}</div>
-              <div className="text-[11px] text-red-600 font-medium pt-2 border-t border-red-50 flex justify-between">
-                <span>Critical Attention</span><span className="font-bold">{metrics?.tendersCount.total ?? 0} Bids</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/leads" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-[#0F5E63]/40 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-[#0F5E63]" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Active Leads Pipeline</span>
-                <div className="w-7 h-7 bg-[#E3EFEE] text-[#0F5E63] rounded-lg flex items-center justify-center"><Target size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">
-                {formatLakh(metrics?.leadsCount.totalValueLakh ?? activePipelineValueLakh)}
-              </div>
-              <div className="text-[11px] text-[#4A5568] pt-2 border-t border-gray-100 flex justify-between">
-                <span>Expected Pipeline</span><span className="font-bold text-[#0F5E63]">{metrics?.leadsCount.total ?? leadsList.length} Accounts</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/expenses" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-emerald-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-emerald-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Pending Reimbursements</span>
-                <div className="w-7 h-7 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center"><Receipt size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{formatINR(metrics?.expensesCount.pendingAmount ?? 0)}</div>
-              <div className="text-[11px] text-emerald-700 font-medium pt-2 border-t border-emerald-50 flex justify-between">
-                <span>Under Signoff</span><span className="font-bold">{(metrics?.expensesCount.pendingManager ?? 0) + (metrics?.expensesCount.pendingAccounts ?? 0)} Claims</span>
-              </div>
-            </div>
-          </Link>
-
-          <Link href="/tasks" className="block">
-            <div className="bg-white border border-[#DCD8CE] rounded-xl overflow-hidden relative pt-4 pb-3.5 px-4 transition-all hover:shadow-md hover:border-amber-300 flex flex-col justify-between h-full min-h-[115px]">
-              <div className="absolute top-0 left-0 right-0 h-[3px] bg-amber-500" />
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] text-[#4A5568] font-bold uppercase tracking-wider">Milestone Tasks</span>
-                <div className="w-7 h-7 bg-amber-50 text-amber-600 rounded-lg flex items-center justify-center"><CheckSquare size={14} /></div>
-              </div>
-              <div className="text-2xl font-black text-gray-950 mb-1">{metrics?.tasksCount.pending ?? tasksList.length} In Progress</div>
-              <div className="text-[11px] text-amber-700 font-medium pt-2 border-t border-amber-50 flex justify-between">
-                <span>Company Milestones</span><span className="font-bold text-red-600">{metrics?.tasksCount.blocked ?? 0} Blocked</span>
-              </div>
-            </div>
-          </Link>
-        </div>
-      )}
-
-      {/* ── WORKBENCH MAIN CONTENT AREA: PERSONA-TAILORED TABLES & WIDGETS ── */}
-
-      {/* SALES WORKBENCH CONTENT */}
-      {role === 'sales' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Widget 1: My Scheduled Client Visits */}
-          <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-[#0F5E63]" />
-                <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider">
-                  My Scheduled Client Visits & Tour Plan
-                </h3>
-              </div>
-              <Link href="/visits" className="text-xs font-bold text-[#0F5E63] hover:underline flex items-center gap-1">
-                <span>View All</span><ChevronRight size={12} />
-              </Link>
-            </div>
-            <div className="divide-y divide-[#DCD8CE]">
-              {visitsList.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#4A5568]">
-                  No client visits currently scheduled. Plan a visit to populate this list.
-                </div>
-              ) : (
-                visitsList.map((v) => (
-                  <div key={v.id} className="p-3.5 hover:bg-[#FBFAF7] transition-colors flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-bold text-xs text-gray-900">{v.organisation_name || 'Client Organisation'}</div>
-                      <div className="text-[11px] text-[#4A5568] mt-0.5">{v.purpose || 'Official Liaison & Demonstration Discussion'}</div>
-                      <div className="text-[10px] text-gray-500 mt-1 flex items-center gap-2 font-mono">
-                        <span>Planned: {v.planned_date ? new Date(v.planned_date).toLocaleDateString('en-IN') : 'Scheduled'}</span>
-                        {v.city && <span>· {v.city}</span>}
-                      </div>
-                    </div>
-                    <Badge variant={v.status === 'completed' ? 'success' : 'cyber'} size="sm" className="uppercase shrink-0">
-                      {v.status || 'PLANNED'}
-                    </Badge>
-                  </div>
-                ))
-              )}
-            </div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <Panel title="Operational health" icon={<TrendingUp size={15} />}>
+          <div className="grid grid-cols-3 gap-2 p-5">
+            {view.rings.map((r) => (
+              <RingGauge key={r.key} label={r.label} sub={r.sub} value={Math.max(0, r.value)} max={r.max} display={r.max === 0 ? '—' : r.display} tone={r.tone} />
+            ))}
           </div>
-
-          {/* Widget 2: My Active Leads & Deal Pipeline */}
-          <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Target className="w-4 h-4 text-[#0F5E63]" />
-                <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider">
-                  My Active Leads & Prospect Pipeline
-                </h3>
-              </div>
-              <Link href="/leads" className="text-xs font-bold text-[#0F5E63] hover:underline flex items-center gap-1">
-                <span>View Funnel</span><ChevronRight size={12} />
-              </Link>
-            </div>
-            <div className="divide-y divide-[#DCD8CE]">
-              {leadsList.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#4A5568]">
-                  No active opportunities in pipeline. Create a new lead to begin tracking.
-                </div>
-              ) : (
-                leadsList.map((l) => (
-                  <Link
-                    key={l.id}
-                    href={`/leads?highlight=${l.id}`}
-                    className="p-3.5 hover:bg-[#FBFAF7] transition-colors flex items-start justify-between gap-3 block"
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-gray-900 hover:text-[#0F5E63] transition-colors">
-                        {l.organisation_name || 'Prospect Client'}
-                      </div>
-                      <div className="text-[11px] text-[#4A5568] mt-0.5">{l.product_name || 'Security Hardware'}</div>
-                      <div className="text-[10px] text-gray-500 mt-1 font-mono">
-                        Est. Value: <strong className="text-gray-900 font-bold">{formatLakh(Number(l.value_lakh ?? l.estimated_value_lakh ?? 0))}</strong>
-                      </div>
-                    </div>
-                    <Badge variant="outline" size="sm" className="uppercase shrink-0 font-bold">
-                      {l.stage || l.lead_status || l.status || 'QUALIFIED'}
-                    </Badge>
-                  </Link>
-                ))
-              )}
-            </div>
+        </Panel>
+        <Panel title="Pipeline mix" icon={<Layers size={15} />}>
+          <div className="space-y-6 p-5">
+            {view.segments.length === 0 ? (
+              <p className="py-8 text-center text-xs text-[#4A5568]">Nothing to chart yet.</p>
+            ) : (
+              view.segments.map((s) => <StackBar key={s.title} title={s.title} segments={s.segments} />)
+            )}
           </div>
-        </div>
-      )}
-
-      {/* TENDER TEAM WORKBENCH CONTENT */}
-      {role === 'tender_team' && (
-        <div className="space-y-6">
-          <div className="rounded-xl border border-red-200 bg-white overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-red-100 bg-red-50/50 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-red-600" />
-                <h3 className="text-xs font-bold text-red-950 uppercase tracking-wider">
-                  Urgent Tender Closing Countdown Board (≤ 7 Days)
-                </h3>
-              </div>
-              <Link href="/tenders" className="text-xs font-bold text-red-700 hover:underline flex items-center gap-1">
-                <span>All {closingTenders.length} Bids</span><ChevronRight size={12} />
-              </Link>
-            </div>
-            <div className="divide-y divide-red-100">
-              {closingTenders.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#4A5568]">
-                  No tenders closing within 7 days. All tender deadlines are on track.
-                </div>
-              ) : (
-                closingTenders.map((t) => (
-                  <div key={t.id} className="p-4 hover:bg-red-50/20 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-bold text-red-700">{t.tender_no}</span>
-                        <Badge variant="urgent" size="sm">CLOSING SOON</Badge>
-                      </div>
-                      <div className="text-xs font-semibold text-gray-900">{t.department || 'Defence / Security Procurement'}</div>
-                      <div className="text-[11px] text-[#4A5568]">Requirement: {t.title || 'Multi-zone Security Scanners'}</div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-xs font-mono font-bold text-red-600">
-                        EMD: {t.emd_fee ? `₹${Number(t.emd_fee).toLocaleString('en-IN')}` : 'Exempted'}
-                      </div>
-                      <div className="text-[10px] text-gray-500 mt-1">Status: {t.status?.replace('_', ' ').toUpperCase()}</div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* DEMO TEAM WORKBENCH CONTENT */}
-      {role === 'demo_team' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Box className="w-4 h-4 text-[#0F5E63]" />
-                <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider">Scheduled Client Demonstrations</h3>
-              </div>
-              <Link href="/demos" className="text-xs font-bold text-[#0F5E63] hover:underline flex items-center gap-1">
-                <span>View Fleet</span><ChevronRight size={12} />
-              </Link>
-            </div>
-            <div className="divide-y divide-[#DCD8CE]">
-              {demosList.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#4A5568]">
-                  No client equipment demonstrations currently scheduled.
-                </div>
-              ) : (
-                demosList.map((d) => (
-                  <div key={d.id} className="p-3.5 hover:bg-[#FBFAF7] transition-colors flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-bold text-xs text-gray-900">{d.organisation_name || 'Client Unit'}</div>
-                      <div className="text-[11px] text-[#4A5568] mt-0.5">Model: {d.product_name || 'Thermal Imaging Camera'}</div>
-                      <div className="text-[10px] text-gray-500 mt-1 font-mono">Location: {d.depot_location || 'North Depot (Delhi)'}</div>
-                    </div>
-                    <Badge variant="cyber" size="sm" className="uppercase shrink-0">{d.status || 'CONFIRMED'}</Badge>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-[#DCD8CE] bg-white p-5 shadow-xs space-y-4">
-            <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider flex items-center gap-2">
-              <Truck className="w-4 h-4 text-[#0F5E63]" />
-              <span>Depot Equipment Availability Matrix</span>
-            </h3>
-            <div className="space-y-3">
-              {[
-                { depot: 'North Depot (Delhi)', total: demosList.filter((d) => (d.depot_location || d.location || '').includes('Delhi')).length },
-                { depot: 'East Depot (Kolkata)', total: demosList.filter((d) => (d.depot_location || d.location || '').includes('Kolkata')).length },
-                { depot: 'Central Depot (Patna)', total: demosList.filter((d) => (d.depot_location || d.location || '').includes('Patna')).length },
-              ].map((m) => (
-                <div key={m.depot} className="p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between text-xs">
-                  <div>
-                    <span className="font-bold text-gray-900">{m.depot}</span>
-                    <div className="text-[11px] text-[#4A5568] mt-0.5">Active Hardware Units: {m.total}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">{m.total} Active</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SERVICE TEAM WORKBENCH CONTENT */}
-      {role === 'service_team' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Wrench className="w-4 h-4 text-[#0F5E63]" />
-                <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider">Breakdown Incident Tickets</h3>
-              </div>
-              <Link href="/service" className="text-xs font-bold text-[#0F5E63] hover:underline flex items-center gap-1">
-                <span>View All Tickets</span><ChevronRight size={12} />
-              </Link>
-            </div>
-            <div className="divide-y divide-[#DCD8CE]">
-              {serviceList.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#4A5568]">
-                  All breakdown tickets cleared. No active breakdown calls logged.
-                </div>
-              ) : (
-                serviceList.map((s) => (
-                  <div key={s.id} className="p-3.5 hover:bg-[#FBFAF7] transition-colors flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-bold text-xs text-gray-900">{s.organisation_name || 'Defence Depot'}</div>
-                      <div className="text-[11px] text-[#4A5568] mt-0.5">{s.issue_description || 'Optical Sensor Calibration Fault'}</div>
-                      <div className="text-[10px] text-gray-500 mt-1 font-mono">
-                        {s.ticket_no ? `Ticket Ref: #${s.ticket_no}` : (s.product_name || 'Service Breakdown Call')}
-                      </div>
-                    </div>
-                    <Badge variant={s.priority === 'critical' ? 'urgent' : 'warning'} size="sm" className="uppercase shrink-0">
-                      {s.priority || 'MEDIUM'}
-                    </Badge>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-[#DCD8CE] bg-white p-5 shadow-xs space-y-4">
-            <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider flex items-center gap-2">
-              <Shield className="w-4 h-4 text-[#0F5E63]" />
-              <span>Installed Machine Fleet Coverage</span>
-            </h3>
-            <div className="space-y-3">
-              <div className="p-3 rounded-lg bg-emerald-50/50 border border-emerald-200 flex justify-between items-center text-xs">
-                <div>
-                  <div className="font-bold text-emerald-950">Active Resolved Tickets</div>
-                  <div className="text-[11px] text-emerald-700">Repairs completed with sign-off documentation</div>
-                </div>
-                <span className="font-bold text-lg text-emerald-800">
-                  {serviceList.filter((s) => s.status === 'completed' || s.status === 'closed').length} Units
-                </span>
-              </div>
-              <div className="p-3 rounded-lg bg-blue-50/50 border border-blue-200 flex justify-between items-center text-xs">
-                <div>
-                  <div className="font-bold text-blue-950">Active Open Breakdowns</div>
-                  <div className="text-[11px] text-blue-700">Immediate diagnostic and spare parts deployment</div>
-                </div>
-                <span className="font-bold text-lg text-blue-800">
-                  {serviceList.filter((s) => s.status !== 'completed' && s.status !== 'closed').length} Units
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ACCOUNTS TEAM WORKBENCH CONTENT */}
-      {role === 'accounts' && (
-        <div className="space-y-6">
-          <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Receipt className="w-4 h-4 text-[#0F5E63]" />
-                <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider">
-                  Two-Stage Reimbursement Audit Queue (Ready for Payout)
-                </h3>
-              </div>
-              <Link href="/expenses" className="text-xs font-bold text-[#0F5E63] hover:underline flex items-center gap-1">
-                <span>All Claims</span><ChevronRight size={12} />
-              </Link>
-            </div>
-            <div className="divide-y divide-[#DCD8CE]">
-              {expensesList.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[#4A5568]">
-                  No reimbursement claims awaiting audit signoff.
-                </div>
-              ) : (
-                expensesList.map((e) => (
-                  <div key={e.id} className="p-4 hover:bg-[#FBFAF7] transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <div className="font-bold text-xs text-gray-900">{e.claimant_name || 'Field Representative'}</div>
-                      <div className="text-[11px] text-[#4A5568] mt-0.5">{e.description || 'Inter-city client tour travel and lodging'}</div>
-                      <div className="text-[10px] text-gray-500 mt-1 font-mono">Category: {e.category?.toUpperCase() || 'TRAVEL'}</div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="font-mono font-bold text-emerald-700 text-sm">{formatINR(e.amount || 0)}</div>
-                      <Badge variant="success" size="sm" className="mt-1">MANAGER ENDORSED</Badge>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* REGIONAL MANAGER WORKBENCH CONTENT */}
-      {role === 'regional_manager' && (
-        <div className="space-y-6">
-          <div className="rounded-xl border border-[#0F5E63]/30 bg-gradient-to-r from-[#0F5E63]/5 via-white to-blue-50/40 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs">
-            <div className="flex items-start sm:items-center gap-3.5">
-              <div className="w-10 h-10 rounded-xl bg-[#0F5E63] text-white flex items-center justify-center shrink-0 shadow-sm">
-                <Compass className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-bold text-gray-950">Regional Territory Command Hub (North Zone)</h3>
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#DCD8CE]">
-                    Territory Operations
-                  </span>
-                </div>
-                <p className="text-xs text-[#4A5568] mt-0.5">
-                  Access territory-scoped live sales funnel, field tour planner with &ldquo;Also Meet&rdquo; directives, and verified employee performance evidence dossiers.
-                </p>
-              </div>
-            </div>
-            <Link href="/regional" className="shrink-0">
-              <Button size="sm" variant="primary">
-                <span>Open Territory Hub</span>
-                <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
-              </Button>
-            </Link>
-          </div>
-        </div>
-      )}
-
-      {/* ADMIN WORKBENCH CONTENT */}
-      {role === 'admin' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="rounded-xl border border-[#DCD8CE] bg-white p-5 shadow-xs space-y-4">
-            <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider flex items-center gap-2">
-              <Key className="w-4 h-4 text-[#0F5E63]" />
-              <span>Enterprise Role Governance Status</span>
-            </h3>
-            <p className="text-xs text-[#4A5568]">
-              Enterprise role policies are enforced across all territorial zones and operational departments.
-            </p>
-            <Link href="/admin">
-              <Button size="sm" variant="primary" className="w-full">
-                <span>Open Permissions Matrix &amp; User Directory</span>
-                <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
-              </Button>
-            </Link>
-          </div>
-        </div>
-      )}
-
-      {/* MANAGEMENT WORKBENCH CONTENT (LIVE TICKER & ALL-INDIA OVERVIEW) */}
-      {role === 'management' && (
-        <>
-          {/* Live Scrolling Ticker */}
-          <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs relative">
-            <div className="flex items-center">
-              <div className="z-10 bg-[#E3EFEE] border-r border-[#DCD8CE] px-3.5 py-2 flex items-center gap-2 shrink-0">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-                </span>
-                <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#0F5E63] whitespace-nowrap">
-                  Live Feed
-                </span>
-              </div>
-              <div className="overflow-hidden flex-1 py-2">
-                <div className="animate-marquee items-center gap-8 text-xs font-medium text-gray-700">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-gray-900">Closing ≤ 7 Days:</span>
-                    <span className="px-2 py-0.5 rounded-md bg-red-50 text-red-700 font-bold border border-red-200">
-                      {metrics?.tendersCount.closingSoon ?? closingTenders.length} Urgent Bids
-                    </span>
-                  </div>
-                  <span className="text-gray-300">·</span>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-gray-900">Total Active Pipeline:</span>
-                    <span className="font-mono font-bold text-[#0F5E63]">
-                      {formatLakh(metrics?.leadsCount.totalValueLakh ?? activePipelineValueLakh)}
-                    </span>
-                  </div>
-                  <span className="text-gray-300">·</span>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-gray-900">Pending Reimbursements:</span>
-                    <span className="font-mono font-bold text-emerald-700">
-                      {formatINR(metrics?.expensesCount.pendingAmount ?? 0)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-              <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-[#0F5E63]" />
-                  <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider">
-                    Live GeM Tenders Closing Soon
-                  </h3>
-                </div>
-                <Link href="/tenders" className="text-xs font-bold text-[#0F5E63] hover:underline flex items-center gap-1">
-                  <span>View All ({closingTenders.length})</span><ChevronRight size={12} />
-                </Link>
-              </div>
-              <div className="divide-y divide-[#DCD8CE]">
-                {closingTenders.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-[#4A5568]">
-                    No tenders currently closing within 7 days.
-                  </div>
-                ) : (
-                  closingTenders.map((t) => (
-                    <div key={t.id} className="p-3.5 hover:bg-[#FBFAF7] transition-colors flex items-start justify-between gap-3">
-                      <div>
-                        <span className="font-mono text-xs font-bold text-red-700">{t.tender_no}</span>
-                        <div className="text-xs font-semibold text-gray-900 mt-0.5">{t.department || 'Defence Procurement'}</div>
-                      </div>
-                      <Badge variant="urgent" size="sm">URGENT</Badge>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-              <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <CheckSquare className="w-4 h-4 text-[#0F5E63]" />
-                  <h3 className="text-xs font-bold text-gray-950 uppercase tracking-wider">
-                    Company Action Milestones &amp; Blockers
-                  </h3>
-                </div>
-                <Link href="/tasks" className="text-xs font-bold text-[#0F5E63] hover:underline flex items-center gap-1">
-                  <span>View All ({tasksList.length})</span><ChevronRight size={12} />
-                </Link>
-              </div>
-              <div className="divide-y divide-[#DCD8CE]">
-                {tasksList.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-[#4A5568]">
-                    No action milestones or blockers recorded.
-                  </div>
-                ) : (
-                  tasksList.map((tk) => (
-                    <div key={tk.id} className="p-3.5 hover:bg-[#FBFAF7] transition-colors flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-bold text-xs text-gray-900">{tk.title || 'Action Milestone'}</div>
-                        <div className="text-[11px] text-[#4A5568] mt-0.5">Assigned: {tk.assigned_to_name || 'Team Member'}</div>
-                      </div>
-                      <Badge variant={tk.is_blocked ? 'danger' : 'cyber'} size="sm">
-                        {tk.is_blocked ? 'BLOCKED' : 'IN PROGRESS'}
-                      </Badge>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
+        </Panel>
+        <Panel title="Recent activity" icon={<AlertTriangle size={15} />} href="/notifications" hrefLabel="Open inbox">
+          <Timeline items={view.timeline} empty="No exceptions or escalations right now" />
+        </Panel>
+      </div>
     </PageContainer>
   );
 }

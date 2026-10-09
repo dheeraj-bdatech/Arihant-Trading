@@ -20,6 +20,8 @@ import {
   UpdatePartRequestStatusDto,
   CreateTicketCommentDto,
   ReviewServiceReportDto,
+  CloseTicketDto,
+  LinkOrganisationDto,
 } from './service.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -33,43 +35,21 @@ export class ServiceController {
   constructor(private readonly serviceService: ServiceService) {}
 
   @Get('stats')
-  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
   async getDashboardStats(@CurrentUser() user: AuthUser) {
     return this.serviceService.getDashboardStats(user);
   }
 
   @Get()
-  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin')
-  async findAll(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('search') search?: string,
-    @Query('status') status?: string,
-    @Query('priority') priority?: string,
-    @Query('assigned_to') assigned_to?: string,
-    @CurrentUser() user?: AuthUser,
-  ) {
-    return this.serviceService.findAllTickets(
-      { page, limit, search, status, priority, assigned_to },
-      user!,
-    );
+  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
+  async findAll(@Query() query: Record<string, any>, @CurrentUser() user: AuthUser) {
+    return this.serviceService.findAllTickets(query, user);
   }
 
   @Get('tickets')
-  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin')
-  async findAllTickets(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('search') search?: string,
-    @Query('status') status?: string,
-    @Query('priority') priority?: string,
-    @Query('assigned_to') assigned_to?: string,
-    @CurrentUser() user?: AuthUser,
-  ) {
-    return this.serviceService.findAllTickets(
-      { page, limit, search, status, priority, assigned_to },
-      user!,
-    );
+  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
+  async findAllTickets(@Query() query: Record<string, any>, @CurrentUser() user: AuthUser) {
+    return this.serviceService.findAllTickets(query, user);
   }
 
   @Get('tickets/:id')
@@ -78,7 +58,7 @@ export class ServiceController {
   }
 
   @Post('tickets')
-  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
   async createTicket(@Body() dto: CreateTicketDto, @CurrentUser() user: AuthUser) {
     return this.serviceService.createTicket(dto, user);
   }
@@ -105,8 +85,22 @@ export class ServiceController {
 
   @Post('tickets/:id/close')
   @Roles('management', 'regional_manager', 'service_team', 'admin')
-  async closeTicket(@Param('id') id: string, @CurrentUser() user: AuthUser) {
-    return this.serviceService.closeTicket(id, user);
+  async closeTicket(@Param('id') id: string, @Body() dto: CloseTicketDto, @CurrentUser() user: AuthUser) {
+    return this.serviceService.closeTicket(id, user, dto);
+  }
+
+  /** Triage: link a portal ticket from the "unverified customer" holding record to the real organisation. */
+  @Patch('tickets/:id/link-organisation')
+  @Roles('management', 'regional_manager', 'service_team', 'admin')
+  async linkOrganisation(@Param('id') id: string, @Body() dto: LinkOrganisationDto, @CurrentUser() user: AuthUser) {
+    return this.serviceService.linkOrganisation(id, dto, user);
+  }
+
+  /** Manual trigger of the SLA / auto-escalation sweep that normally runs every 10 minutes. */
+  @Post('maintenance/sweep')
+  @Roles('management', 'admin')
+  async sweep(@CurrentUser() user: AuthUser) {
+    return this.serviceService.runSlaSweep(user.id);
   }
 
   // --- Visits Endpoints ---

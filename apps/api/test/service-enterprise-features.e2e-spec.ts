@@ -301,17 +301,23 @@ describe('Module 6: Enterprise Service & After-Sales Advanced Workflows (Visits,
     });
 
     it('management approves corrected service report', async () => {
-      // Re-submit
-      await request(app.getHttpServer())
-        .patch(`/api/service/tickets/${ticketId}/status`)
+      // The engineer works again and files a corrected report (the first one stays on file as returned)
+      const second = await request(app.getHttpServer())
+        .post(`/api/service/tickets/${ticketId}/report`)
         .set('Authorization', `Bearer ${serviceToken}`)
         .send({
-          status: 'report_submitted',
-          remarks: 'Pressure gauge photos uploaded to document archive',
+          visit_id: visitId,
+          problem_identified: 'Impeller rotor blades chipped due to cavitation',
+          action_taken: 'Replaced impeller; pressure gauge photos uploaded to the document archive',
+          parts_replaced: 'CP-8821 Impeller Assembly',
+          customer_confirmation_type: 'Signature',
+          customer_name_signed: 'Col. S. K. Roy (Chief Security Officer)',
+          further_work_required: false,
         });
+      expect(second.status).toBe(201);
 
       const res = await request(app.getHttpServer())
-        .post(`/api/service/tickets/${ticketId}/reports/${reportId}/review`)
+        .post(`/api/service/tickets/${ticketId}/reports/${second.body.id}/review`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           approved: true,

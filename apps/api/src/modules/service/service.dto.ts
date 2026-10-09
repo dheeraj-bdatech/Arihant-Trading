@@ -149,6 +149,25 @@ export class CreateTicketDto {
   region_id?: string;
 }
 
+export class CloseTicketDto {
+  @IsString()
+  @IsOptional()
+  remarks?: string;
+}
+
+export class LinkOrganisationDto {
+  @Matches(UUID_REGEX, { message: 'organisation_id must be a valid UUID' })
+  organisation_id!: string;
+
+  @Matches(UUID_REGEX, { message: 'contact_id must be a valid UUID' })
+  @IsOptional()
+  contact_id?: string;
+
+  @IsString()
+  @IsOptional()
+  remarks?: string;
+}
+
 export class UpdateTicketStatusDto {
   @IsString()
   @IsNotEmpty()
@@ -177,6 +196,10 @@ export class UpdateTicketStatusDto {
   @IsNumber()
   @IsOptional()
   version?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  manager_override?: boolean;
 
   @IsBoolean()
   @IsOptional()

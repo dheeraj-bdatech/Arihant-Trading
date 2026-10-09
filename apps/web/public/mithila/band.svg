@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="64" viewBox="0 0 520 64" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <!-- fish -> -->
+  <g stroke="#9A3412" stroke-width="2">
+    <path d="M12 32C32 10 74 10 100 32C74 54 32 54 12 32Z" fill="#FBE3C8"/>
+    <path d="M100 32L122 17V47Z" fill="#C98A1B" stroke="#9A3412"/>
+    <path d="M44 18C52 12 62 12 70 17" stroke="#14213D"/>
+    <path d="M44 46C52 52 62 52 70 47" stroke="#14213D"/>
+  </g>
+  <circle cx="30" cy="30" r="3.4" fill="#14213D"/>
+  <g fill="#0F5E63"><circle cx="50" cy="32" r="2"/><circle cx="60" cy="27" r="2"/><circle cx="60" cy="37" r="2"/><circle cx="71" cy="32" r="2"/><circle cx="82" cy="28" r="1.8"/><circle cx="82" cy="36" r="1.8"/></g>
+  <!-- diamonds -->
+  <g stroke="#14213D" stroke-width="1.6">
+    <path d="M142 32L154 20L166 32L154 44Z" fill="#FBE3C8"/>
+    <path d="M148 32L154 26L160 32L154 38Z" fill="#9A3412" stroke="none"/>
+  </g>
+  <g fill="#C98A1B"><circle cx="134" cy="32" r="2"/><circle cx="174" cy="32" r="2"/></g>
+  <!-- lotus -->
+  <g stroke="#9A3412" stroke-width="2">
+    <path d="M230 54C214 46 204 34 206 18C220 22 228 36 230 54Z" fill="#FBE3C8"/>
+    <path d="M230 54C246 46 256 34 254 18C240 22 232 36 230 54Z" fill="#FBE3C8"/>
+    <path d="M230 54C222 42 222 24 230 10C238 24 238 42 230 54Z" fill="#C98A1B"/>
+  </g>
+  <g fill="#14213D"><circle cx="230" cy="30" r="2.4"/></g>
+  <path d="M212 58H248" stroke="#0F5E63" stroke-width="2.4"/>
+  <!-- diamonds -->
+  <g stroke="#14213D" stroke-width="1.6">
+    <path d="M290 32L302 20L314 32L302 44Z" fill="#FBE3C8"/>
+    <path d="M296 32L302 26L308 32L302 38Z" fill="#0F5E63" stroke="none"/>
+  </g>
+  <g fill="#C98A1B"><circle cx="282" cy="32" r="2"/><circle cx="322" cy="32" r="2"/></g>
+  <!-- fish <- (mirrored) -->
+  <g transform="translate(508 0) scale(-1 1)" stroke="#9A3412" stroke-width="2">
+    <path d="M12 32C32 10 74 10 100 32C74 54 32 54 12 32Z" fill="#FBE3C8" transform="translate(0 0)"/>
+    <path d="M100 32L122 17V47Z" fill="#C98A1B"/>
+    <path d="M44 18C52 12 62 12 70 17" stroke="#14213D"/>
+    <path d="M44 46C52 52 62 52 70 47" stroke="#14213D"/>
+    <circle cx="30" cy="30" r="3.4" fill="#14213D" stroke="none"/>
+    <g fill="#0F5E63" stroke="none"><circle cx="50" cy="32" r="2"/><circle cx="60" cy="27" r="2"/><circle cx="60" cy="37" r="2"/><circle cx="71" cy="32" r="2"/><circle cx="82" cy="28" r="1.8"/><circle cx="82" cy="36" r="1.8"/></g>
+  </g>
+</svg>

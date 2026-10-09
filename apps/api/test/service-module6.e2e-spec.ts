@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { advanceTicket } from './helpers/service-flow';
 
 describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31-34)', () => {
   let app: INestApplication;
@@ -204,6 +205,7 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
     });
 
     it('supports exceptional states: awaiting_part, awaiting_customer, escalated', async () => {
+      await advanceTicket(app, mainTicketId, mgmtToken, serviceUserId, 'in_progress');
       // Transition to awaiting_part
       const partsRes = await request(app.getHttpServer())
         .patch(`/api/service/tickets/${mainTicketId}/status`)
@@ -240,6 +242,7 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
         parts_replaced: 'Optocoupler PCB REV-2.1 (S/N: OC-9021)',
         warranty_status: 'in_warranty',
         customer_confirmation: true,
+        customer_name_signed: 'ACP Rajiv Kumar, Station Security Head',
         further_work_required: false,
         report_url: 'https://docs.arihant.com/service/SR-2026-9001.pdf',
       };
@@ -276,7 +279,9 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
           action_taken: 'Temporary optical bypass configured for 48 hours operation',
           parts_replaced: 'None (awaiting delivery of optic assembly)',
           customer_confirmation: true,
+          customer_name_signed: 'ACP Rajiv Kumar, Station Security Head',
           further_work_required: true,
+          further_work_description: 'Install the replacement optic assembly',
           next_visit_date: nextVisit,
         });
 

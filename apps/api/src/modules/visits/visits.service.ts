@@ -231,10 +231,18 @@ export class VisitsService {
       .leftJoin('users as assignee', 'visits.assigned_to', 'assignee.id')
       .leftJoin('users as planner', 'visits.planned_by', 'planner.id')
       .leftJoin('users as manager', 'visits.assigned_by_manager', 'manager.id')
+      .leftJoin('users as serviceEngineer', 'visits.service_engineer_id', 'serviceEngineer.id')
       .leftJoin('demos', 'demos.visit_id', 'visits.id');
 
-    if (user.role === 'sales' || user.role === 'demo_team' || user.role === 'service_team') {
+    if (user.role === 'sales' || user.role === 'demo_team') {
       baseQuery = baseQuery.where('visits.assigned_to', '=', user.id);
+    } else if (user.role === 'service_team') {
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          eb('visits.assigned_to', '=', user.id),
+          eb('visits.service_engineer_id', '=', user.id),
+        ]),
+      );
     } else if (user.role === 'regional_manager') {
       if (user.zone_id) {
         baseQuery = baseQuery.where('organisations.zone_id', '=', user.zone_id);
@@ -313,6 +321,8 @@ export class VisitsService {
         'visits.end_time',
         'visits.purpose',
         'visits.demo_required',
+        'visits.service_escort_required',
+        'visits.service_engineer_id',
         'visits.travel_required',
         'visits.expected_outcome',
         'visits.status',
@@ -334,6 +344,7 @@ export class VisitsService {
         'contacts.mobile as contact_mobile',
         'contacts.email as contact_email',
         'assignee.full_name as assignee_name',
+        'serviceEngineer.full_name as service_engineer_name',
         'planner.full_name as planner_name',
         'manager.full_name as manager_name',
         'trips.base_location as trip_base_location',
@@ -368,6 +379,7 @@ export class VisitsService {
       .leftJoin('users as assignee', 'visits.assigned_to', 'assignee.id')
       .leftJoin('users as planner', 'visits.planned_by', 'planner.id')
       .leftJoin('users as manager', 'visits.assigned_by_manager', 'manager.id')
+      .leftJoin('users as serviceEngineer', 'visits.service_engineer_id', 'serviceEngineer.id')
       .selectAll('visits')
       .select([
         'organisations.name as organisation_name',
@@ -382,6 +394,7 @@ export class VisitsService {
         'contacts.mobile as contact_mobile',
         'contacts.email as contact_email',
         'assignee.full_name as assignee_name',
+        'serviceEngineer.full_name as service_engineer_name',
         'planner.full_name as planner_name',
         'manager.full_name as manager_name',
         'trips.base_location as trip_base_location',
@@ -499,6 +512,8 @@ export class VisitsService {
         end_time: dto.end_time || null,
         purpose: dto.purpose || null,
         demo_required: dto.demo_required || false,
+        service_escort_required: dto.service_escort_required || false,
+        service_engineer_id: dto.service_engineer_id || null,
         travel_required: dto.travel_required || false,
         expected_outcome: dto.expected_outcome || null,
         status: 'planned',
@@ -528,6 +543,8 @@ export class VisitsService {
           visit_id: visit.id,
           requested_by: user.id,
           assigned_to: demoAssignedTo,
+          service_escort_required: dto.service_escort_required || false,
+          service_engineer_id: dto.service_engineer_id || null,
           location: dto.location || org.city || null,
           requested_date: dto.planned_date,
           purpose: dto.purpose ? `Live demo for: ${dto.purpose}` : 'Field visit live demonstration',
@@ -553,6 +570,21 @@ export class VisitsService {
           location: dto.location || org.city,
           requestedByName: user.full_name,
         });
+
+        if (dto.service_escort_required) {
+          this.eventEmitter.emit(AppEvents.DEMO_SERVICE_ESCORT_REQUESTED, {
+            demoId: demoRecord.id,
+            demoNo: demoRecord.demo_no,
+            organisationName: org.name,
+            location: dto.location || org.city,
+            requestedDate: dto.planned_date,
+            requestedById: user.id,
+            requestedByName: user.full_name || 'Salesperson',
+            serviceEngineerId: dto.service_engineer_id,
+            regionId: (org as any).region_id,
+            zoneId: (org as any).zone_id,
+          });
+        }
 
         if (demoAssignedTo) {
           this.eventEmitter.emit(AppEvents.DEMO_TEAM_ASSIGNED, {

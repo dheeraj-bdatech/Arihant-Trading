@@ -467,6 +467,9 @@ export type ComplaintSource =
   | 'Walk-in'
   | 'Customer Portal'
   | 'Sales Rep'
+  | 'Demo Team'
+  | 'Field Visit'
+  | 'Official Letter'
   | 'Auto-PM';
 
 export type VisitOutcome =

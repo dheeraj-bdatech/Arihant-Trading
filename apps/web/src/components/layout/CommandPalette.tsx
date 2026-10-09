@@ -220,11 +220,11 @@ export const CommandPalette: React.FC<{
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-24 p-4">
       <div
-        className="fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity"
+        className="fixed inset-0 bg-[#2B1A12]/45 backdrop-blur-[3px] transition-opacity"
         onClick={onClose}
       />
 
-      <div className="relative w-full max-w-xl rounded-2xl bg-white border border-[#DCD8CE] shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150">
+      <div className="mt-popup relative w-full max-w-xl rounded-2xl bg-white border border-[#DCD8CE] shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150">
         {/* Search Input */}
         <div className="flex items-center px-4 py-3.5 border-b border-[#ECE9E2] bg-[#FBFAF7]">
           <Search className="h-5 w-5 text-[#0F5E63] mr-3 shrink-0" />

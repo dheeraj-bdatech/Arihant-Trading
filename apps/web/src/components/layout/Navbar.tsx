@@ -79,14 +79,14 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
   }, [user]);
 
   return (
-    <header className="h-16 border-b border-[#DCD8CE] bg-white/95 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30 select-none text-[#14213D]">
+    <header className="mt-header h-16 border-b border-[#DCD8CE]/80 bg-white/75 backdrop-blur-xl shadow-[0_6px_18px_-14px_rgba(20,33,61,0.25)] px-4 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-30 select-none text-[#14213D]">
       {/* Search / Cmd+K Trigger */}
       <div className="flex items-center flex-1 max-w-md min-w-[200px] mr-3">
         {/* Mobile Drawer Trigger Button */}
         <button
           type="button"
           onClick={toggleMobile}
-          className="flex lg:hidden items-center justify-center p-2 mr-2.5 rounded-lg bg-white hover:bg-[#F6F5F1] border border-[#DCD8CE] text-[#4A5568] hover:text-[#0F5E63] transition-all cursor-pointer shrink-0 shadow-2xs"
+          className="mt-hbtn flex lg:hidden items-center justify-center p-2 mr-2.5 rounded-lg bg-white hover:bg-[#F6F5F1] border border-[#DCD8CE] text-[#4A5568] hover:text-[#0F5E63] transition-all cursor-pointer shrink-0 shadow-2xs"
           title="Open Menu Drawer"
           aria-label="Open Menu Drawer"
         >
@@ -97,7 +97,7 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
         <button
           type="button"
           onClick={onOpenCommand}
-          className="w-full flex items-center justify-between px-3.5 py-1.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] hover:border-[#0F5E63] text-[#4A5568] text-xs transition-colors cursor-pointer whitespace-nowrap overflow-hidden"
+          className="mt-search w-full flex items-center justify-between px-3.5 py-2 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] hover:border-[#0F5E63] text-[#4A5568] text-xs transition-colors cursor-pointer whitespace-nowrap overflow-hidden"
         >
           <div className="flex items-center space-x-2 truncate">
             <Search className="h-3.5 w-3.5 text-[#4A5568] shrink-0" />
@@ -113,7 +113,7 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
         {/* Notifications Icon with unread badge */}
         <Link
           href="/notifications"
-          className="relative p-2 rounded-lg bg-white hover:bg-[#F6F5F1] border border-[#DCD8CE] text-[#4A5568] hover:text-[#0F5E63] transition-colors"
+          className="mt-hbtn relative p-2 rounded-lg bg-white hover:bg-[#F6F5F1] border border-[#DCD8CE] text-[#4A5568] hover:text-[#0F5E63] transition-colors"
           title="Notifications"
           aria-label={
             unreadCount > 0
@@ -135,8 +135,8 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
         {/* User Pill & Quick Sign Out */}
         {user && (
           <div className="flex items-center pl-2 border-l border-[#DCD8CE] gap-2">
-            <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-white border border-[#DCD8CE]">
-              <div className="h-6 w-6 rounded-md bg-[#0F5E63] text-white flex items-center justify-center text-[11px] font-bold shrink-0">
+            <div className="mt-user hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-white border border-[#DCD8CE]">
+              <div className="mt-avatar h-6 w-6 rounded-md bg-[#0F5E63] text-white flex items-center justify-center text-[11px] font-bold shrink-0">
                 {user.full_name ? user.full_name[0].toUpperCase() : 'A'}
               </div>
               <div className="flex flex-col text-left">
@@ -152,7 +152,7 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
             <button
               onClick={logout}
               title="Sign Out of Arihant BOS"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white hover:bg-[#FBEBDD] text-[#14213D] hover:text-[#9A3412] border border-[#DCD8CE] hover:border-[#9A3412]/30 text-xs font-semibold transition-all cursor-pointer shadow-2xs group"
+              className="mt-hbtn mt-hbtn--wide flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white hover:bg-[#FBEBDD] text-[#14213D] hover:text-[#9A3412] border border-[#DCD8CE] hover:border-[#9A3412]/30 text-xs font-semibold transition-all cursor-pointer shadow-2xs group"
             >
               <LogOut className="h-3.5 w-3.5 text-[#4A5568] group-hover:text-[#9A3412] transition-colors" />
               <span className="hidden sm:inline">Sign Out</span>

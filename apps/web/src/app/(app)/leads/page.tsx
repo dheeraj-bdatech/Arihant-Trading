@@ -67,8 +67,7 @@ import {
   TableBody,
   TableRow,
   TableHead,
-  TableCell,
-} from '@/components/ui';
+  TableCell, Spinner, ToolbarBox, ToolbarSlot, PageLoader } from '@/components/ui';
 import { formatLakh, LeadStatus, LeadCategory, LeadType, LeadLossReason, InteractionType, FollowUpStatus } from '@arihant/shared';
 
 const LEAD_CATEGORY_OPTIONS: { value: LeadCategory; label: string }[] = [
@@ -1605,7 +1604,6 @@ export default function LeadsPage() {
       {/* 1. Page Header */}
       <PageHeader
         title="Lead & Customer Management"
-        description="Enterprise sales pipeline, customer account directory, proactive follow-up schedule, and 360° interaction timeline."
         icon={<Target className="h-7 w-7 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2">
@@ -1675,7 +1673,7 @@ export default function LeadsPage() {
       </div>
 
       {/* 3. Primary Workspace Tabs */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#DCD8CE] pb-2">
+      <ToolbarBox>
         <Tabs
           variant="segmented"
           activeTab={activeTab}
@@ -1694,7 +1692,7 @@ export default function LeadsPage() {
             { id: 'reports', label: 'Executive Intelligence Reports', icon: <TrendingUp className="h-4 w-4" /> },
           ]}
         />
-      </div>
+      </ToolbarBox>
 
       {/* ========================================================================= */}
       {/* TAB 1: LEAD REGISTER & PIPELINE                                           */}
@@ -1702,7 +1700,7 @@ export default function LeadsPage() {
       {activeTab === 'leads' && (
         <div className="space-y-4">
           {/* Filters Strip */}
-          <div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex flex-wrap items-center justify-between gap-3">
+          <ToolbarSlot><div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[280px]">
               <div className="relative w-full sm:w-64">
                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#4A5568]" />
@@ -1781,13 +1779,11 @@ export default function LeadsPage() {
                 </select>
               </div>
             </div>
-          </div>
+          </div></ToolbarSlot>
 
           {/* Leads Table */}
           {leadsLoading ? (
-            <div className="p-12 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
-              Loading pipeline opportunities...
-            </div>
+            <PageLoader label="Loading pipeline" />
           ) : leads.length === 0 ? (
             <EmptyState
               icon={Target}
@@ -2000,7 +1996,7 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       {activeTab === 'customers' && (
         <div className="space-y-4">
-          <div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex flex-wrap items-center justify-between gap-3">
+          <ToolbarSlot><div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex flex-wrap items-center justify-between gap-3">
             <div className="relative w-full sm:w-80">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#4A5568]" />
               <input
@@ -2035,12 +2031,10 @@ export default function LeadsPage() {
                 </span>
               )}
             </div>
-          </div>
+          </div></ToolbarSlot>
 
           {customersLoading ? (
-            <div className="p-12 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
-              Loading customer accounts...
-            </div>
+            <PageLoader label="Loading customer accounts" />
           ) : customers.length === 0 ? (
             <EmptyState
               icon={Building}
@@ -2212,9 +2206,7 @@ export default function LeadsPage() {
           </div>
 
           {followupsLoading ? (
-            <div className="p-12 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
-              Loading follow-ups desk...
-            </div>
+            <PageLoader label="Loading follow-ups" />
           ) : followups.length === 0 ? (
             <EmptyState
               icon={Clock}
@@ -2608,7 +2600,7 @@ export default function LeadsPage() {
                 {/* Duplicate Detection Alert Banner */}
                 {isCheckingDuplicate && (
                   <div className="text-[11px] text-[#4A5568] italic flex items-center gap-1.5">
-                    <RefreshCw className="h-3 w-3 animate-spin text-[#0F5E63]" />
+                    <Spinner size="xs" />
                     <span>Checking account database for duplicate records...</span>
                   </div>
                 )}
@@ -3985,7 +3977,7 @@ export default function LeadsPage() {
               </label>
               {isLoadingLeadTeamAvailability ? (
                 <span className="text-[10px] text-[#0F5E63] flex items-center gap-1">
-                  <RefreshCw className="h-3 w-3 animate-spin" /> Checking Team Availability...
+                  <Spinner size="xs" /> Checking Team Availability...
                 </span>
               ) : (
                 <span className="text-[10px] text-[#4A5568]">
@@ -4341,13 +4333,26 @@ export default function LeadsPage() {
             />
           </div>
 
-          <Input
-            label="Meeting Venue / Video Link *"
-            required
-            value={discussionForm.venue}
-            onChange={(e) => setDiscussionForm((prev) => ({ ...prev, venue: e.target.value }))}
-            placeholder="e.g. Conference Room B, HQ Jodhpur or https://meet.google.com/xyz"
-          />
+          {(() => {
+            const isLink = discussionForm.mode === 'video_call';
+            const isPhone = discussionForm.mode === 'telephonic';
+            return (
+              <Input
+                label={isLink ? 'Meeting Link *' : isPhone ? 'Dial-in Number / Bridge *' : 'Meeting Venue *'}
+                required
+                type={isLink ? 'url' : 'text'}
+                value={discussionForm.venue}
+                onChange={(e) => setDiscussionForm((prev) => ({ ...prev, venue: e.target.value }))}
+                placeholder={
+                  isLink
+                    ? 'e.g. https://meet.google.com/xyz'
+                    : isPhone
+                    ? 'e.g. +91 98765 43210 or conference bridge ID'
+                    : 'e.g. Conference Room B, HQ Jodhpur'
+                }
+              />
+            );
+          })()}
 
           <Textarea
             label="Meeting Agenda & Tender Discussion Topics"

@@ -4,7 +4,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { Kysely } from 'kysely';
-import { DB } from '@arihant/shared';
+import { Database as DB } from '@arihant/shared';
 
 describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => {
   let app: INestApplication;
@@ -17,6 +17,7 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
   let tenderToken: string;
   let demoToken: string;
   let serviceToken: string;
+  let serviceUserId: string;
   let accountsToken: string;
   let adminToken: string;
 
@@ -110,7 +111,9 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
     });
 
     it('authenticates Service Engineer (service@arihant.com)', async () => {
-      serviceToken = (await login('service@arihant.com')).token;
+      const svc = await login('service@arihant.com');
+      serviceToken = svc.token;
+      serviceUserId = svc.user.id;
     });
 
     it('authenticates Corporate Accounts (accounts@arihant.com)', async () => {
@@ -433,15 +436,19 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
       expect(ticketId).toBeDefined();
     });
 
-    it('assigns service engineer and moves status to in_progress', async () => {
-      const res = await request(app.getHttpServer())
-        .patch(`/api/service/tickets/${ticketId}/status`)
-        .set('Authorization', `Bearer ${serviceToken}`)
-        .send({
-          status: 'in_progress',
-        });
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('in_progress');
+    it('assigns service engineer, schedules the visit and moves status to in_progress (spec §32 path)', async () => {
+      const step = async (body: Record<string, any>) => {
+        const r = await request(app.getHttpServer())
+          .patch(`/api/service/tickets/${ticketId}/status`)
+          .set('Authorization', `Bearer ${serviceToken}`)
+          .send(body);
+        expect(r.status).toBe(200);
+        return r.body;
+      };
+      await step({ status: 'assigned', assigned_to: serviceUserId });
+      await step({ status: 'visit_scheduled', planned_visit_date: new Date(Date.now() + 86400000).toISOString().split('T')[0] });
+      const res = await step({ status: 'in_progress' });
+      expect(res.status).toBe('in_progress');
     });
 
     it('submits mandatory service report with parts replaced and customer signoff (§33)', async () => {
@@ -453,6 +460,7 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
           action_taken: 'Inspected drive assembly, replaced faulty DC driver board, aligned conveyor belt tension.',
           parts_replaced: 'DC Drive Motor Board 24V (Part #DRV-2401)',
           customer_confirmation: true,
+          customer_name_signed: 'SP Rakesh Kumar, Patna Police HQ',
         });
       expect([200, 201]).toContain(res.status);
       expect(res.body.action_taken).toBeDefined();

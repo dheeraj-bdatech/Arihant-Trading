@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Calendar,
   Plus,
@@ -38,6 +39,7 @@ import {
   Hotel,
   Zap,
   Bell,
+  Wrench,
 } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
@@ -58,8 +60,9 @@ import {
   EmptyState,
   InfoCallout,
   Tabs,
-  Checkbox,
-} from '@/components/ui';
+  Checkbox, CountUp, PageLoader, Spinner, ToolbarBox, ToolbarSlot, FilterMenu,
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu } from '@/components/ui';
+import type { RowMenuItem } from '@/components/ui/RowMenu';
 
 // Specific Demo Kit standard accessories mapping
 const getStandardKitAccessories = (productName?: string, category?: string) => {
@@ -124,6 +127,9 @@ const getStandardKitAccessories = (productName?: string, category?: string) => {
 
 export default function VisitsPage() {
   const { user, hasRole } = useAuth();
+  const router = useRouter();
+  const [expandedVisitId, setExpandedVisitId] = useState<string | null>(null);
+  const [expandedTripId, setExpandedTripId] = useState<string | null>(null);
 
   // Tab navigation
   const [activeTab, setActiveTab] = useState<'my_visits' | 'manager_dashboard' | 'trips' | 'customer_history' | 'employee_activity'>('my_visits');
@@ -145,6 +151,7 @@ export default function VisitsPage() {
   // Filters
   const [filterSearch, setFilterSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+
   const [filterEmployee, setFilterEmployee] = useState('');
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
@@ -198,9 +205,15 @@ export default function VisitsPage() {
     power_required: true,
     night_trial: false,
     gate_pass_required: true,
+    service_escort_required: false,
+    service_engineer_id: '',
   });
   const [demoTeamAvailability, setDemoTeamAvailability] = useState<any[]>([]);
   const [isLoadingTeamAvailability, setIsLoadingTeamAvailability] = useState(false);
+
+  const serviceEngineers = useMemo(() => {
+    return (usersList || []).filter((u) => u.role === 'service_team');
+  }, [usersList]);
 
   const [travelDetails, setTravelDetails] = useState({
     travel_from: 'Delhi NCR (HQ Base)',
@@ -589,6 +602,8 @@ export default function VisitsPage() {
         product_id: validProductId,
         demo_required: newVisit.demo_required,
         demo_assigned_to: newVisit.demo_required && demoDetails.demo_assigned_to ? demoDetails.demo_assigned_to : undefined,
+        service_escort_required: newVisit.demo_required ? (demoDetails.service_escort_required || false) : false,
+        service_engineer_id: newVisit.demo_required && demoDetails.service_escort_required && demoDetails.service_engineer_id ? demoDetails.service_engineer_id : undefined,
         travel_required: newVisit.travel_required,
         expected_outcome: newVisit.expected_outcome?.trim() || undefined,
         remarks: payloadRemarks,
@@ -625,6 +640,8 @@ export default function VisitsPage() {
         power_required: true,
         night_trial: false,
         gate_pass_required: true,
+        service_escort_required: false,
+        service_engineer_id: '',
       });
       setTravelDetails({
         travel_from: 'Delhi NCR (HQ Base)',
@@ -889,7 +906,71 @@ export default function VisitsPage() {
     return { total, todayCount, directives, completed };
   }, [visits]);
 
-  // Manager Visit Card rendering all 10 fields and manager directives
+  // ── Row action openers (shared by "My Visits" and manager tables) ──
+  const openAlsoMeet = (v: any) => {
+    setSelectedVisit(v);
+    const directiveText = v.remarks?.includes('Manager Intervention / Directive:')
+      ? v.remarks.split('Manager Intervention / Directive:')[1].trim()
+      : v.remarks?.includes('Manager Directive:')
+      ? v.remarks.split('Manager Directive:')[1].trim()
+      : v.remarks?.includes('Manager Intervention:')
+      ? v.remarks.split('Manager Intervention:')[1].trim()
+      : '';
+    setAlsoMeetData({
+      instructions: directiveText,
+      assign_additional: false,
+      organisation_id: '',
+      location: v.location || '',
+      contact_person: '',
+      purpose: 'Strategic procurement review / GeM requirements',
+      start_time: '14:30',
+      end_time: '16:00',
+    });
+    setIsAlsoMeetOpen(true);
+  };
+  const openReport = (v: any) => {
+    setSelectedVisit(v);
+    setReportData({
+      met_completed: true,
+      person_met: '',
+      discussion: '',
+      product_discussed: v.product_name || '',
+      outcome: '',
+      opportunity: '',
+      tender_opportunity: '',
+      demo_required: v.demo_required || false,
+      next_action: '',
+      followup_date: '',
+      remarks: '',
+    });
+    setIsReportOpen(true);
+  };
+  const openReschedule = (v: any) => {
+    setSelectedVisit(v);
+    setRescheduleData({
+      new_date: v.planned_date,
+      start_time: v.start_time || '',
+      end_time: v.end_time || '',
+      reason: '',
+    });
+    setIsRescheduleOpen(true);
+  };
+  const openDestination = (v: any) => {
+    setSelectedVisit(v);
+    setNewDestination({ new_location: v.location || '', reason: '' });
+    setIsDestinationOpen(true);
+  };
+  const openCancel = (v: any) => {
+    setSelectedVisit(v);
+    setCancelReason('');
+    setIsCancelOpen(true);
+  };
+
+  const fmtDate = (d: any) =>
+    d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  const isActiveVisit = (v: any) => ['planned', 'modified', 'rescheduled'].includes(v.status);
+  const isManagerRole = hasRole(['management', 'regional_manager', 'admin']);
+
   const renderManagerVisitCard = (v: any) => (
     <div
       key={v.id}
@@ -1083,7 +1164,6 @@ export default function VisitsPage() {
       <PageHeader
         icon={<Calendar className="h-7 w-7 text-[#0F5E63]" />}
         title="Field Visits & Tour Operations"
-        description="Weekly tour programs, multi-stop trips, regional manager directives, and post-visit intelligence."
         actions={
           <>
             <Button
@@ -1148,7 +1228,8 @@ export default function VisitsPage() {
         />
       </StatGrid>
 
-      {/* Main Tab Switcher */}
+      {/* Main Tab Switcher + Filters (one box) */}
+      <ToolbarBox>
       <Tabs
         variant="pills"
         tabs={[
@@ -1189,7 +1270,7 @@ export default function VisitsPage() {
       />
 
       {/* Filter Toolbar */}
-      <div className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-3">
+      <ToolbarSlot><div className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
           {/* Search */}
           <div className="col-span-1 sm:col-span-2">
@@ -1245,52 +1326,47 @@ export default function VisitsPage() {
             onChange={(e) => setFilterDateTo(e.target.value)}
             className="text-xs"
           />
-        </div>
-
-        {/* Quick Toggles */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-gray-100">
-          <div className="flex items-center gap-4 text-xs font-semibold text-gray-700">
-            <Checkbox
-              checked={filterTravelOnly}
-              onChange={(e) => setFilterTravelOnly(e.target.checked)}
-              label="Travel Required Only"
+          {/* Quick filters + reset live in the same single row as the other controls */}
+          <div className="flex items-center gap-2">
+            <FilterMenu
+              label="Quick filters"
+              icon={<Filter className="h-3.5 w-3.5" />}
+              neutralKeys={[]}
+              options={[
+                { key: 'travel', label: 'Travel required only', active: filterTravelOnly, onSelect: () => setFilterTravelOnly(!filterTravelOnly) },
+                { key: 'demo', label: 'Demo required only', active: filterDemoOnly, onSelect: () => setFilterDemoOnly(!filterDemoOnly) },
+              ]}
             />
-
-            <Checkbox
-              checked={filterDemoOnly}
-              onChange={(e) => setFilterDemoOnly(e.target.checked)}
-              label="Demo Required Only"
-            />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setFilterSearch('');
+                setFilterStatus('');
+                setFilterEmployee('');
+                setFilterDateFrom('');
+                setFilterDateTo('');
+                setFilterTravelOnly(false);
+                setFilterDemoOnly(false);
+                fetchData();
+              }}
+              className="text-xs text-[#4A5568]"
+            >
+              <RefreshCw className="mr-1 h-3 w-3" />
+              <span>Reset</span>
+            </Button>
           </div>
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setFilterSearch('');
-              setFilterStatus('');
-              setFilterEmployee('');
-              setFilterDateFrom('');
-              setFilterDateTo('');
-              setFilterTravelOnly(false);
-              setFilterDemoOnly(false);
-              fetchData();
-            }}
-            className="text-xs text-[#4A5568]"
-          >
-            <RefreshCw className="h-3 w-3 mr-1" />
-            <span>Reset Filters</span>
-          </Button>
         </div>
-      </div>
+
+      </div></ToolbarSlot>
+
+      </ToolbarBox>
 
       {/* TAB CONTENT: MY VISITS */}
       {activeTab === 'my_visits' && (
         <div className="space-y-3.5">
           {isLoading ? (
-            <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
-              Loading field visit schedules...
-            </div>
+            <PageLoader label="Loading field visits" />
           ) : visits.length === 0 ? (
             <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
               No field visits match the active filters.
@@ -1644,19 +1720,19 @@ export default function VisitsPage() {
             <h2 className="text-xs font-bold uppercase tracking-wider text-[#0F5E63]">Team Field Deployment Horizon</h2>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
               <div className="bg-white p-3 rounded-lg border border-[#DCD8CE]">
-                <span className="text-2xl font-black text-[#14213D]">{managerData.summary?.todayCount || 0}</span>
+                <CountUp as="span" className="text-2xl font-black text-[#14213D]">{managerData.summary?.todayCount || 0}</CountUp>
                 <span className="block text-xs text-[#4A5568]">Deployed Today</span>
               </div>
               <div className="bg-white p-3 rounded-lg border border-[#DCD8CE]">
-                <span className="text-2xl font-black text-[#14213D]">{managerData.summary?.tomorrowCount || 0}</span>
+                <CountUp as="span" className="text-2xl font-black text-[#14213D]">{managerData.summary?.tomorrowCount || 0}</CountUp>
                 <span className="block text-xs text-[#4A5568]">Tomorrow</span>
               </div>
               <div className="bg-white p-3 rounded-lg border border-[#DCD8CE]">
-                <span className="text-2xl font-black text-[#14213D]">{managerData.summary?.next7DaysCount || 0}</span>
+                <CountUp as="span" className="text-2xl font-black text-[#14213D]">{managerData.summary?.next7DaysCount || 0}</CountUp>
                 <span className="block text-xs text-[#4A5568]">Next 7 Days (1-Wk Cycle)</span>
               </div>
               <div className="bg-white p-3 rounded-lg border border-[#DCD8CE]">
-                <span className="text-2xl font-black text-[#14213D]">{managerData.summary?.laterCount || 0}</span>
+                <CountUp as="span" className="text-2xl font-black text-[#14213D]">{managerData.summary?.laterCount || 0}</CountUp>
                 <span className="block text-xs text-[#4A5568]">Later</span>
               </div>
             </div>
@@ -2254,7 +2330,7 @@ export default function VisitsPage() {
                     </label>
                     {isLoadingTeamAvailability ? (
                       <span className="text-[10px] text-[#0F5E63] flex items-center gap-1">
-                        <RefreshCw className="h-3 w-3 animate-spin" /> Checking Team Availability...
+                        <Spinner size="xs" /> Checking Team Availability...
                       </span>
                     ) : (
                       <span className="text-[10px] text-[#4A5568]">
@@ -2730,6 +2806,62 @@ export default function VisitsPage() {
                       <span>Vehicle Entry Gate Pass Required</span>
                     </label>
                   </div>
+                </div>
+
+                {/* Service Team Escort for Live Trial Support */}
+                <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={demoDetails.service_escort_required || false}
+                        onChange={(e) =>
+                          setDemoDetails({
+                            ...demoDetails,
+                            service_escort_required: e.target.checked,
+                            service_engineer_id: e.target.checked ? demoDetails.service_engineer_id : '',
+                          })
+                        }
+                        className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                      />
+                      <div>
+                        <span className="text-xs font-bold text-[#14213D] block">
+                          Request Service Team Escort for Live Demo (Optional)
+                        </span>
+                        <span className="text-[11px] text-[#4A5568] block mt-0.5">
+                          Service Engineers do not plan separate tours. Attach a Service Engineer to this sales tour to assist during the live demonstration in case of technical issues or calibration needs.
+                        </span>
+                      </div>
+                    </label>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 shrink-0">
+                      <Wrench className="w-3 h-3 text-[#0F5E63]" />
+                      Joint Tour
+                    </span>
+                  </div>
+
+                  {demoDetails.service_escort_required && (
+                    <div className="pt-2 border-t border-[#ECE9E2] space-y-2">
+                      <Select
+                        label="Select Available Service Engineer *"
+                        value={demoDetails.service_engineer_id || ''}
+                        onChange={(e) => setDemoDetails({ ...demoDetails, service_engineer_id: e.target.value })}
+                        options={[
+                          { value: '', label: '-- Select Service Engineer to Escort Tour --' },
+                          ...serviceEngineers.map((se) => ({
+                            value: se.id,
+                            label: `🔧 ${se.full_name} (${se.email})`,
+                          })),
+                        ]}
+                        required
+                      />
+                      <div className="p-2 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 text-[11px] flex items-center gap-2">
+                        <Info className="h-3.5 w-3.5 text-teal-700 shrink-0" />
+                        <span>
+                          Attaching a Service Engineer will automatically link them to this tour program and notify Management, Demo Team, Service Team, Salesperson, and the Regional Manager.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

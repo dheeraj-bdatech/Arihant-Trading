@@ -4,7 +4,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 
 import { Kysely } from 'kysely';
-import { DB } from '@arihant/shared';
+import { Database as DB } from '@arihant/shared';
 
 describe('Arihant BOS API E2E Suite', () => {
   let app: INestApplication;
@@ -228,12 +228,12 @@ describe('Arihant BOS API E2E Suite', () => {
       expect(res.body.total).toBeGreaterThanOrEqual(1);
 
       const db = app.get<Kysely<DB>>('KYSELY_DB');
-      const found = res.body.data.find((t: any) => t.status === 'awaiting_internal_approval');
+      const found = res.body.data.find((t: any) => t.status === 'awaiting_approval');
       if (found) {
         testTenderId = found.id;
       } else {
         const candidate = res.body.data[0];
-        await db.updateTable('tenders').set({ status: 'awaiting_internal_approval' }).where('id', '=', candidate.id).execute();
+        await db.updateTable('tenders').set({ status: 'awaiting_approval' }).where('id', '=', candidate.id).execute();
         testTenderId = candidate.id;
       }
     });

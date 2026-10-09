@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import { Spinner } from '@/components/ui/Spinner';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { ROLE_PROFILES, type UserRole } from '@arihant/shared';
 import {
@@ -10,7 +11,6 @@ import {
   UserCheck,
   X,
   ChevronUp,
-  Loader2,
   LogOut,
   Sparkles,
   AlertCircle,
@@ -104,7 +104,7 @@ export const PersonaSwitcherFab: React.FC = () => {
       {/* Floating Modal / Panel */}
       {isOpen && (
         <div
-          className="mb-3 w-[360px] sm:w-[440px] max-h-[85vh] flex flex-col rounded-[14px] bg-white border border-[#DCD8CE] shadow-2xl p-4 text-xs text-[#14213D] animate-in fade-in slide-in-from-bottom-3 duration-200"
+          className="mt-popup mb-3 w-[360px] sm:w-[440px] max-h-[85vh] flex flex-col rounded-[14px] bg-white border border-[#DCD8CE] shadow-2xl p-4 text-xs text-[#14213D] animate-in fade-in slide-in-from-bottom-3 duration-200"
           style={{
             boxShadow:
               '0 20px 45px -10px rgba(15, 94, 99, 0.18), 0 0 0 1px rgba(220, 216, 206, 0.9)',
@@ -230,7 +230,7 @@ export const PersonaSwitcherFab: React.FC = () => {
                       }`}
                     >
                       {isSwitchingThis ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <Spinner size="xs" />
                       ) : (
                         shortLabel.slice(0, 2)
                       )}
@@ -257,7 +257,7 @@ export const PersonaSwitcherFab: React.FC = () => {
                   <div className="shrink-0 ml-2">
                     {isSwitchingThis ? (
                       <span className="text-[10px] text-[#0F5E63] font-semibold flex items-center gap-1">
-                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <Spinner size="xs" />
                         <span>Signing In...</span>
                       </span>
                     ) : isCurrent ? (
@@ -288,7 +288,7 @@ export const PersonaSwitcherFab: React.FC = () => {
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
         title="Quick Role Sign-In & Persona Clearance Switcher"
-        className="flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-white/95 backdrop-blur-md border border-[#DCD8CE] shadow-lg hover:shadow-xl hover:border-[#0F5E63]/50 transition-all duration-200 group text-left cursor-pointer active:scale-98"
+        className="mt-fab flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-white/95 backdrop-blur-md border border-[#DCD8CE] shadow-lg hover:shadow-xl hover:border-[#0F5E63]/50 transition-all duration-200 group text-left cursor-pointer active:scale-98"
         style={{ boxShadow: '0 8px 24px -6px rgba(15, 94, 99, 0.18)' }}
       >
         <div className="relative shrink-0">

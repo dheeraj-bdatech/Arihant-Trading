@@ -1183,7 +1183,7 @@ export class LeadsService {
       .executeTakeFirst();
 
     // Customer accounts count (territorially scoped if regional manager)
-    let orgQuery = this.db.selectFrom('organisations');
+    let orgQuery = this.db.selectFrom('organisations').where('organisations.id', '<>', '00000000-0000-4000-8000-0000000000a1');
     if (user.role === 'regional_manager' && user.region_id) {
       orgQuery = orgQuery.where('organisations.region_id', '=', user.region_id);
     }

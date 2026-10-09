@@ -111,6 +111,16 @@ export class CreateDemoDto {
   @IsString()
   @IsOptional()
   travel_remarks?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  service_escort_required?: boolean;
+
+  @Transform(({ value }) => (value === '' || value === null ? undefined : value))
+  @ValidateIf((o, v) => v !== '' && v !== null && v !== undefined)
+  @Matches(UUID_PATTERN, { message: 'service_engineer_id must be a valid UUID' })
+  @IsOptional()
+  service_engineer_id?: string;
 }
 
 export class UpdateDemoDto {

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { IconButton } from './Button';
@@ -100,24 +101,28 @@ export const Modal: React.FC<ModalProps> = ({
     '5xl': 'sm:max-w-5xl',
   };
 
-  return (
+  return createPortal(
     <div
-      className={twMerge('fixed inset-0 flex items-center justify-center p-4', className)}
+      className={twMerge('fixed inset-0 flex items-center justify-center p-3 sm:p-4', className)}
       style={{ zIndex: resolvedZIndex }}
     >
       {/* Translucent overlay */}
       <div
-        className="fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity animate-in fade-in duration-150"
+        className="fixed inset-0 bg-[#2B1A12]/45 backdrop-blur-[3px] transition-opacity animate-in fade-in duration-150"
         onClick={onClose}
       />
 
       {/* Light Executive Modal Container */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={twMerge(
           'relative w-full rounded-[14px] bg-white border border-[#DCD8CE] shadow-2xl overflow-hidden z-10 animate-in zoom-in-95 duration-150 text-[#14213D]',
           maxWidths[maxWidth],
         )}
       >
+        <div aria-hidden className="mithila-strip" />
         {/* Dialog Header */}
         <div className="px-5 py-4 border-b border-[#ECE9E2] bg-[#FBFAF7] flex items-center justify-between shrink-0">
           <div>
@@ -141,10 +146,11 @@ export const Modal: React.FC<ModalProps> = ({
         </div>
 
         {/* Dialog Body with custom-scrollbar */}
-        <div className="px-5 py-4 max-h-[78vh] overflow-y-auto custom-scrollbar">
+        <div className="px-4 py-4 sm:px-5 max-h-[calc(100dvh-8.5rem)] overflow-y-auto custom-scrollbar">
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };

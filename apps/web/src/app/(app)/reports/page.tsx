@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   FileSpreadsheet,
   Download,
@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   ArrowUpRight,
   TrendingUp,
+  RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -31,13 +32,38 @@ import {
   PageHeader,
   StatGrid,
   StatCard,
+  PageLoader,
+  ToolbarBox,
+  ToolbarSlot,
+  InfoCallout,
+  Select,
 } from '@/components/ui';
 import { formatLakh, formatINR } from '@arihant/shared';
+
+/** Never let a missing field render as "undefined"/"null". */
+const txt = (v: unknown, fallback = '—'): string =>
+  v === undefined || v === null || v === '' || String(v) === 'undefined' || String(v) === 'null' ? fallback : String(v);
+const pretty = (v: unknown, fallback = '—'): string => txt(v, fallback).replace(/_/g, ' ');
+const fmtDate = (v: unknown): string => {
+  if (!v) return '—';
+  const d = new Date(v as string);
+  return Number.isNaN(d.getTime()) ? txt(v) : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+const rows = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : Array.isArray(res?.items) ? res.items : []);
+
+const DATASETS = [
+  { key: 'tenders', label: 'GeM Bids', url: '/tenders' },
+  { key: 'leads', label: 'Sales Pipeline', url: '/leads' },
+  { key: 'visits', label: 'Field Itineraries', url: '/visits' },
+  { key: 'expenses', label: 'Expense Claims', url: '/expenses' },
+  { key: 'service', label: 'Service Desk', url: '/service/tickets' },
+] as const;
 
 export default function ConsolidatedReportsPage() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('tenders');
   const [isLoading, setIsLoading] = useState(true);
+  const [failed, setFailed] = useState<string[]>([]);
 
   // Data sets
   const [tenders, setTenders] = useState<any[]>([]);
@@ -46,35 +72,48 @@ export default function ConsolidatedReportsPage() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [tickets, setTickets] = useState<any[]>([]);
 
-  // Search & filter
+  // Search & filter (shared by every tab)
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  const fetchAllReportData = useCallback(async () => {
+    setIsLoading(true);
+    const bad: string[] = [];
+    const load = (ds: (typeof DATASETS)[number]) =>
+      api.get(ds.url, { limit: 100 }).catch((err: any) => {
+        console.error(`Reports: ${ds.url} failed`, err);
+        bad.push(ds.label);
+        return null;
+      });
+    const [tendersRes, leadsRes, visitsRes, expensesRes, serviceRes] = await Promise.all(DATASETS.map(load));
+    setTenders(rows(tendersRes));
+    setLeads(rows(leadsRes));
+    setVisits(rows(visitsRes));
+    setExpenses(rows(expensesRes));
+    setTickets(rows(serviceRes));
+    setFailed(bad);
+    setIsLoading(false);
+  }, []);
 
   useEffect(() => {
-    const fetchAllReportData = async () => {
-      try {
-        setIsLoading(true);
-        const [tendersRes, leadsRes, visitsRes, expensesRes, serviceRes] = await Promise.all([
-          api.get('/tenders', { limit: 100 }).catch(() => ({ data: [] })),
-          api.get('/leads', { limit: 100 }).catch(() => ({ data: [] })),
-          api.get('/visits', { limit: 100 }).catch(() => ({ data: [] })),
-          api.get('/expenses', { limit: 100 }).catch(() => ({ data: [] })),
-          api.get('/service/tickets', { limit: 100 }).catch(() => ({ data: [] })),
-        ]);
-
-        setTenders(tendersRes?.data || []);
-        setLeads(leadsRes?.data || []);
-        setVisits(visitsRes?.data || []);
-        setExpenses(expensesRes?.data || []);
-        setTickets(serviceRes?.data || []);
-      } catch (err) {
-        console.error('Failed to load reports data:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
     fetchAllReportData();
-  }, []);
+  }, [fetchAllReportData]);
+
+  // Search + status filtering, applied to the active tab's rows
+  const matches = (r: any) => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return true;
+    return Object.values(r).some((v) => typeof v === 'string' || typeof v === 'number' ? String(v).toLowerCase().includes(q) : false);
+  };
+  const byStatus = (r: any) => statusFilter === 'all' || String(r.status || '').toLowerCase() === statusFilter;
+  const vTenders = tenders.filter((r) => matches(r) && byStatus(r));
+  const vLeads = leads.filter((r) => matches(r) && byStatus(r));
+  const vVisits = visits.filter((r) => matches(r) && byStatus(r));
+  const vExpenses = expenses.filter((r) => matches(r) && byStatus(r));
+  const vTickets = tickets.filter((r) => matches(r) && byStatus(r));
+
+  const activeRows: any[] = { tenders, leads, visits, expenses, service: tickets }[activeTab] || [];
+  const statusOptions = Array.from(new Set(activeRows.map((r) => String(r.status || '').toLowerCase()).filter(Boolean))).sort();
 
   // Generic CSV Exporter
   const exportToCsv = (filename: string, rows: Record<string, any>[]) => {
@@ -178,12 +217,13 @@ export default function ConsolidatedReportsPage() {
     <PageContainer>
       {/* Top Banner */}
       <PageHeader
-        badge="Executive Intelligence"
         title="Consolidated Operational Reports"
-        subtitle="Consolidated enterprise data aggregates and business intelligence with direct CSV spreadsheet exports."
         icon={<FileText className="w-5 h-5 text-[#0F5E63]" />}
         actions={
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center gap-2.5">
+            <Button variant="outline" onClick={fetchAllReportData} isLoading={isLoading} leftIcon={<RefreshCw className="h-4 w-4" />}>
+              Reload
+            </Button>
             {activeTab === 'tenders' && (
               <Button variant="outline" onClick={handleExportTenders}>
                 <Download className="h-4 w-4 mr-2" />
@@ -252,24 +292,60 @@ export default function ConsolidatedReportsPage() {
         />
       </StatGrid>
 
-      {/* Tabs */}
-      <Tabs
-        tabs={[
-          { id: 'tenders', label: `GeM Bids (${tenders.length})` },
-          { id: 'leads', label: `Sales Pipeline (${leads.length})` },
-          { id: 'visits', label: `Field Itineraries (${visits.length})` },
-          { id: 'expenses', label: `Expense Claims (${expenses.length})` },
-          { id: 'service', label: `Service Desk (${tickets.length})` },
-        ]}
-        activeTab={activeTab}
-        onChange={setActiveTab}
-      />
+      {/* Tabs + search + filter: one box */}
+      <ToolbarBox>
+        <Tabs
+          tabs={[
+            { id: 'tenders', label: 'GeM Bids', count: tenders.length },
+            { id: 'leads', label: 'Sales Pipeline', count: leads.length },
+            { id: 'visits', label: 'Field Itineraries', count: visits.length },
+            { id: 'expenses', label: 'Expense Claims', count: expenses.length },
+            { id: 'service', label: 'Service Desk', count: tickets.length },
+          ]}
+          activeTab={activeTab}
+          onChange={(id) => {
+            setActiveTab(id);
+            setStatusFilter('all');
+          }}
+        />
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="relative min-w-[220px] flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#4A5568]" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search this report — number, organisation, person, status…"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder-[#4A5568]/70"
+            />
+          </div>
+        </div>
+        <ToolbarSlot>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[#4A5568]">Status</span>
+          <Select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="w-44 text-xs font-semibold"
+          >
+            <option value="all">All statuses</option>
+            {statusOptions.map((st) => (
+              <option key={st} value={st}>{st.replace(/_/g, ' ')}</option>
+            ))}
+          </Select>
+          </div>
+        </ToolbarSlot>
+      </ToolbarBox>
+
+      {failed.length > 0 && (
+        <InfoCallout variant="danger" title="Some report data could not be loaded">
+          {failed.join(', ')} did not respond. Check that the API is reachable (NEXT_PUBLIC_API_URL / API_INTERNAL_URL) and that your role can view these modules, then reload.
+        </InfoCallout>
+      )}
 
       {/* Content Body */}
       {isLoading ? (
-        <div className="p-12 text-center text-xs text-[#4A5568]">
-          Loading consolidated records...
-        </div>
+        <PageLoader label="Loading consolidated records" />
       ) : (
         <div className="bg-white border border-[#DCD8CE] rounded-2xl shadow-xs overflow-hidden">
           {activeTab === 'tenders' && (
@@ -287,10 +363,10 @@ export default function ConsolidatedReportsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {tenders.map((t) => (
+                  {vTenders.map((t) => (
                     <tr key={t.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3.5 font-semibold text-[#0F5E63]">{t.tender_no}</td>
-                      <td className="p-3.5 text-[#14213D]">{t.organisation_name || t.department || 'N/A'}</td>
+                      <td className="p-3.5 text-[#14213D]">{txt(t.organisation_name || t.organisation || t.department)}</td>
                       <td className="p-3.5">
                         <Badge variant={t.category === 'pq' ? 'urgent' : 'outline'}>
                           {t.category?.toUpperCase() || 'GENERAL'}
@@ -300,10 +376,10 @@ export default function ConsolidatedReportsPage() {
                       <td className="p-3.5 text-right font-medium text-emerald-700">
                         {t.emd_fee ? formatINR(t.emd_fee) : 'Exempt'}
                       </td>
-                      <td className="p-3.5 text-[#4A5568]">{t.bid_closing_date ? new Date(t.bid_closing_date).toLocaleDateString('en-IN') : 'N/A'}</td>
+                      <td className="p-3.5 text-[#4A5568]">{fmtDate(t.bid_closing_date || t.submission_deadline)}</td>
                       <td className="p-3.5">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700">
-                          {t.status?.replace('_', ' ')}
+                          {pretty(t.status)}
                         </span>
                       </td>
                     </tr>
@@ -328,21 +404,21 @@ export default function ConsolidatedReportsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {leads.map((l) => (
+                  {vLeads.map((l) => (
                     <tr key={l.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5 font-medium text-[#14213D]">{l.organisation_name}</td>
-                      <td className="p-3.5 text-[#4A5568]">{l.product_name}</td>
+                      <td className="p-3.5 font-medium text-[#14213D]">{txt(l.organisation_name)}</td>
+                      <td className="p-3.5 text-[#4A5568]">{txt(l.product_name)}</td>
                       <td className="p-3.5">
-                        <Badge variant="outline">{l.category?.toUpperCase()}</Badge>
+                        <Badge variant="outline">{txt(l.category).toUpperCase()}</Badge>
                       </td>
-                      <td className="p-3.5 capitalize">{l.probability}</td>
+                      <td className="p-3.5 capitalize">{txt(l.probability)}</td>
                       <td className="p-3.5 text-right font-bold text-[#14213D]">
-                        {l.value_lakh ? `₹ ${l.value_lakh} L` : '-'}
+                        {l.value_lakh || l.estimated_value_lakh ? `₹ ${l.value_lakh || l.estimated_value_lakh} L` : '—'}
                       </td>
                       <td className="p-3.5 text-[#4A5568]">{l.assigned_to_name || 'Unassigned'}</td>
                       <td className="p-3.5">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700">
-                          {l.status}
+                          {pretty(l.status)}
                         </span>
                       </td>
                     </tr>
@@ -366,14 +442,14 @@ export default function ConsolidatedReportsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {visits.map((v) => (
+                  {vVisits.map((v) => (
                     <tr key={v.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3.5">
-                        <p className="font-semibold text-[#14213D]">{v.organisation_name}</p>
-                        <p className="text-[11px] text-[#4A5568]">{v.location || v.city}</p>
+                        <p className="font-semibold text-[#14213D]">{txt(v.organisation_name)}</p>
+                        <p className="text-[11px] text-[#4A5568]">{txt(v.location || v.city)}</p>
                       </td>
-                      <td className="p-3.5 text-[#4A5568]">{v.planned_date}</td>
-                      <td className="p-3.5 text-[#14213D] font-medium">{v.assignee_name}</td>
+                      <td className="p-3.5 text-[#4A5568]">{fmtDate(v.planned_date)}</td>
+                      <td className="p-3.5 text-[#14213D] font-medium">{txt(v.assignee_name || v.assigned_to_name || v.planned_by_name)}</td>
                       <td className="p-3.5 text-[#4A5568]">{v.purpose || 'Client meeting'}</td>
                       <td className="p-3.5">
                         {v.manager_name ? (
@@ -386,7 +462,7 @@ export default function ConsolidatedReportsPage() {
                       </td>
                       <td className="p-3.5">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700">
-                          {v.status}
+                          {pretty(v.status)}
                         </span>
                       </td>
                     </tr>
@@ -410,16 +486,16 @@ export default function ConsolidatedReportsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {expenses.map((e) => (
+                  {vExpenses.map((e) => (
                     <tr key={e.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5 font-medium text-[#14213D]">{e.employee_name}</td>
-                      <td className="p-3.5 text-[#4A5568]">{e.expense_date}</td>
-                      <td className="p-3.5 capitalize">{e.category?.replace('_', ' ')}</td>
+                      <td className="p-3.5 font-medium text-[#14213D]">{txt(e.employee_name)}</td>
+                      <td className="p-3.5 text-[#4A5568]">{fmtDate(e.expense_date)}</td>
+                      <td className="p-3.5 capitalize">{pretty(e.category)}</td>
                       <td className="p-3.5 text-right font-bold text-[#14213D]">{formatINR(e.amount)}</td>
                       <td className="p-3.5 text-[#4A5568]">{e.purpose || 'Travel expense'}</td>
                       <td className="p-3.5">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800">
-                          {e.status?.replace('_', ' ')}
+                          {pretty(e.status)}
                         </span>
                       </td>
                     </tr>
@@ -444,24 +520,24 @@ export default function ConsolidatedReportsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {tickets.map((s) => (
+                  {vTickets.map((s) => (
                     <tr key={s.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5 font-semibold text-[#0F5E63]">{s.ticket_no}</td>
+                      <td className="p-3.5 font-semibold text-[#0F5E63]">{txt(s.ticket_no || s.ticket_number)}</td>
                       <td className="p-3.5">
-                        <p className="font-medium text-[#14213D]">{s.organisation_name}</p>
+                        <p className="font-medium text-[#14213D]">{txt(s.organisation_name)}</p>
                         <p className="text-[11px] text-[#4A5568]">S/N: {s.equipment_serial || 'N/A'}</p>
                       </td>
                       <td className="p-3.5">
                         <Badge variant={s.priority === 'critical' ? 'urgent' : 'outline'}>
-                          {s.priority?.toUpperCase()}
+                          {txt(s.priority).toUpperCase()}
                         </Badge>
                       </td>
-                      <td className="p-3.5 capitalize text-[#4A5568]">{s.warranty_status?.replace('_', ' ')}</td>
+                      <td className="p-3.5 capitalize text-[#4A5568]">{pretty(s.warranty_status)}</td>
                       <td className="p-3.5 text-[#14213D] font-medium">{s.assigned_to_name || 'Unassigned'}</td>
-                      <td className="p-3.5 text-[#4A5568] max-w-xs truncate">{s.complaint}</td>
+                      <td className="p-3.5 text-[#4A5568] max-w-xs truncate">{txt(s.complaint || s.complaint_description)}</td>
                       <td className="p-3.5">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-cyan-50 text-cyan-800">
-                          {s.status?.replace('_', ' ')}
+                          {pretty(s.status)}
                         </span>
                       </td>
                     </tr>

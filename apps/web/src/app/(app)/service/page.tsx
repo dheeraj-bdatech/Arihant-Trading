@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Wrench,
   Plus,
@@ -11,26 +11,25 @@ import {
   User,
   ShieldAlert,
   FileCheck,
-  Search,
-  Filter,
   RefreshCw,
-  ExternalLink,
   Calendar,
-  Layers,
-  ChevronRight,
   UserCheck,
-  AlertCircle,
   FileText,
   Package,
   History,
-  Activity,
-  Check,
-  X,
   Phone,
   MapPin,
   Flame,
   Users,
   Repeat,
+  Globe2,
+  Link2,
+  ShieldQuestion,
+  X,
+  PauseCircle,
+  Play,
+  RotateCcw,
+  Ban,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -48,21 +47,117 @@ import {
   EmptyState,
   StatCard,
   StatGrid,
+  InfoCallout,
+  PageLoader,
+  ToolbarBox,
+  ToolbarSlot,
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
 } from '@/components/ui';
-import type { ServicePriority, WarrantyStatus, ServiceTicketStatus } from '@arihant/shared';
+import { RowMenu, type RowMenuItem } from '@/components/ui/RowMenu';
+import type { ServicePriority, WarrantyStatus, ComplaintSource } from '@arihant/shared';
+import { allowedNextServiceStatuses, normalizeServiceStatus, type ServiceStatus } from '@arihant/shared';
+import {
+  errMsg,
+  statusLabel,
+  statusBadgeVariant,
+  isFinished,
+  isPortalTicket,
+  isUnverified,
+  STATUS_ROLES,
+  MANAGER_ROLES,
+  LINK_ROLES,
+} from '@/components/service/serviceHelpers';
+import { SlaPanel, TicketSlaInline, SlaPausedPill } from '@/components/service/ServiceSla';
+import { UnverifiedBanner } from '@/components/service/UnverifiedBanner';
+import { StatusActionModal, type Engineer } from '@/components/service/StatusActionModal';
+import { CloseTicketModal } from '@/components/service/CloseTicketModal';
+import { LinkOrganisationModal } from '@/components/service/LinkOrganisationModal';
+import { ReportFormModal } from '@/components/service/ReportFormModal';
+import { VisitsTab } from '@/components/service/VisitsTab';
+import { PartsTab } from '@/components/service/PartsTab';
+import { ReportsTab } from '@/components/service/ReportsTab';
+import { NotesTab, AuditTab } from '@/components/service/NotesAuditTabs';
+
+/** One thing a user can do to a ticket right now (derived from allowed_next_statuses + role). */
+type TicketAction =
+  | { kind: 'status'; target: ServiceStatus; label: string; tone: 'primary' | 'secondary' | 'exception' }
+  | { kind: 'report'; label: string; tone: 'primary' }
+  | { kind: 'close'; label: string; tone: 'primary' };
+
+const ACTION_LABEL: Partial<Record<ServiceStatus, string>> = {
+  created: 'Register ticket',
+  assigned: 'Assign engineer',
+  visit_scheduled: 'Schedule visit',
+  in_progress: 'Start / resume work',
+  resolved: 'Mark resolved',
+  awaiting_part: 'Awaiting spare part',
+  awaiting_customer: 'Awaiting customer',
+  escalated: 'Escalate',
+  on_hold: 'Put on hold',
+  revisit_required: 'Revisit required',
+  cancelled: 'Cancel ticket',
+  reopened: 'Reopen ticket',
+  received: 'Back to received',
+};
+const EXCEPTION_TARGETS: ServiceStatus[] = ['awaiting_part', 'awaiting_customer', 'escalated', 'on_hold', 'revisit_required', 'cancelled'];
+const ACTION_ORDER = ['assigned', 'visit_scheduled', 'in_progress', 'report', 'resolved', 'closed', 'reopened', 'created', 'received'];
+
+const ACTION_ICON: Record<string, React.ReactNode> = {
+  assigned: <UserCheck className="h-3.5 w-3.5 mr-1" />,
+  visit_scheduled: <Calendar className="h-3.5 w-3.5 mr-1" />,
+  in_progress: <Play className="h-3.5 w-3.5 mr-1" />,
+  resolved: <CheckCircle2 className="h-3.5 w-3.5 mr-1" />,
+  awaiting_part: <Package className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />,
+  awaiting_customer: <Clock className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />,
+  on_hold: <PauseCircle className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />,
+  escalated: <ShieldAlert className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />,
+  revisit_required: <RotateCcw className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />,
+  cancelled: <Ban className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />,
+  reopened: <Repeat className="h-3.5 w-3.5 mr-1" />,
+  report: <FileCheck className="h-3.5 w-3.5 mr-1" />,
+  closed: <CheckCircle2 className="h-3.5 w-3.5 mr-1" />,
+};
+const actionKey = (a: TicketAction) => (a.kind === 'status' ? a.target : a.kind === 'report' ? 'report' : 'closed');
+const actionRank = (a: TicketAction) => {
+  const i = ACTION_ORDER.indexOf(actionKey(a));
+  return i === -1 ? 99 : i;
+};
+
+const WORKLOAD_BADGE: Record<string, 'success' | 'info' | 'warning' | 'urgent' | 'default'> = {
+  AVAILABLE: 'success',
+  'OPTIMAL LOAD': 'info',
+  'HEAVY QUEUE': 'warning',
+  'OVERDUE RISK': 'urgent',
+};
+
+type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link'; ticket: any; target?: ServiceStatus };
 
 export default function ServicePage() {
-  const { user, hasRole } = useAuth();
+  const { user } = useAuth();
+  const role = (user?.role as string) || '';
+  const userId = user?.id || '';
 
   // Data states
   const [tickets, setTickets] = useState<any[]>([]);
   const [stats, setStats] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('all');
 
-  // Filters
+  // Filters (all applied server-side except the pipeline tabs)
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [unassignedFilter, setUnassignedFilter] = useState(false);
+  const [overdueFilter, setOverdueFilter] = useState(false);
+  const [repeatFilter, setRepeatFilter] = useState(false);
+  const [unverifiedFilter, setUnverifiedFilter] = useState(false);
 
   // Reference data
   const [organisations, setOrganisations] = useState<any[]>([]);
@@ -70,85 +165,74 @@ export default function ServicePage() {
 
   // Modals
   const [isLogTicketOpen, setIsLogTicketOpen] = useState(false);
-  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
-  const [isResolveModalOpen, setIsResolveModalOpen] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [isWorkloadModalOpen, setIsWorkloadModalOpen] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<any | null>(null);
+  const [actionCtx, setActionCtx] = useState<ActionCtx | null>(null);
+  const [cardError, setCardError] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
 
   // New ticket form (§31)
-  const [newTicket, setNewTicket] = useState({
+  const emptyTicket = () => ({
     organisation_id: '',
     organisation_name: '',
     city: '',
-    ticket_no: `SRV/26-27/${Math.floor(1000 + Math.random() * 9000)}`,
+    ticket_no: '',
     equipment_type: 'XBIS (X-Ray Baggage Inspection System)',
     serial_no: '',
     location: '',
     complaint: '',
+    complaint_source: 'Phone' as ComplaintSource,
     received_date: new Date().toISOString().split('T')[0],
     priority: 'high' as ServicePriority,
     warranty_status: 'in_warranty' as WarrantyStatus,
     assigned_to: '',
     planned_visit_date: '',
   });
-
-  // Assign Engineer form
-  const [assignForm, setAssignForm] = useState({
-    assigned_to: '',
-    planned_visit_date: '',
-    status: 'assigned' as ServiceTicketStatus,
-  });
-
-  // Service report form (§33)
-  const [reportForm, setReportForm] = useState({
-    problem_identified: '',
-    action_taken: '',
-    parts_replaced: '',
-    warranty_status: 'in_warranty',
-    customer_signoff_by: '',
-    customer_remarks: '',
-    further_work_required: false,
-    next_visit_date: '',
-    report_url: '',
-  });
+  const [newTicket, setNewTicket] = useState(emptyTicket);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  // Enterprise Detail Modal States
   const [detailTab, setDetailTab] = useState<'overview' | 'visits' | 'reports' | 'parts' | 'comments' | 'history'>('overview');
-  const [commentInput, setCommentInput] = useState('');
-  const [partNameInput, setPartNameInput] = useState('');
-  const [partQtyInput, setPartQtyInput] = useState(1);
-  const [partRemarksInput, setPartRemarksInput] = useState('');
-  const [visitScheduleDate, setVisitScheduleDate] = useState('');
-  const [visitNotesInput, setVisitNotesInput] = useState('');
-  const [reportReturnReason, setReportReturnReason] = useState('');
-  const [isReturningReport, setIsReturningReport] = useState<string | null>(null);
 
-  // Fetch Tickets & Stats
+  // Engineers the current user may pick: everyone for managers, only themselves for an engineer
+  const engineers: Engineer[] = useMemo(() => {
+    const list = serviceEngineers.map((u: any) => ({ id: u.id as string, name: (u.full_name || u.email) as string }));
+    return role === 'service_team' ? list.filter((e) => e.id === userId) : list;
+  }, [serviceEngineers, role, userId]);
+  const engineerNames = useMemo(() => Object.fromEntries(serviceEngineers.map((u: any) => [u.id, u.full_name || u.email])), [serviceEngineers]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  // Fetch tickets & stats
   const fetchData = useCallback(async () => {
     try {
-      setIsLoading(true);
+      setLoadError(null);
       const [ticketsRes, statsRes] = await Promise.all([
         api.get('/service/tickets', {
-          status: activeTab !== 'all' ? activeTab : undefined,
           priority: priorityFilter !== 'all' ? priorityFilter : undefined,
-          search: searchQuery || undefined,
-          limit: 50,
+          complaint_source: sourceFilter !== 'all' ? sourceFilter : undefined,
+          unassigned: unassignedFilter ? 'true' : undefined,
+          overdue: overdueFilter ? 'true' : undefined,
+          repeat: repeatFilter ? 'true' : undefined,
+          unverified: unverifiedFilter ? 'true' : undefined,
+          search: debouncedSearch || undefined,
+          limit: 100,
         }),
         api.get('/service/stats').catch(() => null),
       ]);
-
       setTickets(ticketsRes.data || []);
       if (statsRes) setStats(statsRes);
     } catch (err) {
       console.error('Failed to load service tickets:', err);
+      setLoadError(errMsg(err, 'Failed to load service tickets.'));
     } finally {
       setIsLoading(false);
     }
-  }, [activeTab, priorityFilter, searchQuery]);
+  }, [priorityFilter, sourceFilter, unassignedFilter, overdueFilter, repeatFilter, unverifiedFilter, debouncedSearch]);
 
   useEffect(() => {
     fetchData();
@@ -162,31 +246,135 @@ export default function ServicePage() {
       .catch(() => {});
 
     api
-      .get('/users', { limit: 100 })
-      .then((res) => {
-        const users = res.data || [];
-        const engineers = users.filter((u: any) =>
-          ['service_team', 'demo_team', 'admin'].includes(u.role),
-        );
-        setServiceEngineers(engineers.length > 0 ? engineers : users);
-      })
+      .get('/users', { role: 'service_team', limit: 100 })
+      .then((res) => setServiceEngineers((res.data || []).filter((u: any) => u.is_active !== false)))
       .catch(() => {});
   }, []);
 
-  // Filtered tickets client-side for pipeline tabs (§32)
-  const displayedTickets = useMemo(() => {
-    return tickets.filter((t) => {
-      if (activeTab === 'all') return true;
-      if (activeTab === 'open') return ['received', 'created'].includes(t.status);
-      if (activeTab === 'assigned') return ['assigned', 'visit_scheduled'].includes(t.status);
-      if (activeTab === 'in_progress') return t.status === 'in_progress';
-      if (activeTab === 'awaiting') return ['awaiting_part', 'awaiting_customer'].includes(t.status);
-      if (activeTab === 'escalated') return ['escalated', 'revisit', 'revisit_required'].includes(t.status);
-      if (activeTab === 'reports') return ['report_submitted', 'resolved'].includes(t.status);
-      if (activeTab === 'closed') return t.status === 'closed';
-      return t.status === activeTab;
-    });
-  }, [tickets, activeTab]);
+  // Pipeline tabs (§32) are client-side over the filtered list
+  const matchesTab = useCallback((tab: string, status: string) => {
+    const s = normalizeServiceStatus(status);
+    if (tab === 'all') return true;
+    if (tab === 'open') return ['received', 'created'].includes(s);
+    if (tab === 'assigned') return ['assigned', 'visit_scheduled'].includes(s);
+    if (tab === 'in_progress') return s === 'in_progress';
+    if (tab === 'awaiting') return ['awaiting_part', 'awaiting_customer', 'on_hold'].includes(s);
+    if (tab === 'escalated') return ['escalated', 'revisit_required', 'reopened'].includes(s);
+    if (tab === 'reports') return ['report_submitted', 'resolved'].includes(s);
+    if (tab === 'closed') return ['closed', 'cancelled'].includes(s);
+    return s === tab;
+  }, []);
+  const displayedTickets = useMemo(() => tickets.filter((t) => matchesTab(activeTab, t.status)), [tickets, activeTab, matchesTab]);
+
+  const tabCount = (tab: string) => tickets.filter((t) => matchesTab(tab, t.status)).length;
+
+  const anyFilter = sourceFilter !== 'all' || priorityFilter !== 'all' || unassignedFilter || overdueFilter || repeatFilter || unverifiedFilter || !!searchQuery;
+  const clearFilters = () => {
+    setSourceFilter('all');
+    setPriorityFilter('all');
+    setUnassignedFilter(false);
+    setOverdueFilter(false);
+    setRepeatFilter(false);
+    setUnverifiedFilter(false);
+    setSearchQuery('');
+    setActiveTab('all');
+  };
+  const applyStatFilter = (kind: 'portal' | 'breached' | 'unverified') => {
+    clearFilters();
+    if (kind === 'portal') {
+      setSourceFilter('Customer Portal');
+      setActiveTab('open');
+    } else if (kind === 'breached') setOverdueFilter(true);
+    else setUnverifiedFilter(true);
+  };
+
+  /* ------------------------------- helpers ------------------------------- */
+  const fetchDetail = useCallback(async (id: string) => api.get(`/service/tickets/${id}`), []);
+
+  /** Reload list + stats and, when open, the dossier. */
+  const refreshAll = useCallback(async () => {
+    await fetchData();
+    const id = selectedIdRef.current;
+    if (id) {
+      try {
+        setSelectedTicket(await fetchDetail(id));
+      } catch {
+        /* ticket may have left this user's scope */
+      }
+    }
+  }, [fetchData, fetchDetail]);
+
+  const actionCtxRef = useRef<ActionCtx | null>(null);
+  useEffect(() => {
+    actionCtxRef.current = actionCtx;
+  }, [actionCtx]);
+  const refreshActionTicket = useCallback(async () => {
+    const id = actionCtxRef.current?.ticket?.id;
+    if (!id) return;
+    try {
+      const fresh = await fetchDetail(id);
+      setActionCtx((ctx) => (ctx ? { ...ctx, ticket: fresh } : ctx));
+    } catch {
+      /* ignore */
+    }
+    await refreshAll();
+  }, [fetchDetail, refreshAll]);
+
+  /** What this user may do to this ticket right now. */
+  const getActions = useCallback(
+    (t: any): TicketAction[] => {
+      if (!STATUS_ROLES.includes(role)) return [];
+      const status = normalizeServiceStatus(t.status);
+      const allowed: ServiceStatus[] = (t.allowed_next_statuses as ServiceStatus[]) || allowedNextServiceStatuses(status);
+      const isManager = MANAGER_ROLES.includes(role);
+      const out: TicketAction[] = [];
+      for (const target of allowed) {
+        if (target === 'report_submitted') continue; // set by filing a report
+        if (target === 'closed') {
+          out.push({ kind: 'close', label: 'Sign off & close', tone: 'primary' });
+          continue;
+        }
+        if (target === 'reopened' && !['management', 'admin'].includes(role)) continue;
+        if (status === 'escalated' && !isManager) continue; // only managers de-escalate
+        if (target === 'assigned' && role === 'service_team' && t.assigned_to) continue; // engineers can only self-assign an unassigned ticket
+        if (target === 'cancelled' && role === 'service_team' && t.assigned_to && t.assigned_to !== userId) continue;
+        let label = ACTION_LABEL[target] || statusLabel(target);
+        if (status === 'escalated' && target !== 'cancelled') label = `De-escalate: ${statusLabel(target)}`;
+        else if (target === 'assigned' && t.assigned_to) label = 'Reassign engineer';
+        out.push({
+          kind: 'status',
+          target,
+          label,
+          tone: EXCEPTION_TARGETS.includes(target) ? 'exception' : ['assigned', 'visit_scheduled', 'in_progress', 'resolved'].includes(target) ? 'primary' : 'secondary',
+        });
+      }
+      if (['service_team', 'admin'].includes(role) && ['in_progress', 'resolved'].includes(status)) {
+        out.push({ kind: 'report', label: 'File service report', tone: 'primary' });
+      }
+      return out.sort((a, b) => actionRank(a) - actionRank(b));
+    },
+    [role, userId],
+  );
+
+  const runAction = async (t: any, a: TicketAction) => {
+    setCardError(null);
+    try {
+      // the list row has no reports / extra engineers; the modals need the full record
+      const full = t.reports ? t : await fetchDetail(t.id);
+      setActionCtx({ kind: a.kind, ticket: full, target: a.kind === 'status' ? a.target : undefined });
+    } catch (err) {
+      setCardError(errMsg(err, 'Could not load the ticket.'));
+    }
+  };
+
+  const openLink = async (t: any) => {
+    try {
+      const full = t.intake !== undefined ? t : await fetchDetail(t.id);
+      setActionCtx({ kind: 'link', ticket: full });
+    } catch (err) {
+      setCardError(errMsg(err, 'Could not load the ticket.'));
+    }
+  };
 
   // 1. Log New Incident (§31)
   const handleLogTicket = async (e: React.FormEvent) => {
@@ -210,10 +398,11 @@ export default function ServicePage() {
 
       await api.post('/service/tickets', {
         organisation_id: orgId,
-        ticket_no: newTicket.ticket_no,
+        ticket_no: newTicket.ticket_no.trim() || undefined,
         equipment_serial: newTicket.serial_no || undefined,
         location: newTicket.location || newTicket.city || undefined,
         complaint: `[${newTicket.equipment_type}] ${newTicket.complaint}`,
+        complaint_source: newTicket.complaint_source,
         received_date: newTicket.received_date || undefined,
         priority: newTicket.priority,
         warranty_status: newTicket.warranty_status,
@@ -222,329 +411,127 @@ export default function ServicePage() {
       });
 
       setIsLogTicketOpen(false);
-      setNewTicket({
-        organisation_id: '',
-        organisation_name: '',
-        city: '',
-        ticket_no: `SRV/26-27/${Math.floor(1000 + Math.random() * 9000)}`,
-        equipment_type: 'XBIS (X-Ray Baggage Inspection System)',
-        serial_no: '',
-        location: '',
-        complaint: '',
-        received_date: new Date().toISOString().split('T')[0],
-        priority: 'high',
-        warranty_status: 'in_warranty',
-        assigned_to: '',
-        planned_visit_date: '',
-      });
+      setNewTicket(emptyTicket());
       await fetchData();
-    } catch (err: any) {
-      setActionError(err.message || 'Failed to register breakdown incident.');
+    } catch (err) {
+      setActionError(errMsg(err, 'Failed to register breakdown incident.'));
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Close ticket (§32 workflow)
-  const handleCloseTicket = async (ticketId: string) => {
-    try {
-      await api.post(`/service/tickets/${ticketId}/close`);
-      await fetchData();
-    } catch (err: any) {
-      alert(err.message || 'Failed to close ticket.');
-    }
-  };
-
-  // 2. Assign Engineer & Schedule Visit
-  const handleAssignSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTicket) return;
-    setActionError(null);
-    setIsSubmitting(true);
-
-    try {
-      await api.patch(`/service/tickets/${selectedTicket.id}/status`, {
-        status: assignForm.planned_visit_date ? 'visit_scheduled' : 'assigned',
-        assigned_to: assignForm.assigned_to || undefined,
-        planned_visit_date: assignForm.planned_visit_date || undefined,
-      });
-
-      setIsAssignModalOpen(false);
-      setSelectedTicket(null);
-      await fetchData();
-    } catch (err: any) {
-      setActionError(err.message || 'Failed to dispatch engineer.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // 3. Quick Status Change (Exception States: Awaiting Part, Customer, Escalated)
-  const handleQuickStatusChange = async (ticket: any, newStatus: ServiceTicketStatus) => {
-    try {
-      await api.patch(`/service/tickets/${ticket.id}/status`, {
-        status: newStatus,
-      });
-      await fetchData();
-    } catch (err: any) {
-      alert(err.message || 'Status transition failed.');
-    }
-  };
-
-  // 4. Submit Service Report & Spares Vouchers (§33)
-  const handleResolveSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTicket) return;
-    setActionError(null);
-    setIsSubmitting(true);
-
-    try {
-      await api.post(`/service/tickets/${selectedTicket.id}/report`, {
-        problem_identified: reportForm.problem_identified || selectedTicket.complaint,
-        action_taken: reportForm.action_taken,
-        parts_replaced: reportForm.parts_replaced || undefined,
-        warranty_status: reportForm.warranty_status || selectedTicket.warranty_status || 'in_warranty',
-        customer_confirmation: true,
-        further_work_required: reportForm.further_work_required,
-        next_visit_date: reportForm.further_work_required && reportForm.next_visit_date ? reportForm.next_visit_date : undefined,
-        report_url: reportForm.report_url || undefined,
-      });
-
-      setIsResolveModalOpen(false);
-      setSelectedTicket(null);
-      setReportForm({
-        problem_identified: '',
-        action_taken: '',
-        parts_replaced: '',
-        warranty_status: 'in_warranty',
-        customer_signoff_by: '',
-        customer_remarks: '',
-        further_work_required: false,
-        next_visit_date: '',
-        report_url: '',
-      });
-      await fetchData();
-    } catch (err: any) {
-      setActionError(err.message || 'Failed to file service report.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // 5. Open Ticket Detail Drawer / History
+  // Open Ticket Detail
   const handleOpenDetail = async (ticket: any) => {
+    setCardError(null);
+    setDetailTab('overview');
+    selectedIdRef.current = ticket.id;
     try {
-      setDetailTab('overview');
-      const fullTicket = await api.get(`/service/tickets/${ticket.id}`);
-      setSelectedTicket(fullTicket);
+      setSelectedTicket(await fetchDetail(ticket.id));
       setIsDetailModalOpen(true);
     } catch (err) {
-      setSelectedTicket(ticket);
-      setIsDetailModalOpen(true);
+      selectedIdRef.current = null;
+      setCardError(errMsg(err, 'Could not open this ticket.'));
     }
+  };
+  const closeDetail = () => {
+    setIsDetailModalOpen(false);
+    selectedIdRef.current = null;
   };
 
-  const handleAddComment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTicket || !commentInput.trim()) return;
-    try {
-      await api.post(`/service/tickets/${selectedTicket.id}/comments`, {
-        body: commentInput,
-        is_internal: true,
-      });
-      setCommentInput('');
-      const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-      setSelectedTicket(updated);
-    } catch (err: any) {
-      alert(err.message || 'Failed to post comment');
-    }
-  };
+  const canLinkRole = LINK_ROLES.includes(role);
+  const workload: any[] = stats?.employeeWorkload || [];
 
-  const handleAddPartRequest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTicket || !partNameInput.trim()) return;
-    try {
-      await api.post(`/service/tickets/${selectedTicket.id}/part-requests`, {
-        part_name: partNameInput,
-        quantity: Number(partQtyInput) || 1,
-        store_remarks: partRemarksInput || undefined,
-      });
-      setPartNameInput('');
-      setPartRemarksInput('');
-      const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-      setSelectedTicket(updated);
-    } catch (err: any) {
-      alert(err.message || 'Failed to request part');
-    }
-  };
+  const renderAction = (t: any, a: TicketAction, size: 'xs' | 'sm' = 'sm') => (
+    <Button
+      key={actionKey(a)}
+      size={size}
+      variant={a.tone === 'primary' ? 'primary' : a.tone === 'exception' ? 'outline' : 'secondary'}
+      className={a.tone === 'exception' ? 'border-[#9A3412]/40 text-[#7C2D12] hover:bg-[#FBEBDD]' : undefined}
+      onClick={() => runAction(t, a)}
+    >
+      {ACTION_ICON[actionKey(a)]}
+      <span>{a.label}</span>
+    </Button>
+  );
 
-  const handleCreateVisit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTicket || !visitScheduleDate) return;
-    try {
-      await api.post(`/service/tickets/${selectedTicket.id}/visits`, {
-        scheduled_start: new Date(visitScheduleDate).toISOString(),
-        notes: visitNotesInput || undefined,
-      });
-      setVisitScheduleDate('');
-      setVisitNotesInput('');
-      const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-      setSelectedTicket(updated);
-    } catch (err: any) {
-      alert(err.message || 'Failed to schedule visit');
-    }
-  };
+  const FilterToggle = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
+        on ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#4A5568] hover:bg-[#FBFAF7]'
+      }`}
+    >
+      {children}
+    </button>
+  );
 
-  const handleCheckInVisit = async (visitId: string) => {
-    if (!selectedTicket) return;
-    try {
-      let lat = 28.5562;
-      let lng = 77.1000;
-      if (typeof window !== 'undefined' && navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          async (pos) => {
-            lat = pos.coords.latitude;
-            lng = pos.coords.longitude;
-            await api.patch(`/service/tickets/${selectedTicket.id}/visits/${visitId}/check-in`, {
-              check_in_lat: lat,
-              check_in_lng: lng,
-            });
-            const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-            setSelectedTicket(updated);
-            await fetchData();
-          },
-          async () => {
-            await api.patch(`/service/tickets/${selectedTicket.id}/visits/${visitId}/check-in`, {
-              check_in_lat: lat,
-              check_in_lng: lng,
-            });
-            const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-            setSelectedTicket(updated);
-            await fetchData();
-          },
-        );
-      } else {
-        await api.patch(`/service/tickets/${selectedTicket.id}/visits/${visitId}/check-in`, {
-          check_in_lat: lat,
-          check_in_lng: lng,
-        });
-        const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-        setSelectedTicket(updated);
-        await fetchData();
-      }
-    } catch (err: any) {
-      alert(err.message || 'Check-in failed');
-    }
-  };
-
-  const handleCheckOutVisit = async (visitId: string, outcome: string) => {
-    if (!selectedTicket) return;
-    try {
-      await api.patch(`/service/tickets/${selectedTicket.id}/visits/${visitId}/check-out`, {
-        visit_outcome: outcome,
-      });
-      const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-      setSelectedTicket(updated);
-      await fetchData();
-    } catch (err: any) {
-      alert(err.message || 'Check-out failed');
-    }
-  };
-
-  const handleReviewReport = async (reportId: string, approved: boolean, reason?: string) => {
-    if (!selectedTicket) return;
-    try {
-      await api.post(`/service/tickets/${selectedTicket.id}/reports/${reportId}/review`, {
-        approved,
-        return_reason: reason,
-      });
-      setIsReturningReport(null);
-      setReportReturnReason('');
-      const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-      setSelectedTicket(updated);
-      await fetchData();
-    } catch (err: any) {
-      alert(err.message || 'Report review action failed');
-    }
-  };
+  const activeRing = (on: boolean) => `cursor-pointer transition-shadow hover:shadow-md ${on ? 'ring-2 ring-[#0F5E63]' : ''}`;
 
   return (
     <PageContainer>
       {/* Page Header */}
       <PageHeader
-        badge="Module 06 • Service & After-Sales"
         title="Service Desk & Installed Base Maintenance"
-        subtitle="Breakdown ticketing, SLA adherence, spare parts tracking, on-site engineer deployment, and customer sign-off."
         icon={<Wrench className="h-5 w-5 text-[#0F5E63]" />}
         actions={
-          <div className="flex items-center gap-2.5">
-            <Button
-              onClick={() => fetchData()}
-              variant="outline"
-              size="sm"
-              className="border-[#DCD8CE] text-[#14213D] shadow-xs"
-            >
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Button onClick={() => fetchData()} variant="outline" size="sm" className="border-[#DCD8CE] text-[#14213D] shadow-xs">
               <RefreshCw className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
               <span>Refresh</span>
             </Button>
-            <Button
-              onClick={() => setIsWorkloadModalOpen(true)}
-              variant="outline"
-              size="sm"
-              className="border-[#DCD8CE] text-[#14213D] shadow-xs"
-            >
+            <Button onClick={() => setIsWorkloadModalOpen(true)} variant="outline" size="sm" className="border-[#DCD8CE] text-[#14213D] shadow-xs">
               <Users className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-              <span>Engineer Workload ({stats?.employeeWorkload?.length || serviceEngineers.length})</span>
+              <span>Engineer Workload ({workload.length || serviceEngineers.length})</span>
             </Button>
-            <Button
-              onClick={() => setIsLogTicketOpen(true)}
-              variant="primary"
-              className="shadow-xs"
-            >
-              <Plus className="h-4 w-4 mr-1.5" />
-              <span>Log Breakdown Incident</span>
-            </Button>
+            {role !== 'accounts' && (
+              <Button onClick={() => setIsLogTicketOpen(true)} variant="primary" className="shadow-xs">
+                <Plus className="h-4 w-4 mr-1.5" />
+                <span>Log Breakdown Incident</span>
+              </Button>
+            )}
           </div>
         }
       />
 
-      {/* KPI Metrics HUD (§34: New, Pending, Assigned, Overdue, Awaiting Parts, Completed, Repeat Complaints, Avg Closure Time) */}
+      {/* KPI Metrics HUD (§34) */}
       <StatGrid cols={4}>
         <StatCard
           label="New Tickets"
-          value={stats?.newTickets ?? tickets.filter((t) => ['received', 'created'].includes(t.status)).length}
+          value={stats?.newTickets ?? tabCount('open')}
           subtext="Fresh intake awaiting action"
           icon={<Clock className="h-5 w-5 text-[#0F5E63]" />}
         />
         <StatCard
           label="Pending Queue"
-          value={stats?.pendingTickets ?? tickets.filter((t) => !['resolved', 'closed', 'report_submitted'].includes(t.status)).length}
+          value={stats?.pendingTickets ?? tickets.filter((t) => !isFinished(t.status)).length}
           subtext="Active in diagnosis & field trials"
           icon={<Wrench className="h-5 w-5 text-[#0F5E63]" />}
         />
         <StatCard
           label="Assigned Tickets"
-          value={stats?.assignedTickets ?? tickets.filter((t) => t.assigned_to && !['resolved', 'closed', 'report_submitted'].includes(t.status)).length}
+          value={stats?.assignedTickets ?? tickets.filter((t) => t.assigned_to && !isFinished(t.status)).length}
           subtext="Engineers mobilized & on-site"
           icon={<UserCheck className="h-5 w-5 text-[#0F5E63]" />}
         />
         <StatCard
           label="Overdue SLA Tickets"
-          value={stats?.overdueTickets ?? tickets.filter((t) => t.planned_visit_date && new Date(t.planned_visit_date) < new Date() && !['resolved', 'closed', 'report_submitted'].includes(t.status)).length}
+          value={stats?.overdueTickets ?? 0}
           subtext="Past scheduled visit target"
           icon={<Flame className="h-5 w-5 text-[#9A3412]" />}
           variant="amber"
         />
         <StatCard
           label="Awaiting Parts / Spares"
-          value={stats?.awaitingParts ?? tickets.filter((t) => t.status === 'awaiting_part').length}
+          value={stats?.awaitingParts ?? tickets.filter((t) => normalizeServiceStatus(t.status) === 'awaiting_part').length}
           subtext="Depot spares logistics pending"
           icon={<Package className="h-5 w-5 text-[#9A3412]" />}
           variant="amber"
         />
         <StatCard
           label="Completed & Signed"
-          value={stats?.completedTickets ?? tickets.filter((t) => ['resolved', 'closed', 'report_submitted'].includes(t.status)).length}
+          value={stats?.completedTickets ?? 0}
           subtext="Customer sign-off certificate on file"
           icon={<CheckCircle2 className="h-5 w-5 text-[#0F5E63]" />}
           variant="emerald"
@@ -558,150 +545,204 @@ export default function ServicePage() {
         />
         <StatCard
           label="Avg Closure Time"
-          value={`${stats?.avgClosureDays ?? '2.4'}d`}
+          value={`${stats?.avgClosureDays ?? 0}d`}
           subtext="Turnaround from intake to closure"
           icon={<History className="h-5 w-5 text-[#0F5E63]" />}
+        />
+        {/* Triage tiles: click to filter */}
+        <StatCard
+          label="Portal Requests To Triage"
+          value={stats?.portalNew ?? 0}
+          subtext="Customer-portal tickets not yet picked up"
+          icon={<Globe2 className="h-5 w-5 text-[#0F5E63]" />}
+          role="button"
+          tabIndex={0}
+          onClick={() => applyStatFilter('portal')}
+          onKeyDown={(e) => e.key === 'Enter' && applyStatFilter('portal')}
+          className={activeRing(sourceFilter === 'Customer Portal' && activeTab === 'open')}
+        />
+        <StatCard
+          label="SLA Breached"
+          value={stats?.slaBreached ?? 0}
+          subtext="Open tickets past their resolution deadline"
+          icon={<AlertTriangle className="h-5 w-5 text-[#9A3412]" />}
+          variant="amber"
+          role="button"
+          tabIndex={0}
+          onClick={() => applyStatFilter('breached')}
+          onKeyDown={(e) => e.key === 'Enter' && applyStatFilter('breached')}
+          className={activeRing(overdueFilter)}
+        />
+        <StatCard
+          label="Unverified Customers"
+          value={stats?.unverifiedCustomers ?? 0}
+          subtext="Portal tickets awaiting customer verification"
+          icon={<ShieldQuestion className="h-5 w-5 text-[#9A3412]" />}
+          variant="amber"
+          role="button"
+          tabIndex={0}
+          onClick={() => applyStatFilter('unverified')}
+          onKeyDown={(e) => e.key === 'Enter' && applyStatFilter('unverified')}
+          className={activeRing(unverifiedFilter)}
         />
       </StatGrid>
 
       {/* Filter Bar */}
-      <div className="flex flex-col sm:flex-row gap-3 items-center justify-between p-3.5 bg-white border border-[#DCD8CE] rounded-[14px]">
-        <div className="flex-1 w-full sm:w-auto relative">
-          <Input
-            placeholder="Search by ticket ref, customer, complaint, or machine serial number..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') fetchData();
-            }}
-            className="w-full"
-          />
-        </div>
-        <div className="flex items-center gap-2.5 w-full sm:w-auto">
-          <Select
-            value={priorityFilter}
-            onChange={(e) => setPriorityFilter(e.target.value)}
-            className="w-full sm:w-44 text-xs font-semibold"
-          >
-            <option value="all">All Priorities</option>
-            <option value="critical">Critical (LD Risk)</option>
-            <option value="high">High Priority</option>
-            <option value="medium">Medium Priority</option>
-            <option value="low">Routine / Preventative</option>
-          </Select>
-          <Button
-            onClick={() => fetchData()}
-            variant="secondary"
-            size="sm"
-            className="whitespace-nowrap"
-          >
-            <Filter className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-            Apply Filter
-          </Button>
-        </div>
-      </div>
-
-      {/* Pipeline Navigation Tabs (§32) */}
-      <Tabs
-        tabs={[
-          { id: 'all', label: 'All Incidents', count: tickets.length },
-          { id: 'open', label: '1. New Intake', count: tickets.filter((t) => ['received', 'created'].includes(t.status)).length },
-          { id: 'assigned', label: '2. Assigned & Scheduled', count: tickets.filter((t) => ['assigned', 'visit_scheduled'].includes(t.status)).length },
-          { id: 'in_progress', label: '3. In Progress', count: tickets.filter((t) => t.status === 'in_progress').length },
-          { id: 'awaiting', label: '4. Awaiting Parts / Customer', count: tickets.filter((t) => ['awaiting_part', 'awaiting_customer'].includes(t.status)).length },
-          { id: 'escalated', label: '5. Escalated / Revisit', count: tickets.filter((t) => ['escalated', 'revisit', 'revisit_required'].includes(t.status)).length },
-          { id: 'reports', label: '6. Reports Filed', count: tickets.filter((t) => ['report_submitted', 'resolved'].includes(t.status)).length },
-          { id: 'closed', label: '7. Closed', count: tickets.filter((t) => t.status === 'closed').length },
-        ]}
-        activeTab={activeTab}
-        onChange={setActiveTab}
-      />
-
-      {/* Incidents Card Feed */}
-      <div className="space-y-3">
-        {isLoading ? (
-          <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
-            Loading service queue...
+      <ToolbarBox>
+        <ToolbarSlot>
+          <div className="space-y-3 p-3.5 bg-white border border-[#DCD8CE] rounded-[14px]">
+            <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
+              <div className="flex-1 w-full sm:w-auto relative">
+                <Input
+                  placeholder="Search by ticket ref, customer, complaint, or machine serial number..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                <Select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} className="w-full sm:w-48 text-xs font-semibold">
+                  <option value="all">All Origin Channels</option>
+                  <option value="Phone">Client Helpline Call</option>
+                  <option value="Email">Official Client Email</option>
+                  <option value="Official Letter">Govt Written Dispatch</option>
+                  <option value="Customer Portal">Customer Portal</option>
+                  <option value="Demo Team">Demo Team (Trials/Demos)</option>
+                  <option value="Sales Rep">Sales Field Rep</option>
+                  <option value="Field Visit">Field Inspection Discovery</option>
+                  <option value="Walk-in">Depot Walk-in</option>
+                  <option value="WhatsApp">WhatsApp Hotline</option>
+                </Select>
+                <Select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)} className="w-full sm:w-40 text-xs font-semibold">
+                  <option value="all">All Priorities</option>
+                  <option value="critical">Critical (LD Risk)</option>
+                  <option value="high">High Priority</option>
+                  <option value="medium">Medium Priority</option>
+                  <option value="low">Routine / Preventative</option>
+                </Select>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-[#4A5568]">Quick filters</span>
+              <FilterToggle on={sourceFilter === 'Customer Portal'} onClick={() => setSourceFilter(sourceFilter === 'Customer Portal' ? 'all' : 'Customer Portal')}>
+                <Globe2 className="h-3 w-3" /> Customer Portal
+              </FilterToggle>
+              <FilterToggle on={unassignedFilter} onClick={() => setUnassignedFilter((v) => !v)}>
+                <User className="h-3 w-3" /> Unassigned
+              </FilterToggle>
+              <FilterToggle on={overdueFilter} onClick={() => setOverdueFilter((v) => !v)}>
+                <Flame className="h-3 w-3" /> Overdue
+              </FilterToggle>
+              <FilterToggle on={repeatFilter} onClick={() => setRepeatFilter((v) => !v)}>
+                <Repeat className="h-3 w-3" /> Repeat complaints
+              </FilterToggle>
+              <FilterToggle on={unverifiedFilter} onClick={() => setUnverifiedFilter((v) => !v)}>
+                <ShieldQuestion className="h-3 w-3" /> Unverified customer
+              </FilterToggle>
+              {anyFilter && (
+                <Button size="xs" variant="ghost" onClick={clearFilters}>
+                  <X className="h-3 w-3 mr-1" /> Clear all
+                </Button>
+              )}
+            </div>
           </div>
-        ) : displayedTickets.length === 0 ? (
-          <EmptyState
-            icon={Wrench}
-            title="No service tickets in this pipeline view"
-            description="All client equipment and defense units in this filter are currently operating normally."
-          />
-        ) : (
-          displayedTickets.map((t) => {
-            const isCritical = t.priority === 'critical';
-            const isResolved = ['resolved', 'closed'].includes(t.status);
+        </ToolbarSlot>
 
+        {/* Pipeline Navigation Tabs (§32) */}
+        <Tabs
+          tabs={[
+            { id: 'all', label: 'All Incidents', count: tickets.length },
+            { id: 'open', label: '1. New Intake', count: tabCount('open') },
+            { id: 'assigned', label: '2. Assigned & Scheduled', count: tabCount('assigned') },
+            { id: 'in_progress', label: '3. In Progress', count: tabCount('in_progress') },
+            { id: 'awaiting', label: '4. Awaiting / On Hold', count: tabCount('awaiting') },
+            { id: 'escalated', label: '5. Escalated / Revisit', count: tabCount('escalated') },
+            { id: 'reports', label: '6. Reports Filed', count: tabCount('reports') },
+            { id: 'closed', label: '7. Closed / Cancelled', count: tabCount('closed') },
+          ]}
+          activeTab={activeTab}
+          onChange={setActiveTab}
+        />
+      </ToolbarBox>
+
+      {anyFilter && (
+        <p className="text-xs text-[#4A5568]">
+          Showing {displayedTickets.length} of {tickets.length} loaded tickets with filters applied.
+        </p>
+      )}
+      {(loadError || cardError) && (
+        <div role="alert" className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+          {loadError || cardError}
+        </div>
+      )}
+
+      {/* Incidents table */}
+      {isLoading ? (
+        <PageLoader label="Loading service queue" />
+      ) : displayedTickets.length === 0 ? (
+        <EmptyState
+          icon={Wrench}
+          title="No service tickets in this pipeline view"
+          description={anyFilter ? 'No tickets match the current filters.' : 'All client equipment and defense units in this filter are currently operating normally.'}
+        />
+      ) : (
+        <div className="space-y-3">
+          {displayedTickets.map((t) => {
+            const isCritical = t.priority === 'critical';
+            const done = isFinished(t.status);
+            const unverified = isUnverified(t);
+            const actions = getActions(t);
             return (
               <Card
                 key={t.id}
                 padding="md"
                 className={`transition-all hover:border-[#0F5E63] ${
-                  isCritical && !isResolved ? 'border-l-4 border-l-[#9A3412]' : ''
+                  unverified ? 'border-l-4 border-l-[#F2B872]' : isCritical && !done ? 'border-l-4 border-l-[#9A3412]' : ''
                 }`}
               >
                 <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-                  {/* Left Content */}
-                  <div className="space-y-2 flex-1">
+                  <div className="space-y-2 flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs font-bold text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenDetail(t)}
+                        className="font-mono text-xs font-bold text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded hover:underline"
+                        title="Open ticket dossier"
+                      >
                         {t.ticket_no}
-                      </span>
-
-                      {/* SLA Priority Pill */}
+                      </button>
+                      {isPortalTicket(t) ? (
+                        <span className="svc-flag svc-flag--teal"><Globe2 className="h-2.5 w-2.5" />Portal</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-[#4A5568]">
+                          {t.complaint_source === 'Demo Team' ? <Flame className="h-2.5 w-2.5" /> : t.complaint_source === 'Official Letter' ? <FileText className="h-2.5 w-2.5" /> : t.complaint_source === 'Phone' || !t.complaint_source ? <Phone className="h-2.5 w-2.5" /> : <Building className="h-2.5 w-2.5" />}
+                          {t.complaint_source || 'Phone'}
+                        </span>
+                      )}
                       <Badge
-                        variant={
-                          t.priority === 'critical'
-                            ? 'urgent'
-                            : t.priority === 'high'
-                            ? 'danger'
-                            : t.priority === 'medium'
-                            ? 'warning'
-                            : 'default'
-                        }
+                        variant={t.priority === 'critical' ? 'urgent' : t.priority === 'high' ? 'danger' : t.priority === 'medium' ? 'warning' : 'default'}
                         size="sm"
                         className="font-bold uppercase tracking-wider"
                       >
                         {t.priority === 'critical' ? 'CRITICAL • LD RISK' : t.priority}
                       </Badge>
-
-                      {/* Warranty Status Pill */}
                       <Badge variant="outline" size="sm" className="font-mono text-[10px] uppercase">
-                        {t.warranty_status === 'in_warranty'
-                          ? 'In Warranty'
-                          : t.warranty_status === 'amc'
-                          ? 'Under AMC'
-                          : 'Billable / Out of Warranty'}
+                        {t.warranty_status === 'in_warranty' ? 'In Warranty' : t.warranty_status === 'amc' ? 'Under AMC' : 'Billable / Out of Warranty'}
                       </Badge>
-
-                      {/* Operational Status Pill */}
-                      <Badge
-                        variant={
-                          isResolved
-                            ? 'success'
-                            : t.status === 'in_progress' || t.status === 'visit_scheduled'
-                            ? 'info'
-                            : t.status === 'awaiting_part' || t.status === 'awaiting_customer'
-                            ? 'warning'
-                            : t.status === 'escalated'
-                            ? 'urgent'
-                            : 'default'
-                        }
-                        size="sm"
-                      >
-                        {t.status.replace(/_/g, ' ').toUpperCase()}
+                      <Badge variant={statusBadgeVariant(t.status)} size="sm">
+                        {statusLabel(t.status).toUpperCase()}
                       </Badge>
+                      <span className="font-mono text-xs"><TicketSlaInline ticket={t} /></span>
+                      {unverified && <span className="svc-flag svc-flag--warn"><ShieldQuestion className="h-2.5 w-2.5" />Unverified</span>}
+                      {t.is_repeat_complaint && <span className="svc-flag svc-flag--amber"><Repeat className="h-2.5 w-2.5" />Repeat</span>}
+                      {t.reopened_count > 0 && <span className="svc-flag svc-flag--warn"><RotateCcw className="h-2.5 w-2.5" />Reopened x{t.reopened_count}</span>}
                     </div>
 
                     <div>
                       <h3 className="font-serif text-base font-bold text-[#14213D]">
-                        {t.organisation_name || 'Client Agency / Command Station'}
+                        {unverified ? t.claimed_organisation_name : t.organisation_name || 'Client Agency / Command Station'}
                       </h3>
-                      <p className="text-xs text-[#14213D] mt-0.5 leading-relaxed font-medium">
-                        {t.complaint}
-                      </p>
+                      <p className="text-xs text-[#14213D] mt-0.5 leading-relaxed font-medium">{t.complaint}</p>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[#4A5568] pt-1">
@@ -719,7 +760,7 @@ export default function ServicePage() {
                       <span className="flex items-center gap-1">
                         <User className="h-3 w-3 text-[#0F5E63]" />
                         <span>
-                          Assigned: <strong className="text-[#14213D]">{t.assignee_name || t.assigned_name || 'Unassigned (Dispatch Pending)'}</strong>
+                          Assigned: <strong className={t.assignee_name ? 'text-[#14213D]' : 'text-[#9A3412]'}>{t.assignee_name || 'Unassigned (Dispatch Pending)'}</strong>
                         </span>
                       </span>
                       {t.planned_visit_date && (
@@ -732,141 +773,29 @@ export default function ServicePage() {
                     </div>
                   </div>
 
-                  {/* Right Actions */}
                   <div className="flex flex-wrap sm:flex-col items-end gap-2 shrink-0">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleOpenDetail(t)}
-                      className="border-[#DCD8CE] text-[#14213D]"
-                    >
-                      <History className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-                      <span>Ticket Dossier</span>
-                    </Button>
-
-                    {/* Regional Manager / Admin: Assign Engineer */}
-                    {hasRole(['management', 'regional_manager', 'admin']) && !isResolved && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => {
-                          setSelectedTicket(t);
-                          setAssignForm({
-                            assigned_to: t.assigned_to || '',
-                            planned_visit_date: t.planned_visit_date ? t.planned_visit_date.split('T')[0] : '',
-                            status: t.status,
-                          });
-                          setIsAssignModalOpen(true);
-                        }}
-                      >
-                        <UserCheck className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-                        <span>{t.assigned_to ? 'Reassign / Reschedule' : 'Dispatch Engineer'}</span>
-                      </Button>
-                    )}
-
-                    {/* Quick Move to In Progress if visit is scheduled or assigned */}
-                    {['assigned', 'visit_scheduled'].includes(t.status) && hasRole(['service_team', 'regional_manager', 'admin']) && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleQuickStatusChange(t, 'in_progress')}
-                        className="text-[#0F5E63] border-[#0F5E63]"
-                      >
-                        <Wrench className="h-3.5 w-3.5 mr-1" />
-                        <span>Begin Work (In Progress)</span>
-                      </Button>
-                    )}
-
-                    {/* Schedule Revisit if parts were pending */}
-                    {['revisit', 'revisit_required'].includes(t.status) && hasRole(['management', 'regional_manager', 'service_team', 'admin']) && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => {
-                          setSelectedTicket(t);
-                          setAssignForm({
-                            assigned_to: t.assigned_to || '',
-                            planned_visit_date: t.planned_visit_date ? t.planned_visit_date.split('T')[0] : '',
-                            status: 'visit_scheduled',
-                          });
-                          setIsAssignModalOpen(true);
-                        }}
-                      >
-                        <Calendar className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-                        <span>Schedule Revisit</span>
-                      </Button>
-                    )}
-
-                    {/* Service Engineer / Admin: Submit Report */}
-                    {hasRole(['service_team', 'admin']) && !isResolved && (
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={() => {
-                          setSelectedTicket(t);
-                          setReportForm({
-                            problem_identified: t.complaint || '',
-                            action_taken: '',
-                            parts_replaced: '',
-                            warranty_status: t.warranty_status || 'in_warranty',
-                            customer_signoff_by: '',
-                            customer_remarks: '',
-                            further_work_required: false,
-                            next_visit_date: '',
-                            report_url: '',
-                          });
-                          setIsResolveModalOpen(true);
-                        }}
-                      >
-                        <FileCheck className="h-3.5 w-3.5 mr-1" />
-                        <span>Submit Service Report</span>
-                      </Button>
-                    )}
-
-                    {/* Final Sign-off: Close Ticket */}
-                    {['resolved', 'report_submitted'].includes(t.status) && hasRole(['management', 'regional_manager', 'service_team', 'admin']) && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => handleCloseTicket(t.id)}
-                        className="text-emerald-800 border-emerald-300 hover:bg-emerald-50 font-medium"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5 mr-1 text-emerald-600" />
-                        <span>Close Ticket (Sign-off)</span>
-                      </Button>
-                    )}
-
-                    {/* Quick status transition dropdown for exception handling */}
-                    {!isResolved && hasRole(['service_team', 'regional_manager', 'admin']) && (
-                      <div className="flex items-center gap-1 mt-1">
-                        <span className="text-[10px] text-[#4A5568]">Move to:</span>
-                        <select
-                          value={t.status}
-                          onChange={(e) => handleQuickStatusChange(t, e.target.value as any)}
-                          className="text-[11px] font-semibold bg-[#FBFAF7] border border-[#DCD8CE] rounded px-1.5 py-0.5 text-[#14213D] focus:outline-none"
-                        >
-                          <option value="received">1. Complaint Received</option>
-                          <option value="created">2. Ticket Created</option>
-                          <option value="assigned">3. Assigned</option>
-                          <option value="visit_scheduled">4. Visit Scheduled</option>
-                          <option value="in_progress">5. Work in Progress</option>
-                          <option value="awaiting_part">Awaiting Part</option>
-                          <option value="awaiting_customer">Awaiting Customer</option>
-                          <option value="escalated">Escalated</option>
-                          <option value="revisit_required">Revisit Required</option>
-                          <option value="report_submitted">6. Report Submitted</option>
-                          <option value="resolved">Resolved</option>
-                          <option value="closed">7. Ticket Closed</option>
-                        </select>
-                      </div>
-                    )}
+                    <RowMenu
+                      buttonLabel="Actions"
+                      label="Ticket actions"
+                      items={[
+                        { key: 'dossier', label: 'Ticket Dossier', icon: <History />, onSelect: () => handleOpenDetail(t) },
+                        ...actions.map((a) => ({
+                          key: actionKey(a),
+                          label: a.label,
+                          icon: ACTION_ICON[actionKey(a)],
+                          danger: a.tone === 'exception',
+                          onSelect: () => runAction(t, a),
+                        })),
+                        { key: 'link', label: 'Link to customer', icon: <Link2 />, hidden: !(unverified && canLinkRole), onSelect: () => openLink(t) },
+                      ]}
+                    />
                   </div>
                 </div>
               </Card>
             );
-          })
-        )}
-      </div>
+          })}
+        </div>
+      )}
 
       {/* 1. Log Breakdown Ticket Modal */}
       <Modal
@@ -883,10 +812,11 @@ export default function ServicePage() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Input
               label="Ticket Ref"
-              required
+              placeholder="Auto: TCK-YYYY-NNNNNN"
+              helperText="Leave blank to use the next number"
               value={newTicket.ticket_no}
               onChange={(e) => setNewTicket({ ...newTicket, ticket_no: e.target.value })}
             />
@@ -896,6 +826,22 @@ export default function ServicePage() {
               required
               value={newTicket.received_date}
               onChange={(e) => setNewTicket({ ...newTicket, received_date: e.target.value })}
+            />
+            <Select
+              label="Complaint Origin / Source"
+              value={newTicket.complaint_source}
+              onChange={(e) => setNewTicket({ ...newTicket, complaint_source: e.target.value as ComplaintSource })}
+              options={[
+                { value: 'Phone', label: 'Direct Client Call / Phone Helpline' },
+                { value: 'Email', label: 'Official Client Email / Notice' },
+                { value: 'Official Letter', label: 'Government Written Dispatch / Letter' },
+                { value: 'Customer Portal', label: 'Client Direct / Web Portal' },
+                { value: 'Demo Team', label: 'Demo Team (Trial Incident / Client Discovery)' },
+                { value: 'Sales Rep', label: 'Sales Rep (Field Visit / On-site Contact)' },
+                { value: 'Field Visit', label: 'Routine Inspection / Field Visit' },
+                { value: 'Walk-in', label: 'Client Walk-in / Depot Visit' },
+                { value: 'WhatsApp', label: 'WhatsApp Helpline' },
+              ]}
             />
             <Select
               label="SLA Priority Level"
@@ -909,6 +855,32 @@ export default function ServicePage() {
               ]}
             />
           </div>
+
+          {/* Dynamic Source Origin Guidance Note */}
+          {newTicket.complaint_source === 'Demo Team' && (
+            <div className="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
+              <Flame className="h-4 w-4 shrink-0 text-purple-600" />
+              <span>
+                <strong>Demo Team Field Intake:</strong> Tagged for demo trials. Use this if demo equipment broke down during a client demonstration trial, or if an on-site customer requested servicing for an existing machine during your demo visit.
+              </span>
+            </div>
+          )}
+          {newTicket.complaint_source === 'Official Letter' && (
+            <div className="p-2.5 rounded-lg bg-[#FBEBDD] border border-[#9A3412]/30 text-xs text-[#7C2D12] flex items-center gap-2">
+              <FileText className="h-4 w-4 shrink-0 text-[#9A3412]" />
+              <span>
+                <strong>Formal B2G Government Notice:</strong> Registered under official client letter dispatch. Ensure the letter dispatch number and contract terms are noted in the complaint field.
+              </span>
+            </div>
+          )}
+          {newTicket.complaint_source === 'Customer Portal' && (
+            <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-xs text-[#0F5E63] flex items-center gap-2">
+              <Building className="h-4 w-4 shrink-0 text-[#0F5E63]" />
+              <span>
+                <strong>Direct Client Web Intake:</strong> Incident logged directly by client authority or nodal checkpoint officer.
+              </span>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -997,10 +969,7 @@ export default function ServicePage() {
               onChange={(e) => setNewTicket({ ...newTicket, assigned_to: e.target.value })}
               options={[
                 { value: '', label: '-- Unassigned (Assign Later) --' },
-                ...serviceEngineers.map((eng) => ({
-                  value: eng.id,
-                  label: `${eng.full_name} (${eng.role.replace('_', ' ')})`,
-                })),
+                ...engineers.map((eng) => ({ value: eng.id, label: eng.name })),
               ]}
             />
             <Input
@@ -1022,915 +991,241 @@ export default function ServicePage() {
         </form>
       </Modal>
 
-      {/* 2. Dispatch Engineer Modal */}
-      <Modal
-        isOpen={isAssignModalOpen}
-        onClose={() => setIsAssignModalOpen(false)}
-        title="Deploy Field Service Engineer"
-        description="Allocate technical personnel and schedule the on-site diagnostic visit."
-        maxWidth="md"
-      >
-        <form onSubmit={handleAssignSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
 
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs space-y-1">
-            <div className="flex justify-between">
-              <span className="text-[#4A5568]">Ticket Ref:</span>
-              <span className="font-mono font-bold text-[#0F5E63]">{selectedTicket?.ticket_no}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-[#4A5568]">Customer:</span>
-              <span className="font-bold text-[#14213D]">{selectedTicket?.organisation_name}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-[#4A5568]">Complaint:</span>
-              <span className="text-[#14213D] truncate max-w-xs">{selectedTicket?.complaint}</span>
-            </div>
-          </div>
+      {/* Workflow action modals (status moves / report / close / link) */}
+      {actionCtx?.kind === 'status' && (
+        <StatusActionModal
+          ticket={actionCtx.ticket}
+          target={actionCtx.target || null}
+          role={role}
+          userId={userId}
+          engineers={engineers}
+          onClose={() => setActionCtx(null)}
+          onDone={refreshAll}
+          onStale={refreshActionTicket}
+        />
+      )}
+      {actionCtx?.kind === 'close' && (
+        <CloseTicketModal ticket={actionCtx.ticket} role={role} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
+      )}
+      {actionCtx?.kind === 'report' && (
+        <ReportFormModal ticket={actionCtx.ticket} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
+      )}
+      {actionCtx?.kind === 'link' && (
+        <LinkOrganisationModal ticket={actionCtx.ticket} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
+      )}
 
-          <Select
-            label="Select Service Engineer"
-            required
-            value={assignForm.assigned_to}
-            onChange={(e) => setAssignForm({ ...assignForm, assigned_to: e.target.value })}
-            options={[
-              { value: '', label: '-- Select Engineer --' },
-              ...serviceEngineers.map((eng) => ({
-                value: eng.id,
-                label: `${eng.full_name} (${eng.role.replace('_', ' ')})`,
-              })),
-            ]}
-          />
-
-          <Input
-            label="Scheduled Visit Date"
-            type="date"
-            required
-            value={assignForm.planned_visit_date}
-            onChange={(e) => setAssignForm({ ...assignForm, planned_visit_date: e.target.value })}
-          />
-
-          <div className="pt-2 flex justify-end gap-2 border-t border-[#ECE9E2]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsAssignModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Deploy Engineer
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* 3. Comprehensive Service & Rectification Report Modal (§33) */}
-      <Modal
-        isOpen={isResolveModalOpen}
-        onClose={() => setIsResolveModalOpen(false)}
-        title="File Service Report & Spares Replacement Voucher"
-        description="Record diagnostic findings, technical rectification steps, spares consumed, and customer verification."
-        maxWidth="lg"
-      >
-        <form onSubmit={handleResolveSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
-
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs grid grid-cols-2 gap-2">
-            <div>
-              <span className="text-[#4A5568]">Ticket Ref:</span>{' '}
-              <strong className="font-mono text-[#0F5E63]">{selectedTicket?.ticket_no}</strong>
-            </div>
-            <div>
-              <span className="text-[#4A5568]">Station:</span>{' '}
-              <strong className="text-[#14213D]">{selectedTicket?.organisation_name}</strong>
-            </div>
-            {selectedTicket?.equipment_serial && (
-              <div className="col-span-2">
-                <span className="text-[#4A5568]">Machine S/N:</span>{' '}
-                <strong className="font-mono text-[#14213D]">{selectedTicket?.equipment_serial}</strong>
-              </div>
-            )}
-          </div>
-
-          <Textarea
-            label="Problem Identified (Root Cause Diagnostic)"
-            required
-            rows={2}
-            value={reportForm.problem_identified}
-            onChange={(e) => setReportForm({ ...reportForm, problem_identified: e.target.value })}
-            placeholder="e.g. Diode array sensor board short-circuited due to power surge."
-          />
-
-          <Textarea
-            label="Action Taken / Rectification Steps"
-            required
-            rows={3}
-            value={reportForm.action_taken}
-            onChange={(e) => setReportForm({ ...reportForm, action_taken: e.target.value })}
-            placeholder="e.g. Replaced diode array PCB board #DA-200, cleaned optical collimator, re-calibrated X-Ray generator."
-          />
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Spare Parts Consumed / Replaced"
-              value={reportForm.parts_replaced}
-              onChange={(e) => setReportForm({ ...reportForm, parts_replaced: e.target.value })}
-              placeholder="e.g. PCB #DA-200 (1 Unit), Roller belt #RB-12 (2 Units)"
-            />
-            <Select
-              label="Warranty / Billable Status"
-              value={reportForm.warranty_status}
-              onChange={(e) => setReportForm({ ...reportForm, warranty_status: e.target.value })}
-              options={[
-                { value: 'in_warranty', label: 'Warranty Covered (FOC Spares)' },
-                { value: 'amc', label: 'Covered under Annual Maintenance (AMC)' },
-                { value: 'billable', label: 'Out of Warranty — Billable Voucher' },
-              ]}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Customer Sign-off Officer Name & Designation"
-              required
-              value={reportForm.customer_signoff_by}
-              onChange={(e) => setReportForm({ ...reportForm, customer_signoff_by: e.target.value })}
-              placeholder="e.g. ACP Rajiv Kumar, Security Head"
-            />
-            <Input
-              label="Customer Remarks / Officer Comments"
-              value={reportForm.customer_remarks}
-              onChange={(e) => setReportForm({ ...reportForm, customer_remarks: e.target.value })}
-              placeholder="e.g. Equipment tested and operational in presence of station staff."
-            />
-          </div>
-
-          <Input
-            label="Signed Service Report Document URL"
-            value={reportForm.report_url}
-            onChange={(e) => setReportForm({ ...reportForm, report_url: e.target.value })}
-            placeholder="https://res.cloudinary.com/... or Google Drive scanned report link"
-          />
-
-          {/* Revisit Required Toggle */}
-          <div className="p-3 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
-            <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-[#14213D]">
-              <input
-                type="checkbox"
-                checked={reportForm.further_work_required}
-                onChange={(e) => setReportForm({ ...reportForm, further_work_required: e.target.checked })}
-                className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
-              />
-              <span>Further Work / Revisit Required (Additional parts or burn-in test needed)</span>
-            </label>
-
-            {reportForm.further_work_required && (
-              <Input
-                label="Scheduled Next Visit Date"
-                type="date"
-                required
-                value={reportForm.next_visit_date}
-                onChange={(e) => setReportForm({ ...reportForm, next_visit_date: e.target.value })}
-              />
-            )}
-          </div>
-
-          <div className="pt-3 flex justify-end gap-2 border-t border-[#ECE9E2]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsResolveModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Sign Off & Complete Service Ticket
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* 4. Comprehensive Enterprise Service Ticket Dossier (§32, §33, §34) */}
+      {/* Ticket Dossier (§32, §33, §34) */}
       <Modal
         isOpen={isDetailModalOpen}
-        onClose={() => setIsDetailModalOpen(false)}
+        onClose={closeDetail}
         title="Service Ticket Dossier & Operations Center"
-        description="Comprehensive technical record, field visits, spares replenishment, and audit timeline."
+        description="Technical record, field visits, spares, SLA and audit timeline."
         maxWidth="xl"
       >
-        {selectedTicket && (
-          <div className="space-y-4">
-            {/* Top Identity Strip */}
-            <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-base font-bold text-[#0F5E63]">{selectedTicket.ticket_no || selectedTicket.ticket_number}</span>
-                  <Badge
-                    variant={
-                      ['resolved', 'closed'].includes(selectedTicket.status)
-                        ? 'success'
-                        : selectedTicket.priority === 'critical'
-                        ? 'urgent'
-                        : selectedTicket.status === 'in_progress'
-                        ? 'info'
-                        : 'warning'
-                    }
-                  >
-                    {selectedTicket.status.replace(/_/g, ' ').toUpperCase()}
-                  </Badge>
-                  {selectedTicket.is_repeat_complaint && (
-                    <Badge variant="urgent" size="sm" className="flex items-center gap-1 font-bold">
-                      <Repeat className="h-3 w-3" />
-                      <span>REPEAT COMPLAINT ({selectedTicket.repeat_count || 1} prior)</span>
+        {selectedTicket && (() => {
+          const st = selectedTicket;
+          const unverified = isUnverified(st);
+          const actions = getActions(st);
+          const progress = actions.filter((a) => a.kind !== 'status' || a.tone !== 'exception');
+          const exceptions = actions.filter((a) => a.kind === 'status' && a.tone === 'exception');
+          const readOnly = !STATUS_ROLES.includes(role);
+          const tabs: { id: typeof detailTab; label: string }[] = [
+            { id: 'overview', label: 'Overview & Workflow' },
+            { id: 'visits', label: `Visits & GPS (${st.visits?.length || 0})` },
+            { id: 'reports', label: `Service Reports (${st.reports?.length || 0})` },
+            { id: 'parts', label: `Spare Parts (${st.part_requests?.length || 0})` },
+            { id: 'comments', label: `Notes (${st.comments?.length || 0})` },
+            { id: 'history', label: `Audit Timeline (${(st.status_history?.length || 0) + (st.assignment_history?.length || 0)})` },
+          ];
+          return (
+            <div className="space-y-4">
+              {unverified && <UnverifiedBanner ticket={st} canLink={canLinkRole} onLink={() => setActionCtx({ kind: 'link', ticket: st })} />}
+
+              {/* Top Identity Strip */}
+              <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-base font-bold text-[#0F5E63]">{st.ticket_no || st.ticket_number}</span>
+                    <Badge variant={statusBadgeVariant(st.status)}>{statusLabel(st.status).toUpperCase()}</Badge>
+                    {isPortalTicket(st) && (
+                      <Badge variant="info" size="sm" className="font-bold">
+                        <Globe2 className="h-3 w-3 mr-1" /> PORTAL
+                      </Badge>
+                    )}
+                    {st.is_repeat_complaint && (
+                      <Badge variant="urgent" size="sm" className="flex items-center gap-1 font-bold">
+                        <Repeat className="h-3 w-3" />
+                        <span>REPEAT COMPLAINT ({st.repeat_count || 1} prior)</span>
+                      </Badge>
+                    )}
+                    {st.reopened_count > 0 && (
+                      <Badge variant="warning" size="sm" className="font-bold">
+                        <RotateCcw className="h-3 w-3 mr-1" /> REOPENED ×{st.reopened_count}
+                      </Badge>
+                    )}
+                    {st.sla_breached && (
+                      <Badge variant="urgent" size="sm">
+                        SLA BREACHED
+                      </Badge>
+                    )}
+                    {!isFinished(st.status) && st.sla_pause_started_at && <SlaPausedPill />}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" size="sm" className="font-mono text-[10px]">
+                      {st.priority?.toUpperCase()} PRIORITY
                     </Badge>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" size="sm" className="font-mono text-[10px]">
-                    {selectedTicket.priority?.toUpperCase()} PRIORITY
-                  </Badge>
-                  <Badge variant="outline" size="sm" className="font-mono text-[10px]">
-                    {selectedTicket.warranty_status_snapshot || selectedTicket.warranty_status || 'Under Warranty'}
-                  </Badge>
-                  {selectedTicket.is_chargeable && (
-                    <Badge variant="urgent" size="sm">
-                      CHARGEABLE (BILLABLE)
+                    <Badge variant="outline" size="sm" className="font-mono text-[10px]">
+                      {st.warranty_status_snapshot || st.warranty_status || 'Under Warranty'}
                     </Badge>
-                  )}
+                    {st.is_chargeable && (
+                      <Badge variant="urgent" size="sm">
+                        CHARGEABLE (BILLABLE)
+                      </Badge>
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              <div>
-                <h4 className="font-serif text-base font-bold text-[#14213D]">{selectedTicket.organisation_name}</h4>
-                <p className="text-xs text-[#14213D] font-medium mt-1">{selectedTicket.complaint || selectedTicket.complaint_description}</p>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs pt-2 border-t border-[#ECE9E2]">
                 <div>
-                  <span className="text-[#4A5568] block text-[10px]">Machine S/N</span>
-                  <span className="font-mono font-bold text-[#14213D]">{selectedTicket.equipment_serial || selectedTicket.serial_number || 'N/A'}</span>
+                  <h4 className="font-serif text-base font-bold text-[#14213D]">{unverified ? `${st.claimed_organisation_name} (unverified)` : st.organisation_name}</h4>
+                  <p className="text-xs text-[#14213D] font-medium mt-1 break-words">{st.complaint || st.complaint_description}</p>
                 </div>
-                <div>
-                  <span className="text-[#4A5568] block text-[10px]">Assigned Engineer</span>
-                  <span className="font-semibold text-[#14213D]">{selectedTicket.assignee_name || 'Unassigned'}</span>
-                </div>
-                <div>
-                  <span className="text-[#4A5568] block text-[10px]">Planned Visit</span>
-                  <span className="font-semibold text-[#14213D]">
-                    {selectedTicket.planned_visit_date ? new Date(selectedTicket.planned_visit_date).toLocaleDateString('en-IN') : 'Not Scheduled'}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[#4A5568] block text-[10px]">Resolution Due (SLA)</span>
-                  <span className={`font-mono font-semibold ${selectedTicket.sla_resolution_due_at && new Date(selectedTicket.sla_resolution_due_at) < new Date() && !['resolved', 'closed'].includes(selectedTicket.status) ? 'text-[#9A3412] font-bold' : 'text-[#14213D]'}`}>
-                    {selectedTicket.sla_resolution_due_at ? new Date(selectedTicket.sla_resolution_due_at).toLocaleString('en-IN') : 'N/A'}
-                  </span>
-                </div>
-              </div>
-            </div>
 
-            {/* Dossier Tabs */}
-            <div className="flex border-b border-[#DCD8CE] gap-1 overflow-x-auto text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => setDetailTab('overview')}
-                className={`py-2 px-3 border-b-2 transition-all ${
-                  detailTab === 'overview'
-                    ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg'
-                    : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
-                }`}
-              >
-                Overview & Workflow
-              </button>
-              <button
-                type="button"
-                onClick={() => setDetailTab('visits')}
-                className={`py-2 px-3 border-b-2 transition-all ${
-                  detailTab === 'visits'
-                    ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg'
-                    : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
-                }`}
-              >
-                Visits & GPS ({selectedTicket.visits?.length || 0})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDetailTab('reports')}
-                className={`py-2 px-3 border-b-2 transition-all ${
-                  detailTab === 'reports'
-                    ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg'
-                    : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
-                }`}
-              >
-                Service Reports ({selectedTicket.reports?.length || 0})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDetailTab('parts')}
-                className={`py-2 px-3 border-b-2 transition-all ${
-                  detailTab === 'parts'
-                    ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg'
-                    : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
-                }`}
-              >
-                Spare Parts ({selectedTicket.part_requests?.length || 0})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDetailTab('comments')}
-                className={`py-2 px-3 border-b-2 transition-all ${
-                  detailTab === 'comments'
-                    ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg'
-                    : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
-                }`}
-              >
-                Internal Notes ({selectedTicket.comments?.length || 0})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDetailTab('history')}
-                className={`py-2 px-3 border-b-2 transition-all ${
-                  detailTab === 'history'
-                    ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg'
-                    : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
-                }`}
-              >
-                Audit Timeline ({selectedTicket.status_history?.length || 0})
-              </button>
-            </div>
-
-            {/* Tab 1: Overview & Allowed Next Status Actions */}
-            {detailTab === 'overview' && (
-              <div className="space-y-4">
-                <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
-                  <h5 className="font-serif text-xs font-bold text-[#14213D] uppercase tracking-wider text-[#0F5E63]">
-                    Workflow Status Transitions
-                  </h5>
-                  <p className="text-xs text-[#4A5568]">
-                    Strict state machine enforces required guards before any state advancement.
-                  </p>
-                  <div className="flex flex-wrap gap-2 pt-2">
-                    {/* Dynamic state actions */}
-                    {['received', 'created'].includes(selectedTicket.status) && (
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          setIsAssignModalOpen(true);
-                          setAssignForm({
-                            assigned_to: selectedTicket.assigned_to || '',
-                            planned_visit_date: selectedTicket.planned_visit_date || '',
-                            status: 'assigned',
-                          });
-                        }}
-                      >
-                        <UserCheck className="h-3.5 w-3.5 mr-1" />
-                        Assign Engineer
-                      </Button>
-                    )}
-
-                    {selectedTicket.status === 'assigned' && (
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          setIsAssignModalOpen(true);
-                          setAssignForm({
-                            assigned_to: selectedTicket.assigned_to || '',
-                            planned_visit_date: selectedTicket.planned_visit_date || new Date().toISOString().split('T')[0],
-                            status: 'visit_scheduled',
-                          });
-                        }}
-                      >
-                        <Calendar className="h-3.5 w-3.5 mr-1" />
-                        Schedule Visit
-                      </Button>
-                    )}
-
-                    {['visit_scheduled', 'assigned'].includes(selectedTicket.status) && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={async () => {
-                          await handleQuickStatusChange(selectedTicket, 'in_progress');
-                          const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-                          setSelectedTicket(updated);
-                        }}
-                      >
-                        <Activity className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-                        Start Work (In Progress)
-                      </Button>
-                    )}
-
-                    {selectedTicket.status === 'in_progress' && (
-                      <>
-                        <Button
-                          size="sm"
-                          onClick={() => {
-                            setIsResolveModalOpen(true);
-                            setReportForm({
-                              problem_identified: selectedTicket.complaint || '',
-                              action_taken: '',
-                              parts_replaced: '',
-                              warranty_status: selectedTicket.warranty_status || 'in_warranty',
-                              customer_signoff_by: '',
-                              customer_remarks: '',
-                              further_work_required: false,
-                              next_visit_date: '',
-                              report_url: '',
-                            });
-                          }}
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                          Resolve & Submit Report
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={async () => {
-                            await handleQuickStatusChange(selectedTicket, 'awaiting_part');
-                            const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-                            setSelectedTicket(updated);
-                          }}
-                        >
-                          <Package className="h-3.5 w-3.5 mr-1 text-amber-600" />
-                          Awaiting Parts
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={async () => {
-                            await handleQuickStatusChange(selectedTicket, 'awaiting_customer');
-                            const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-                            setSelectedTicket(updated);
-                          }}
-                        >
-                          <Clock className="h-3.5 w-3.5 mr-1 text-amber-600" />
-                          Awaiting Customer
-                        </Button>
-                      </>
-                    )}
-
-                    {['awaiting_part', 'awaiting_customer'].includes(selectedTicket.status) && (
-                      <Button
-                        size="sm"
-                        onClick={async () => {
-                          await handleQuickStatusChange(selectedTicket, 'in_progress');
-                          const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-                          setSelectedTicket(updated);
-                        }}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                        Resume In Progress
-                      </Button>
-                    )}
-
-                    {['report_submitted', 'resolved'].includes(selectedTicket.status) && hasRole(['management', 'admin', 'service_team']) && (
-                      <Button
-                        size="sm"
-                        onClick={async () => {
-                          await handleCloseTicket(selectedTicket.id);
-                          const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-                          setSelectedTicket(updated);
-                        }}
-                      >
-                        <FileCheck className="h-3.5 w-3.5 mr-1" />
-                        Sign Off & Close Ticket
-                      </Button>
-                    )}
-
-                    {selectedTicket.status !== 'closed' && selectedTicket.status !== 'escalated' && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={async () => {
-                          await handleQuickStatusChange(selectedTicket, 'escalated');
-                          const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-                          setSelectedTicket(updated);
-                        }}
-                      >
-                        <ShieldAlert className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />
-                        Escalate to OEM / Manager
-                      </Button>
-                    )}
-
-                    {selectedTicket.status === 'closed' && hasRole(['management', 'admin']) && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={async () => {
-                          await handleQuickStatusChange(selectedTicket, 'received');
-                          const updated = await api.get(`/service/tickets/${selectedTicket.id}`);
-                          setSelectedTicket(updated);
-                        }}
-                      >
-                        <Repeat className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-                        Reopen Ticket (Dispute)
-                      </Button>
-                    )}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs pt-2 border-t border-[#ECE9E2]">
+                  <div>
+                    <span className="text-[#4A5568] block text-[10px]">Machine S/N</span>
+                    <span className="font-mono font-bold text-[#14213D]">{st.equipment_serial || st.serial_number || 'N/A'}</span>
                   </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div className="p-3 rounded-xl border border-[#DCD8CE] bg-white space-y-1.5">
-                    <span className="font-bold text-[#14213D] block">Technical Context</span>
-                    <div className="text-[#4A5568] space-y-1">
-                      <p><strong>Category:</strong> {selectedTicket.problem_category || 'Breakdown'}</p>
-                      <p><strong>Source:</strong> {selectedTicket.complaint_source || 'Phone / Walk-in'}</p>
-                      <p><strong>Location:</strong> {selectedTicket.location || selectedTicket.city || 'Standard Facility'}</p>
-                    </div>
+                  <div>
+                    <span className="text-[#4A5568] block text-[10px]">Assigned Engineer</span>
+                    <span className="font-semibold text-[#14213D]">{st.assignee_name || 'Unassigned'}</span>
                   </div>
-
-                  <div className="p-3 rounded-xl border border-[#DCD8CE] bg-white space-y-1.5">
-                    <span className="font-bold text-[#14213D] block">Billing & Coverage Snapshot</span>
-                    <div className="text-[#4A5568] space-y-1">
-                      <p><strong>Coverage:</strong> {selectedTicket.warranty_status_snapshot || selectedTicket.warranty_status || 'Under Warranty'}</p>
-                      <p><strong>Is Chargeable:</strong> {selectedTicket.is_chargeable ? 'Yes (Billable Spare/Labor)' : 'No (Covered FOC)'}</p>
-                      <p><strong>Billing Status:</strong> {selectedTicket.billing_status || 'Not Chargeable'}</p>
-                    </div>
+                  <div>
+                    <span className="text-[#4A5568] block text-[10px]">Planned Visit</span>
+                    <span className="font-semibold text-[#14213D]">{st.planned_visit_date ? new Date(st.planned_visit_date).toLocaleDateString('en-IN') : 'Not Scheduled'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[#4A5568] block text-[10px]">Status reason</span>
+                    <span className="font-semibold text-[#14213D] break-words">{st.status_reason || '—'}</span>
                   </div>
                 </div>
               </div>
-            )}
 
-            {/* Tab 2: Visits & Check-in */}
-            {detailTab === 'visits' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h5 className="font-serif text-xs font-bold text-[#14213D] uppercase tracking-wider text-[#0F5E63]">
-                    Scheduled Technical Visits
-                  </h5>
-                </div>
+              <SlaPanel ticket={st} />
 
-                {(!selectedTicket.visits || selectedTicket.visits.length === 0) ? (
-                  <div className="p-4 rounded-xl border border-dashed border-[#DCD8CE] text-center text-xs text-[#4A5568]">
-                    No visits scheduled yet for this ticket.
-                  </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {selectedTicket.visits.map((v: any) => (
-                      <div key={v.id} className="p-3 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-bold text-[#14213D]">
-                            Visit #{v.visit_number}
-                          </span>
-                          <Badge variant={v.actual_check_out ? 'success' : v.actual_check_in ? 'info' : 'default'} size="sm">
-                            {v.visit_outcome || (v.actual_check_in ? 'IN PROGRESS (CHECKED IN)' : 'SCHEDULED')}
-                          </Badge>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2 text-xs text-[#4A5568]">
-                          <div>
-                            <span>Scheduled: </span>
-                            <strong className="text-[#14213D]">{v.scheduled_start ? new Date(v.scheduled_start).toLocaleString('en-IN') : 'TBD'}</strong>
-                          </div>
-                          <div>
-                            <span>Check-in: </span>
-                            <strong className="text-[#14213D]">{v.actual_check_in ? new Date(v.actual_check_in).toLocaleString('en-IN') : 'Pending'}</strong>
-                          </div>
-                        </div>
-
-                        {v.notes && <p className="text-xs text-[#14213D] bg-[#FBFAF7] p-2 rounded border border-[#ECE9E2]">{v.notes}</p>}
-
-                        {/* Engineer Check-in & Check-out actions */}
-                        <div className="flex items-center gap-2 pt-1 border-t border-[#ECE9E2]">
-                          {!v.actual_check_in && (
-                            <Button size="xs" onClick={() => handleCheckInVisit(v.id)}>
-                              <MapPin className="h-3 w-3 mr-1" />
-                              Record GPS Check-in
-                            </Button>
-                          )}
-                          {v.actual_check_in && !v.actual_check_out && (
-                            <div className="flex items-center gap-1.5">
-                              <Button size="xs" onClick={() => handleCheckOutVisit(v.id, 'Completed')}>
-                                Check-out: Completed
-                              </Button>
-                              <Button size="xs" variant="secondary" onClick={() => handleCheckOutVisit(v.id, 'Part Required')}>
-                                Check-out: Part Required
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Schedule Visit Inline Form */}
-                <form onSubmit={handleCreateVisit} className="p-3.5 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] space-y-3">
-                  <h6 className="font-serif text-xs font-bold text-[#14213D]">Schedule Follow-up Visit</h6>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Input
-                      label="Planned Date & Time"
-                      type="datetime-local"
-                      required
-                      value={visitScheduleDate}
-                      onChange={(e) => setVisitScheduleDate(e.target.value)}
-                    />
-                    <Input
-                      label="Visit Notes / Instructions"
-                      value={visitNotesInput}
-                      onChange={(e) => setVisitNotesInput(e.target.value)}
-                      placeholder="e.g. Bring replacement optics assembly"
-                    />
-                  </div>
-                  <div className="flex justify-end">
-                    <Button type="submit" size="xs">Schedule Visit</Button>
-                  </div>
-                </form>
-              </div>
-            )}
-
-            {/* Tab 3: Service Reports & Approval */}
-            {detailTab === 'reports' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h5 className="font-serif text-xs font-bold text-[#14213D] uppercase tracking-wider text-[#0F5E63]">
-                    Filed Engineering Reports
-                  </h5>
-                  <Button
-                    size="xs"
-                    onClick={() => {
-                      setIsResolveModalOpen(true);
-                      setReportForm({
-                        problem_identified: selectedTicket.complaint || '',
-                        action_taken: '',
-                        parts_replaced: '',
-                        warranty_status: selectedTicket.warranty_status || 'in_warranty',
-                        customer_signoff_by: '',
-                        customer_remarks: '',
-                        further_work_required: false,
-                        next_visit_date: '',
-                        report_url: '',
-                      });
-                    }}
+              {/* Dossier Tabs */}
+              <div className="flex border-b border-[#DCD8CE] gap-1 overflow-x-auto text-xs font-semibold">
+                {tabs.map((tb) => (
+                  <button
+                    key={tb.id}
+                    type="button"
+                    onClick={() => setDetailTab(tb.id)}
+                    className={`py-2 px-3 border-b-2 transition-all whitespace-nowrap ${
+                      detailTab === tb.id ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg' : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
+                    }`}
                   >
-                    <Plus className="h-3.5 w-3.5 mr-1" />
-                    New Report
-                  </Button>
-                </div>
+                    {tb.label}
+                  </button>
+                ))}
+              </div>
 
-                {(!selectedTicket.reports || selectedTicket.reports.length === 0) ? (
-                  <div className="p-4 rounded-xl border border-dashed border-[#DCD8CE] text-center text-xs text-[#4A5568]">
-                    No service reports filed yet for this incident.
-                  </div>
-                ) : (
-                  selectedTicket.reports.map((rep: any) => (
-                    <div key={rep.id} className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-[#14213D]">
-                          Submitted by: {rep.submitted_by_name || 'Service Engineer'}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[#4A5568]">{new Date(rep.created_at).toLocaleDateString('en-IN')}</span>
-                          <Badge
-                            variant={
-                              rep.report_status === 'Approved'
-                                ? 'success'
-                                : rep.report_status === 'Returned for Correction'
-                                ? 'urgent'
-                                : 'warning'
-                            }
-                            size="sm"
-                          >
-                            {rep.report_status || 'SUBMITTED'}
-                          </Badge>
-                        </div>
-                      </div>
-
-                      <div className="text-xs space-y-1.5 text-[#14213D]">
-                        <p><strong>Problem Identified:</strong> {rep.problem_identified}</p>
-                        {rep.root_cause && <p><strong>Root Cause:</strong> {rep.root_cause}</p>}
-                        <p><strong>Action Taken:</strong> {rep.action_taken}</p>
-                        {rep.parts_replaced && <p><strong>Parts Replaced:</strong> {rep.parts_replaced}</p>}
-                        {rep.customer_name_signed && <p><strong>Customer Sign-off:</strong> {rep.customer_name_signed}</p>}
-                        {rep.return_reason && (
-                          <div className="p-2 rounded bg-red-50 border border-red-200 text-red-700 text-xs">
-                            <strong>Correction Required:</strong> {rep.return_reason}
+              {/* Tab 1: Overview & legal next steps */}
+              {detailTab === 'overview' && (
+                <div className="space-y-4">
+                  <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
+                    <h5 className="font-serif text-xs font-bold uppercase tracking-wider text-[#0F5E63]">Workflow — next steps</h5>
+                    <p className="text-xs text-[#4A5568]">
+                      Only moves the state machine allows from <strong>{statusLabel(st.status)}</strong> are offered. Some steps ask for a reason or details first.
+                    </p>
+                    {readOnly ? (
+                      <InfoCallout variant="neutral">Your role has read-only access to service tickets.</InfoCallout>
+                    ) : actions.length === 0 ? (
+                      <InfoCallout variant="neutral">
+                        {normalizeServiceStatus(st.status) === 'cancelled'
+                          ? 'This ticket is cancelled and cannot be changed.'
+                          : normalizeServiceStatus(st.status) === 'escalated'
+                          ? 'Escalated tickets can only be handled by a regional manager, management or admin.'
+                          : normalizeServiceStatus(st.status) === 'closed'
+                          ? 'This ticket is closed. Only management or admin can reopen it (within the reopen window).'
+                          : 'No further steps are available to you for this ticket.'}
+                      </InfoCallout>
+                    ) : (
+                      <div className="space-y-2 pt-1">
+                        {progress.length > 0 && <div className="flex flex-wrap gap-2">{progress.map((a) => renderAction(st, a))}</div>}
+                        {exceptions.length > 0 && (
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-[#4A5568]">Exceptions (reason required)</span>
+                            <div className="flex flex-wrap gap-2">{exceptions.map((a) => renderAction(st, a))}</div>
                           </div>
                         )}
+                        {normalizeServiceStatus(st.status) === 'resolved' && (
+                          <p className="text-[11px] text-[#4A5568]">“Service report submitted” is set by filing the report, and “Closed” by signing off from that state.</p>
+                        )}
                       </div>
+                    )}
+                  </div>
 
-                      {/* Management Approval / Return controls */}
-                      {rep.report_status === 'Submitted' && hasRole(['management', 'admin', 'regional_manager']) && (
-                        <div className="pt-2 border-t border-[#ECE9E2] flex items-center justify-end gap-2">
-                          {isReturningReport === rep.id ? (
-                            <div className="flex items-center gap-2 w-full">
-                              <Input
-                                placeholder="Specify reason for returning report..."
-                                value={reportReturnReason}
-                                onChange={(e) => setReportReturnReason(e.target.value)}
-                                className="flex-1"
-                              />
-                              <Button
-                                size="xs"
-                                variant="danger"
-                                onClick={() => handleReviewReport(rep.id, false, reportReturnReason)}
-                              >
-                                Confirm Return
-                              </Button>
-                              <Button size="xs" variant="ghost" onClick={() => setIsReturningReport(null)}>
-                                Cancel
-                              </Button>
-                            </div>
-                          ) : (
-                            <>
-                              <Button size="xs" variant="secondary" onClick={() => setIsReturningReport(rep.id)}>
-                                Return for Correction
-                              </Button>
-                              <Button size="xs" onClick={() => handleReviewReport(rep.id, true)}>
-                                <Check className="h-3.5 w-3.5 mr-1" />
-                                Approve Report
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-[#14213D] block">Intake origin & channel</span>
+                        <Badge variant={isPortalTicket(st) ? 'info' : 'outline'} size="sm">
+                          {st.complaint_source || 'Phone'}
+                        </Badge>
+                      </div>
+                      <div className="text-[#4A5568] space-y-1">
+                        <p><strong>Category:</strong> {st.problem_category || 'Breakdown'}</p>
+                        <p><strong>Location:</strong> {st.location || st.city || 'Standard Facility'}</p>
+                        <p><strong>Received:</strong> {st.received_date ? new Date(st.received_date).toLocaleDateString('en-IN') : '—'}</p>
+                        <p><strong>Customer:</strong> {unverified ? `${st.claimed_organisation_name} (unverified)` : st.organisation_name}</p>
+                        {st.contact_name && <p><strong>Contact:</strong> {st.contact_name}{st.contact_mobile ? ` · ${st.contact_mobile}` : ''}</p>}
+                        {st.complaint_source === 'Demo Team' && (
+                          <p className="text-[11px] font-semibold text-purple-700 bg-purple-50 p-1.5 rounded mt-1 border border-purple-200">Flagged by Demo Team during a field trial or live demonstration</p>
+                        )}
+                        {st.complaint_source === 'Official Letter' && (
+                          <p className="text-[11px] font-semibold text-[#7C2D12] bg-[#FBEBDD] p-1.5 rounded mt-1 border border-[#9A3412]/20">Official government written notice on record</p>
+                        )}
+                      </div>
                     </div>
-                  ))
-                )}
-              </div>
-            )}
 
-            {/* Tab 4: Spare Parts & Inventory */}
-            {detailTab === 'parts' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h5 className="font-serif text-xs font-bold text-[#14213D] uppercase tracking-wider text-[#0F5E63]">
-                    Spares & Part Requests
-                  </h5>
-                </div>
-
-                {(!selectedTicket.part_requests || selectedTicket.part_requests.length === 0) ? (
-                  <div className="p-4 rounded-xl border border-dashed border-[#DCD8CE] text-center text-xs text-[#4A5568]">
-                    No spare parts requested for this incident.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto rounded-xl border border-[#DCD8CE]">
-                    <table className="w-full text-xs text-left">
-                      <thead className="bg-[#FBFAF7] text-[#14213D] border-b border-[#ECE9E2] font-semibold">
-                        <tr>
-                          <th className="py-2 px-3">Part Description</th>
-                          <th className="py-2 px-3">Qty</th>
-                          <th className="py-2 px-3">Requested By</th>
-                          <th className="py-2 px-3">Status</th>
-                          <th className="py-2 px-3">Expected Date</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#ECE9E2] bg-white">
-                        {selectedTicket.part_requests.map((p: any) => (
-                          <tr key={p.id}>
-                            <td className="py-2 px-3 font-medium text-[#14213D]">{p.part_name}</td>
-                            <td className="py-2 px-3 font-mono font-bold text-[#0F5E63]">{p.quantity}</td>
-                            <td className="py-2 px-3 text-[#4A5568]">{p.requested_by_name || 'Technician'}</td>
-                            <td className="py-2 px-3">
-                              <Badge
-                                variant={
-                                  p.status === 'Issued'
-                                    ? 'success'
-                                    : p.status === 'Reserved'
-                                    ? 'info'
-                                    : p.status === 'Unavailable – Ordered'
-                                    ? 'urgent'
-                                    : 'warning'
-                                }
-                                size="sm"
-                              >
-                                {p.status}
-                              </Badge>
-                            </td>
-                            <td className="py-2 px-3 font-mono text-[#4A5568]">{p.expected_date ? new Date(p.expected_date).toLocaleDateString('en-IN') : 'N/A'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {/* Request Part Form */}
-                <form onSubmit={handleAddPartRequest} className="p-3.5 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] space-y-3">
-                  <h6 className="font-serif text-xs font-bold text-[#14213D]">Raise New Spare Part Request</h6>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <Input
-                      label="Part Name / Part Number"
-                      required
-                      value={partNameInput}
-                      onChange={(e) => setPartNameInput(e.target.value)}
-                      placeholder="e.g. Conveyor Motor VFD-200"
-                    />
-                    <Input
-                      label="Quantity"
-                      type="number"
-                      min={1}
-                      required
-                      value={partQtyInput}
-                      onChange={(e) => setPartQtyInput(Number(e.target.value))}
-                    />
-                    <Input
-                      label="Remarks for Store"
-                      value={partRemarksInput}
-                      onChange={(e) => setPartRemarksInput(e.target.value)}
-                      placeholder="Urgent replacement required"
-                    />
-                  </div>
-                  <div className="flex justify-end">
-                    <Button type="submit" size="xs">Submit Part Request</Button>
-                  </div>
-                </form>
-              </div>
-            )}
-
-            {/* Tab 5: Comments & Internal Notes */}
-            {detailTab === 'comments' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h5 className="font-serif text-xs font-bold text-[#14213D] uppercase tracking-wider text-[#0F5E63]">
-                    Internal Team Discussion & Dispatch Notes
-                  </h5>
-                </div>
-
-                {(!selectedTicket.comments || selectedTicket.comments.length === 0) ? (
-                  <div className="p-4 rounded-xl border border-dashed border-[#DCD8CE] text-center text-xs text-[#4A5568]">
-                    No comments posted yet.
-                  </div>
-                ) : (
-                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                    {selectedTicket.comments.map((c: any) => (
-                      <div key={c.id} className="p-2.5 rounded-xl border border-[#DCD8CE] bg-white text-xs space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-[#14213D]">{c.author_name || 'Team Member'}</span>
-                          <span className="text-[#4A5568] text-[10px]">{new Date(c.created_at).toLocaleString('en-IN')}</span>
-                        </div>
-                        <p className="text-[#14213D]">{c.body}</p>
+                    <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
+                      <span className="font-bold text-[#14213D] block">Billing & coverage</span>
+                      <div className="text-[#4A5568] space-y-1">
+                        <p><strong>Coverage:</strong> {st.warranty_status_snapshot || st.warranty_status || 'Under Warranty'}</p>
+                        <p><strong>Is chargeable:</strong> {st.is_chargeable ? 'Yes (billable spares / labour)' : 'No (covered FOC)'}</p>
+                        <p><strong>Billing status:</strong> {st.billing_status || 'Not chargeable'}</p>
+                        <p><strong>Resolved:</strong> {st.resolved_at ? new Date(st.resolved_at).toLocaleString('en-IN') : '—'}</p>
+                        <p><strong>Closed:</strong> {st.closed_at ? new Date(st.closed_at).toLocaleString('en-IN') : '—'}</p>
                       </div>
-                    ))}
+                    </div>
                   </div>
-                )}
+                </div>
+              )}
 
-                <form onSubmit={handleAddComment} className="flex gap-2">
-                  <Input
-                    placeholder="Type an internal note for engineers or coordinators..."
-                    value={commentInput}
-                    onChange={(e) => setCommentInput(e.target.value)}
-                    className="flex-1"
-                  />
-                  <Button type="submit" size="sm">Post Note</Button>
-                </form>
+              {detailTab === 'visits' && <VisitsTab ticket={st} role={role} userId={userId} onChanged={refreshAll} />}
+              {detailTab === 'reports' && (
+                <ReportsTab ticket={st} role={role} onNewReport={() => setActionCtx({ kind: 'report', ticket: st })} onChanged={refreshAll} />
+              )}
+              {detailTab === 'parts' && <PartsTab ticket={st} role={role} onChanged={refreshAll} />}
+              {detailTab === 'comments' && <NotesTab ticket={st} onChanged={refreshAll} />}
+              {detailTab === 'history' && <AuditTab ticket={st} engineerNames={engineerNames} />}
+
+              <div className="pt-2 flex justify-end">
+                <Button size="sm" variant="secondary" onClick={closeDetail}>
+                  Close Dossier
+                </Button>
               </div>
-            )}
-
-            {/* Tab 6: Audit History */}
-            {detailTab === 'history' && (
-              <div className="space-y-4">
-                <h5 className="font-serif text-xs font-bold text-[#14213D] uppercase tracking-wider text-[#0F5E63]">
-                  Status Progression & SLA Audit Trail
-                </h5>
-
-                {(!selectedTicket.status_history || selectedTicket.status_history.length === 0) ? (
-                  <div className="p-4 rounded-xl border border-dashed border-[#DCD8CE] text-center text-xs text-[#4A5568]">
-                    No audit records recorded yet.
-                  </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {selectedTicket.status_history.map((h: any) => (
-                      <div key={h.id} className="p-3 rounded-xl border border-[#DCD8CE] bg-white text-xs flex items-start justify-between gap-4">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono font-bold text-[#4A5568] uppercase">{h.from_status || 'INITIAL'}</span>
-                            <ChevronRight className="h-3 w-3 text-[#4A5568]" />
-                            <span className="font-mono font-bold text-[#0F5E63] uppercase">{h.to_status}</span>
-                            {h.sla_impact !== 'none' && (
-                              <Badge variant="warning" size="sm">SLA {h.sla_impact?.toUpperCase()}</Badge>
-                            )}
-                          </div>
-                          {h.reason && <p className="text-[#14213D] italic">"{h.reason}"</p>}
-                          <span className="text-[10px] text-[#4A5568] block">By {h.changed_by_name || 'System Operator'}</span>
-                        </div>
-                        <span className="font-mono text-[10px] text-[#4A5568] shrink-0">
-                          {new Date(h.changed_at).toLocaleString('en-IN')}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="pt-2 flex justify-end">
-              <Button size="sm" variant="secondary" onClick={() => setIsDetailModalOpen(false)}>
-                Close Dossier
-              </Button>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </Modal>
 
-      {/* 5. Employee Workload Modal (§34) */}
+      {/* Employee Workload Modal (§34) */}
       <Modal
         isOpen={isWorkloadModalOpen}
         onClose={() => setIsWorkloadModalOpen(false)}
         title="Service Team Workload & Allocation HUD"
-        description="Monitor field engineer queue depth, active breakdown assignments, overdue SLA risks, and completed tickets to eliminate uncertainty."
+        description="Engineer queue depth, active assignments, overdue risks and completed tickets."
         maxWidth="lg"
       >
         <div className="space-y-4">
@@ -1939,54 +1234,21 @@ export default function ServicePage() {
               <thead className="bg-[#FBFAF7] text-[#14213D] border-b border-[#ECE9E2] font-semibold">
                 <tr>
                   <th className="py-2.5 px-3">Field Engineer</th>
-                  <th className="py-2.5 px-3">Active Tickets</th>
-                  <th className="py-2.5 px-3">Overdue Risks</th>
+                  <th className="py-2.5 px-3">Active</th>
+                  <th className="py-2.5 px-3">Overdue</th>
                   <th className="py-2.5 px-3">Completed</th>
                   <th className="py-2.5 px-3">Workload Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#ECE9E2] bg-white">
-                {(!stats?.employeeWorkload || stats.employeeWorkload.length === 0) ? (
-                  serviceEngineers.map((eng) => {
-                    const engActive = tickets.filter(
-                      (t) => t.assigned_to === eng.id && !['resolved', 'closed', 'report_submitted'].includes(t.status),
-                    ).length;
-                    const engOverdue = tickets.filter(
-                      (t) =>
-                        t.assigned_to === eng.id &&
-                        t.planned_visit_date &&
-                        new Date(t.planned_visit_date) < new Date() &&
-                        !['resolved', 'closed', 'report_submitted'].includes(t.status),
-                    ).length;
-                    const engCompleted = tickets.filter(
-                      (t) => t.assigned_to === eng.id && ['resolved', 'closed', 'report_submitted'].includes(t.status),
-                    ).length;
-
-                    return (
-                      <tr key={eng.id} className="hover:bg-[#FBFAF7]">
-                        <td className="py-2 px-3">
-                          <strong className="text-[#14213D] block">{eng.full_name}</strong>
-                          <span className="text-[#4A5568] text-[10px]">{eng.email}</span>
-                        </td>
-                        <td className="py-2 px-3 font-mono font-bold text-[#0F5E63]">{engActive}</td>
-                        <td className="py-2 px-3 font-mono font-bold text-[#9A3412]">{engOverdue}</td>
-                        <td className="py-2 px-3 font-mono text-[#14213D]">{engCompleted}</td>
-                        <td className="py-2 px-3">
-                          {engOverdue > 0 ? (
-                            <Badge variant="urgent" size="sm">OVERDUE RISK</Badge>
-                          ) : engActive >= 4 ? (
-                            <Badge variant="warning" size="sm">HEAVY QUEUE</Badge>
-                          ) : engActive > 0 ? (
-                            <Badge variant="info" size="sm">OPTIMAL LOAD</Badge>
-                          ) : (
-                            <Badge variant="default" size="sm">AVAILABLE</Badge>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
+                {workload.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-6 px-3 text-center text-[#4A5568]">
+                      No engineer workload data available.
+                    </td>
+                  </tr>
                 ) : (
-                  stats.employeeWorkload.map((ew: any) => (
+                  workload.map((ew: any) => (
                     <tr key={ew.id} className="hover:bg-[#FBFAF7]">
                       <td className="py-2 px-3">
                         <strong className="text-[#14213D] block">{ew.name}</strong>
@@ -1996,15 +1258,9 @@ export default function ServicePage() {
                       <td className="py-2 px-3 font-mono font-bold text-[#9A3412]">{ew.overdueTickets}</td>
                       <td className="py-2 px-3 font-mono text-[#14213D]">{ew.completedTickets}</td>
                       <td className="py-2 px-3">
-                        {ew.overdueTickets > 0 ? (
-                          <Badge variant="urgent" size="sm">OVERDUE RISK</Badge>
-                        ) : ew.activeTickets >= 4 ? (
-                          <Badge variant="warning" size="sm">HEAVY QUEUE</Badge>
-                        ) : ew.activeTickets > 0 ? (
-                          <Badge variant="info" size="sm">OPTIMAL LOAD</Badge>
-                        ) : (
-                          <Badge variant="default" size="sm">AVAILABLE</Badge>
-                        )}
+                        <Badge variant={WORKLOAD_BADGE[ew.workloadStatus] || 'default'} size="sm">
+                          {ew.workloadStatus || '—'}
+                        </Badge>
                       </td>
                     </tr>
                   ))

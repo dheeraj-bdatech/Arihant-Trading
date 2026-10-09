@@ -16,8 +16,7 @@ import {
   TableRow,
   TableCell,
   InfoCallout,
-  EmptyState,
-} from '@/components/ui';
+  EmptyState, Spinner } from '@/components/ui';
 import {
   DollarSign,
   IndianRupee,
@@ -131,6 +130,7 @@ export function FinanceEmdView({
     if (filterType === 'pbg') return inst.instrument_type === 'PBG';
     return true;
   });
+
 
   return (
     <div className="space-y-6">
@@ -293,7 +293,7 @@ export function FinanceEmdView({
       <Card className="p-0 overflow-hidden bg-white border-[#DCD8CE]">
         {loading ? (
           <div className="p-12 text-center text-sm text-[#4A5568] flex items-center justify-center gap-2">
-            <RefreshCw className="w-4 h-4 animate-spin text-[#0F5E63]" />
+            <Spinner size="xs" />
             Loading financial records...
           </div>
         ) : error ? (

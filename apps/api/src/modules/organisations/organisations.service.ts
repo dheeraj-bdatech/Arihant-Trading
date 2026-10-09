@@ -26,7 +26,9 @@ export class OrganisationsService {
     let baseQuery = this.db
       .selectFrom('organisations')
       .leftJoin('zones', 'organisations.zone_id', 'zones.id')
-      .leftJoin('regions', 'organisations.region_id', 'regions.id');
+      .leftJoin('regions', 'organisations.region_id', 'regions.id')
+      // the "Unverified Portal Customer" placeholder is plumbing, not a customer
+      .where('organisations.id', '<>', '00000000-0000-4000-8000-0000000000a1');
 
     if (query.search) {
       const s = `%${query.search.toLowerCase()}%`;

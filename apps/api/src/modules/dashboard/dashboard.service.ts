@@ -464,7 +464,7 @@ export class DashboardService {
         'status',
       ])
       .orderBy('bid_closing_date', 'asc')
-      .limit(10)
+      .limit(1000)
       .execute();
 
     // 5. Regional Employee Performance & Accountability

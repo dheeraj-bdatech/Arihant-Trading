@@ -17,7 +17,7 @@ import {
   Eye,
   ChevronRight
 } from 'lucide-react';
-import { PageContainer } from '@/components/ui';
+import { PageContainer, PageHeader, Button } from '@/components/ui';
 import { 
   BROCHURE_PRODUCTS, 
   BROCHURE_CATEGORIES, 
@@ -40,41 +40,23 @@ export default function ProductsPage() {
 
   return (
     <PageContainer>
-      {/* ── TOP HERO BANNER: DEFENCE PORTFOLIO & 3D STUDIO ── */}
-      <div className="relative overflow-hidden rounded-2xl bg-white border border-[#DCD8CE] p-6 lg:p-8 shadow-xs">
-        <div className="relative z-10 flex flex-col xl:flex-row xl:items-center justify-between gap-5">
-          <div className="space-y-2 max-w-3xl">
-            <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#E3EFEE] border border-[#DCD8CE] text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider">
-              <Shield className="h-3.5 w-3.5" />
-              <span>Official Brochure Portfolio · 34 Systems</span>
-            </div>
-            <h1 className="text-2xl lg:text-3xl font-extrabold text-[#14213D] tracking-tight">
-              Defence Hardware Command Studio
-            </h1>
-            <p className="text-xs lg:text-sm text-[#4A5568] font-normal leading-relaxed">
-              Interactive 3D inspection, real-time diagnostic telemetry, and complete technical specifications for Arihant Trading Corporation's full defence, homeland security, and tactical portfolio.
-            </p>
-          </div>
-
-          {/* Quick Header Actions */}
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <button
-              onClick={() => setSelectedDossierProduct(selectedProduct)}
-              className="px-4 py-2 rounded-xl bg-[#0F5E63] hover:bg-[#0B4A4E] text-white font-medium text-xs flex items-center gap-2 shadow-sm transition-colors"
-            >
-              <FileText className="w-4 h-4" />
-              <span>View Active Dossier</span>
-            </button>
-            <Link
-              href="/dashboard"
-              className="px-4 py-2 rounded-xl border border-[#DCD8CE] text-[#14213D] hover:bg-[#FBFAF7] font-medium text-xs transition-colors flex items-center gap-1.5"
-            >
-              <span>Back to Executive Desk</span>
-              <ChevronRight className="w-3.5 h-3.5 text-[#4A5568]" />
+      <PageHeader
+        title="Products"
+        actions={
+          <>
+            <Button variant="primary" size="sm" onClick={() => setSelectedDossierProduct(selectedProduct)}>
+              <FileText className="w-4 h-4 mr-1.5" />
+              <span>View Dossier</span>
+            </Button>
+            <Link href="/dashboard">
+              <Button variant="outline" size="sm">
+                <span>Dashboard</span>
+                <ChevronRight className="w-3.5 h-3.5 ml-1" />
+              </Button>
             </Link>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* ── 3D DEFENCE COMMAND CENTER & TELEMETRY STUDIO ── */}
       <div className="space-y-4 pt-1">

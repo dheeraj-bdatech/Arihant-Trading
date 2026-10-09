@@ -12,6 +12,7 @@ import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { AppEvents } from '../../common/events/event-names.js';
+import { ServiceService } from '../service/service.service.js';
 import type { Database, AuthUser, PaginatedResult } from '@arihant/shared';
 import type {
   CreateDemoDto,
@@ -58,6 +59,7 @@ export class DemosService {
 
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
+    private readonly serviceService: ServiceService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -332,11 +334,20 @@ export class DemosService {
       .leftJoin('products', 'demos.product_id', 'products.id')
       .leftJoin('users as requestedUser', 'demos.requested_by', 'requestedUser.id')
       .leftJoin('users as assignee', 'demos.assigned_to', 'assignee.id')
+      .leftJoin('users as serviceEngineer', 'demos.service_engineer_id', 'serviceEngineer.id')
+      .leftJoin('service_tickets', 'demos.service_ticket_id', 'service_tickets.id')
       .leftJoin('visits', 'demos.visit_id', 'visits.id');
 
     // Role-based visibility
     if (user.role === 'sales') {
       baseQuery = baseQuery.where('demos.requested_by', '=', user.id);
+    } else if (user.role === 'service_team') {
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          eb('demos.assigned_to', '=', user.id),
+          eb('demos.service_engineer_id', '=', user.id),
+        ]),
+      );
     } else if (user.role === 'regional_manager') {
       if (user.zone_id) {
         baseQuery = baseQuery.where((eb) =>
@@ -450,6 +461,9 @@ export class DemosService {
         'demos.travel_date',
         'demos.status',
         'demos.version',
+        'demos.service_escort_required',
+        'demos.service_engineer_id',
+        'demos.service_ticket_id',
         'demos.created_at',
         'demos.updated_at',
         'organisations.name as organisation_name',
@@ -457,6 +471,8 @@ export class DemosService {
         'products.name as product_name',
         'requestedUser.full_name as requested_by_name',
         'assignee.full_name as assignee_name',
+        'serviceEngineer.full_name as service_engineer_name',
+        'service_tickets.ticket_no as service_ticket_no',
         'visits.planned_date as visit_planned_date',
         'visits.status as visit_status',
       ])
@@ -528,6 +544,8 @@ export class DemosService {
       .leftJoin('products', 'demos.product_id', 'products.id')
       .leftJoin('users as requestedUser', 'demos.requested_by', 'requestedUser.id')
       .leftJoin('users as assignee', 'demos.assigned_to', 'assignee.id')
+      .leftJoin('users as serviceEngineer', 'demos.service_engineer_id', 'serviceEngineer.id')
+      .leftJoin('service_tickets', 'demos.service_ticket_id', 'service_tickets.id')
       .leftJoin('visits', 'demos.visit_id', 'visits.id')
       .selectAll('demos')
       .select([
@@ -538,6 +556,8 @@ export class DemosService {
         'requestedUser.email as requested_by_email',
         'assignee.full_name as assignee_name',
         'assignee.email as assignee_email',
+        'serviceEngineer.full_name as service_engineer_name',
+        'service_tickets.ticket_no as service_ticket_no',
         'visits.planned_date as visit_planned_date',
         'visits.purpose as visit_purpose',
         'visits.status as visit_status',
@@ -621,6 +641,8 @@ export class DemosService {
           visit_id: dto.visit_id || null,
           requested_by: user.id,
           assigned_to: dto.assigned_to || null,
+          service_escort_required: dto.service_escort_required || false,
+          service_engineer_id: dto.service_engineer_id || null,
           location: dto.location || null,
           requested_date: dto.requested_date,
           confirmed_date: dto.confirmed_date || null,
@@ -642,19 +664,23 @@ export class DemosService {
         .returningAll()
         .executeTakeFirstOrThrow();
 
-      // If created from a visit, update the visit to link/record demo_required
+      // If created from a visit, update the visit to link/record demo_required and service escort
       if (dto.visit_id) {
         await trx
           .updateTable('visits')
-          .set({ demo_required: true })
+          .set({
+            demo_required: true,
+            service_escort_required: dto.service_escort_required || false,
+            service_engineer_id: dto.service_engineer_id || null,
+          })
           .where('id', '=', dto.visit_id)
           .execute();
       }
 
-      // Fetch org name for notification
+      // Fetch org details for notification
       const org = await trx
         .selectFrom('organisations')
-        .select('name')
+        .select(['name', 'region_id', 'zone_id', 'city'])
         .where('id', '=', dto.organisation_id)
         .executeTakeFirst();
 
@@ -676,6 +702,21 @@ export class DemosService {
         requestedByName: user.full_name || 'Salesperson',
         location: demo.location,
       });
+
+      if (dto.service_escort_required) {
+        this.eventEmitter.emit(AppEvents.DEMO_SERVICE_ESCORT_REQUESTED, {
+          demoId: demo.id,
+          demoNo: demo.demo_no,
+          organisationName: org?.name || 'Client',
+          location: demo.location,
+          requestedDate: demo.requested_date,
+          requestedById: user.id,
+          requestedByName: user.full_name || 'Salesperson',
+          serviceEngineerId: dto.service_engineer_id,
+          regionId: org?.region_id,
+          zoneId: org?.zone_id,
+        });
+      }
 
       return demo;
     });
@@ -1731,12 +1772,18 @@ export class DemosService {
       });
     }
 
-    return this.db.transaction().execute(async (trx) => {
+    let createdTicket: any = null;
+    const outcomeResult = await this.db.transaction().execute(async (trx) => {
       const demo = await trx
         .selectFrom('demos')
         .innerJoin('organisations', 'demos.organisation_id', 'organisations.id')
         .selectAll('demos')
-        .select('organisations.name as organisation_name')
+        .select([
+          'organisations.name as organisation_name',
+          'organisations.region_id as org_region_id',
+          'organisations.zone_id as org_zone_id',
+          'organisations.city as org_city',
+        ])
         .where('demos.id', '=', demoId)
         .forUpdate()
         .executeTakeFirst();
@@ -1756,6 +1803,75 @@ export class DemosService {
         .where('demo_id', '=', demoId)
         .executeTakeFirst();
 
+      // Check if this demo outcome is a TECHNICAL_FAILURE
+      let autoServiceTicket: any = null;
+      if (dto.result === 'fail' && dto.failure_reason === 'TECHNICAL_FAILURE') {
+        // Query reserved equipment to attach serial numbers & product info
+        const reservedUnits = await trx
+          .selectFrom('demo_reservations')
+          .innerJoin('demo_equipment', 'demo_reservations.equipment_id', 'demo_equipment.id')
+          .selectAll('demo_equipment')
+          .where('demo_reservations.demo_id', '=', demoId)
+          .execute();
+
+        const primaryUnit = reservedUnits[0] || null;
+        const productId = demo.product_id || primaryUnit?.product_id || null;
+        const serialNo = primaryUnit?.serial_no || null;
+        const complaintText = `Live Trial Technical Failure reported during demo ${demo.demo_no}: ${dto.technical_performance || dto.remarks || 'Hardware / calibration failure during field demonstration'}`;
+
+        // one shared ticket factory: collision-free numbering, SLA from sla_rules, repeat detection, history
+        const created = await this.serviceService.createTicketCore(trx, {
+          organisationId: demo.organisation_id,
+          productId,
+          serial: serialNo,
+          location: demo.location || demo.org_city || null,
+          complaint: complaintText,
+          source: 'Demo Team',
+          problemCategory: 'Breakdown',
+          priority: 'high',
+          warranty: 'in_warranty',
+          isChargeable: false,
+          assignedTo: demo.service_engineer_id || null,
+          regionId: demo.org_region_id || null,
+          actorId: user.id,
+          initialReason: `Auto-created from failed demo ${demo.demo_no}`,
+        });
+        autoServiceTicket = created.ticket;
+        const ticketNo = created.ticket.ticket_no || created.ticket.ticket_number;
+
+        // Put reserved equipment into MAINTENANCE status
+        for (const unit of reservedUnits) {
+          await trx
+            .updateTable('demo_equipment')
+            .set({
+              availability_status: 'maintenance',
+              condition: 'Field Breakdown (Demo Failure)',
+              remarks: `Quarantined after live trial failure on demo ${demo.demo_no}. Service ticket ${ticketNo} logged.`,
+              reserved_until: null,
+            })
+            .where('id', '=', unit.id)
+            .execute();
+        }
+      } else {
+        // Release reserved equipment back to available
+        const reservations = await trx
+          .selectFrom('demo_reservations')
+          .select('equipment_id')
+          .where('demo_id', '=', demoId)
+          .execute();
+
+        for (const r of reservations) {
+          await trx
+            .updateTable('demo_equipment')
+            .set({
+              availability_status: 'available',
+              reserved_until: null,
+            })
+            .where('id', '=', r.equipment_id)
+            .execute();
+        }
+      }
+
       let outcome;
       if (existingOutcome) {
         outcome = await trx
@@ -1771,6 +1887,7 @@ export class DemosService {
             opportunity_stage: dto.opportunity_stage || null,
             result: dto.result,
             failure_reason: dto.result === 'fail' ? dto.failure_reason || 'OTHER' : null,
+            service_ticket_id: autoServiceTicket?.id || (existingOutcome as any).service_ticket_id || null,
             remarks: dto.remarks || null,
             submitted_by: user.id,
           })
@@ -1792,6 +1909,7 @@ export class DemosService {
             opportunity_stage: dto.opportunity_stage || null,
             result: dto.result,
             failure_reason: dto.result === 'fail' ? dto.failure_reason || 'OTHER' : null,
+            service_ticket_id: autoServiceTicket?.id || null,
             remarks: dto.remarks || null,
             submitted_by: user.id,
           })
@@ -1799,34 +1917,17 @@ export class DemosService {
           .executeTakeFirstOrThrow();
       }
 
-      // 1. Mark demo completed
+      // 1. Mark demo completed and link service ticket if created
       await trx
         .updateTable('demos')
         .set({
           status: 'completed',
+          service_ticket_id: autoServiceTicket?.id || demo.service_ticket_id || null,
           updated_at: new Date(),
           version: demo.version + 1,
         })
         .where('id', '=', demoId)
         .execute();
-
-      // 2. Release reserved equipment back to available
-      const reservations = await trx
-        .selectFrom('demo_reservations')
-        .select('equipment_id')
-        .where('demo_id', '=', demoId)
-        .execute();
-
-      for (const r of reservations) {
-        await trx
-          .updateTable('demo_equipment')
-          .set({
-            availability_status: 'available',
-            reserved_until: null,
-          })
-          .where('id', '=', r.equipment_id)
-          .execute();
-      }
 
       // 3. Customer timeline interaction (§20: idempotent using demo_id unique constraint)
       const occurredDate = demo.confirmed_date || demo.requested_date || new Date().toISOString().split('T')[0];
@@ -1911,8 +2012,33 @@ export class DemosService {
         actorName: user.full_name,
       });
 
+      if (autoServiceTicket) {
+        this.eventEmitter.emit(AppEvents.DEMO_TECHNICAL_FAILURE, {
+          demoId,
+          demoNo: demo.demo_no,
+          organisationName: demo.organisation_name,
+          location: demo.location,
+          ticketId: autoServiceTicket.id,
+          ticketNo: autoServiceTicket.ticket_no,
+          failureReason: dto.failure_reason || 'TECHNICAL_FAILURE',
+          actorId: user.id,
+          actorName: user.full_name,
+          requestedById: demo.requested_by,
+          serviceEngineerId: demo.service_engineer_id,
+          regionId: demo.org_region_id,
+          zoneId: demo.org_zone_id,
+        });
+      }
+
+      createdTicket = autoServiceTicket;
       return outcome;
     });
+
+    // side effects only after the failure ticket is committed, so listeners can read it
+    if (createdTicket) {
+      await this.serviceService.afterCreate(createdTicket, user.id, { source: 'demo_failure' });
+    }
+    return outcomeResult;
   }
 
   // =========================================================================
