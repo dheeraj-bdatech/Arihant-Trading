@@ -596,9 +596,9 @@ export function Equipment3DViewer({ product, className = '' }: Equipment3DViewer
       />
 
       {/* Top Floating Telemetry & Inspection Bar */}
-      <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none">
-        <div className="flex items-center gap-2 pointer-events-auto">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/90 backdrop-blur-md border border-[#DCD8CE] shadow-sm text-xs font-mono font-medium text-[#14213D]">
+      <div className="absolute top-3 left-3 right-3 sm:top-4 sm:left-4 sm:right-4 flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between pointer-events-none">
+        <div className="flex flex-wrap items-center gap-2 pointer-events-auto">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 rounded-lg bg-white/90 backdrop-blur-md border border-[#DCD8CE] shadow-sm text-xs font-mono font-medium text-[#14213D]">
             <Radio className="w-3.5 h-3.5 text-[#0F5E63] animate-pulse" />
             <span>3D TACTICAL VIEWPORT</span>
             <span className="text-[#9A3412] font-semibold">[{product.code}]</span>
@@ -611,10 +611,10 @@ export function Equipment3DViewer({ product, className = '' }: Equipment3DViewer
         </div>
 
         {/* Viewport Mode Controls */}
-        <div className="flex items-center gap-1.5 pointer-events-auto bg-white/90 backdrop-blur-md border border-[#DCD8CE] p-1 rounded-xl shadow-sm">
+        <div className="flex max-w-full items-center gap-1 overflow-x-auto pointer-events-auto bg-white/90 backdrop-blur-md border border-[#DCD8CE] p-1 rounded-xl shadow-sm">
           <button
             onClick={() => setRenderMode('standard')}
-            className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
+            className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
               renderMode === 'standard'
                 ? 'bg-[#0F5E63] text-white shadow-sm'
                 : 'text-[#4A5568] hover:text-[#14213D] hover:bg-[#F6F5F1]'
@@ -624,7 +624,7 @@ export function Equipment3DViewer({ product, className = '' }: Equipment3DViewer
           </button>
           <button
             onClick={() => setRenderMode('wireframe')}
-            className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
+            className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
               renderMode === 'wireframe'
                 ? 'bg-[#0F5E63] text-white shadow-sm'
                 : 'text-[#4A5568] hover:text-[#14213D] hover:bg-[#F6F5F1]'
@@ -634,7 +634,7 @@ export function Equipment3DViewer({ product, className = '' }: Equipment3DViewer
           </button>
           <button
             onClick={() => setRenderMode('xray')}
-            className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
+            className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
               renderMode === 'xray'
                 ? 'bg-[#9A3412] text-white shadow-sm'
                 : 'text-[#4A5568] hover:text-[#14213D] hover:bg-[#F6F5F1]'

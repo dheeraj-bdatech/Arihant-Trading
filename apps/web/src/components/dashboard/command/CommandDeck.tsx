@@ -1,18 +1,20 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import Link from 'next/link';
-import { ChevronRight, Flame, Info, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, ChevronRight, Flame, Info, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { CountUp } from '@/components/ui';
+import './command-deck.css';
 
 /* ------------------------------------------------------------------ tones -- */
+/** colours live in command-deck.css under [data-tone]; components only pick a tone */
 export type Tone = 'teal' | 'red' | 'ochre' | 'ink' | 'green';
-const TONE: Record<Tone, { text: string; bar: string; chip: string }> = {
-  teal: { text: 'text-[#0F5E63]', bar: '#0F5E63', chip: 'bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/30' },
-  red: { text: 'text-[#9A3412]', bar: '#9A3412', chip: 'bg-[#FBEBDD] text-[#7C2D12] border-[#9A3412]/30' },
-  ochre: { text: 'text-[#A15C07]', bar: '#C98A1B', chip: 'bg-[#FFF4DC] text-[#8A5A00] border-[#C98A1B]/40' },
-  ink: { text: 'text-[#14213D]', bar: '#14213D', chip: 'bg-[#EEF1F7] text-[#14213D] border-[#14213D]/20' },
-  green: { text: 'text-[#1F7A55]', bar: '#1F7A55', chip: 'bg-[#EAF6F0] text-[#1F7A55] border-[#1F7A55]/30' },
+const GRAD_STOPS: Record<Tone, [string, string]> = {
+  teal: ['#14b8a6', '#0f766e'],
+  red: ['#f97316', '#c2410c'],
+  ochre: ['#f2b53d', '#b7791f'],
+  ink: ['#4a63a6', '#1f2e52'],
+  green: ['#4ade80', '#15803d'],
 };
 
 /** mounts false then flips true so CSS transitions (rings, bars) animate in */
@@ -24,6 +26,56 @@ function useMounted(delay = 60) {
   }, [delay]);
   return m;
 }
+
+/* -------------------------------------------------------------------- hero -- */
+export interface HeroStat {
+  label: string;
+  value: number;
+  tone: Tone;
+}
+export const HeroBanner: React.FC<{
+  greeting: string;
+  name: string;
+  roleLabel: string;
+  zone?: string;
+  dateLabel: string;
+  summary: string;
+  stats: HeroStat[];
+  ctaHref: string;
+  ctaLabel: string;
+}> = ({ greeting, name, roleLabel, zone, dateLabel, summary, stats, ctaHref, ctaLabel }) => (
+  <section className="dx-hero dx-rise">
+    <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+      <div className="min-w-0">
+        <span className="dx-hero__eyebrow">
+          <span className="dx-hero__live" aria-hidden /> Command dashboard
+        </span>
+        <h1 className="dx-hero__title">
+          {greeting}, <em>{name}</em>
+        </h1>
+        <p className="dx-hero__sub">{summary}</p>
+        <div className="dx-hero__meta">
+          <span className="dx-pill">{roleLabel}</span>
+          {zone && <span className="dx-pill">{zone}</span>}
+          <span className="dx-pill font-mono">{dateLabel}</span>
+        </div>
+      </div>
+      <div className="flex flex-col gap-3 lg:items-end">
+        <div className="dx-hero__stats">
+          {stats.map((s) => (
+            <div key={s.label} className="dx-hstat" data-tone={s.tone}>
+              <div className="dx-hstat__v">{s.value}</div>
+              <div className="dx-hstat__l">{s.label}</div>
+            </div>
+          ))}
+        </div>
+        <Link href={ctaHref} className="dx-cta self-start lg:self-end">
+          {ctaLabel} <ArrowRight size={15} />
+        </Link>
+      </div>
+    </div>
+  </section>
+);
 
 /* ---------------------------------------------------------------- KPI tile -- */
 export interface KpiProps {
@@ -38,24 +90,29 @@ export interface KpiProps {
   progress?: number;
 }
 
-export const KpiTile: React.FC<KpiProps> = ({ label, value, sub, href, icon, tone = 'teal', chip }) => {
-  // same box model as the shared StatCard so dashboard tiles match every other page
+export const KpiTile: React.FC<KpiProps> = ({ label, value, sub, href, icon, tone = 'teal', chip, progress }) => {
+  const mounted = useMounted(220);
   return (
     <Link href={href} className="block h-full">
-      <div className="kpi-tile tilt-3d glare edge relative flex h-full flex-col justify-between overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white p-3 shadow-2xs sm:p-4">
-        <div className="mb-2 flex items-start justify-between gap-2">
-          <span className="line-clamp-2 text-[11px] font-semibold uppercase leading-tight tracking-wider text-[#4A5568] sm:text-xs">{label}</span>
-          <span className="kpi-icon shrink-0 rounded-[8px] border border-[#DCD8CE] bg-[#FBFAF7] p-1.5 text-[#9A3412] [&>svg]:h-4 [&>svg]:w-4">{icon}</span>
+      <div className="dx-kpi" data-tone={tone}>
+        <div className="dx-kpi__top">
+          <span className="dx-kpi__label line-clamp-2">{label}</span>
+          <span className="dx-kpi__icon">{icon}</span>
         </div>
         <div>
-          <CountUp as="div" className={`font-mono text-xl font-bold tracking-tight sm:text-2xl ${TONE[tone].text}`}>
+          <CountUp as="div" className="dx-kpi__val">
             {String(value)}
           </CountUp>
-          <span className="mt-1.5 flex items-center justify-between gap-2 text-xs font-medium text-[#4A5568]">
+          <span className="dx-kpi__foot">
             <span className="truncate">{sub}</span>
-            {chip && <span className={`shrink-0 rounded-full border px-2 font-mono text-[10px] font-bold leading-4 ${TONE[tone].chip}`}>{chip}</span>}
+            {chip && <span className="dx-kpi__chip">{chip}</span>}
           </span>
         </div>
+        {typeof progress === 'number' && (
+          <div className="dx-kpi__bar" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
+            <i style={{ width: mounted ? `${Math.min(100, Math.max(0, progress))}%` : '0%' }} />
+          </div>
+        )}
       </div>
     </Link>
   );
@@ -67,22 +124,24 @@ export const Panel: React.FC<{
   icon?: React.ReactNode;
   href?: string;
   hrefLabel?: string;
+  tone?: Tone;
   className?: string;
+  style?: React.CSSProperties;
   children: React.ReactNode;
-}> = ({ title, icon, href, hrefLabel = 'View all', className = '', children }) => (
-  <section className={`edge relative overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white shadow-2xs ${className}`}>
-    <header className="flex items-center justify-between gap-3 border-b border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3">
-      <div className="flex min-w-0 items-center gap-2">
-        {icon && <span className="text-[#9A3412]">{icon}</span>}
-        <h2 className="truncate font-serif text-[13px] font-bold uppercase tracking-wider text-[#14213D]">{title}</h2>
+}> = ({ title, icon, href, hrefLabel = 'View all', tone = 'teal', className = '', style, children }) => (
+  <section className={`dx-panel dx-rise ${className}`} data-tone={tone} style={style}>
+    <header className="dx-panel__head">
+      <div className="dx-panel__title">
+        {icon && <span className="dx-panel__icon">{icon}</span>}
+        <h2 className="dx-panel__h">{title}</h2>
       </div>
       {href && (
-        <Link href={href} className="flex shrink-0 items-center gap-1 text-xs font-bold text-[#9A3412] hover:underline">
+        <Link href={href} className="dx-link">
           {hrefLabel} <ChevronRight size={12} />
         </Link>
       )}
     </header>
-    {children}
+    <div className="dx-panel__body">{children}</div>
   </section>
 );
 
@@ -98,9 +157,9 @@ export interface AttentionItem {
 }
 
 const SEV = {
-  critical: { Icon: Flame, cls: 'text-[#9A3412] bg-[#FBEBDD]' },
-  warning: { Icon: AlertTriangle, cls: 'text-[#A15C07] bg-[#FFF4DC]' },
-  info: { Icon: Info, cls: 'text-[#0F5E63] bg-[#E3EFEE]' },
+  critical: { Icon: Flame, tone: 'red' as Tone, label: 'Critical' },
+  warning: { Icon: AlertTriangle, tone: 'ochre' as Tone, label: 'Warning' },
+  info: { Icon: Info, tone: 'teal' as Tone, label: 'Info' },
 } as const;
 
 export function timeAgo(iso?: string): string {
@@ -115,41 +174,60 @@ export function timeAgo(iso?: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+type AttentionFilter = 'all' | AttentionItem['severity'];
+
 export const AttentionList: React.FC<{ items: AttentionItem[] }> = ({ items }) => {
+  const [filter, setFilter] = useState<AttentionFilter>('all');
+
   if (items.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
-        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-[#EAF6F0] text-[#1F7A55]">
+      <div className="dx-empty">
+        <span className="dx-empty__ic">
           <CheckCircle2 className="h-6 w-6" />
         </span>
-        <p className="font-serif text-sm font-bold text-[#14213D]">Nothing is waiting on you</p>
-        <p className="max-w-xs text-xs text-[#4A5568]">Deadlines, blocked work and approvals that need action will appear here.</p>
+        <p className="font-serif text-[15px] font-bold text-[color:var(--th-ink)]">Nothing is waiting on you</p>
+        <p className="max-w-xs text-xs text-[color:var(--th-mute)]">Deadlines, blocked work and approvals that need action will appear here.</p>
       </div>
     );
   }
+
+  const count = (s: AttentionFilter) => (s === 'all' ? items.length : items.filter((i) => i.severity === s).length);
+  const tabs = (['all', 'critical', 'warning', 'info'] as const).filter((t) => t === 'all' || count(t) > 0);
+  const shown = filter === 'all' ? items : items.filter((i) => i.severity === filter);
+
   return (
-    <ul className="divide-y">
-      {items.map((it, i) => {
-        const { Icon, cls } = SEV[it.severity];
-        return (
-          <li key={it.id} className="dash-row" style={{ animationDelay: `${i * 45}ms` }}>
-            <Link href={it.href} className="flex items-center gap-3 px-4 py-3">
-              <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${cls}`}>
-                <Icon className="h-4 w-4" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-semibold text-[#14213D]">{it.title}</span>
-                {it.detail && <span className="block truncate text-[11px] text-[#4A5568]">{it.detail}</span>}
-              </span>
-              <span className="flex shrink-0 flex-col items-end gap-1">
-                {it.right}
-                {it.when && <span className="font-mono text-[10px] text-[#6B7280]">{it.when}</span>}
-              </span>
-            </Link>
-          </li>
-        );
-      })}
-    </ul>
+    <>
+      <div className="dx-tabs" role="tablist" aria-label="Filter alerts by severity">
+        {tabs.map((t) => (
+          <button key={t} type="button" role="tab" aria-selected={filter === t} className="dx-tab" onClick={() => setFilter(t)}>
+            {t === 'all' ? 'All' : SEV[t].label} <b>{count(t)}</b>
+          </button>
+        ))}
+      </div>
+      <ul className="dx-attn">
+        {shown.map((it, i) => {
+          const { Icon, tone } = SEV[it.severity];
+          return (
+            <li key={it.id} className="dx-slide" style={{ animationDelay: `${i * 40}ms` }} data-tone={tone}>
+              <Link href={it.href} className="dx-attn__row">
+                <span className="dx-attn__ic">
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="dx-attn__t">{it.title}</span>
+                  {it.detail && <span className="dx-attn__d">{it.detail}</span>}
+                </span>
+                <span className="flex shrink-0 flex-col items-end gap-1.5">
+                  {it.right}
+                  {it.when && <span className="dx-attn__when">{it.when}</span>}
+                </span>
+                <ArrowUpRight size={15} className="dx-attn__go hidden shrink-0 sm:block" />
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 };
 
@@ -163,21 +241,28 @@ export const RingGauge: React.FC<{ label: string; sub?: string; value: number; m
   tone = 'teal',
 }) => {
   const mounted = useMounted(160);
-  const R = 38;
+  const gid = useId().replace(/:/g, '');
+  const R = 40;
   const C = 2 * Math.PI * R;
   const pct = max > 0 ? Math.min(1, value / max) : 0;
+  const [from, to] = GRAD_STOPS[tone];
   return (
-    <div className="flex flex-col items-center text-center">
-      <div className="relative h-[104px] w-[104px]">
+    <div className="dx-ring">
+      <div className="dx-ring__svg">
         <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90">
-          <circle cx="50" cy="50" r={R} fill="none" stroke="#EFDDBE" strokeWidth="9" />
-          <circle cx="50" cy="50" r={R} fill="none" stroke="#C98A1B" strokeWidth="1" strokeDasharray="2 5" opacity="0.7" transform="scale(1)" />
+          <defs>
+            <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={from} />
+              <stop offset="100%" stopColor={to} />
+            </linearGradient>
+          </defs>
+          <circle cx="50" cy="50" r={R} fill="none" strokeWidth="9" style={{ stroke: 'var(--th-line)' }} />
           <circle
             cx="50"
             cy="50"
             r={R}
             fill="none"
-            stroke={TONE[tone].bar}
+            stroke={`url(#${gid})`}
             strokeWidth="9"
             strokeLinecap="round"
             strokeDasharray={C}
@@ -185,12 +270,10 @@ export const RingGauge: React.FC<{ label: string; sub?: string; value: number; m
             style={{ transition: 'stroke-dashoffset 1.2s cubic-bezier(0.22, 1, 0.36, 1)' }}
           />
         </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className={`font-mono text-lg font-bold leading-none ${TONE[tone].text}`}>{display ?? `${Math.round(pct * 100)}%`}</span>
-        </div>
+        <div className="dx-ring__val">{display ?? `${Math.round(pct * 100)}%`}</div>
       </div>
-      <div className="mt-1.5 text-[11px] font-bold uppercase tracking-wider text-[#14213D]">{label}</div>
-      {sub && <div className="text-[11px] text-[#4A5568]">{sub}</div>}
+      <div className="dx-ring__l">{label}</div>
+      {sub && <div className="dx-ring__s">{sub}</div>}
     </div>
   );
 };
@@ -206,25 +289,34 @@ export const StackBar: React.FC<{ title?: string; segments: Segment[] }> = ({ ti
   const total = segments.reduce((a, s) => a + s.value, 0);
   return (
     <div>
-      {title && <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-[#4A5568]">{title}</div>}
-      <div className="flex h-3.5 w-full gap-[2px] overflow-hidden rounded-full bg-[#EFDDBE]">
+      {title && (
+        <div className="dx-stack__title">
+          {title}
+          <span>{total} total</span>
+        </div>
+      )}
+      <div className="dx-stack__bar">
         {segments.map((s) => (
           <div
             key={s.label}
-            className="h-full transition-[width] duration-1000 ease-out first:rounded-l-full last:rounded-r-full"
-            style={{ width: mounted && total ? `${(s.value / total) * 100}%` : '0%', background: TONE[s.tone].bar }}
+            className="dx-stack__seg"
+            data-tone={s.tone}
+            style={{ width: mounted && total ? `${(s.value / total) * 100}%` : '0%' }}
             title={`${s.label}: ${s.value}`}
           />
         ))}
       </div>
-      <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
+      <ul className="dx-stack__legend">
         {segments.map((s) => (
-          <li key={s.label} className="flex items-center justify-between gap-2 text-xs">
-            <span className="flex min-w-0 items-center gap-1.5 text-[#4A5568]">
-              <span className="h-2 w-2 shrink-0 rotate-45" style={{ background: TONE[s.tone].bar }} />
+          <li key={s.label} className="dx-stack__li" data-tone={s.tone}>
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="dx-stack__dot" />
               <span className="truncate">{s.label}</span>
             </span>
-            <span className="font-mono font-bold text-[#14213D]">{s.value}</span>
+            <span>
+              <b>{s.value}</b>
+              <i>{total ? Math.round((s.value / total) * 100) : 0}%</i>
+            </span>
           </li>
         ))}
       </ul>
@@ -239,22 +331,17 @@ export interface QuickAction {
   href: string;
   icon: React.ReactNode;
 }
+const ACTION_TONES: Tone[] = ['teal', 'red', 'ink', 'ochre'];
 export const QuickActions: React.FC<{ actions: QuickAction[] }> = ({ actions }) => (
-  <div className="grid grid-cols-2 gap-3 p-4">
+  <div className="dx-qa">
     {actions.map((a, i) => (
-      <Link
-        key={a.label}
-        href={a.href}
-        className="dash-row tilt-3d group flex flex-col gap-2 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] p-3 transition-colors hover:border-[#9A3412] hover:bg-[#FBE9D0]"
-        style={{ animationDelay: `${i * 55}ms` }}
-      >
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-[#9A3412] shadow-2xs ring-1 ring-[#C98A1B]/40 transition-transform group-hover:scale-110">
-          {a.icon}
+      <Link key={a.label} href={a.href} className="dx-qa__row dx-slide" data-tone={ACTION_TONES[i % ACTION_TONES.length]} style={{ animationDelay: `${i * 55}ms` }}>
+        <span className="dx-qa__ic">{a.icon}</span>
+        <span className="min-w-0">
+          <span className="dx-qa__t">{a.label}</span>
+          <span className="dx-qa__d">{a.hint}</span>
         </span>
-        <span>
-          <span className="block text-[13px] font-bold text-[#14213D]">{a.label}</span>
-          <span className="block text-[11px] leading-snug text-[#4A5568]">{a.hint}</span>
-        </span>
+        <ChevronRight size={16} className="dx-qa__go" />
       </Link>
     ))}
   </div>
@@ -270,29 +357,28 @@ export interface TimelineItem {
   href?: string;
 }
 export const Timeline: React.FC<{ items: TimelineItem[]; empty?: string }> = ({ items, empty = 'No recent activity' }) => {
-  if (items.length === 0) return <p className="px-4 py-10 text-center text-xs text-[#4A5568]">{empty}</p>;
+  if (items.length === 0) return <p className="dx-none">{empty}</p>;
   return (
-    <ol className="relative px-4 py-3">
-      <span aria-hidden className="absolute bottom-5 left-[26px] top-5 w-px border-l border-dotted border-[#C98A1B]" />
+    <ol className="dx-tl">
       {items.map((it, i) => {
         const body = (
           <>
-            <span className="relative z-10 mt-1 h-3 w-3 shrink-0 rotate-45 border-2 border-white" style={{ background: TONE[it.tone].bar }} />
+            <span className="dx-tl__dot" />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[13px] font-semibold text-[#14213D]">{it.title}</span>
-              {it.detail && <span className="block truncate text-[11px] text-[#4A5568]">{it.detail}</span>}
+              <span className="dx-tl__t">{it.title}</span>
+              {it.detail && <span className="dx-tl__d">{it.detail}</span>}
             </span>
-            {it.when && <span className="shrink-0 font-mono text-[10px] text-[#6B7280]">{it.when}</span>}
+            {it.when && <span className="dx-tl__when">{it.when}</span>}
           </>
         );
         return (
-          <li key={it.id} className="dash-row py-2" style={{ animationDelay: `${i * 50}ms` }}>
+          <li key={it.id} className="dx-slide" data-tone={it.tone} style={{ animationDelay: `${i * 50}ms` }}>
             {it.href ? (
-              <Link href={it.href} className="flex items-start gap-3">
+              <Link href={it.href} className="dx-tl__row">
                 {body}
               </Link>
             ) : (
-              <div className="flex items-start gap-3">{body}</div>
+              <div className="dx-tl__row">{body}</div>
             )}
           </li>
         );

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Shield,
@@ -11,18 +11,14 @@ import {
   Lock,
 } from 'lucide-react';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
-import { Button, Input, MithilaDecor } from '@/components/ui';
+import { Button, Input } from '@/components/ui';
+import { AppearanceMenu } from '@/components/layout/AppearanceMenu';
+import { BrandMark } from '@/components/layout/BrandMark';
 import type { UserRole } from '@arihant/shared';
 
 export default function LoginPage() {
   const { login } = useAuth();
   const router = useRouter();
-
-  // the sign-in screen sits outside the app shell, so switch the Mithila theme on here too
-  useEffect(() => {
-    document.body.classList.add('mithila');
-    return () => document.body.classList.remove('mithila');
-  }, []);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -51,19 +47,19 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="relative min-h-screen bg-[#F6F5F1] grid grid-cols-1 lg:grid-cols-12 select-none text-[#14213D]">
+    <div className="app-shell relative min-h-screen grid grid-cols-1 lg:grid-cols-12 select-none text-[#14213D]">
       {/* Left Column: Brand Hero (matches ui-kit .auth__brand) */}
-      <MithilaDecor />
-      <section className="mt-login-hero relative z-10 lg:col-span-5 bg-[#FBE9D0] text-[#14213D] p-8 lg:p-14 flex flex-col justify-between gap-8 border-r-[1.5px] border-[#9A3412] overflow-hidden">
+      <div className="absolute right-4 top-4 z-20"><AppearanceMenu /></div>
+      <section className="login-hero relative z-10 lg:col-span-5 text-[#14213D] p-8 lg:p-14 flex flex-col justify-between gap-8 overflow-hidden">
         <div className="space-y-2">
           <div className="flex items-center gap-2.5">
-            <div className="h-10 w-10 rounded-[8px] mt-logo bg-[#9A3412] flex items-center justify-center text-white shadow-xs">
-              <img src="/mithila/lotus.svg" alt="" className="h-8 w-8" />
+            <div className="h-10 w-10 rounded-[8px] app-logo bg-[#9A3412] flex items-center justify-center text-white shadow-xs">
+              <BrandMark className="h-7 w-7" />
             </div>
             <div>
               <div className="font-serif text-2xl font-bold text-[#14213D] tracking-tight flex items-center gap-1.5">
                 <span>Arihant</span>
-                <span className="font-sans font-bold text-xs px-1.5 py-0.2 rounded bg-[#9A3412] text-white">
+                <span className="font-sans font-bold text-xs px-1.5 py-0.2 rounded bg-[#0F5E63] text-white">
                   BOS
                 </span>
               </div>
@@ -114,7 +110,7 @@ export default function LoginPage() {
       </section>
 
       {/* Right Column: Sign In & Role Picker (matches ui-kit .auth__form) */}
-      <main className="relative z-10 lg:col-span-7 p-6 sm:p-10 lg:p-14 flex items-center justify-center bg-[#F6F5F1]">
+      <main className="relative z-10 lg:col-span-7 p-6 sm:p-10 lg:p-14 flex items-center justify-center">
         <div className="w-full max-w-2xl space-y-8">
           <div>
             <span className="text-xs font-semibold text-[#4A5568] uppercase tracking-wider">
@@ -130,7 +126,7 @@ export default function LoginPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
             {/* Credentials Card */}
-            <div className="edge md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-6 shadow-2xs space-y-4">
+            <div className="md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-6 shadow-2xs space-y-4">
               <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
                   Credentials
@@ -187,7 +183,7 @@ export default function LoginPage() {
             </div>
 
             {/* Persona Switcher (8 Roles) */}
-            <div className="edge md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-5 shadow-2xs space-y-3">
+            <div className="md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-5 shadow-2xs space-y-3">
               <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
                 <div className="flex items-center space-x-1.5">
                   <UserCheck className="h-4 w-4 text-[#0F5E63]" />

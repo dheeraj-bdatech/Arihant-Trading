@@ -104,7 +104,7 @@ export const PersonaSwitcherFab: React.FC = () => {
       {/* Floating Modal / Panel */}
       {isOpen && (
         <div
-          className="mt-popup mb-3 w-[360px] sm:w-[440px] max-h-[85vh] flex flex-col rounded-[14px] bg-white border border-[#DCD8CE] shadow-2xl p-4 text-xs text-[#14213D] animate-in fade-in slide-in-from-bottom-3 duration-200"
+          className="app-popup mb-3 w-[360px] sm:w-[440px] max-h-[85vh] flex flex-col rounded-[14px] bg-white border border-[#DCD8CE] shadow-2xl p-4 text-xs text-[#14213D] animate-in fade-in slide-in-from-bottom-3 duration-200"
           style={{
             boxShadow:
               '0 20px 45px -10px rgba(15, 94, 99, 0.18), 0 0 0 1px rgba(220, 216, 206, 0.9)',
@@ -288,7 +288,7 @@ export const PersonaSwitcherFab: React.FC = () => {
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
         title="Quick Role Sign-In & Persona Clearance Switcher"
-        className="mt-fab flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-white/95 backdrop-blur-md border border-[#DCD8CE] shadow-lg hover:shadow-xl hover:border-[#0F5E63]/50 transition-all duration-200 group text-left cursor-pointer active:scale-98"
+        className="app-fab flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-white/95 backdrop-blur-md border border-[#DCD8CE] shadow-lg hover:shadow-xl hover:border-[#0F5E63]/50 transition-all duration-200 group text-left cursor-pointer active:scale-98"
         style={{ boxShadow: '0 8px 24px -6px rgba(15, 94, 99, 0.18)' }}
       >
         <div className="relative shrink-0">

@@ -122,7 +122,6 @@ export const Modal: React.FC<ModalProps> = ({
           maxWidths[maxWidth],
         )}
       >
-        <div aria-hidden className="mithila-strip" />
         {/* Dialog Header */}
         <div className="px-5 py-4 border-b border-[#ECE9E2] bg-[#FBFAF7] flex items-center justify-between shrink-0">
           <div>

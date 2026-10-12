@@ -41,7 +41,7 @@ export const ToolbarBox: React.FC<{ children?: React.ReactNode; row?: boolean; d
   const filtersRef = useCallback((el: HTMLDivElement | null) => patch({ filters: el }), []);
 
   return (
-    <div className={twMerge('toolbar-box edge', className)}>
+    <div className={twMerge('toolbar-box', className)}>
       <div className="toolbar-box__head">
         <div className="toolbar-box__main">{children}</div>
         <div className="toolbar-box__tools">

@@ -2,8 +2,10 @@ import type { Metadata } from 'next';
 import { GeistSans } from 'geist/font/sans';
 import { GeistMono } from 'geist/font/mono';
 import './globals.css';
+import './theme.css';
 import { AuthProvider } from '@/lib/auth-context';
 import { PersonaSwitcherFab } from '@/components/layout/PersonaSwitcherFab';
+import { ThemeProvider, THEME_BOOT_SCRIPT, DEFAULT_THEME } from '@/lib/theme-context';
 
 export const metadata: Metadata = {
   title: 'Arihant BOS | Defence & Security GeM ERP',
@@ -20,9 +22,11 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${GeistSans.variable} ${GeistMono.variable}`}
+      data-app-theme={DEFAULT_THEME}
       suppressHydrationWarning
     >
       <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
@@ -34,10 +38,12 @@ export default function RootLayout({
         className="font-sans bg-[#F6F5F1] text-[#14213D] text-[14px] antialiased selection:bg-[#E3EFEE] selection:text-[#0F5E63]"
         suppressHydrationWarning
       >
-        <AuthProvider>
-          {children}
-          <PersonaSwitcherFab />
-        </AuthProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            {children}
+            <PersonaSwitcherFab />
+          </AuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

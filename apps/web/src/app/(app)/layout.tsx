@@ -5,11 +5,10 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
-import { Tilt3D } from '@/components/layout/Tilt3D';
-import { MithilaFrame } from '@/components/layout/MithilaFrame';
+import { ShellEnhancer } from '@/components/layout/ShellEnhancer';
 import { CommandPalette } from '@/components/layout/CommandPalette';
 import { Shield, ShieldAlert, ArrowLeft, UserCheck } from 'lucide-react';
-import { Button, Spinner, MithilaDecor } from '@/components/ui';
+import { Button, Spinner } from '@/components/ui';
 import { SidebarProvider } from '@/lib/sidebar-context';
 import type { UserRole } from '@arihant/shared';
 
@@ -57,7 +56,7 @@ export default function AppLayout({
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#F6F5F1] flex flex-col items-center justify-center gap-4">
+      <div className="app-shell min-h-screen flex flex-col items-center justify-center gap-4">
         <Spinner size="lg" />
         <p className="font-mono text-[11px] font-semibold text-[#4A5568] tracking-[0.2em] uppercase">
           Securing session<span className="loader-dots" aria-hidden />
@@ -79,15 +78,13 @@ export default function AppLayout({
 
   return (
     <SidebarProvider>
-      <div className="h-screen bg-[#F6F5F1] flex flex-row text-[#14213D] overflow-hidden">
-        <Tilt3D />
-        <MithilaFrame />
+      <div className="app-shell h-screen flex flex-row text-[#14213D] overflow-hidden">
+        <ShellEnhancer />
         <Sidebar />
         <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
           <Navbar onOpenCommand={() => setIsCommandOpen(true)} />
           <div className="relative flex-1 min-h-0">
-            <MithilaDecor />
-            <main key={pathname} className="route-3d mithila-page absolute inset-0 z-10 overflow-y-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-6 custom-scrollbar">
+            <main key={pathname} className="route-enter absolute inset-0 z-10 overflow-y-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-6 custom-scrollbar">
               <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-5">
             {isUnauthorized ? (
               <div className="max-w-2xl mx-auto my-12 bg-white border border-[#DCD8CE] rounded-[10px] p-8 shadow-xs text-center space-y-5">

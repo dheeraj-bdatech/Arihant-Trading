@@ -3003,23 +3003,16 @@ function DemosPageContent() {
           />
 
           {/* A. Live Demonstration Setup Details */}
-          <div className="p-3.5 bg-white rounded-xl border border-[#DCD8CE] space-y-3">
-            <div className="pb-1.5 border-b border-[#ECE9E2] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-[#14213D]">
-                  A. Live Demonstration Setup Details
-                </span>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
-                  Live Fleet Sync
-                </span>
-              </div>
-              <span className="text-[10px] text-[#4A5568]">
-                Depot Inventory & Calibration Status
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <span className="text-sm font-bold text-[#14213D]">Demonstration setup</span>
+              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
+                Live fleet status
               </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+            <div className="grid grid-cols-1 gap-4 items-start">
               <div className="space-y-2">
                 <Select
                   label="Equipment / Product Required for Demo *"
@@ -3054,13 +3047,13 @@ function DemosPageContent() {
                 {/* Fleet Availability Overview by Product (when no product is selected yet) */}
                 {!activeNewDemoProductFleet && (
                   <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
                       <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                        Demo Equipment Fleet Availability & Status:
+                        Fleet availability
                       </span>
-                      <span className="text-[10px] text-[#0F5E63] font-medium">Click to select</span>
+                      <span className="text-[10px] text-[#0F5E63] font-medium">Tap a product to select</span>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    <div className="grid grid-cols-1 gap-1.5">
                       {products.slice(0, 6).map((p) => {
                         const pUnits = (equipmentList || []).filter((e) => e.product_id === p.id);
                         const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
@@ -3074,11 +3067,11 @@ function DemosPageContent() {
                             }}
                             className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
                           >
-                            <span className="font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
+                            <span className="min-w-0 flex-1 font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
                               {p.name}
                             </span>
                             <span
-                              className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
+                              className={`text-[10px] font-mono font-bold shrink-0 whitespace-nowrap ml-1.5 px-1.5 py-0.5 rounded ${
                                 availCount > 0
                                   ? 'bg-emerald-100 text-emerald-800'
                                   : total > 0

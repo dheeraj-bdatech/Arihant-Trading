@@ -89,7 +89,7 @@ export function NativeSelectMenu() {
     ...(up ? { bottom: window.innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),
   };
   return createPortal(
-    <div className="mt-select-panel mt-select-panel--native" style={style}>
+    <div className="select-panel mt-select-panel--native" style={style}>
       <div role="listbox" className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
         {opts.map((o, i) => (
           <div

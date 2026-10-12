@@ -76,7 +76,7 @@ export default function ProductsPage() {
             </span>
           </div>
 
-          <div className="flex items-center gap-3 text-xs font-mono text-[#4A5568]">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono text-[#4A5568]">
             <div className="flex items-center gap-1.5">
               <span className="text-[#14213D] font-bold">20+</span>
               <span className="text-[11px]">Years</span>
@@ -119,7 +119,7 @@ export default function ProductsPage() {
             />
             
             {/* Quick Action Overlay: Open Full Brochure Dossier */}
-            <div className="absolute top-14 right-4 z-20">
+            <div className="absolute top-[6.25rem] right-3 sm:top-14 sm:right-4 z-20">
               <button
                 onClick={() => setSelectedDossierProduct(selectedProduct)}
                 className="px-3 py-1.5 rounded-xl bg-white/90 hover:bg-white backdrop-blur-md border border-[#DCD8CE] shadow-sm text-xs font-medium text-[#0F5E63] hover:text-[#0B4A4E] transition-all flex items-center gap-1.5 hover:shadow-md"

@@ -68,11 +68,11 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
         ref={ref}
         data-selected={selected || undefined}
         className={twMerge(
-          'edge rounded-[10px] border border-[#DCD8CE] text-[#14213D] shadow-2xs transition-all duration-150 overflow-hidden relative',
+          'ui-card rounded-[10px] border border-[#DCD8CE] text-[#14213D] shadow-2xs transition-all duration-150 overflow-hidden relative',
           variantCls,
           bg !== 'white' && bgCls,
           isInteractive && variant !== 'interactive' && 'hover:border-[#0F5E63] hover:shadow-xs',
-          isInteractive && 'tilt-3d glare',
+          isInteractive && 'ui-card--interactive',
           selected && 'border-[#0F5E63] ring-1 ring-[#0F5E63]/20 bg-[#E3EFEE]/40',
           accentCls,
           paddingCls,

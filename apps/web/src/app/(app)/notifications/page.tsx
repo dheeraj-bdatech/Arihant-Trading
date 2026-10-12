@@ -331,7 +331,7 @@ export default function NotificationsPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         {getTypeBadge(n.type)}
                         <span
-                          className={`text-sm truncate ${
+                          className={`text-sm min-w-0 max-w-full break-words ${
                             !n.is_read
                               ? 'font-bold text-[#14213D]'
                               : 'font-semibold text-[#35463F]'

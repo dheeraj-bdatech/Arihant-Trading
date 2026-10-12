@@ -21,6 +21,5 @@ export * from './Checkbox';
 export * from './CountUp';
 export * from './Spinner';
 export * from './ToolbarBox';
-export * from './MithilaDecor';
 export * from './FilterMenu';
 export * from './RowMenu';

@@ -69,7 +69,7 @@ export const RowMenu: React.FC<{ items: RowMenuItem[]; label?: string; buttonLab
         createPortal(
           <div
             role="menu"
-            className="mt-select-panel row-menu__panel"
+            className="select-panel row-menu__panel"
             style={{ position: 'fixed', zIndex: 120, minWidth: 190, right: Math.max(8, window.innerWidth - open.right), ...(up ? { bottom: window.innerHeight - open.top + 6 } : { top: open.bottom + 6 }) }}
           >
             <div className="p-1.5 space-y-0.5">

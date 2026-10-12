@@ -28,7 +28,7 @@ export function ProductDossierModal({ product, onClose }: ProductDossierModalPro
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2B1A12]/50 backdrop-blur-[3px] animate-in fade-in duration-200">
       <div 
-        className="mt-popup relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl border border-[#DCD8CE] shadow-2xl p-6 lg:p-8 space-y-6"
+        className="app-popup relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl border border-[#DCD8CE] shadow-2xl p-6 lg:p-8 space-y-6"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close Button */}

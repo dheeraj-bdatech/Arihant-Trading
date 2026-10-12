@@ -21,12 +21,13 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react';
-import { useAuth } from '@/lib/auth-context';
+import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { PageContainer, PageLoader } from '@/components/ui';
 import { DeadlineChip } from '@/components/tender/Countdown';
 import {
   AttentionList,
+  HeroBanner,
   KpiTile,
   Panel,
   QuickActions,
@@ -460,7 +461,6 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const role = (user?.role || 'management') as UserRole;
   const [data, setData] = useState<Data | null>(null);
-
   useEffect(() => {
     let alive = true;
     const run = async () => {
@@ -530,41 +530,70 @@ export default function DashboardPage() {
     );
   }
 
+  const critical = view.attention.filter((a) => a.severity === 'critical').length;
+  const warnings = view.attention.filter((a) => a.severity === 'warning').length;
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const preset = PRESET_ROLE_USERS[role];
+  const firstName = (user?.full_name || preset?.name || 'there').split(' ')[0];
+  const summary =
+    critical + warnings === 0
+      ? 'You are all caught up. No deadlines, blockers or approvals need action right now.'
+      : `${critical} critical and ${warnings} warning item${critical + warnings === 1 ? '' : 's'} need your attention today. Start with the highest severity below.`;
+
   return (
-    <PageContainer>
-      <div className="dash-grid grid grid-cols-2 gap-2.5 sm:gap-4 md:grid-cols-4">
-        {view.kpis.map((k) => (
-          <KpiTile key={k.label} {...k} />
+    <PageContainer className="dx-root">
+      <HeroBanner
+        greeting={greeting}
+        name={firstName}
+        roleLabel={preset?.title || role.replace(/_/g, ' ')}
+        zone={preset?.zone}
+        dateLabel={new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
+        summary={summary}
+        stats={[
+          { label: 'Critical', value: critical, tone: 'red' },
+          { label: 'Warnings', value: warnings, tone: 'ochre' },
+          { label: 'Open alerts', value: view.attention.length, tone: 'teal' },
+        ]}
+        ctaHref="/notifications"
+        ctaLabel="Review alerts"
+      />
+
+      <div className="dx-kpis grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+        {view.kpis.map((k, i) => (
+          <div key={k.label} className="dx-rise" style={{ animationDelay: `${80 + i * 70}ms` }}>
+            <KpiTile {...k} />
+          </div>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-        <Panel className="lg:col-span-2" title="Needs your attention" icon={<Activity size={15} />} href="/notifications" hrefLabel="All alerts">
+      <div className="dx-main grid grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-3">
+        <Panel className="lg:col-span-2" title="Needs your attention" icon={<Activity size={15} />} tone="red" href="/notifications" hrefLabel="All alerts" style={{ animationDelay: '200ms' }}>
           <AttentionList items={view.attention} />
         </Panel>
-        <Panel title="Quick actions" icon={<Zap size={15} />}>
+        <Panel title="Quick actions" icon={<Zap size={15} />} tone="teal" style={{ animationDelay: '260ms' }}>
           <QuickActions actions={view.actions} />
         </Panel>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-        <Panel title="Operational health" icon={<TrendingUp size={15} />}>
-          <div className="grid grid-cols-3 gap-2 p-5">
+      <div className="grid grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-3">
+        <Panel title="Operational health" icon={<TrendingUp size={15} />} tone="green" style={{ animationDelay: '300ms' }}>
+          <div className="grid grid-cols-3 gap-2 px-4 pb-6 pt-3">
             {view.rings.map((r) => (
               <RingGauge key={r.key} label={r.label} sub={r.sub} value={Math.max(0, r.value)} max={r.max} display={r.max === 0 ? '—' : r.display} tone={r.tone} />
             ))}
           </div>
         </Panel>
-        <Panel title="Pipeline mix" icon={<Layers size={15} />}>
-          <div className="space-y-6 p-5">
+        <Panel title="Pipeline mix" icon={<Layers size={15} />} tone="ink" style={{ animationDelay: '340ms' }}>
+          <div className="space-y-7 px-5 pb-6 pt-3">
             {view.segments.length === 0 ? (
-              <p className="py-8 text-center text-xs text-[#4A5568]">Nothing to chart yet.</p>
+              <p className="dx-none">Nothing to chart yet.</p>
             ) : (
               view.segments.map((s) => <StackBar key={s.title} title={s.title} segments={s.segments} />)
             )}
           </div>
         </Panel>
-        <Panel title="Recent activity" icon={<AlertTriangle size={15} />} href="/notifications" hrefLabel="Open inbox">
+        <Panel title="Recent activity" icon={<AlertTriangle size={15} />} tone="ochre" href="/notifications" hrefLabel="Open inbox" style={{ animationDelay: '380ms' }}>
           <Timeline items={view.timeline} empty="No exceptions or escalations right now" />
         </Panel>
       </div>

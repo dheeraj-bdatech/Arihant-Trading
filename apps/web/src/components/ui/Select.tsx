@@ -228,7 +228,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
             htmlFor={selectId}
             className="block text-xs font-semibold text-[#14213D] mb-1.5"
           >
-            {label}
+            {required && typeof label === 'string' ? label.replace(/\s*\*\s*$/, '') : label}
             {required && <span className="text-red-500 ml-0.5">*</span>}
           </label>
         )}
@@ -297,7 +297,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         {isOpen && (
           <div
             className={twMerge(
-              'mt-select-panel absolute z-50 left-0 right-0 w-full min-w-[200px] rounded-[10px] border border-[#DCD8CE] bg-white shadow-xl animate-in fade-in-50 zoom-in-95 duration-100 overflow-hidden',
+              'select-panel absolute z-50 left-0 right-0 w-full min-w-[200px] rounded-[10px] border border-[#DCD8CE] bg-white shadow-xl animate-in fade-in-50 zoom-in-95 duration-100 overflow-hidden',
               dropUp ? 'bottom-full mb-1' : 'top-full mt-1',
             )}
           >

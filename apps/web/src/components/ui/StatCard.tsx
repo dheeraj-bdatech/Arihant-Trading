@@ -51,7 +51,7 @@ export const StatCard: React.FC<StatCardProps> = ({
   return (
     <div
       className={twMerge(
-        'tilt-3d glare edge kpi-tile',
+        'ui-stat',
         'p-3 sm:p-4 bg-white border border-[#DCD8CE] rounded-[14px] shadow-2xs hover:border-[#0F5E63] transition-all duration-150 flex flex-col justify-between relative overflow-hidden',
         className,
       )}

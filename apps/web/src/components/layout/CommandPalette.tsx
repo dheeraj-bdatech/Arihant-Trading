@@ -224,7 +224,7 @@ export const CommandPalette: React.FC<{
         onClick={onClose}
       />
 
-      <div className="mt-popup relative w-full max-w-xl rounded-2xl bg-white border border-[#DCD8CE] shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150">
+      <div className="app-popup relative w-full max-w-xl rounded-2xl bg-white border border-[#DCD8CE] shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150">
         {/* Search Input */}
         <div className="flex items-center px-4 py-3.5 border-b border-[#ECE9E2] bg-[#FBFAF7]">
           <Search className="h-5 w-5 text-[#0F5E63] mr-3 shrink-0" />

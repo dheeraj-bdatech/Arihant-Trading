@@ -1,5 +1,6 @@
 'use client';
 
+import { BrandMark } from '@/components/layout/BrandMark';
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -831,23 +832,21 @@ export const Sidebar: React.FC = () => {
   const renderNavContent = (isCompact: boolean, onNavigate?: () => void) => (
     <nav className={`overflow-y-auto overflow-x-hidden custom-scrollbar flex-1 min-h-0 ${isCompact ? 'pl-0 pr-0 py-3 space-y-0' : 'px-3 py-3 space-y-3'}`}>
       {!isCompact && user && (
-        <div className="mt-clearance relative overflow-hidden rounded-[14px] border-[1.5px] border-[#D9B98A] bg-gradient-to-br from-[#FFF6E6] to-[#FBE9D0] p-3 select-none">
-          <span aria-hidden className="absolute -right-3 -top-3 h-14 w-14 rotate-45 border-2 border-dashed border-[#C98A1B]/40" />
-          <span className="text-[10px] tracking-[0.12em] text-[#9A3412] uppercase font-bold">Active clearance</span>
-          <div className="text-[#14213D] text-[13px] font-bold leading-snug mt-0.5">{roleProfile?.title || role.replace('_', ' ')}</div>
-          <div className="text-[11px] text-[#4A5568] truncate">{(user as any)?.territory || roleProfile?.territorialScope || 'All India Operations'}</div>
+        <div className="md-rolecard select-none">
+          <span className="md-rolecard__label">Active clearance</span>
+          <div className="md-rolecard__title">{roleProfile?.title || role.replace('_', ' ')}</div>
+          <div className="md-rolecard__sub truncate capitalize">{String((user as any)?.territory || roleProfile?.territorialScope || 'All India Operations').replace(/_/g, ' ')}</div>
         </div>
       )}
 
       {!isCompact && (
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#9A3412]" />
+        <div className="md-search">
+          <Search aria-hidden />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Find a module…"
             aria-label="Find a module"
-            className="h-9 w-full rounded-xl border-[1.5px] border-[#E8D5B5] bg-[#FFFCF5] pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#9A3412] focus:outline-none"
           />
         </div>
       )}
@@ -857,15 +856,14 @@ export const Sidebar: React.FC = () => {
         return (
           <div key={group.title} className={isCompact ? '' : 'space-y-1'}>
             {isCompact ? (
-              gIdx > 0 && <div className="my-2 ml-[10px] w-10 border-t border-dashed border-[#D9B98A]" />
+              gIdx > 0 && <div className="md-rail-divider" />
             ) : (
               <button
                 type="button"
                 onClick={() => toggleGroup(group.title)}
                 aria-expanded={!closed}
-                className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-[10px] font-bold uppercase tracking-[0.06em] text-[#8A6A3B] hover:text-[#9A3412] transition-colors"
+                className="md-navgroup"
               >
-                <span aria-hidden className="h-1.5 w-1.5 rotate-45 bg-[#C98A1B]" />
                 <span className="flex-1 truncate">{group.title}</span>
                 <ChevronDown className={`h-3.5 w-3.5 transition-transform ${closed ? '-rotate-90' : ''}`} />
               </button>
@@ -887,14 +885,11 @@ export const Sidebar: React.FC = () => {
                         setTip({ label: item.label, top: r.top + r.height / 2, badge: item.badge });
                       }}
                       onMouseLeave={() => setTip(null)}
-                      className={`relative w-10 h-10 ml-[10px] my-1.5 flex items-center justify-center rounded-[10px] border-[1.5px] transition-all cursor-pointer group ${
-                        isActive
-                          ? 'bg-[#9A3412] border-[#9A3412] shadow-[2px_2px_0_rgba(154,52,18,0.22)]'
-                          : 'bg-[#FFFCF5] border-[#E8D5B5] hover:bg-[#FBE9D0] hover:border-[#9A3412] hover:shadow-[2px_2px_0_rgba(154,52,18,0.14)]'
-                      }`}
+                      data-active={isActive || undefined}
+                      className="md-rail-item relative my-1.5 ml-2 flex h-9 w-14 cursor-pointer items-center justify-center"
                     >
-                      <Icon className={`w-[18px] h-[18px] transition-transform group-hover:scale-110 ${isActive ? 'text-[#FFFCF5]' : 'text-[#9A3412]'}`} />
-                      {item.badge && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#C98A1B] ring-2 ring-[#FFFCF5]" />}
+                      <Icon className="h-[22px] w-[22px]" />
+                      {item.badge && <span className="md-rail-badge" aria-hidden />}
                     </Link>
                   );
                 }
@@ -904,29 +899,12 @@ export const Sidebar: React.FC = () => {
                     key={item.href + item.label}
                     href={item.href}
                     onClick={onNavigate}
-                    className={`group flex items-center gap-3 rounded-xl border-[1.5px] px-2 py-1.5 min-w-0 max-w-full transition-all ${
-                      isActive
-                        ? 'bg-[#FBE9D0] border-[#D9B98A] shadow-[2px_2px_0_rgba(154,52,18,0.12)]'
-                        : 'border-transparent hover:bg-[#FFF6E6] hover:border-[#EBD9B8]'
-                    }`}
+                    data-active={isActive || undefined}
+                    className="md-nav-item min-w-0 max-w-full"
                   >
-                    <span
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${
-                        isActive
-                          ? 'bg-[#9A3412] border-[#9A3412] text-[#FFFCF5]'
-                          : 'bg-[#FFFCF5] border-[#E8D5B5] text-[#9A3412] group-hover:border-[#9A3412]'
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className={`block truncate text-[13px] leading-tight ${isActive ? 'font-bold text-[#14213D]' : 'font-medium text-[#4A5568] group-hover:text-[#14213D]'}`}>
-                        {item.label}
-                      </span>
-                      {item.badge && (
-                        <span className="block truncate font-mono text-[10px] font-semibold leading-tight text-[#9A3412]">{item.badge}</span>
-                      )}
-                    </span>
+                    <Icon className="md-nav-item__icon" />
+                    <span className="md-nav-item__label">{item.label}</span>
+                    {item.badge && <span className="md-nav-item__badge">{item.badge}</span>}
                   </Link>
                 );
               })}
@@ -953,12 +931,12 @@ export const Sidebar: React.FC = () => {
         <div className="flex flex-col flex-1 min-h-0">
           {/* Header with Open/Close Buttons */}
           {isCollapsed ? (
-            <div className="h-[64px] pl-[10px] border-b border-[#DCD8CE] flex items-center bg-white shrink-0">
+            <div className="md-side-head h-[64px] pl-2 flex items-center shrink-0">
               {/* OPEN BUTTON IN SIDEBAR */}
               <button
                 type="button"
                 onClick={toggleCollapse}
-                className="h-10 w-10 rounded-[8px] bg-white hover:bg-[#F6F5F1] border border-[#DCD8CE] text-[#4A5568] hover:text-[#0F5E63] flex items-center justify-center transition-all cursor-pointer group"
+                className="md-icon-btn h-10 w-10 flex items-center justify-center cursor-pointer"
                 title="Open sidebar (Expand) [Ctrl+B]"
                 aria-label="Open sidebar"
               >
@@ -966,15 +944,15 @@ export const Sidebar: React.FC = () => {
               </button>
             </div>
           ) : (
-            <div className="h-[64px] px-4 border-b border-[#DCD8CE] flex items-center justify-between bg-white shrink-0">
+            <div className="md-side-head h-[64px] px-4 flex items-center justify-between shrink-0">
               <div className="flex items-center space-x-2.5 min-w-0">
-                <div className="mt-logo h-9 w-9 rounded-[10px] bg-gradient-to-br from-[#9A3412] to-[#7C2D12] flex items-center justify-center text-white shadow-xs shrink-0">
-                  <img src="/mithila/lotus.svg" alt="" className="h-7 w-7" />
+                <div className="app-logo h-9 w-9 flex items-center justify-center shrink-0">
+                  <BrandMark className="h-6 w-6" />
                 </div>
                 <div className="min-w-0">
-                  <div className="font-serif font-bold text-[#14213D] text-sm tracking-tight flex items-center gap-1.5">
-                    <span>ARIHANT</span>
-                    <span className="mt-bos-pill font-sans font-bold text-[10px] px-1.5 py-0.5 rounded bg-[#FBEBDD] text-[#9A3412]">
+                  <div className="font-display font-semibold text-[#14213D] text-[15px] tracking-tight flex items-center gap-1.5">
+                    <span>Arihant</span>
+                    <span className="app-pill font-sans font-bold text-[10px] px-1.5 py-0.5 rounded-md bg-[#FBEBDD] text-[#9A3412]">
                       BOS
                     </span>
                   </div>
@@ -986,7 +964,7 @@ export const Sidebar: React.FC = () => {
                 <button
                   type="button"
                   onClick={toggleCollapse}
-                  className="p-1.5 rounded-[8px] text-[#6B7280] hover:text-[#14213D] hover:bg-[#F6F5F1] border border-transparent transition-all cursor-pointer shrink-0 ml-1 group"
+                  className="md-icon-btn p-2 cursor-pointer shrink-0 ml-1"
                   title="Close sidebar (Collapse) [Ctrl+B]"
                   aria-label="Close sidebar"
                 >
@@ -1002,10 +980,10 @@ export const Sidebar: React.FC = () => {
 
         {/* Footer / Status / Logout */}
         {isCollapsed ? (
-          <div className="py-3 border-t border-[#DCD8CE] bg-white flex flex-col items-start space-y-2 shrink-0">
+          <div className="md-side-foot py-3 flex flex-col items-start space-y-2 shrink-0">
             {user && (
               <div
-                className="h-10 w-10 ml-[10px] rounded-[10px] bg-[#9A3412] text-white flex items-center justify-center text-xs font-bold shrink-0 cursor-default"
+                className="md-avatar h-10 w-10 ml-3 flex items-center justify-center text-sm font-semibold shrink-0 cursor-default"
                 title={`${user.full_name} (${user.role.replace('_', ' ')})`}
               >
                 {user.full_name ? user.full_name[0].toUpperCase() : 'U'}
@@ -1015,27 +993,27 @@ export const Sidebar: React.FC = () => {
               onClick={logout}
               title="Sign Out"
               aria-label="Sign Out"
-              className="h-10 w-10 ml-[10px] flex items-center justify-center rounded-[10px] text-[#9A3412] bg-[#FFFCF5] hover:bg-[#FBE9D0] border border-[#E8D5B5] transition-colors cursor-pointer"
+              className="md-icon-btn h-10 w-10 ml-3 flex items-center justify-center cursor-pointer"
             >
-              <LogOut className="h-3.5 w-3.5" />
+              <LogOut className="h-4 w-4" />
             </button>
           </div>
         ) : (
-          <div className="p-3 border-t border-[#E8D5B5] bg-[#FFFCF5] shrink-0">
+          <div className="md-side-foot p-3 shrink-0">
             {user && (
-              <div className="flex items-center gap-2.5 rounded-xl border-[1.5px] border-[#E8D5B5] bg-white p-2">
-                <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-[#9A3412] to-[#7C2D12] text-white flex items-center justify-center text-sm font-bold shrink-0">
+              <div className="md-userrow flex items-center gap-3 p-2">
+                <div className="md-avatar h-10 w-10 flex items-center justify-center text-sm font-semibold shrink-0">
                   {user.full_name ? user.full_name[0].toUpperCase() : 'U'}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-bold text-[#14213D] truncate">{user.full_name}</div>
-                  <div className="text-[9px] text-[#8A6A3B] font-bold uppercase tracking-wider truncate">{user.role.replace('_', ' ')}</div>
+                  <div className="text-[13px] font-semibold text-[#14213D] truncate">{user.full_name}</div>
+                  <div className="text-[11px] text-[#4A5568] capitalize truncate">{user.role.replace('_', ' ')}</div>
                 </div>
                 <button
                   onClick={logout}
                   title="Sign Out"
                   aria-label="Sign Out"
-                  className="h-8 w-8 shrink-0 flex items-center justify-center rounded-lg text-[#9A3412] hover:bg-[#FBE9D0] border border-transparent hover:border-[#D9B98A] transition-colors cursor-pointer"
+                  className="md-icon-btn h-10 w-10 shrink-0 flex items-center justify-center cursor-pointer"
                 >
                   <LogOut className="h-4 w-4" />
                 </button>
@@ -1047,11 +1025,11 @@ export const Sidebar: React.FC = () => {
       {isCollapsed && tip && (
         <div
           role="tooltip"
-          className="pointer-events-none fixed z-[130] -translate-y-1/2 rounded-lg border-[1.5px] border-[#9A3412] bg-[#FFFCF5] px-3 py-1.5 text-xs font-semibold text-[#14213D] shadow-[3px_3px_0_rgba(154,52,18,0.18)] animate-in fade-in slide-in-from-left-1 duration-100"
+          className="md-tooltip pointer-events-none fixed z-[130] -translate-y-1/2 animate-in fade-in slide-in-from-left-1 duration-100"
           style={{ left: 82, top: tip.top }}
         >
           {tip.label}
-          {tip.badge && <span className="ml-2 rounded-full bg-[#FBEBDD] px-1.5 py-0.5 font-mono text-[10px] text-[#9A3412]">{tip.badge}</span>}
+          {tip.badge && <span className="ml-2 font-mono text-[10px] opacity-80">{tip.badge}</span>}
         </div>
       )}
 
@@ -1062,23 +1040,23 @@ export const Sidebar: React.FC = () => {
         <div className="fixed inset-0 z-50 lg:hidden">
           {/* Backdrop */}
           <div
-            className="fixed inset-0 bg-[#2B1A12]/45 backdrop-blur-[3px] transition-opacity"
+            className="md-scrim fixed inset-0 transition-opacity"
             onClick={closeMobile}
           />
 
           {/* Drawer Panel */}
-          <aside className="fixed top-0 left-0 bottom-0 w-72 max-w-[85vw] bg-white z-50 shadow-2xl flex flex-col justify-between select-none text-[#4A5568] border-r border-[#DCD8CE] animate-in slide-in-from-left duration-200">
+          <aside className="md-drawer fixed top-0 left-0 bottom-0 w-72 max-w-[85vw] z-50 flex flex-col justify-between select-none text-[#4A5568] animate-in slide-in-from-left duration-200">
             <div className="flex flex-col flex-1 min-h-0">
               {/* Header with Close Button */}
-              <div className="h-[64px] px-4 border-b border-[#DCD8CE] flex items-center justify-between bg-white shrink-0">
+              <div className="md-side-head h-[64px] px-4 flex items-center justify-between shrink-0">
                 <div className="flex items-center space-x-2.5 min-w-0">
-                  <div className="mt-logo h-9 w-9 rounded-[10px] bg-gradient-to-br from-[#9A3412] to-[#7C2D12] flex items-center justify-center text-white shadow-xs shrink-0">
-                    <img src="/mithila/lotus.svg" alt="" className="h-7 w-7" />
+                  <div className="app-logo h-9 w-9 flex items-center justify-center shrink-0">
+                    <BrandMark className="h-6 w-6" />
                   </div>
                   <div className="min-w-0">
-                    <div className="font-serif font-bold text-[#14213D] text-sm tracking-tight flex items-center gap-1.5">
-                      <span>ARIHANT</span>
-                      <span className="mt-bos-pill font-sans font-bold text-[10px] px-1.5 py-0.5 rounded bg-[#FBEBDD] text-[#9A3412]">
+                    <div className="font-display font-semibold text-[#14213D] text-[15px] tracking-tight flex items-center gap-1.5">
+                      <span>Arihant</span>
+                      <span className="app-pill font-sans font-bold text-[10px] px-1.5 py-0.5 rounded-md bg-[#FBEBDD] text-[#9A3412]">
                         BOS
                       </span>
                     </div>
@@ -1089,7 +1067,7 @@ export const Sidebar: React.FC = () => {
                 <button
                   type="button"
                   onClick={closeMobile}
-                  className="p-1.5 rounded-[8px] text-[#6B7280] hover:text-[#14213D] hover:bg-[#F6F5F1] transition-colors cursor-pointer"
+                  className="md-icon-btn p-2 cursor-pointer"
                   title="Close sidebar drawer"
                   aria-label="Close sidebar drawer"
                 >
@@ -1102,15 +1080,15 @@ export const Sidebar: React.FC = () => {
             </div>
 
             {/* Mobile Footer */}
-            <div className="p-3 border-t border-[#DCD8CE] bg-white space-y-2 shrink-0">
+            <div className="md-side-foot p-3 space-y-2 shrink-0">
               {user && (
-                <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-[8px] bg-white border border-[#DCD8CE]">
-                  <div className="h-6 w-6 rounded-md bg-[#0F5E63] text-white flex items-center justify-center text-[11px] font-bold shrink-0">
+                <div className="md-userrow flex items-center gap-3 p-2">
+                  <div className="md-avatar h-10 w-10 flex items-center justify-center text-sm font-semibold shrink-0">
                     {user.full_name ? user.full_name[0].toUpperCase() : 'U'}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-bold text-[#14213D] truncate">{user.full_name}</div>
-                    <div className="text-[9px] text-[#6B7280] font-semibold uppercase tracking-wider truncate">
+                    <div className="text-[13px] font-semibold text-[#14213D] truncate">{user.full_name}</div>
+                    <div className="text-[11px] text-[#4A5568] capitalize truncate">
                       {user.role.replace('_', ' ')}
                     </div>
                   </div>
@@ -1122,7 +1100,7 @@ export const Sidebar: React.FC = () => {
                   closeMobile();
                   logout();
                 }}
-                className="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-[8px] text-xs font-semibold text-[#14213D] hover:text-[#9A3412] bg-white hover:bg-[#FBEBDD] border border-[#DCD8CE] hover:border-[#F2B872] transition-colors min-w-0 truncate cursor-pointer shadow-2xs"
+                className="md-btn-outlined w-full flex items-center justify-center space-x-2 px-3 min-w-0 truncate cursor-pointer"
               >
                 <LogOut className="h-3.5 w-3.5 shrink-0 text-[#4A5568]" />
                 <span className="truncate">Sign Out</span>
