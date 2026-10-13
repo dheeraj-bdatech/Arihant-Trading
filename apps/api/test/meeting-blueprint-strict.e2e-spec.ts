@@ -63,6 +63,8 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
     await db.deleteFrom('service_reports').execute();
     await db.deleteFrom('service_tickets').execute();
     await db.deleteFrom('expenses').execute();
+    // Module 9 claims keep a strict FK to their trip/visit; unlink them before this suite wipes visits and trips.
+    await db.updateTable('expense_claims').set({ trip_id: null, visit_id: null }).execute();
     await db.deleteFrom('visit_updates').execute();
     await db.deleteFrom('interactions').where('visit_id', 'is not', null).execute();
     await db.deleteFrom('visits').execute();
@@ -477,79 +479,88 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
   // MODULE 7: Expense 2-Stage Approval & Tally Excel/CSV Export (§35 – §37)
   // =========================================================================
   describe('7. Field Expense 2-Stage Approval & Tally Export (§35 – §37)', () => {
+    const claimVersion = async (token: string) =>
+      (await request(app.getHttpServer()).get(`/api/expense-claims/${expenseId}`).set('Authorization', `Bearer ${token}`)).body.version;
+
     it('submits a travel expense claim by sales executive', async () => {
-      const res = await request(app.getHttpServer())
-        .post('/api/expenses')
+      const draft = await request(app.getHttpServer())
+        .post('/api/expense-claims')
+        .set('Authorization', `Bearer ${salesToken}`)
+        .send({ title: 'Patna trip — Bihar Police visit' });
+      expect(draft.status).toBe(201);
+      expenseId = draft.body.id;
+      const cats = await request(app.getHttpServer()).get('/api/expense-categories').set('Authorization', `Bearer ${salesToken}`);
+      const item = await request(app.getHttpServer())
+        .post(`/api/expense-claims/${expenseId}/items`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          category: 'travel',
-          amount: 8500,
+          category_id: cats.body.find((c: any) => c.code === 'TRAVEL').id,
+          amount: '8500',
           purpose: 'Rajdhani Express train travel to Patna for Bihar Police visit',
-          expense_date: new Date().toISOString().split('T')[0],
-          organisation_id: orgId,
-          visit_id: visitId,
+          expense_date: new Date(Date.now() - 86400000).toISOString().split('T')[0],
+          customer_id: orgId,
+          category_details: { from: 'New Delhi', to: 'Patna', mode: 'train' },
+          confirm_not_duplicate: true,
         });
-      expect([200, 201]).toContain(res.status);
-      expenseId = res.body.id;
-      expect(expenseId).toBeDefined();
+      expect(item.status).toBe(201);
+      await request(app.getHttpServer())
+        .post(`/api/expense-items/${item.body.item.id}/attachments`)
+        .set('Authorization', `Bearer ${salesToken}`)
+        .attach('file', Buffer.from(`%PDF-1.4 rail ticket ${Date.now()}`), 'ticket.pdf');
+      const res = await request(app.getHttpServer())
+        .post(`/api/expense-claims/${expenseId}/submit`)
+        .set('Authorization', `Bearer ${salesToken}`)
+        .send({ version: await claimVersion(salesToken) });
+      expect(res.status).toBe(200);
       expect(res.body.status).toBe('submitted');
     });
 
     it('strictly blocks self-approval when submitter attempts Stage-1 signoff (403/400)', async () => {
       const res = await request(app.getHttpServer())
-        .patch(`/api/expenses/${expenseId}/manager-approve`)
+        .post(`/api/expense-claims/${expenseId}/manager-approve`)
         .set('Authorization', `Bearer ${salesToken}`)
-        .send({
-          decision: 'manager_approved',
-          manager_remarks: 'Self approval attempt.',
-        });
+        .send({ version: await claimVersion(salesToken), comment: 'Self approval attempt.' });
       expect([400, 403]).toContain(res.status);
     });
 
     it('allows Regional Manager to grant Stage-1 approval (§36)', async () => {
       const res = await request(app.getHttpServer())
-        .patch(`/api/expenses/${expenseId}/manager-approve`)
+        .post(`/api/expense-claims/${expenseId}/manager-approve`)
         .set('Authorization', `Bearer ${rmToken}`)
-        .send({
-          decision: 'manager_approved',
-          manager_remarks: 'Verified against Patna itinerary.',
-        });
+        .send({ version: await claimVersion(rmToken), comment: 'Verified against Patna itinerary.' });
       expect(res.status).toBe(200);
-      expect(res.body.status).toBe('manager_approved');
+      expect(res.body.status).toBe('accounts_review');
     });
 
     it('allows Corporate Accounts to process Stage-2 reimbursement (§36)', async () => {
       const res = await request(app.getHttpServer())
-        .patch(`/api/expenses/${expenseId}/accounts-process`)
+        .post(`/api/expense-claims/${expenseId}/process`)
         .set('Authorization', `Bearer ${accountsToken}`)
-        .send({
-          decision: 'accounts_processed',
-          remarks: 'Voucher settled via NEFT.',
-        });
+        .send({ version: await claimVersion(accountsToken), tally_voucher_ref: 'JV/PATNA/001', payment_reference: 'NEFT settled' });
       expect(res.status).toBe(200);
-      expect(res.body.status).toBe('accounts_processed');
+      expect(res.body.status).toBe('processed');
     });
 
     it('retrieves financial summary reporting for accounts & management (§37)', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/expenses/summary')
+        .get('/api/expense-reports/summary')
         .set('Authorization', `Bearer ${accountsToken}`);
       expect(res.status).toBe(200);
-      expect(res.body.metrics).toBeDefined();
-      expect(res.body.metrics.total_amount).toBeGreaterThanOrEqual(8500);
-      expect(res.body.category_breakdown).toBeDefined();
+      expect(res.body.totals.total_claimed).toBeGreaterThanOrEqual(8500);
+      expect(res.body.by_category).toBeDefined();
     });
 
     it('exports expenses spreadsheet in CSV format ready for Tally ERP import (§37)', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/expenses/export/csv')
+        .get(`/api/expense-reports/export?format=csv&claim_ids=${expenseId}`)
         .set('Authorization', `Bearer ${accountsToken}`);
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/csv');
-      expect(res.text).toContain('Expense ID');
-      expect(res.text).toContain('Amount (INR)');
-      expect(res.text).toContain('accounts_processed');
-      expect(res.text).toContain('8500.00');
+      expect(res.text).toContain('Claim No');
+      expect(res.text).toContain('Approved Amount');
+      expect(res.text).toContain('Processed');
+      expect(res.text).toContain('JV/PATNA/001');
+      expect(res.text).toContain('"8500"');
     });
   });
 

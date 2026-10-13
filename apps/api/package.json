@@ -13,7 +13,9 @@
     "seed:module5": "tsx ../../db/seed/seed_module5_proposals.ts",
     "migrate": "tsx ../../db/migrate.ts",
     "migrate:prod": "tsx ../../db/migrate.ts --prod",
-    "test:e2e": "jest --config test/jest-e2e.json --runInBand --forceExit"
+    "test:e2e": "jest --config test/jest-e2e.json --runInBand --forceExit",
+    "test:unit": "jest --config test/jest-unit.json",
+    "seed:module9": "tsx ../../db/seed/seed_module9_expenses.ts"
   },
   "dependencies": {
     "@arihant/shared": "workspace:*",
@@ -32,6 +34,7 @@
     "class-validator": "^0.14.1",
     "cloudinary": "^2.5.1",
     "dotenv": "^16.4.7",
+    "exceljs": "4.4.0",
     "jsonwebtoken": "^9.0.2",
     "kysely": "^0.27.6",
     "passport": "^0.7.0",

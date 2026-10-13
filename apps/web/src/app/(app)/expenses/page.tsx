@@ -1,677 +1,346 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
-import {
-  Receipt,
-  Plus,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  ShieldCheck,
-  Building,
-  Upload,
-  Calendar,
-  AlertCircle,
-  AlertTriangle,
-  FileText,
-  CreditCard,
-  ExternalLink,
-  MapPin,
-  Download,
-  Filter,
-  Coins,
-} from 'lucide-react';
-import { useAuth } from '@/lib/auth-context';
-import { api } from '@/lib/api';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { ChevronLeft, ChevronRight, FileSpreadsheet, Plus, Receipt, SlidersHorizontal, Upload, X } from 'lucide-react';
 import {
   Button,
-  Badge,
   Card,
-  Modal,
+  EmptyState,
+  InfoCallout,
   Input,
-  Select,
-  Tabs,
+  Modal,
   PageContainer,
   PageHeader,
-  EmptyState,
+  PageLoader,
+  Select,
   StatCard,
-  StatGrid, PageLoader, ToolbarBox, ToolbarSlot, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, RowMenu } from '@/components/ui';
-import { formatINR } from '@arihant/shared';
+  StatGrid,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui';
+import { api } from '@/lib/api';
+import { EXPENSE_CLAIM_STATUSES, EXPENSE_STATUS_LABELS } from '@arihant/shared';
+import { errorMessage, fieldErrors, notifyExpensesChanged, saveBlob, type ExpenseClaim, type Paged } from './_lib/expense-lib';
+import { DateText, ExpensesNav, Money, StatusBadge, useToaster } from './_lib/expense-ui';
+import { useUrlFilters } from './_lib/use-url-filters';
 
-export default function ExpensesPage() {
-  const { user, hasRole } = useAuth();
-  const searchParams = useSearchParams();
-  const visitIdParam = searchParams.get('visit_id');
+const FILTER_KEYS = ['statuses', 'date_from', 'date_to', 'trip_id', 'search', 'page'] as const;
 
-  const [expenses, setExpenses] = useState<any[]>([]);
-  const [summary, setSummary] = useState<any | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isExporting, setIsExporting] = useState(false);
-  const [activeTab, setActiveTab] = useState('all');
-  const [categoryFilter, setCategoryFilter] = useState('all');
-  const [searchQuery, setSearchQuery] = useState('');
+function MyExpenses() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const { values, set, clear, activeCount } = useUrlFilters(FILTER_KEYS);
+  const [result, setResult] = useState<Paged<ExpenseClaim> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [trips, setTrips] = useState<{ id: string; trip_date: string; base_location: string }[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const { push, Toaster } = useToaster();
 
+  // Legacy deep link from the visit planner: /expenses?visit_id=… → start a claim for that visit.
+  useEffect(() => {
+    const visitId = params.get('visit_id');
+    if (visitId) router.replace(`/expenses/new?visit_id=${visitId}`);
+  }, [params, router]);
 
-  // Modals
-  const [isSubmitOpen, setIsSubmitOpen] = useState(false);
-  const [isManagerModalOpen, setIsManagerModalOpen] = useState(false);
-  const [isAccountsModalOpen, setIsAccountsModalOpen] = useState(false);
-  const [selectedExpense, setSelectedExpense] = useState<any | null>(null);
-
-  // Manager Approval Form
-  const [managerAction, setManagerAction] = useState<'manager_approved' | 'rejected'>('manager_approved');
-  const [managerRemarks, setManagerRemarks] = useState('');
-
-  // Accounts Process Form
-  const [accountsAction, setAccountsAction] = useState<'accounts_processed' | 'rejected'>('accounts_processed');
-  const [accountsRemarks, setAccountsRemarks] = useState('');
-
-  // Submit Expense Form
-  const [newExpense, setNewExpense] = useState({
-    category: 'travel',
-    amount: '',
-    purpose: '',
-    expense_date: new Date().toISOString().split('T')[0],
-    receipt_url: '',
-    visit_id: visitIdParam || '',
-  });
-
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-
-  const [availableVisits, setAvailableVisits] = useState<any[]>([]);
-
-  const fetchExpenses = async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
-      setIsLoading(true);
-      const [res, summaryRes] = await Promise.all([
-        api.get('/expenses', {
-          status: activeTab !== 'all' ? activeTab : undefined,
-          category: categoryFilter !== 'all' ? categoryFilter : undefined,
-          search: searchQuery || undefined,
-          limit: 50,
-        }),
-        api
-          .get('/expenses/summary', {
-            category: categoryFilter !== 'all' ? categoryFilter : undefined,
-          })
-          .catch(() => null),
-      ]);
-      setExpenses(res.data || []);
-      if (summaryRes) setSummary(summaryRes);
-    } catch (err) {
-      console.error('Failed to load expenses:', err);
+      setResult(await api.get<Paged<ExpenseClaim>>('/expense-claims', { mine: true, page_size: 20, ...values }));
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  };
-
-  const handleExportCsv = async () => {
-    try {
-      setIsExporting(true);
-      const csvData = await api.get<string>('/expenses/export/csv', {
-        status: activeTab !== 'all' ? activeTab : undefined,
-        category: categoryFilter !== 'all' ? categoryFilter : undefined,
-      });
-      const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute(
-        'download',
-        `arihant-expenses-${new Date().toISOString().split('T')[0]}.csv`,
-      );
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (err) {
-      console.error('Failed to export expenses for Tally:', err);
-    } finally {
-      setIsExporting(false);
-    }
-  };
+  }, [values]);
 
   useEffect(() => {
-    fetchExpenses();
-  }, [activeTab, categoryFilter]);
+    load();
+  }, [load]);
 
   useEffect(() => {
-    api
-      .get('/visits', { limit: 50 })
-      .then((res) => setAvailableVisits(res.data || []))
-      .catch(() => {});
+    api.get('/expense-claims/linkable').then((r: any) => setTrips(r.trips || [])).catch(() => setTrips([]));
   }, []);
 
-  const handleSubmitExpense = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setActionError(null);
-    setIsSubmitting(true);
+  const totals = result?.totals;
+  const page = Number(values.page || 1);
 
+  return (
+    <PageContainer>
+      <PageHeader
+        title="My Expenses"
+        icon={<Receipt className="h-5 w-5" />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" leftIcon={<Upload className="h-4 w-4" />} onClick={() => setImportOpen(true)}>
+              <span className="hidden sm:inline">Import Excel</span>
+            </Button>
+            <Link href="/expenses/new">
+              <Button size="sm" leftIcon={<Plus className="h-4 w-4" />}>
+                New Expense Claim
+              </Button>
+            </Link>
+          </div>
+        }
+      />
+      <ExpensesNav />
+
+      <StatGrid cols={4}>
+        <StatCard label="Claims (filtered)" value={String(totals?.count ?? 0)} subtext="Matching the filters below" icon={<Receipt className="h-5 w-5 text-[#0F5E63]" />} />
+        <StatCard label="Total claimed" value={formatShort(totals?.total_claimed)} subtext="Sum of claim totals" variant="primary" />
+        <StatCard label="Total approved" value={formatShort(totals?.total_approved)} subtext="After manager / Accounts review" variant="emerald" />
+        <StatCard label="Needs your action" value={String(result?.data.filter((c) => c.status === 'clarification_required' || c.status === 'draft').length ?? 0)} subtext="Drafts & clarifications on this page" variant="amber" />
+      </StatGrid>
+
+      <Button className="md:hidden" variant="secondary" fullWidth leftIcon={<SlidersHorizontal className="h-4 w-4" />} onClick={() => setFiltersOpen((o) => !o)}>
+        {filtersOpen ? 'Hide filters' : `Filters${activeCount ? ` (${activeCount})` : ''}`}
+      </Button>
+      <Card className={`p-3.5 overflow-visible ${filtersOpen ? '' : 'hidden md:block'}`}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+          <Input label="Search" placeholder="Claim no. or title" defaultValue={values.search} onKeyDown={(e) => e.key === 'Enter' && set({ search: (e.target as HTMLInputElement).value })} onBlur={(e) => e.target.value !== values.search && set({ search: e.target.value })} />
+          <Select
+            label="Status"
+            value={values.statuses}
+            onChange={(e) => set({ statuses: e.target.value })}
+            options={[{ value: '', label: 'All statuses' }, ...EXPENSE_CLAIM_STATUSES.filter((s) => s !== 'manager_approved').map((s) => ({ value: s, label: EXPENSE_STATUS_LABELS[s] }))]}
+          />
+          <Input label="Expense date from" type="date" value={values.date_from} onChange={(e) => set({ date_from: e.target.value })} />
+          <Input label="Expense date to" type="date" value={values.date_to} min={values.date_from || undefined} onChange={(e) => set({ date_to: e.target.value })} />
+          <Select
+            label="Trip"
+            value={values.trip_id}
+            onChange={(e) => set({ trip_id: e.target.value })}
+            options={[{ value: '', label: 'Any trip' }, ...trips.map((t) => ({ value: t.id, label: `${t.trip_date.split('-').reverse().join('-')} · ${t.base_location}` }))]}
+          />
+        </div>
+        {activeCount > 0 && (
+          <div className="mt-3 flex justify-end">
+            <Button size="xs" variant="ghost" leftIcon={<X className="h-3 w-3" />} onClick={clear}>
+              Clear filters
+            </Button>
+          </div>
+        )}
+      </Card>
+
+      {error && <InfoCallout variant="danger" title="Could not load claims">{error}</InfoCallout>}
+
+      {loading && !result ? (
+        <PageLoader rows={5} />
+      ) : result && result.data.length === 0 ? (
+        <EmptyState
+          icon={Receipt}
+          title={activeCount ? 'No claims match these filters' : 'No expense claims yet'}
+          description={activeCount ? 'Try widening the date range or clearing filters.' : 'Raise one claim per trip or visit. Add each expense line, attach receipts and submit for approval.'}
+          action={
+            activeCount ? (
+              <Button variant="secondary" onClick={clear}>Clear filters</Button>
+            ) : (
+              <Link href="/expenses/new"><Button leftIcon={<Plus className="h-4 w-4" />}>New Expense Claim</Button></Link>
+            )
+          }
+        />
+      ) : (
+        result && (
+          <>
+            {/* Desktop table */}
+            <Card className="hidden md:block overflow-hidden p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Claim No</TableHead>
+                    <TableHead>Title</TableHead>
+                    <TableHead>Trip</TableHead>
+                    <TableHead>Period</TableHead>
+                    <TableHead className="text-right">Claimed</TableHead>
+                    <TableHead className="text-right">Approved</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Updated</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {result.data.map((c) => (
+                    <TableRow key={c.id} className="cursor-pointer" onClick={() => router.push(`/expenses/${c.id}`)}>
+                      <TableCell className="font-mono text-xs font-semibold text-[#0F5E63]">{c.claim_number}</TableCell>
+                      <TableCell className="max-w-[240px]">
+                        <div className="truncate font-medium text-[#14213D]">{c.title}</div>
+                        <div className="text-[11px] text-[#4A5568]">{c.item_count ?? 0} line(s)</div>
+                      </TableCell>
+                      <TableCell className="text-xs">{c.trip_id ? `${(c.trip_date || '').split('-').reverse().join('-')} ${c.trip_location || ''}` : '—'}</TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">
+                        {c.period_from ? <><DateText value={c.period_from} /> – <DateText value={c.period_to} /></> : '—'}
+                      </TableCell>
+                      <TableCell className="text-right"><Money value={c.total_claimed} /></TableCell>
+                      <TableCell className="text-right"><Money value={c.total_approved} /></TableCell>
+                      <TableCell><StatusBadge status={c.status} /></TableCell>
+                      <TableCell className="text-xs"><DateText value={c.updated_at} /></TableCell>
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        {c.allowed_actions.includes('edit') ? (
+                          <Link href={`/expenses/${c.id}/edit`}><Button size="xs" variant="secondary">{c.status === 'clarification_required' ? 'Respond' : 'Edit'}</Button></Link>
+                        ) : (
+                          <Link href={`/expenses/${c.id}`}><Button size="xs" variant="ghost">View</Button></Link>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Card>
+
+            {/* Mobile cards */}
+            <div className="md:hidden space-y-3">
+              {result.data.map((c) => (
+                <Link key={c.id} href={c.allowed_actions.includes('edit') ? `/expenses/${c.id}/edit` : `/expenses/${c.id}`} className="block">
+                  <Card className="p-4 space-y-2 active:scale-[0.99] transition-transform">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-mono text-xs font-semibold text-[#0F5E63]">{c.claim_number}</div>
+                        <div className="font-medium text-[#14213D] truncate">{c.title}</div>
+                      </div>
+                      <StatusBadge status={c.status} />
+                    </div>
+                    <div className="flex items-end justify-between text-xs text-[#4A5568]">
+                      <span>{c.period_from ? <><DateText value={c.period_from} /> – <DateText value={c.period_to} /></> : `${c.item_count ?? 0} line(s)`}</span>
+                      <Money value={c.total_claimed} className="text-sm font-semibold text-[#14213D]" />
+                    </div>
+                    {c.status === 'clarification_required' && c.last_reviewer_comment && (
+                      <p className="text-xs text-[#9A3412] bg-[#FBEBDD] rounded-lg px-2 py-1.5">“{c.last_reviewer_comment}”</p>
+                    )}
+                  </Card>
+                </Link>
+              ))}
+            </div>
+
+            {result.totalPages > 1 && (
+              <div className="flex items-center justify-between text-xs text-[#4A5568]">
+                <span>Page {page} of {result.totalPages} · {result.total} claims</span>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => set({ page: String(page - 1) }, { resetPage: false })} leftIcon={<ChevronLeft className="h-4 w-4" />}>Prev</Button>
+                  <Button size="sm" variant="secondary" disabled={page >= result.totalPages} onClick={() => set({ page: String(page + 1) }, { resetPage: false })} rightIcon={<ChevronRight className="h-4 w-4" />}>Next</Button>
+                </div>
+              </div>
+            )}
+          </>
+        )
+      )}
+
+      <ImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(id) => {
+          setImportOpen(false);
+          notifyExpensesChanged();
+          push('success', 'Imported as a draft. Attach receipts and submit when ready.');
+          router.push(`/expenses/${id}/edit`);
+        }}
+      />
+      <Toaster />
+    </PageContainer>
+  );
+}
+
+function formatShort(v: number | undefined) {
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2 }).format(v || 0).replace(/^₹\s?/, '₹');
+}
+
+const ImportModal: React.FC<{ open: boolean; onClose: () => void; onImported: (id: string) => void }> = ({ open, onClose, onImported }) => {
+  const [title, setTitle] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [rowErrors, setRowErrors] = useState<{ row: number; field: string; message: string }[]>([]);
+  const [message, setMessage] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setTitle('');
+      setFile(null);
+      setErrors({});
+      setRowErrors([]);
+      setMessage(null);
+    }
+  }, [open]);
+
+  const downloadTemplate = async () => {
     try {
-      await api.post('/expenses', {
-        category: newExpense.category,
-        amount: Number(newExpense.amount),
-        purpose: newExpense.purpose,
-        expense_date: newExpense.expense_date,
-        receipt_url: newExpense.receipt_url || undefined,
-        visit_id: newExpense.visit_id || undefined,
-      });
-
-      setIsSubmitOpen(false);
-      setNewExpense({
-        category: 'travel',
-        amount: '',
-        purpose: '',
-        expense_date: new Date().toISOString().split('T')[0],
-        receipt_url: '',
-        visit_id: '',
-      });
-      await fetchExpenses();
-    } catch (err: any) {
-      setActionError(err.message || 'Failed to submit expense claim.');
-    } finally {
-      setIsSubmitting(false);
+      const { blob } = await api.blob('/expense-claims/import/template');
+      saveBlob(blob, 'arihant-expense-template.xlsx');
+    } catch (e) {
+      setMessage(errorMessage(e));
     }
   };
 
-  const handleManagerApproveSubmit = async (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedExpense) return;
-    setActionError(null);
-    setIsSubmitting(true);
-
+    const errs: Record<string, string> = {};
+    if (!title.trim()) errs.title = 'Give the claim a title.';
+    if (!file) errs.file = 'Choose the filled-in template.';
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+    setBusy(true);
+    setRowErrors([]);
+    setMessage(null);
     try {
-      await api.patch(`/expenses/${selectedExpense.id}/manager-approve`, {
-        decision: managerAction,
-        manager_remarks: managerRemarks,
-      });
-
-      setIsManagerModalOpen(false);
-      setManagerRemarks('');
-      await fetchExpenses();
+      const form = new FormData();
+      form.append('title', title.trim());
+      form.append('file', file!);
+      const claim = await api.upload<ExpenseClaim>('/expense-claims/import', form);
+      onImported(claim.id);
     } catch (err: any) {
-      setActionError(err.message || 'Approval action failed.');
+      setErrors(fieldErrors(err));
+      setRowErrors(err?.data?.row_errors || []);
+      setMessage(errorMessage(err));
     } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleAccountsProcessSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedExpense) return;
-    setActionError(null);
-    setIsSubmitting(true);
-
-    try {
-      await api.patch(`/expenses/${selectedExpense.id}/accounts-process`, {
-        decision: accountsAction,
-        remarks: accountsRemarks,
-      });
-
-      setIsAccountsModalOpen(false);
-      setAccountsRemarks('');
-      await fetchExpenses();
-    } catch (err: any) {
-      setActionError(err.message || 'Accounts processing failed.');
-    } finally {
-      setIsSubmitting(false);
+      setBusy(false);
     }
   };
 
   return (
-    <PageContainer>
-      {/* Top Header */}
-      <PageHeader
-        title="Two-Stage Expense Reimbursements"
-        icon={<Receipt className="h-5 w-5 text-[#0F5E63]" />}
-        actions={
-          <div className="flex items-center gap-2.5">
-            <Button
-              onClick={handleExportCsv}
-              variant="outline"
-              disabled={isExporting}
-              className="border-[#DCD8CE] hover:border-[#0F5E63] text-[#14213D] shadow-xs"
-            >
-              <Download className="h-4 w-4 mr-1.5 text-[#0F5E63]" />
-              <span>{isExporting ? 'Exporting...' : 'Export for Tally (CSV)'}</span>
-            </Button>
-            <Button
-              onClick={() => setIsSubmitOpen(true)}
-              variant="primary"
-              className="shadow-xs"
-            >
-              <Plus className="h-4 w-4 mr-1.5" />
-              <span>Submit Reimbursement</span>
-            </Button>
-          </div>
-        }
-      />
-
-      {/* Financial Summary HUD */}
-      <StatGrid cols={4}>
-        <StatCard
-          label="Total Claims Submitted"
-          value={formatINR(summary?.metrics?.total_amount || 0)}
-          subtext={`${summary?.metrics?.total_count || 0} claims in system`}
-          icon={<Coins className="h-5 w-5 text-[#0F5E63]" />}
-        />
-        <StatCard
-          label="Stage 1: Awaiting RM"
-          value={formatINR(summary?.metrics?.pending_manager_amount || 0)}
-          subtext="Pending field manager review"
-          icon={<Clock className="h-5 w-5 text-[#9A3412]" />}
-          variant="amber"
-        />
-        <StatCard
-          label="Stage 2: In Accounts"
-          value={formatINR(summary?.metrics?.pending_accounts_amount || 0)}
-          subtext="Ready for finance clearance"
-          icon={<ShieldCheck className="h-5 w-5 text-[#0F5E63]" />}
-          variant="emerald"
-        />
-        <StatCard
-          label="Settled & Reconciled"
-          value={formatINR(summary?.metrics?.approved_amount || 0)}
-          subtext="Processed into Tally accounts"
-          icon={<CheckCircle2 className="h-5 w-5 text-[#0F5E63]" />}
-          variant="primary"
-        />
-      </StatGrid>
-
-      {/* Category & Search Filter Bar */}
-      <ToolbarBox>
-      <ToolbarSlot><div className="flex flex-col sm:flex-row gap-3 items-center justify-between p-3.5 bg-white border border-[#DCD8CE] rounded-[14px]">
-        <div className="flex-1 w-full sm:w-auto">
-          <Input
-            placeholder="Search claims by purpose, employee, or customer..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') fetchExpenses();
-            }}
-            className="w-full"
-          />
-        </div>
-        <div className="flex items-center gap-2.5 w-full sm:w-auto">
-          <Select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="w-full sm:w-48 text-xs font-semibold"
-          >
-            <option value="all">All Categories</option>
-            <option value="travel">Travel (Train/Flight/Bus)</option>
-            <option value="hotel">Hotel & Lodging</option>
-            <option value="local_conveyance">Local Conveyance (Auto/Taxi)</option>
-            <option value="food">Food & Daily Allowance</option>
-            <option value="demo">Demo Freight / Unit Transit</option>
-            <option value="service">Service Spares & Tools</option>
-            <option value="other">Other Out-of-Pocket</option>
-          </Select>
-          <Button
-            onClick={() => fetchExpenses()}
-            variant="secondary"
-            size="sm"
-            className="whitespace-nowrap"
-          >
-            <Filter className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-            Apply Filter
+    <Modal isOpen={open} onClose={onClose} title="Import expenses from Excel" description="Use the standard template. The import creates a draft — nothing is submitted automatically." maxWidth="lg">
+      <form onSubmit={submit} className="space-y-4">
+        <Button type="button" variant="secondary" size="sm" leftIcon={<FileSpreadsheet className="h-4 w-4" />} onClick={downloadTemplate}>
+          Download standard template
+        </Button>
+        <Input label="Claim title *" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} placeholder="e.g. Lucknow trip, 3–5 Oct" error={errors.title} />
+        <div>
+          <input ref={inputRef} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          <Button type="button" variant="outline" onClick={() => inputRef.current?.click()} leftIcon={<Upload className="h-4 w-4" />}>
+            {file ? file.name : 'Choose .xlsx file'}
           </Button>
+          {errors.file && <p className="text-xs text-[#881337] mt-1">{errors.file}</p>}
         </div>
-      </div></ToolbarSlot>
-
-      {/* Tabs */}
-      <Tabs
-        tabs={[
-          { id: 'all', label: 'All Claims' },
-          { id: 'submitted', label: 'Stage 1: Awaiting RM Approval' },
-          { id: 'manager_approved', label: 'Stage 2: In Accounts Processing' },
-          { id: 'accounts_processed', label: 'Settled & Paid' },
-        ]}
-        activeTab={activeTab}
-        onChange={setActiveTab}
-      />
-      </ToolbarBox>
-
-      {/* Claims Grid */}
-      <div className="space-y-3">
-        {isLoading ? (
-          <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">Loading claims...</div>
-        ) : expenses.length === 0 ? (
-          <EmptyState
-            icon={Receipt}
-            title="No expense claims in this stage"
-            description="There are currently no reimbursement claims filed or awaiting action."
-          />
-        ) : (
-          expenses.map((exp) => {
-            const isSubmitter = user && (exp.employee_id === user.id || exp.user_id === user.id);
-
-            return (
-              <Card
-                key={exp.id}
-                padding="sm"
-                className="flex flex-col md:flex-row md:items-center justify-between gap-4"
-              >
-                <div className="space-y-1.5 flex-1">
-                  <div className="flex items-center space-x-2.5">
-                    <span className="font-mono text-base font-extrabold text-[#14213D]">
-                      {formatINR(exp.amount)}
-                    </span>
-                    <Badge variant="outline" size="sm" className="uppercase font-bold">
-                      {exp.category}
-                    </Badge>
-                    <Badge
-                      variant={
-                        exp.status === 'accounts_processed'
-                          ? 'success'
-                          : exp.status === 'manager_approved'
-                          ? 'info'
-                          : exp.status === 'rejected'
-                          ? 'danger'
-                          : 'warning'
-                      }
-                      size="sm"
-                    >
-                      {exp.status.replace('_', ' ').toUpperCase()}
-                    </Badge>
-                  </div>
-
-                  <p className="text-xs text-[#14213D] font-medium">{exp.purpose}</p>
-
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#4A5568]">
-                    <span>Officer: <strong className="text-[#14213D]">{exp.employee_name || exp.user_name || 'Staff'}</strong></span>
-                    <span>Date: {new Date(exp.expense_date).toLocaleDateString('en-IN')}</span>
-                    {(exp.organisation_name || exp.visit_purpose) && (
-                      <span className="flex items-center gap-1 text-[#4A5568]">
-                        <MapPin className="h-3 w-3 text-[#0F5E63]" />
-                        Tour: <strong className="text-[#14213D]">{exp.organisation_name || exp.visit_purpose}</strong>
-                      </span>
-                    )}
-                    {exp.receipt_url && (
-                      <a
-                        href={exp.receipt_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[#0F5E63] hover:underline flex items-center gap-1 font-semibold"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        <span>View Attached Bill Slip</span>
-                      </a>
-                    )}
-                  </div>
-
-                  {/* Stage Notes */}
-                  {exp.manager_remarks && (
-                    <div className="text-[11px] text-amber-800 bg-amber-50 px-2.5 py-1 rounded border border-amber-200">
-                      RM Note: {exp.manager_remarks}
-                    </div>
-                  )}
-                  {exp.accounts_remarks && (
-                    <div className="text-[11px] text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
-                      Accounts Voucher: {exp.accounts_remarks}
-                    </div>
-                  )}
-                </div>
-
-                {/* Workflow Buttons */}
-                <div className="flex items-center gap-2 shrink-0">
-                  {/* Stage 1: RM / Management Approval */}
-                  {exp.status === 'submitted' &&
-                    hasRole(['management', 'regional_manager']) &&
-                    (isSubmitter ? (
-                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-medium" title="Dual-control policy: You cannot approve your own expense claim.">
-                        <AlertTriangle className="h-3 w-3 text-amber-600 shrink-0" />
-                        <span>Self-Approval Prohibited</span>
-                      </div>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={() => {
-                          setSelectedExpense(exp);
-                          setIsManagerModalOpen(true);
-                        }}
-                      >
-                        <ShieldCheck className="h-3.5 w-3.5 mr-1" />
-                        <span>Stage-1: RM Signoff</span>
-                      </Button>
-                    ))}
-
-                  {/* Stage 2: Accounts Processing */}
-                  {exp.status === 'manager_approved' &&
-                    hasRole(['management', 'accounts']) && (
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={() => {
-                          setSelectedExpense(exp);
-                          setIsAccountsModalOpen(true);
-                        }}
-                      >
-                        <CreditCard className="h-3.5 w-3.5 mr-1" />
-                        <span>Stage-2: Settle Claim</span>
-                      </Button>
-                    )}
-
-                  {isSubmitter && exp.status === 'submitted' && !hasRole(['management', 'regional_manager']) && (
-                    <span className="text-[10px] text-[#4A5568] italic">
-                      Awaiting Manager Verification
-                    </span>
-                  )}
-                </div>
-              </Card>
-            );
-          })
+        {message && !rowErrors.length && !Object.keys(errors).length && <InfoCallout variant="danger">{message}</InfoCallout>}
+        {rowErrors.length > 0 && (
+          <InfoCallout variant="danger" title={message || 'Some rows have problems'}>
+            <ul className="max-h-48 overflow-y-auto text-xs space-y-1 mt-1">
+              {rowErrors.map((r, i) => (
+                <li key={i}><span className="font-mono font-semibold">Row {r.row}</span> · {r.field}: {r.message}</li>
+              ))}
+            </ul>
+          </InfoCallout>
         )}
-      </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button type="submit" isLoading={busy}>Import as draft</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
 
-      {/* Submit Claim Modal */}
-      <Modal
-        isOpen={isSubmitOpen}
-        onClose={() => setIsSubmitOpen(false)}
-        title="Submit Expense Reimbursement Claim"
-        description="Enter bill details and upload receipt slips for tour travel or demonstrations."
-        maxWidth="md"
-      >
-        <form onSubmit={handleSubmitExpense} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <Select
-              label="Expense Category"
-              value={newExpense.category}
-              onChange={(e) => setNewExpense({ ...newExpense, category: e.target.value })}
-              options={[
-                { value: 'travel', label: 'Train / Air / Bus Fare' },
-                { value: 'local_conveyance', label: 'Local Taxi / Cab Slip' },
-                { value: 'hotel', label: 'Hotel & Lodging' },
-                { value: 'food', label: 'Food & Meals' },
-                { value: 'demo', label: 'Demo / Trial Expenses' },
-                { value: 'service', label: 'Service Spares & Hardware Tools' },
-                { value: 'other', label: 'Other Sundry / Field Out-of-Pocket' },
-              ]}
-            />
-            <Input
-              label="Amount Claimed (₹)"
-              type="number"
-              min="1"
-              required
-              value={newExpense.amount}
-              onChange={(e) => setNewExpense({ ...newExpense, amount: e.target.value })}
-              placeholder="2500"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              label="Expense Date"
-              type="date"
-              required
-              value={newExpense.expense_date}
-              onChange={(e) => setNewExpense({ ...newExpense, expense_date: e.target.value })}
-            />
-            <Input
-              label="Receipt / Slip Image URL"
-              value={newExpense.receipt_url}
-              onChange={(e) => setNewExpense({ ...newExpense, receipt_url: e.target.value })}
-              placeholder="https://res.cloudinary.com/..."
-            />
-          </div>
-
-          <Select
-            label="Linked Client Tour / Field Visit"
-            value={newExpense.visit_id}
-            onChange={(e) => setNewExpense({ ...newExpense, visit_id: e.target.value })}
-            options={[
-              { value: '', label: '-- General Office / Non-Tour Claim --' },
-              ...availableVisits.map((v) => ({
-                value: v.id,
-                label: `${v.organisation_name || 'Client Agency'} (${new Date(v.planned_date).toLocaleDateString('en-IN')}) - ${v.purpose || 'Field Tour'}`,
-              })),
-            ]}
-          />
-
-          <Input
-            label="Purpose & Route Details"
-            required
-            value={newExpense.purpose}
-            onChange={(e) => setNewExpense({ ...newExpense, purpose: e.target.value })}
-            placeholder="e.g. Taxi fare from Chandigarh Station to ITBP Camp"
-          />
-
-          <div className="pt-2 flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsSubmitOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Submit for Approval
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Stage 1: RM Approval Modal */}
-      <Modal
-        isOpen={isManagerModalOpen}
-        onClose={() => setIsManagerModalOpen(false)}
-        title="Stage-1: Regional Manager Approval"
-        description="Verify that the claimed expenditure corresponds to an authorized client visit."
-        maxWidth="md"
-      >
-        <form onSubmit={handleManagerApproveSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
-
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs space-y-1">
-            <div className="flex justify-between">
-              <span className="text-[#4A5568]">Claimed By:</span>
-              <span className="font-bold text-[#14213D]">{selectedExpense?.employee_name || selectedExpense?.user_name}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-[#4A5568]">Total Amount:</span>
-              <span className="font-bold text-[#0F5E63]">{formatINR(selectedExpense?.amount || 0)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-[#4A5568]">Purpose:</span>
-              <span className="text-gray-700">{selectedExpense?.purpose}</span>
-            </div>
-          </div>
-
-          <Select
-            label="Manager Action"
-            value={managerAction}
-            onChange={(e) => setManagerAction(e.target.value as any)}
-            options={[
-              { value: 'manager_approved', label: 'APPROVE - Forward to Accounts for Payment' },
-              { value: 'rejected', label: 'REJECT - Disallow Claim' },
-            ]}
-          />
-
-          <Input
-            label="Manager Verification Remarks"
-            value={managerRemarks}
-            onChange={(e) => setManagerRemarks(e.target.value)}
-            placeholder="e.g. Slips verified against Chandigarh tour itinerary."
-            required
-          />
-
-          <div className="pt-2 flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsManagerModalOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Commit Stage-1 Signoff
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Stage 2: Accounts Process Modal */}
-      <Modal
-        isOpen={isAccountsModalOpen}
-        onClose={() => setIsAccountsModalOpen(false)}
-        title="Stage-2: Accounts Settlement & Disbursement"
-        description="Release reimbursement payment or NEFT transfer voucher."
-        maxWidth="md"
-      >
-        <form onSubmit={handleAccountsProcessSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
-
-          <Select
-            label="Accounts Action"
-            value={accountsAction}
-            onChange={(e) => setAccountsAction(e.target.value as any)}
-            options={[
-              { value: 'accounts_processed', label: 'DISBURSED - Settle Voucher & Reconcile' },
-              { value: 'rejected', label: 'REJECT - Return to Submitter' },
-            ]}
-          />
-
-          <Input
-            label="Payment Voucher / UTR Reference"
-            value={accountsRemarks}
-            onChange={(e) => setAccountsRemarks(e.target.value)}
-            placeholder="e.g. NEFT ref #CMS2918239 / Petty cash paid"
-            required
-          />
-
-          <div className="pt-2 flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsAccountsModalOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Mark Disbursed
-            </Button>
-          </div>
-        </form>
-      </Modal>
-    </PageContainer>
+export default function MyExpensesPage() {
+  return (
+    <Suspense fallback={<PageLoader rows={5} />}>
+      <MyExpenses />
+    </Suspense>
   );
 }

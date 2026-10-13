@@ -906,6 +906,47 @@ export class LeadsService {
         })
         .execute();
 
+      // Contacting the lead fulfils any pending follow-ups on it, keeping the Follow-ups Desk in sync
+      if (toStatus === 'contacted') {
+        const completedFollowUps = await trx
+          .updateTable('follow_ups')
+          .set({
+            status: 'completed',
+            outcome: 'Lead marked as Contacted',
+            completed_at: new Date(),
+            completed_by: user.id,
+            updated_at: new Date(),
+          })
+          .where('lead_id', '=', id)
+          .where('status', '=', 'pending')
+          .returning('id')
+          .execute();
+
+        if (completedFollowUps.length > 0) {
+          await trx
+            .updateTable('leads')
+            .set({ next_followup_at: null, next_followup_date: null })
+            .where('id', '=', id)
+            .execute();
+
+          for (const fu of completedFollowUps) {
+            await this.outboxService.queueEvent(trx, {
+              eventType: AppEvents.FOLLOWUP_COMPLETED,
+              aggregateType: 'FOLLOW_UP',
+              aggregateId: fu.id,
+              actorId: user.id,
+              payload: {
+                followUpId: fu.id,
+                leadId: id,
+                organisationId: lead.organisation_id,
+                outcome: 'Lead marked as Contacted',
+                completedBy: user.id,
+              },
+            });
+          }
+        }
+      }
+
       // Domain Event: LeadStatusChanged
       await this.outboxService.queueEvent(trx, {
         eventType: AppEvents.LEAD_STATUS_CHANGED,

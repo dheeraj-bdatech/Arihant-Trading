@@ -259,15 +259,15 @@ function attentionFor(role: UserRole, d: Data): AttentionItem[] {
   }
   if (wants('management', 'regional_manager', 'accounts', 'admin', 'sales')) {
     d.expenses
-      .filter((x) => ['submitted', 'manager_approved'].includes(x.status))
+      .filter((x) => ['submitted', 'accounts_review', 'accounts_approved', 'clarification_required'].includes(x.status))
       .slice(0, 3)
       .forEach((x) =>
         out.push({
           id: `e-${x.id}`,
           severity: 'warning',
-          title: `${formatINR(Number(x.amount) || 0)} · ${String(x.category || 'claim').replace(/_/g, ' ')}`,
-          detail: `${x.employee_name || 'Employee'} — ${x.status === 'submitted' ? 'awaiting manager' : 'awaiting accounts'}`,
-          href: '/expenses',
+          title: `${formatINR(Number(x.total_claimed) || 0)} · ${x.claim_number || 'claim'}`,
+          detail: `${x.employee_name || 'Employee'} — ${x.status === 'submitted' ? 'awaiting manager' : x.status === 'clarification_required' ? 'clarification requested' : 'with accounts'}`,
+          href: `/expenses/${x.id}`,
           when: timeAgo(x.created_at),
         }),
       );
@@ -473,7 +473,7 @@ export default function DashboardPage() {
         safe(api.get('/leads', { limit: 6 })),
         safe(api.get('/demos', { limit: 6 })),
         safe(api.get('/service', { limit: 20 })),
-        safe(api.get('/expenses', { limit: 8 })),
+        safe(api.get('/expense-claims', { page_size: 8, sort_by: 'updated_at' })),
         safe(api.get('/tasks', { limit: 8 })),
         needsSvc ? safe(api.get('/service/stats')) : Promise.resolve(null),
         role === 'admin' ? safe(api.get('/users', { limit: 1 })) : Promise.resolve(null),

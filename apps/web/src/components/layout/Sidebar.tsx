@@ -25,10 +25,15 @@ import {
   AlertTriangle,
   Search,
   ChevronDown,
+  ClipboardCheck,
+  Landmark,
+  BarChart3,
+  Settings2,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useSidebar } from '@/lib/sidebar-context';
 import { ROLE_PROFILES, type UserRole, type BosModuleKey } from '@arihant/shared';
+import { useBadgeCounts, type BadgeCounts } from '@/app/(app)/expenses/_lib/expense-lib';
 
 interface NavItem {
   label: string;
@@ -758,6 +763,43 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
   }
 }
 
+const EXPENSE_SUBROUTES = ['/expenses/approvals', '/expenses/accounts', '/expenses/reports', '/expenses/categories'];
+
+/**
+ * Module 9: expands each role's single "/expenses" entry into the sub-pages that role can use,
+ * with live counts (pending approvals, Accounts queue, clarifications to answer).
+ */
+function withExpenseItems(groups: NavGroup[], role: UserRole, counts: BadgeCounts | null): NavGroup[] {
+  const n = (v?: number) => (v && v > 0 ? String(v) : undefined);
+  const isAdminLike = role === 'admin' || role === 'management';
+  return groups.map((g) => ({
+    ...g,
+    items: g.items.flatMap((item) => {
+      if (item.href !== '/expenses') return [item];
+      const out: NavItem[] = [
+        {
+          ...item,
+          badge: counts?.my_clarifications ? `${counts.my_clarifications} to fix` : item.badge,
+          badgeVariant: counts?.my_clarifications ? 'urgent' : item.badgeVariant,
+        },
+      ];
+      if (role === 'regional_manager' || isAdminLike || counts?.has_team) {
+        out.push({ label: 'Expense Approvals', href: '/expenses/approvals', icon: ClipboardCheck, moduleKey: 'expenses', badge: n(counts?.manager_pending), badgeVariant: 'urgent' });
+      }
+      if (role === 'accounts') {
+        out.push({ label: 'Accounts Queue', href: '/expenses/accounts', icon: Landmark, moduleKey: 'expenses', badge: n((counts?.accounts_pending || 0) + (counts?.accounts_ready || 0)), badgeVariant: 'urgent' });
+      }
+      if (['management', 'admin', 'accounts', 'regional_manager'].includes(role)) {
+        out.push({ label: 'Expense Reports', href: '/expenses/reports', icon: BarChart3, moduleKey: 'expenses' });
+      }
+      if (isAdminLike) {
+        out.push({ label: 'Expense Categories', href: '/expenses/categories', icon: Settings2, moduleKey: 'expenses', badge: n(counts?.approver_inactive), badgeVariant: 'urgent' });
+      }
+      return out;
+    }),
+  }));
+}
+
 function toSentenceCase(str: string): string {
   if (!str) return '';
   const lower = str.toLowerCase();
@@ -771,7 +813,8 @@ export const Sidebar: React.FC = () => {
 
   const role = user?.role || 'management';
   const roleProfile = ROLE_PROFILES[role];
-  const navGroups = getRoleNavGroups(role);
+  const expenseCounts = useBadgeCounts(Boolean(user));
+  const navGroups = useMemo(() => withExpenseItems(getRoleNavGroups(role), role, expenseCounts), [role, expenseCounts]);
 
   // RBAC clearance validation
   const isModuleAllowed = (moduleKey: BosModuleKey | 'reports') => {
@@ -805,7 +848,9 @@ export const Sidebar: React.FC = () => {
     });
 
   const isItemActive = (item: NavItem) =>
-    item.href.includes('?')
+    item.href === '/expenses'
+      ? pathname.startsWith('/expenses') && !EXPENSE_SUBROUTES.some((r) => pathname.startsWith(r))
+      : item.href.includes('?')
       ? pathname === item.href.split('?')[0] &&
         typeof window !== 'undefined' &&
         window.location.search.includes(item.href.split('?')[1])

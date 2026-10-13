@@ -263,6 +263,7 @@ export default function LeadsPage() {
   // Modal Dialogs State
   const [isCreateLeadOpen, setIsCreateLeadOpen] = useState(false);
   const [isLeadDetailOpen, setIsLeadDetailOpen] = useState(false);
+  const [leadDetailTab, setLeadDetailTab] = useState<'overview' | 'activity' | 'products' | 'ownership'>('overview');
   const [isLogInteractionOpen, setIsLogInteractionOpen] = useState(false);
   const [isCustomer360Open, setIsCustomer360Open] = useState(false);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
@@ -407,6 +408,7 @@ export default function LeadsPage() {
   const [completionRemarks, setCompletionRemarks] = useState('');
   const [scheduleNextFollowup, setScheduleNextFollowup] = useState(false);
   const [nextFollowupDueDate, setNextFollowupDueDate] = useState('');
+  const [nextFollowupDueTime, setNextFollowupDueTime] = useState('');
 
   // Action Success Toast
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -590,6 +592,7 @@ export default function LeadsPage() {
 
   // Follow-up Reschedule Form
   const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduleTime, setRescheduleTime] = useState('');
   const [rescheduleRemarks, setRescheduleRemarks] = useState('');
 
   // Load Master Data on Mount
@@ -860,7 +863,7 @@ export default function LeadsPage() {
     try {
       const fullLead = await api.get(`/leads/${leadId}`);
       setSelectedLead(fullLead);
-      setIsLeadDetailOpen(true);
+      setLeadDetailTab('overview'); setIsLeadDetailOpen(true);
     } catch (err: any) {
       console.error('Failed to inspect lead:', err);
     }
@@ -913,6 +916,9 @@ export default function LeadsPage() {
       }
       if (leadForm.product_ids.length === 0) {
         throw new Error('Please select at least one Product Interest.');
+      }
+      if (leadForm.contact_name.trim() && !leadForm.contact_designation.trim()) {
+        throw new Error('Designation / Rank is required for the contact officer.');
       }
 
       await api.post('/leads', {
@@ -1473,6 +1479,7 @@ export default function LeadsPage() {
         outcome: completionOutcome || undefined,
         remarks: completionRemarks || undefined,
         next_followup_date: scheduleNextFollowup && nextFollowupDueDate ? nextFollowupDueDate : undefined,
+        next_followup_time: scheduleNextFollowup && nextFollowupDueDate && nextFollowupDueTime ? nextFollowupDueTime : undefined,
       });
 
       setIsCompleteFollowupOpen(false);
@@ -1481,6 +1488,7 @@ export default function LeadsPage() {
       setCompletionRemarks('');
       setScheduleNextFollowup(false);
       setNextFollowupDueDate('');
+      setNextFollowupDueTime('');
       fetchFollowups();
       fetchDashboardStats();
     } catch (err: any) {
@@ -1500,12 +1508,14 @@ export default function LeadsPage() {
     try {
       await api.patch(`/follow-ups/${selectedFollowup.id}/reschedule`, {
         new_due_date: rescheduleDate,
-        remarks: rescheduleRemarks || undefined,
+        new_due_time: rescheduleTime || undefined,
+        reason: rescheduleRemarks || undefined,
       });
 
       setIsRescheduleFollowupOpen(false);
       setSelectedFollowup(null);
       setRescheduleDate('');
+      setRescheduleTime('');
       setRescheduleRemarks('');
       fetchFollowups();
       fetchDashboardStats();
@@ -2243,6 +2253,9 @@ export default function LeadsPage() {
                           <span className="font-mono font-bold text-xs text-[#14213D]">
                             {new Date(fu.due_date).toLocaleDateString('en-IN')}
                           </span>
+                          {fu.due_time && (
+                            <span className="font-mono text-[10px] text-[#4A5568]">{String(fu.due_time).slice(0, 5)}</span>
+                          )}
                         </div>
                         {isOverdue && (
                           <Badge variant="danger" size="sm" className="mt-1 text-[10px]">
@@ -2271,7 +2284,10 @@ export default function LeadsPage() {
                         {fu.contact_name ? (
                           <div>
                             <div className="font-medium text-[#14213D]">{fu.contact_name}</div>
-                            <div className="text-[10px] text-[#4A5568]">{fu.contact_phone || '—'}</div>
+                            <div className="text-[10px] text-[#4A5568]">
+                              {fu.contact_designation || '—'}
+                              {(fu.contact_mobile || fu.contact_phone) ? ` · ${fu.contact_mobile || fu.contact_phone}` : ''}
+                            </div>
                           </div>
                         ) : (
                           <span className="text-[#4A5568] italic text-[11px]">—</span>
@@ -2317,6 +2333,7 @@ export default function LeadsPage() {
                                 setCompletionRemarks('');
                                 setScheduleNextFollowup(false);
                                 setNextFollowupDueDate('');
+                                setNextFollowupDueTime('');
                                 setIsCompleteFollowupOpen(true);
                               }}
                               leftIcon={<Check className="h-3 w-3" />}
@@ -2328,7 +2345,8 @@ export default function LeadsPage() {
                               variant="outline"
                               onClick={() => {
                                 setSelectedFollowup(fu);
-                                setRescheduleDate(fu.due_date);
+                                setRescheduleDate(String(fu.due_date).slice(0, 10));
+                                setRescheduleTime(fu.due_time ? String(fu.due_time).slice(0, 5) : '');
                                 setRescheduleRemarks('');
                                 setIsRescheduleFollowupOpen(true);
                               }}
@@ -2963,7 +2981,7 @@ export default function LeadsPage() {
         {selectedLead && (
           <div className="space-y-5 text-xs">
             {/* Meta Executive Metrics Strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 p-4 rounded-xl bg-white border border-[#DCD8CE]">
               <div>
                 <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Current Stage</span>
                 <div className="mt-1">{getStatusBadge(selectedLead.lead_status || selectedLead.status)}</div>
@@ -3026,10 +3044,150 @@ export default function LeadsPage() {
               </div>
             </div>
 
+            {/* Allowed Lifecycle Transitions Stepper */}
+            <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
+                  <ArrowRight className="h-4 w-4 text-[#0F5E63]" />
+                  <span>Lifecycle Stage Transitions</span>
+                </span>
+              </div>
+
+              {actionSuccess && (
+                <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-[#0F5E63] text-xs font-semibold flex items-center justify-between animate-in fade-in">
+                  <div className="flex items-center gap-1.5">
+                    <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />
+                    <span>{actionSuccess}</span>
+                  </div>
+                  <button type="button" onClick={() => setActionSuccess(null)} className="text-[#0F5E63] hover:opacity-70 font-bold ml-2">×</button>
+                </div>
+              )}
+
+              {formError && (
+                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
+                  {formError}
+                </div>
+              )}
+
+              {(() => {
+                const PIPELINE = ['new', 'contacted', 'qualified', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'converted'];
+                const label = (st: string) => st.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+                const current = (selectedLead.lead_status || selectedLead.status || 'new').toLowerCase();
+                const curIdx = PIPELINE.indexOf(current);
+                const allowed: string[] = selectedLead.allowed_transitions || [];
+                const nextStage = PIPELINE.find((st, i) => i > curIdx && allowed.includes(st));
+                const sideActions = allowed.filter((st) => st !== nextStage && !PIPELINE.includes(st) || (st !== nextStage && PIPELINE.includes(st) && PIPELINE.indexOf(st) > curIdx && st !== 'converted'));
+                const closeActions = allowed.filter((st) => st === 'converted' || st === 'lost');
+                const otherActions = sideActions.filter((st) => st !== 'lost' && st !== 'converted');
+                return (
+                  <div className="space-y-3">
+                    <ol className="flex flex-wrap items-center gap-1.5">
+                      {PIPELINE.map((st, i) => {
+                        const done = curIdx >= 0 && i < curIdx;
+                        const active = st === current;
+                        return (
+                          <li key={st} className="flex items-center gap-1.5">
+                            <span
+                              className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
+                                active
+                                  ? 'bg-[#0F5E63] text-white border-[#0F5E63]'
+                                  : done
+                                  ? 'bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/30'
+                                  : 'bg-white text-[#4A5568] border-[#DCD8CE]'
+                              }`}
+                            >
+                              {done ? '✓ ' : ''}{label(st)}
+                            </span>
+                            {i < PIPELINE.length - 1 && <ArrowRight className="h-3 w-3 text-[#C9C4B8]" />}
+                          </li>
+                        );
+                      })}
+                    </ol>
+
+                    {!PIPELINE.includes(current) && (
+                      <div className="text-[11px] text-[#4A5568]">
+                        Current stage: <span className="font-semibold text-[#14213D]">{label(current)}</span>
+                      </div>
+                    )}
+
+                    {allowed.length === 0 ? (
+                      <div className="text-[11px] text-[#4A5568] italic">
+                        This lead is in terminal stage ({label(current)}). No further transitions allowed.
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {nextStage && (
+                          <Button
+                            size="xs"
+                            variant="primary"
+                            rightIcon={<ArrowRight className="h-3 w-3" />}
+                            isLoading={actionLoading && targetStatus === nextStage}
+                            onClick={() => handleDirectAdvanceStatus(nextStage)}
+                          >
+                            Move to {label(nextStage)}
+                          </Button>
+                        )}
+                        {otherActions.map((st) => (
+                          <Button
+                            key={st}
+                            size="xs"
+                            variant="outline"
+                            isLoading={actionLoading && targetStatus === st}
+                            onClick={() => handleDirectAdvanceStatus(st)}
+                          >
+                            {st === 'follow_up' ? 'Schedule Follow-up' : st === 'on_hold' ? 'Put On Hold' : `Skip to ${label(st)}`}
+                          </Button>
+                        ))}
+                        {closeActions.map((st) => (
+                          <Button
+                            key={st}
+                            size="xs"
+                            variant={st === 'converted' ? 'success' : 'danger'}
+                            isLoading={actionLoading && targetStatus === st}
+                            onClick={() => handleDirectAdvanceStatus(st)}
+                          >
+                            {st === 'converted' ? 'Mark Converted' : 'Mark Lost'}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Section tabs */}
+            <div className="flex items-center gap-1 border-b border-[#DCD8CE] overflow-x-auto" role="tablist">
+              {([
+                ['overview', 'Overview', null],
+                ['activity', 'Activity & Notes', null],
+                ['products', 'Products', (selectedLead.product_interests || []).length || (selectedLead.product_name ? 1 : 0)],
+                ['ownership', 'Ownership History', (selectedLead.assignment_history || []).length],
+              ] as const).map(([key, lbl, count]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={leadDetailTab === key}
+                  onClick={() => setLeadDetailTab(key)}
+                  className={`px-3.5 py-2 text-xs font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
+                    leadDetailTab === key
+                      ? 'border-[#0F5E63] text-[#0F5E63]'
+                      : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
+                  }`}
+                >
+                  {lbl}
+                  {count ? <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-[#E3EFEE] text-[#0F5E63] text-[10px]">{count}</span> : null}
+                </button>
+              ))}
+            </div>
+
+            {leadDetailTab === 'overview' && (
+              <div className="space-y-5 animate-in fade-in duration-150">
             {/* Two-Column Grid: 1. Organisation & Jurisdiction | 2. Key Contact Person */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 rounded-xl bg-white border border-[#DCD8CE] divide-y md:divide-y-0 md:divide-x divide-[#ECE9E2]">
               {/* 1. Organisation & Jurisdiction Intelligence */}
-              <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+              <div className="p-5 space-y-3">
                 <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
                   <Building className="h-4 w-4 text-[#0F5E63]" />
                   <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
@@ -3090,7 +3248,7 @@ export default function LeadsPage() {
               </div>
 
               {/* 2. Key Contact Person Details */}
-              <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+              <div className="p-5 space-y-3">
                 <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
                   <User className="h-4 w-4 text-[#0F5E63]" />
                   <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
@@ -3146,7 +3304,7 @@ export default function LeadsPage() {
             </div>
 
             {/* Ownership & Territorial Jurisdiction Strip */}
-            <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
+            <div className="p-5 rounded-xl bg-white border border-[#DCD8CE]">
               <div className="flex items-center gap-2 border-b border-[#DCD8CE] pb-2 mb-3">
                 <Users className="h-4 w-4 text-[#0F5E63]" />
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
@@ -3181,6 +3339,11 @@ export default function LeadsPage() {
               </div>
             </div>
 
+              </div>
+            )}
+
+            {leadDetailTab === 'activity' && (
+              <div className="space-y-5 animate-in fade-in duration-150">
             {/* Interactions, Scheduled Follow-Up & Remarks */}
             <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
               <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
@@ -3238,55 +3401,11 @@ export default function LeadsPage() {
               </div>
             </div>
 
-            {/* Allowed Lifecycle Transitions Stepper */}
-            <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
-                  <ArrowRight className="h-4 w-4 text-[#0F5E63]" />
-                  <span>Lifecycle Stage Transitions</span>
-                </span>
-                <span className="text-[10px] text-[#4A5568]">
-                  Validated by LeadWorkflowService state machine
-                </span>
               </div>
+            )}
 
-              {actionSuccess && (
-                <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-[#0F5E63] text-xs font-semibold flex items-center justify-between animate-in fade-in">
-                  <div className="flex items-center gap-1.5">
-                    <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />
-                    <span>{actionSuccess}</span>
-                  </div>
-                  <button type="button" onClick={() => setActionSuccess(null)} className="text-[#0F5E63] hover:opacity-70 font-bold ml-2">×</button>
-                </div>
-              )}
-
-              {formError && (
-                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
-                  {formError}
-                </div>
-              )}
-
-              {selectedLead.allowed_transitions && selectedLead.allowed_transitions.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  {selectedLead.allowed_transitions.map((nextSt: string) => (
-                    <Button
-                      key={nextSt}
-                      size="xs"
-                      variant={nextSt === 'converted' ? 'success' : nextSt === 'lost' ? 'danger' : 'outline'}
-                      isLoading={actionLoading && targetStatus === nextSt}
-                      onClick={() => handleDirectAdvanceStatus(nextSt)}
-                    >
-                      Advance to: {nextSt.toUpperCase()}
-                    </Button>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-[11px] text-[#4A5568] italic">
-                  This lead is in terminal stage ({selectedLead.lead_status?.toUpperCase()}). No further transitions allowed.
-                </div>
-              )}
-            </div>
-
+            {leadDetailTab === 'products' && (
+              <div className="space-y-5 animate-in fade-in duration-150">
             {/* Product Interests Section */}
             <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
               <div className="flex items-center justify-between">
@@ -3340,6 +3459,11 @@ export default function LeadsPage() {
               )}
             </div>
 
+              </div>
+            )}
+
+            {leadDetailTab === 'ownership' && (
+              <div className="space-y-5 animate-in fade-in duration-150">
             {/* Salesperson Assignment History Audit */}
             <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
               <div className="flex items-center justify-between">
@@ -3395,6 +3519,9 @@ export default function LeadsPage() {
                 </span>
               )}
             </div>
+
+              </div>
+            )}
 
             {/* Action Bar */}
             <div className="flex items-center justify-between pt-2 border-t border-[#DCD8CE]">
@@ -5284,13 +5411,22 @@ export default function LeadsPage() {
             </label>
 
             {scheduleNextFollowup && (
-              <Input
-                label="Next Follow-up Due Date *"
-                type="date"
-                required={scheduleNextFollowup}
-                value={nextFollowupDueDate}
-                onChange={(e) => setNextFollowupDueDate(e.target.value)}
-              />
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  label="Next Follow-up Due Date *"
+                  type="date"
+                  required={scheduleNextFollowup}
+                  value={nextFollowupDueDate}
+                  onChange={(e) => setNextFollowupDueDate(e.target.value)}
+                />
+                <Input
+                  label="Next Follow-up Due Time"
+                  type="time"
+                  value={nextFollowupDueTime}
+                  onChange={(e) => setNextFollowupDueTime(e.target.value)}
+                  helperText="Optional"
+                />
+              </div>
             )}
           </div>
 
@@ -5312,7 +5448,7 @@ export default function LeadsPage() {
         isOpen={isRescheduleFollowupOpen}
         onClose={() => setIsRescheduleFollowupOpen(false)}
         title="Reschedule Follow-up Touchpoint"
-        description="Updates the reminder due date for this sales activity."
+        description="Updates the reminder date and time for this sales activity."
         maxWidth="sm"
         zIndex={60}
       >
@@ -5323,13 +5459,22 @@ export default function LeadsPage() {
             </div>
           )}
 
-          <Input
-            label="New Due Date *"
-            type="date"
-            required
-            value={rescheduleDate}
-            onChange={(e) => setRescheduleDate(e.target.value)}
-          />
+          <div className="grid grid-cols-2 gap-3">
+            <Input
+              label="New Due Date *"
+              type="date"
+              required
+              value={rescheduleDate}
+              onChange={(e) => setRescheduleDate(e.target.value)}
+            />
+            <Input
+              label="New Due Time"
+              type="time"
+              value={rescheduleTime}
+              onChange={(e) => setRescheduleTime(e.target.value)}
+              helperText="Optional"
+            />
+          </div>
 
           <Input
             label="Reschedule Remarks"

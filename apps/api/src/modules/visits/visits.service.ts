@@ -446,6 +446,17 @@ export class VisitsService {
       });
     }
 
+    if (dto.demo_required && dto.demo_assigned_to) {
+      const specialist = await this.db
+        .selectFrom('users')
+        .select('role')
+        .where('id', '=', dto.demo_assigned_to)
+        .executeTakeFirst();
+      if (!specialist || specialist.role !== 'demo_team') {
+        throw new BadRequestException('Demo specialist must be a member of the Demo Team');
+      }
+    }
+
     const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
     const assignedTo = dto.assigned_to && UUID_REGEX.test(dto.assigned_to) ? dto.assigned_to : user.id;
 

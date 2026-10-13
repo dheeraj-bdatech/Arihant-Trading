@@ -347,7 +347,7 @@ export default function VisitsPage() {
   const demoTeamOptions = useMemo(() => {
     const roster = demoTeamAvailability.length > 0
       ? demoTeamAvailability
-      : usersList.filter((u) => ['demo_team', 'service_team', 'sales'].includes(u.role));
+      : usersList.filter((u) => u.role === 'demo_team');
 
     return roster.map((m) => {
       const isAvail = m.is_available ?? true;
@@ -1604,7 +1604,7 @@ export default function VisitsPage() {
                     )}
 
                     {/* Claim Expense for this visit */}
-                    <Link href={`/expenses?visit_id=${v.id}`}>
+                    <Link href={`/expenses/new?visit_id=${v.id}`}>
                       <Button size="sm" variant="ghost" className="text-[#0F5E63]">
                         <Receipt className="h-3.5 w-3.5 mr-1 text-[#4A5568]" />
                         <span>Claim Expense</span>
@@ -2358,7 +2358,7 @@ export default function VisitsPage() {
                         <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {(demoTeamAvailability.length > 0 ? demoTeamAvailability : usersList.filter((u) => ['demo_team', 'service_team', 'sales'].includes(u.role))).map((m) => {
+                        {(demoTeamAvailability.length > 0 ? demoTeamAvailability : usersList.filter((u) => u.role === 'demo_team')).map((m) => {
                           const isAvail = m.is_available ?? true;
                           return (
                             <button

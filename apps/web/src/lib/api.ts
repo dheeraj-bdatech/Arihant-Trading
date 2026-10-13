@@ -106,4 +106,39 @@ export const api = {
 
   delete: <T = any>(endpoint: string) =>
     request<T>(endpoint, { method: 'DELETE' }),
+
+  /** Multipart upload (receipts, Excel import). The browser sets the multipart boundary. */
+  upload: async <T = any>(endpoint: string, form: FormData): Promise<T> => {
+    const token = getStoredToken();
+    const res = await fetch(`${API_BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`, {
+      method: 'POST',
+      body: form,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    const data = await res.json().catch(() => ({ message: res.statusText }));
+    if (!res.ok) throw new ApiError(data?.message || 'Upload failed', res.status, data);
+    return data as T;
+  },
+
+  /** Authorised binary download (receipts, exports) — files are never public URLs. */
+  blob: async (endpoint: string, query?: Record<string, any>): Promise<{ blob: Blob; fileName: string | null }> => {
+    const token = getStoredToken();
+    const qs = query
+      ? new URLSearchParams(
+          Object.entries(query).flatMap(([k, v]) =>
+            v === undefined || v === null || v === '' ? [] : Array.isArray(v) ? (v.length ? [[k, v.join(',')]] : []) : [[k, String(v)]],
+          ) as [string, string][],
+        ).toString()
+      : '';
+    const res = await fetch(`${API_BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}${qs ? `?${qs}` : ''}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ message: res.statusText }));
+      throw new ApiError(data?.message || 'Download failed', res.status, data);
+    }
+    const cd = res.headers.get('content-disposition') || '';
+    const match = /filename="([^"]+)"/.exec(cd);
+    return { blob: await res.blob(), fileName: match ? match[1] : null };
+  },
 };

@@ -43,6 +43,8 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
     await db.deleteFrom('employee_activities').execute();
     await db.deleteFrom('visit_updates').execute();
     await db.deleteFrom('expenses').execute();
+    // Module 9 claims keep a strict FK to their trip/visit; unlink them before this suite wipes visits and trips.
+    await db.updateTable('expense_claims').set({ trip_id: null, visit_id: null }).execute();
     await db.deleteFrom('interactions').where('visit_id', 'is not', null).execute();
     await db.deleteFrom('visits').execute();
     await db.deleteFrom('trips').execute();

@@ -41,6 +41,8 @@ describe('Arihant BOS API E2E Suite', () => {
     await db.deleteFrom('employee_activities').execute();
     await db.deleteFrom('visit_updates').execute();
     await db.deleteFrom('expenses').execute();
+    // Module 9 claims keep a strict FK to their trip/visit; unlink them before this suite wipes visits and trips.
+    await db.updateTable('expense_claims').set({ trip_id: null, visit_id: null }).execute();
     await db.deleteFrom('interactions').where('visit_id', 'is not', null).execute();
     await db.deleteFrom('visits').execute();
     await db.deleteFrom('trips').execute();
@@ -390,39 +392,61 @@ describe('Arihant BOS API E2E Suite', () => {
   });
 
   describe('MODULE 9: Expense Reimbursements & Two-Stage Signoff', () => {
-    let createdExpenseId: string;
+    let claimId: string;
+    const version = async (token: string) =>
+      (await request(app.getHttpServer()).get(`/api/expense-claims/${claimId}`).set('Authorization', `Bearer ${token}`)).body.version;
 
-    it('submits a new expense report by sales executive', async () => {
-      const res = await request(app.getHttpServer())
-        .post('/api/expenses')
+    it('submits a new expense claim by sales executive', async () => {
+      const draft = await request(app.getHttpServer())
+        .post('/api/expense-claims')
+        .set('Authorization', `Bearer ${salesToken}`)
+        .send({ title: 'Cab fare for client site visit in Gurgaon' });
+      expect(draft.status).toBe(201);
+      claimId = draft.body.id;
+      const cats = await request(app.getHttpServer()).get('/api/expense-categories').set('Authorization', `Bearer ${salesToken}`);
+      const travel = cats.body.find((c: any) => c.code === 'TRAVEL').id;
+      const item = await request(app.getHttpServer())
+        .post(`/api/expense-claims/${claimId}/items`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          category: 'travel',
-          amount: 2500,
-          expense_date: '2026-09-15',
+          category_id: travel,
+          amount: '2500',
+          expense_date: new Date(Date.now() - 86400000).toISOString().split('T')[0],
           purpose: 'Cab fare for client site visit in Gurgaon',
+          category_details: { from: 'Connaught Place', to: 'Gurgaon', mode: 'cab' },
+          confirm_not_duplicate: true,
         });
-      expect(res.status).toBe(201);
+      expect(item.status).toBe(201);
+      const receipt = await request(app.getHttpServer())
+        .post(`/api/expense-items/${item.body.item.id}/attachments`)
+        .set('Authorization', `Bearer ${salesToken}`)
+        .attach('file', Buffer.from(`%PDF-1.4 cab slip ${Date.now()}`), 'cab-slip.pdf');
+      expect(receipt.status).toBe(201);
+      const res = await request(app.getHttpServer())
+        .post(`/api/expense-claims/${claimId}/submit`)
+        .set('Authorization', `Bearer ${salesToken}`)
+        .send({ version: await version(salesToken) });
+      expect(res.status).toBe(200);
       expect(res.body.status).toBe('submitted');
-      expect(Number(res.body.amount)).toBe(2500);
-      createdExpenseId = res.body.id;
+      expect(res.body.total_claimed).toBe(2500);
     });
 
     it('blocks self-approval when submitter attempts to endorse own expense (403)', async () => {
       const res = await request(app.getHttpServer())
-        .patch(`/api/expenses/${createdExpenseId}/manager-approve`)
+        .post(`/api/expense-claims/${claimId}/manager-approve`)
         .set('Authorization', `Bearer ${salesToken}`)
-        .send({ decision: 'manager_approved' });
+        .send({ version: await version(salesToken) });
       expect(res.status).toBe(403);
     });
 
     it('allows Regional Manager to grant stage-1 approval', async () => {
       const res = await request(app.getHttpServer())
-        .patch(`/api/expenses/${createdExpenseId}/manager-approve`)
+        .post(`/api/expense-claims/${claimId}/manager-approve`)
         .set('Authorization', `Bearer ${rmToken}`)
-        .send({ decision: 'manager_approved', manager_remarks: 'Verified cab slips' });
+        .send({ version: await version(rmToken), comment: 'Verified cab slips' });
       expect(res.status).toBe(200);
-      expect(res.body.status).toBe('manager_approved');
+      // Stage-1 approval hands the claim to the Accounts queue (stage 2).
+      expect(res.body.status).toBe('accounts_review');
     });
   });
 

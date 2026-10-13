@@ -36,3 +36,5 @@ Thumbs.db
 docs/
 
 ui-kit
+# Module 9 private receipt storage (EXPENSE_STORAGE_DIR default)
+apps/api/storage/

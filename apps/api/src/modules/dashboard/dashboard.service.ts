@@ -2,6 +2,7 @@ import { Injectable, Inject } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import type { Database, AuthUser, DashboardMetricsDto } from '@arihant/shared';
+import { claimScopeFilter } from '../expense-management/expense-scope.js';
 
 @Injectable()
 export class DashboardService {
@@ -91,11 +92,12 @@ export class DashboardService {
         .executeTakeFirst(),
     ]);
 
-    // 4. Expenses metrics
-    let expQuery = this.db.selectFrom('expenses');
-    if (['sales', 'demo_team', 'service_team'].includes(user.role)) {
-      expQuery = expQuery.where('employee_id', '=', user.id);
-    }
+    // 4. Expenses metrics (Module 9 claims, same role scope as the expense screens)
+    const expQuery = this.db
+      .selectFrom('expense_claims as c')
+      .innerJoin('users as emp', 'emp.id', 'c.employee_id')
+      .where('c.deleted_at', 'is', null)
+      .where(claimScopeFilter(user));
 
     const [
       expPendingManager,
@@ -103,12 +105,12 @@ export class DashboardService {
       expProcessed,
       expPendingAmount,
     ] = await Promise.all([
-      expQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'submitted').executeTakeFirst(),
-      expQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'manager_approved').executeTakeFirst(),
-      expQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'accounts_processed').executeTakeFirst(),
+      expQuery.select(sql<number>`count(c.id)::int`.as('c')).where('c.status', '=', 'submitted').executeTakeFirst(),
+      expQuery.select(sql<number>`count(c.id)::int`.as('c')).where('c.status', 'in', ['accounts_review', 'accounts_approved']).executeTakeFirst(),
+      expQuery.select(sql<number>`count(c.id)::int`.as('c')).where('c.status', '=', 'processed').executeTakeFirst(),
       expQuery
-        .select(sql<number>`coalesce(sum(amount), 0)::float`.as('amt'))
-        .where('status', 'in', ['submitted', 'manager_approved'])
+        .select(sql<number>`coalesce(sum(c.total_claimed), 0)::float`.as('amt'))
+        .where('c.status', 'in', ['submitted', 'accounts_review', 'accounts_approved', 'clarification_required'])
         .executeTakeFirst(),
     ]);
 

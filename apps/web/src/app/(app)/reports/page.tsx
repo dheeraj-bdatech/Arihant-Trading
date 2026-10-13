@@ -55,7 +55,7 @@ const DATASETS = [
   { key: 'tenders', label: 'GeM Bids', url: '/tenders' },
   { key: 'leads', label: 'Sales Pipeline', url: '/leads' },
   { key: 'visits', label: 'Field Itineraries', url: '/visits' },
-  { key: 'expenses', label: 'Expense Claims', url: '/expenses' },
+  { key: 'expenses', label: 'Expense Claims', url: '/expense-reports' },
   { key: 'service', label: 'Service Desk', url: '/service/tickets' },
 ] as const;
 
@@ -89,7 +89,8 @@ export default function ConsolidatedReportsPage() {
     setTenders(rows(tendersRes));
     setLeads(rows(leadsRes));
     setVisits(rows(visitsRes));
-    setExpenses(rows(expensesRes));
+    // Module 9 report rows are per expense line; keep the field names this view already uses.
+    setExpenses(rows(expensesRes).map((r: any) => ({ ...r, id: r.item_id, category: r.category_name, status: r.status_label || r.status, manager_remarks: r.reviewer_comment })));
     setTickets(rows(serviceRes));
     setFailed(bad);
     setIsLoading(false);

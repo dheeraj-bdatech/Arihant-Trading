@@ -6,6 +6,7 @@ import {
   Matches,
 } from 'class-validator';
 
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class CreateFollowUpDto {
@@ -33,6 +34,10 @@ export class CreateFollowUpDto {
   @IsNotEmpty()
   due_date!: string;
 
+  @Matches(TIME_PATTERN, { message: 'Due time must be in HH:mm format' })
+  @IsOptional()
+  due_time?: string;
+
   @IsString()
   @IsOptional()
   remarks?: string;
@@ -50,12 +55,20 @@ export class CompleteFollowUpDto {
   @IsDateString()
   @IsOptional()
   next_followup_date?: string;
+
+  @Matches(TIME_PATTERN, { message: 'Due time must be in HH:mm format' })
+  @IsOptional()
+  next_followup_time?: string;
 }
 
 export class RescheduleFollowUpDto {
   @IsDateString()
   @IsNotEmpty({ message: 'New due date is required' })
   new_due_date!: string;
+
+  @Matches(TIME_PATTERN, { message: 'Due time must be in HH:mm format' })
+  @IsOptional()
+  new_due_time?: string;
 
   @IsString()
   @IsOptional()

@@ -174,7 +174,10 @@ export default function NotificationsPage() {
       case 'delivery':
         return { label: 'View Delivery Register', href: '/deliveries', icon: Truck };
       case 'expense':
-        return { label: 'View Expense Record', href: '/reports', icon: DollarSign };
+      case 'expense_claim':
+        return { label: 'Open Expense Claim', href: entityId ? `/expenses/${entityId}` : '/expenses', icon: DollarSign };
+      case 'expense_queue':
+        return { label: 'Open Expense Approvals', href: '/expenses/approvals', icon: DollarSign };
       case 'service':
         return { label: 'View Service Desk', href: '/service', icon: Wrench };
       default:

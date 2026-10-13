@@ -787,7 +787,7 @@ export class DemosService {
     const teamMembers = await this.db
       .selectFrom('users')
       .select(['id', 'full_name', 'email', 'role', 'phone'])
-      .where('role', 'in', ['demo_team', 'service_team', 'sales', 'regional_manager'])
+      .where('role', '=', 'demo_team')
       .where('is_active', '=', true)
       .orderBy('full_name', 'asc')
       .execute();

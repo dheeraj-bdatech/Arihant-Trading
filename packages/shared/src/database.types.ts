@@ -1,4 +1,5 @@
 import type { ColumnType, Generated } from 'kysely';
+import type { ExpenseClaimStatus, ExpenseItemStatus } from './expense-workflow.js';
 import type {
   UserRole,
   LeadCategory,
@@ -67,6 +68,7 @@ export interface UsersTable {
   zone_id: string | null;
   reporting_manager_id: string | null;
   is_active: Generated<boolean>;
+  employee_code: Generated<string | null>;
   password_hash?: string | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
@@ -161,6 +163,7 @@ export interface FollowUpsTable {
   interaction_id: string | null;
   assigned_to: string;
   due_date: string; // date
+  due_time: string | null; // time (HH:MM:SS)
   status: Generated<FollowUpStatus>;
   remarks: string | null;
   outcome: string | null;
@@ -1292,6 +1295,130 @@ export interface ExpensesTable {
   updated_at: Generated<Date>;
 }
 
+// ---------------------------------------------------------------------------
+// Module 9 — Expense Management
+// ---------------------------------------------------------------------------
+type Numeric = ColumnType<string, number | string, number | string>;
+type NullableNumeric = ColumnType<string | null, number | string | null, number | string | null>;
+type JsonColumn = ColumnType<unknown, string | undefined, string>;
+type NullableJsonColumn = ColumnType<unknown | null, string | null | undefined, string | null>;
+
+export interface ProjectsTable {
+  id: Generated<string>;
+  code: string;
+  name: string;
+  organisation_id: string | null;
+  is_active: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+}
+
+export interface ExpenseCategoriesTable {
+  id: Generated<string>;
+  code: string;
+  name: string;
+  is_active: Generated<boolean>;
+  receipt_required_above: NullableNumeric;
+  max_amount_per_item: NullableNumeric;
+  cap_is_hard: Generated<boolean>;
+  requires_customer_or_project: Generated<boolean>;
+  requires_remark: Generated<boolean>;
+  display_order: Generated<number>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+}
+
+export interface ExpenseClaimsTable {
+  id: Generated<string>;
+  claim_number: string;
+  employee_id: string;
+  trip_id: string | null;
+  visit_id: string | null;
+  title: string;
+  remarks: string | null;
+  period_from: string | null;
+  period_to: string | null;
+  region_id: string | null;
+  manager_id: string | null;
+  status: Generated<ExpenseClaimStatus>;
+  total_claimed: Generated<Numeric>;
+  total_approved: NullableNumeric;
+  currency: Generated<string>;
+  submitted_at: Date | null;
+  manager_actioned_at: Date | null;
+  accounts_actioned_at: Date | null;
+  processed_at: Date | null;
+  tally_voucher_ref: string | null;
+  payment_reference: string | null;
+  payment_date: string | null;
+  last_reviewer_comment: string | null;
+  copied_from_claim_id: string | null;
+  legacy_expense_id: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+  deleted_at: Date | null;
+}
+
+export interface ExpenseItemsTable {
+  id: Generated<string>;
+  claim_id: string;
+  expense_date: string;
+  category_id: string;
+  category_name: string;
+  amount: Numeric;
+  approved_amount: NullableNumeric;
+  purpose: string;
+  customer_id: string | null;
+  project_id: string | null;
+  remarks: string | null;
+  late_submission_reason: string | null;
+  item_status: Generated<ExpenseItemStatus>;
+  reviewer_comment: string | null;
+  category_details: JsonColumn;
+  duplicate_confirmed_at: Date | null;
+  duplicate_of_item_id: string | null;
+  manager_approved_amount: NullableNumeric;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+  deleted_at: Date | null;
+}
+
+export interface ExpenseAttachmentsTable {
+  id: Generated<string>;
+  item_id: string;
+  file_name: string;
+  storage_key: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  duplicate_of_attachment_id: string | null;
+  uploaded_by: string;
+  uploaded_at: Generated<Date>;
+  deleted_at: Date | null;
+}
+
+export interface ExpenseApprovalHistoryTable {
+  id: Generated<string>;
+  claim_id: string;
+  from_status: string | null;
+  to_status: string;
+  action: string;
+  actor_id: string | null;
+  actor_role: string | null;
+  comment: string | null;
+  metadata: NullableJsonColumn;
+  created_at: Generated<Date>;
+}
+
 export interface TasksTable {
   id: Generated<string>;
   title: string;
@@ -1502,6 +1629,12 @@ export interface Database {
   sla_rules: SlaRulesTable;
   service_settings: ServiceSettingsTable;
   expenses: ExpensesTable;
+  projects: ProjectsTable;
+  expense_categories: ExpenseCategoriesTable;
+  expense_claims: ExpenseClaimsTable;
+  expense_items: ExpenseItemsTable;
+  expense_attachments: ExpenseAttachmentsTable;
+  expense_approval_history: ExpenseApprovalHistoryTable;
   tasks: TasksTable;
   task_blockers: TaskBlockersTable;
   attachments: AttachmentsTable;

@@ -24,7 +24,7 @@ import { TendersModule } from './modules/tenders/tenders.module.js';
 import { ProposalsModule } from './modules/proposals/proposals.module.js';
 import { DeliveriesModule } from './modules/deliveries/deliveries.module.js';
 import { ServiceModule } from './modules/service/service.module.js';
-import { ExpensesModule } from './modules/expenses/expenses.module.js';
+import { ExpenseManagementModule } from './modules/expense-management/expense-management.module.js';
 import { TasksModule } from './modules/tasks/tasks.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
@@ -62,7 +62,7 @@ import { AuditModule } from './modules/audit/audit.module.js';
     ProposalsModule,
     DeliveriesModule,
     ServiceModule,
-    ExpensesModule,
+    ExpenseManagementModule,
     TasksModule,
     NotificationsModule,
     DashboardModule,

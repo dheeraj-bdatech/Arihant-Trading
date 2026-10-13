@@ -105,6 +105,7 @@ export class FollowUpsService {
         'follow_ups.interaction_id',
         'follow_ups.assigned_to',
         'follow_ups.due_date',
+        'follow_ups.due_time',
         'follow_ups.status',
         'follow_ups.remarks',
         'follow_ups.outcome',
@@ -116,6 +117,7 @@ export class FollowUpsService {
         'organisations.city as organisation_city',
         'contacts.full_name as contact_name',
         'contacts.mobile as contact_mobile',
+        'contacts.designation as contact_designation',
         'contacts.email as contact_email',
         'leads.lead_status',
         'assignee.full_name as assigned_to_name',
@@ -182,6 +184,7 @@ export class FollowUpsService {
           interaction_id: dto.interaction_id || null,
           assigned_to: dto.assigned_to,
           due_date: dto.due_date,
+          due_time: dto.due_time || null,
           status: 'pending',
           remarks: dto.remarks || null,
         })
@@ -280,6 +283,7 @@ export class FollowUpsService {
             lead_id: existing.lead_id,
             assigned_to: existing.assigned_to,
             due_date: dto.next_followup_date,
+            due_time: dto.next_followup_time || null,
             status: 'pending',
             remarks: `Continuation: ${dto.outcome}`,
           })
@@ -343,8 +347,9 @@ export class FollowUpsService {
         .updateTable('follow_ups')
         .set({
           due_date: dto.new_due_date,
+          due_time: dto.new_due_time || null,
           remarks: dto.reason
-            ? `${existing.remarks || ''}\nRescheduled to ${dto.new_due_date}: ${dto.reason}`.trim()
+            ? `${existing.remarks || ''}\nRescheduled to ${dto.new_due_date}${dto.new_due_time ? ` ${dto.new_due_time}` : ''}: ${dto.reason}`.trim()
             : existing.remarks,
           updated_at: new Date(),
         })
