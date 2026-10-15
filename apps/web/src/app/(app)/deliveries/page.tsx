@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useState, useEffect } from 'react';
 import {
   Truck,
@@ -20,6 +21,9 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useOpenParam } from '@/lib/use-open-param';
+import { canRead } from '@/lib/module-access';
+import { canOpen } from '@/lib/route-access';
 import {
   Button,
   Badge,
@@ -41,6 +45,8 @@ export default function DeliveriesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+  // Deep link from linked-records panels: /deliveries?search=<SO / delivery no>
+  useOpenParam(setSearchQuery, true, 'search');
 
 
   // Modals
@@ -57,11 +63,23 @@ export default function DeliveriesPage() {
     delivery_location: '',
     product_model: '',
     serial_numbers: '',
-    carrier_name: 'BlueDart Express Logistics',
-    tracking_number: `TRK-${Math.floor(100000 + Math.random() * 900000)}`,
+    carrier_name: '',
+    tracking_number: '',
     order_reference: `PO/2026/${Math.floor(1000 + Math.random() * 9000)}`,
     remarks: '',
+    tender_id: '',
   });
+
+  // Won tenders of the selected customer, so a delivery can be raised against the bid it fulfils.
+  const [orgTenders, setOrgTenders] = useState<any[]>([]);
+  useEffect(() => {
+    setOrgTenders([]);
+    if (!newDelivery.organisation_id || !canRead(user?.role, 'tenders')) return;
+    api
+      .get('/tenders', { organisation_id: newDelivery.organisation_id, limit: 50 })
+      .then((res: any) => setOrgTenders((res?.data || []).filter((t: any) => ['won', 'partially_won', 'WON', 'PARTIALLY_WON'].includes(t.status))))
+      .catch(() => setOrgTenders([]));
+  }, [newDelivery.organisation_id, user?.role]);
 
   // Status update form
   const [updateForm, setUpdateForm] = useState({
@@ -133,12 +151,19 @@ export default function DeliveriesPage() {
         assigned_to: newDelivery.assigned_to || user?.id,
         delivery_date: newDelivery.delivery_date,
         delivery_location: newDelivery.delivery_location || undefined,
-        product_model: newDelivery.product_model || undefined,
-        serial_numbers: newDelivery.serial_numbers || undefined,
-        carrier_name: newDelivery.carrier_name || undefined,
-        tracking_number: newDelivery.tracking_number || undefined,
+        // API field names: the serial is what the service portal matches a breakdown report back to this customer by.
+        model: newDelivery.product_model || undefined,
+        equipment_serial: newDelivery.serial_numbers.trim() || undefined,
         order_reference: newDelivery.order_reference || undefined,
-        remarks: newDelivery.remarks || undefined,
+        tender_id: newDelivery.tender_id || undefined,
+        // Deliveries have no carrier/LR columns; keep what was entered in the remarks instead of dropping it.
+        remarks:
+          [
+            newDelivery.remarks.trim(),
+            [newDelivery.carrier_name.trim() && `Carrier: ${newDelivery.carrier_name.trim()}`, newDelivery.tracking_number.trim() && `LR/Tracking: ${newDelivery.tracking_number.trim()}`].filter(Boolean).join(' · '),
+          ]
+            .filter(Boolean)
+            .join('\n') || undefined,
       });
 
       setIsCreateOpen(false);
@@ -284,8 +309,23 @@ export default function DeliveriesPage() {
                       {delivery.delivery_no}
                     </span>
                     <h3 className="font-serif text-base font-bold text-[#14213D] line-clamp-1 mt-0.5">
-                      {delivery.organisation_name || 'Defence / Security Buyer'}
+                      {canOpen(user?.role, '/leads') ? (
+                        <Link href={`/leads?customer=${delivery.organisation_id}`} className="hover:underline hover:text-[#0F5E63]" title="Open Customer 360">
+                          {delivery.organisation_name || 'Defence / Security Buyer'}
+                        </Link>
+                      ) : (
+                        delivery.organisation_name || 'Defence / Security Buyer'
+                      )}
                     </h3>
+                    {delivery.tender_id && (
+                      canOpen(user?.role, '/tenders') ? (
+                        <Link href={`/tenders?highlight=${delivery.tender_id}`} className="text-[11px] font-semibold text-[#0F5E63] hover:underline">
+                          Tender {delivery.tender_no}
+                        </Link>
+                      ) : (
+                        <span className="text-[11px] text-[#4A5568]">Tender {delivery.tender_no}</span>
+                      )
+                    )}
                   </div>
                   <div>{getStatusBadge(delivery.status)}</div>
                 </div>
@@ -298,11 +338,19 @@ export default function DeliveriesPage() {
                     <span className="truncate">{delivery.product_name || 'Security Scanning Equipment'}</span>
                   </div>
 
-                  {delivery.product_model && (
+                  {delivery.model && (
                     <div className="flex items-center gap-2">
                       <Shield className="h-4 w-4 text-[#4A5568] shrink-0" />
                       <span>Model:</span>
-                      <span className="font-mono text-[#14213D]">{delivery.product_model}</span>
+                      <span className="font-mono text-[#14213D]">{delivery.model}</span>
+                    </div>
+                  )}
+
+                  {delivery.equipment_serial && (
+                    <div className="flex items-center gap-2">
+                      <Shield className="h-4 w-4 text-[#4A5568] shrink-0" />
+                      <span>Serial:</span>
+                      <span className="font-mono text-[#14213D] truncate">{delivery.equipment_serial}</span>
                     </div>
                   )}
 
@@ -321,14 +369,6 @@ export default function DeliveriesPage() {
                     </span>
                   </div>
 
-                  {delivery.tracking_number && (
-                    <div className="flex items-center gap-2">
-                      <Truck className="h-4 w-4 text-[#4A5568] shrink-0" />
-                      <span className="font-mono bg-[#FBFAF7] px-1.5 py-0.5 rounded border border-[#DCD8CE]">
-                        {delivery.carrier_name || 'Carrier'}: {delivery.tracking_number}
-                      </span>
-                    </div>
-                  )}
 
                   {delivery.assigned_name && (
                     <div className="flex items-center gap-2">
@@ -398,7 +438,7 @@ export default function DeliveriesPage() {
             </label>
             <select
               value={newDelivery.organisation_id}
-              onChange={(e) => setNewDelivery({ ...newDelivery, organisation_id: e.target.value })}
+              onChange={(e) => setNewDelivery({ ...newDelivery, organisation_id: e.target.value, tender_id: '' })}
               className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
               required
             >
@@ -410,6 +450,25 @@ export default function DeliveriesPage() {
               ))}
             </select>
           </div>
+
+          {canRead(user?.role, 'tenders') && newDelivery.organisation_id && (
+            <div>
+              <label className="block text-xs font-semibold text-[#14213D] mb-1">Against won tender (optional)</label>
+              <select
+                value={newDelivery.tender_id}
+                onChange={(e) => setNewDelivery({ ...newDelivery, tender_id: e.target.value })}
+                className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
+                disabled={!orgTenders.length}
+              >
+                <option value="">{orgTenders.length ? 'Not linked to a tender' : 'No won tenders for this customer'}</option>
+                {orgTenders.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.tender_number || t.tender_no}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>

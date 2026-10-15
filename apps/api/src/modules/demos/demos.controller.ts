@@ -117,6 +117,9 @@ export class DemosController {
     @Query('location') location?: string,
     @Query('date_from') date_from?: string,
     @Query('date_to') date_to?: string,
+    @Query('lead_id') lead_id?: string,
+    @Query('tender_id') tender_id?: string,
+    @Query('service_ticket_id') service_ticket_id?: string,
     @CurrentUser() user?: AuthUser,
   ) {
     return this.demosService.findAllDemos(
@@ -128,6 +131,9 @@ export class DemosController {
         assigned_to,
         requested_by,
         organisation_id,
+        lead_id,
+        tender_id,
+        service_ticket_id,
         product_id,
         location,
         date_from,

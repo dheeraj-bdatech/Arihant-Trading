@@ -608,18 +608,6 @@ export class NotificationListener {
     });
   }
 
-  @OnEvent(AppEvents.TASK_BLOCKED)
-  async handleTaskBlocked(payload: { taskId: string; title: string; raisedById: string; managerId: string; blockerType: string; description: string }) {
-    await this.createAndPushNotification({
-      userId: payload.managerId,
-      type: 'task_blocked',
-      title: 'Task Execution Blocked',
-      body: `Task "${payload.title}" is blocked: ${payload.description}`,
-      entityType: 'task',
-      entityId: payload.taskId,
-    });
-  }
-
   @OnEvent(AppEvents.VISIT_ALSO_MEET)
   async handleVisitAlsoMeet(payload: { visitId: string; employeeId: string; managerName: string; instructions: string }) {
     await this.createAndPushNotification({
@@ -739,18 +727,6 @@ export class NotificationListener {
         entityId: payload.visitId,
       });
     }
-  }
-
-  @OnEvent(AppEvents.TASK_ASSIGNED)
-  async handleTaskAssigned(payload: { taskId: string; title: string; assignedTo: string; deadline?: string }) {
-    await this.createAndPushNotification({
-      userId: payload.assignedTo,
-      type: 'task_assigned',
-      title: 'New Operational Task Assigned',
-      body: `You have been assigned: "${payload.title}" (Due: ${payload.deadline || 'Immediate'})`,
-      entityType: 'task',
-      entityId: payload.taskId,
-    });
   }
 
   @OnEvent(AppEvents.TENDER_DEADLINE_SOON)

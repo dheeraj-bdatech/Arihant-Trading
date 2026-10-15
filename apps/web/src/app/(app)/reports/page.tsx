@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   FileSpreadsheet,
   Download,
@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { canRead, type ReadableModule } from '@/lib/module-access';
 import {
   Card,
   CardHeader,
@@ -51,17 +52,22 @@ const fmtDate = (v: unknown): string => {
 };
 const rows = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : Array.isArray(res?.items) ? res.items : []);
 
+// `access` = the module read permission the dataset needs; expense reports are scoped server-side for every role.
 const DATASETS = [
-  { key: 'tenders', label: 'GeM Bids', url: '/tenders' },
-  { key: 'leads', label: 'Sales Pipeline', url: '/leads' },
-  { key: 'visits', label: 'Field Itineraries', url: '/visits' },
-  { key: 'expenses', label: 'Expense Claims', url: '/expense-reports' },
-  { key: 'service', label: 'Service Desk', url: '/service/tickets' },
-] as const;
+  { key: 'tenders', label: 'GeM Bids', url: '/tenders', access: 'tenders' },
+  { key: 'leads', label: 'Sales Pipeline', url: '/leads', access: 'leads' },
+  { key: 'visits', label: 'Field Itineraries', url: '/visits', access: 'visits' },
+  { key: 'expenses', label: 'Expense Claims', url: '/expense-reports', access: null },
+  { key: 'service', label: 'Service Desk', url: '/service/tickets', access: 'service' },
+] as const satisfies readonly { key: string; label: string; url: string; access: ReadableModule | null }[];
 
 export default function ConsolidatedReportsPage() {
   const { user } = useAuth();
+  const visible = useMemo(() => new Set<string>(DATASETS.filter((ds) => !ds.access || canRead(user?.role, ds.access)).map((ds) => ds.key)), [user?.role]);
   const [activeTab, setActiveTab] = useState('tenders');
+  useEffect(() => {
+    if (!visible.has(activeTab)) setActiveTab(DATASETS.find((ds) => visible.has(ds.key))?.key || 'expenses');
+  }, [visible, activeTab]);
   const [isLoading, setIsLoading] = useState(true);
   const [failed, setFailed] = useState<string[]>([]);
 
@@ -85,7 +91,7 @@ export default function ConsolidatedReportsPage() {
         bad.push(ds.label);
         return null;
       });
-    const [tendersRes, leadsRes, visitsRes, expensesRes, serviceRes] = await Promise.all(DATASETS.map(load));
+    const [tendersRes, leadsRes, visitsRes, expensesRes, serviceRes] = await Promise.all(DATASETS.map((ds) => (visible.has(ds.key) ? load(ds) : null)));
     setTenders(rows(tendersRes));
     setLeads(rows(leadsRes));
     setVisits(rows(visitsRes));
@@ -94,7 +100,7 @@ export default function ConsolidatedReportsPage() {
     setTickets(rows(serviceRes));
     setFailed(bad);
     setIsLoading(false);
-  }, []);
+  }, [visible]);
 
   useEffect(() => {
     fetchAllReportData();
@@ -260,37 +266,12 @@ export default function ConsolidatedReportsPage() {
       />
 
       {/* KPI Highlights Bar */}
-      <StatGrid cols={5}>
-        <StatCard
-          title="Live GeM Bids"
-          value={tenders.length}
-          icon={<FileText className="h-4 w-4" />}
-          variant="primary"
-        />
-        <StatCard
-          title="Active Leads"
-          value={leads.length}
-          icon={<Target className="h-4 w-4" />}
-          variant="primary"
-        />
-        <StatCard
-          title="Field Visits"
-          value={visits.length}
-          icon={<Calendar className="h-4 w-4" />}
-          variant="primary"
-        />
-        <StatCard
-          title="Expense Claims"
-          value={expenses.length}
-          icon={<Receipt className="h-4 w-4" />}
-          variant="amber"
-        />
-        <StatCard
-          title="Service Tickets"
-          value={tickets.length}
-          icon={<Wrench className="h-4 w-4" />}
-          variant="emerald"
-        />
+      <StatGrid cols={Math.min(5, Math.max(2, visible.size)) as 2 | 3 | 4 | 5}>
+        {visible.has('tenders') && <StatCard title="Live GeM Bids" value={tenders.length} icon={<FileText className="h-4 w-4" />} variant="primary" />}
+        {visible.has('leads') && <StatCard title="Active Leads" value={leads.length} icon={<Target className="h-4 w-4" />} variant="primary" />}
+        {visible.has('visits') && <StatCard title="Field Visits" value={visits.length} icon={<Calendar className="h-4 w-4" />} variant="primary" />}
+        {visible.has('expenses') && <StatCard title="Expense Claims" value={expenses.length} icon={<Receipt className="h-4 w-4" />} variant="amber" />}
+        {visible.has('service') && <StatCard title="Service Tickets" value={tickets.length} icon={<Wrench className="h-4 w-4" />} variant="emerald" />}
       </StatGrid>
 
       {/* Tabs + search + filter: one box */}
@@ -302,7 +283,7 @@ export default function ConsolidatedReportsPage() {
             { id: 'visits', label: 'Field Itineraries', count: visits.length },
             { id: 'expenses', label: 'Expense Claims', count: expenses.length },
             { id: 'service', label: 'Service Desk', count: tickets.length },
-          ]}
+          ].filter((t) => visible.has(t.id))}
           activeTab={activeTab}
           onChange={(id) => {
             setActiveTab(id);

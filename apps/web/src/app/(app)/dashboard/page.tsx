@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { canRead } from '@/lib/module-access';
 import { PageContainer, PageLoader } from '@/components/ui';
 import { DeadlineChip } from '@/components/tender/Countdown';
 import {
@@ -468,11 +469,11 @@ export default function DashboardPage() {
       const needsSvc = ['service_team', 'management', 'regional_manager', 'admin'].includes(role);
       const [m, closing, visits, leads, demos, service, expenses, tasks, svc, users, products, audit] = await Promise.all([
         safe(api.get<DashboardMetricsDto>('/dashboard/metrics')),
-        safe(api.get('/tenders', { closingSoonOnly: true, limit: 6 })),
-        safe(api.get('/visits', { limit: 6 })),
-        safe(api.get('/leads', { limit: 6 })),
-        safe(api.get('/demos', { limit: 6 })),
-        safe(api.get('/service', { limit: 20 })),
+        canRead(role, 'tenders') ? safe(api.get('/tenders', { closingSoonOnly: true, limit: 6 })) : Promise.resolve(null),
+        canRead(role, 'visits') ? safe(api.get('/visits', { limit: 6 })) : Promise.resolve(null),
+        canRead(role, 'leads') ? safe(api.get('/leads', { limit: 6 })) : Promise.resolve(null),
+        canRead(role, 'demos') ? safe(api.get('/demos', { limit: 6 })) : Promise.resolve(null),
+        canRead(role, 'service') ? safe(api.get('/service', { limit: 20 })) : Promise.resolve(null),
         safe(api.get('/expense-claims', { page_size: 8, sort_by: 'updated_at' })),
         safe(api.get('/tasks', { limit: 8 })),
         needsSvc ? safe(api.get('/service/stats')) : Promise.resolve(null),

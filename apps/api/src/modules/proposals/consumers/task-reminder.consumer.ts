@@ -1,9 +1,9 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../../common/database/database.module.js';
 import { OutboxService, type DomainEventEnvelope } from '../../../common/outbox/outbox.service.js';
-import type { Database } from '@arihant/shared';
+import { istEndOfDay, todayInKolkata, type Database } from '@arihant/shared';
 
 @Injectable()
 export class ProposalTaskReminderConsumer {
@@ -37,10 +37,14 @@ export class ProposalTaskReminderConsumer {
       const dueDateStr = payload?.nextFollowUpDate || payload?.scheduledDate;
 
       if (ownerId && dueDateStr && aggregateId) {
-        // Upsert or create task in tasks table
+        // Module 8: a follow-up date means 23:59:59 IST that day; every reschedule is recorded so the
+        // delay classification stays honest (original_deadline never moves).
+        const raw = String(dueDateStr);
+        const deadline = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? istEndOfDay(raw) : new Date(raw);
+        if (Number.isNaN(deadline.getTime())) throw new Error(`Invalid follow-up date "${raw}"`);
         const existingTask = await this.db
           .selectFrom('tasks')
-          .select('id')
+          .select(['id', 'deadline'])
           .where('related_entity_type', '=', 'proposal')
           .where('related_entity_id', '=', aggregateId)
           .where('assigned_to', '=', ownerId)
@@ -48,16 +52,28 @@ export class ProposalTaskReminderConsumer {
           .executeTakeFirst();
 
         if (existingTask) {
-          await this.db
-            .updateTable('tasks')
-            .set({
-              deadline: dueDateStr,
-              updated_at: new Date(),
-            })
-            .where('id', '=', existingTask.id)
-            .execute();
+          if (!existingTask.deadline || new Date(existingTask.deadline).getTime() !== deadline.getTime()) {
+            await this.db.transaction().execute(async (trx) => {
+              await trx
+                .updateTable('tasks')
+                .set({ deadline, version: sql`version + 1`, updated_at: new Date() })
+                .where('id', '=', existingTask.id)
+                .execute();
+              await trx
+                .insertInto('task_deadline_changes')
+                .values({ task_id: existingTask.id, old_deadline: existingTask.deadline, new_deadline: deadline, reason: `Proposal follow-up rescheduled (${eventType})`, source: 'linked_reschedule' })
+                .execute();
+              await trx
+                .insertInto('task_updates')
+                .values({ task_id: existingTask.id, author_id: null, kind: 'linked_reschedule', comment: 'Follow-up date moved on the proposal', metadata: JSON.stringify({ event_id: eventId }) })
+                .execute();
+            });
+          }
         } else {
-          await this.db
+          const org = await this.db.selectFrom('proposals').select(['customer_id', 'organisation_id']).where('id', '=', aggregateId).executeTakeFirst();
+          const customerId = org?.customer_id || org?.organisation_id || null;
+          const category = await this.db.selectFrom('task_categories').select('id').where('code', '=', customerId ? 'CUSTOMER' : 'GENERAL').executeTakeFirst();
+          const created = await this.db
             .insertInto('tasks')
             .values({
               title: `Proposal Follow-up: ${payload?.proposalNo || ''}`,
@@ -67,14 +83,24 @@ export class ProposalTaskReminderConsumer {
               task_type: 'follow_up',
               related_entity_type: 'proposal',
               related_entity_id: aggregateId,
-              start_date: new Date().toISOString().split('T')[0],
-              deadline: dueDateStr,
+              customer_id: customerId,
+              ...(category ? { category_id: category.id } : {}),
+              source: 'proposal_followup',
+              start_date: todayInKolkata(),
+              deadline,
               expected_outcome: 'Log customer decision or reschedule follow-up interaction',
               status: 'not_started',
               created_at: new Date(),
               updated_at: new Date(),
             })
-            .execute();
+            .returning('id')
+            .executeTakeFirst();
+          if (created) {
+            await this.db
+              .insertInto('task_updates')
+              .values({ task_id: created.id, author_id: null, kind: 'created', status_to: 'not_started', comment: 'Created from a proposal follow-up', metadata: JSON.stringify({ event_id: eventId }) })
+              .execute();
+          }
         }
       }
 

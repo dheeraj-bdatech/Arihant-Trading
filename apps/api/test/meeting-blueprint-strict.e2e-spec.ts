@@ -5,6 +5,7 @@ import { AppModule } from '../src/app.module';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { Kysely } from 'kysely';
 import { Database as DB } from '@arihant/shared';
+import { purgeTaskModule } from './helpers/reset-tasks';
 
 describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => {
   let app: INestApplication;
@@ -54,12 +55,12 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
     db = moduleFixture.get<Kysely<DB>>('KYSELY_DB');
 
     // Clean test state for isolation
+    // Module 8 tasks reference demos / tenders / service tickets: clear them first.
+    await purgeTaskModule(db);
     await db.deleteFrom('demo_reservations').execute();
     await db.deleteFrom('demo_outcomes').execute();
     await db.deleteFrom('demos').execute();
     await db.updateTable('demo_equipment').set({ availability_status: 'available', reserved_until: null }).execute();
-    await db.deleteFrom('task_blockers').execute();
-    await db.deleteFrom('tasks').execute();
     await db.deleteFrom('service_reports').execute();
     await db.deleteFrom('service_tickets').execute();
     await db.deleteFrom('expenses').execute();
@@ -580,28 +581,33 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
           priority: 'high',
         });
       expect([200, 201]).toContain(res.status);
-      taskId = res.body.id;
+      taskId = res.body.data[0].id;
       expect(taskId).toBeDefined();
     });
 
     it('raises an external dependency blocker (Customer / Committee Delay) (§41)', async () => {
+      const task = await request(app.getHttpServer()).get(`/api/tasks/${taskId}`).set('Authorization', `Bearer ${salesToken}`);
       const res = await request(app.getHttpServer())
         .post(`/api/tasks/${taskId}/blockers`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          blocker_type: 'customer',
+          version: task.body.version,
+          blocker_type: 'customer_dependency',
+          dependency_customer_id: orgId,
           description: 'Awaiting revised Annexure B technical specifications from Bihar Police Purchase Committee.',
         });
       expect([200, 201]).toContain(res.status);
+      expect(res.body.status).toBe('blocked');
     });
 
-    it('retrieves employee performance evidence dossier (Strictly NO Auto Salary Deduction) (§4, §43)', async () => {
+    it('retrieves employee performance evidence (strictly no automatic salary deduction) (§4, §43)', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/tasks/salary-evidence')
+        .get('/api/performance/evidence')
+        .query({ employee_id: salesUserId })
         .set('Authorization', `Bearer ${mgmtToken}`);
       expect(res.status).toBe(200);
-      expect(res.body.disclaimer).toContain('automated salary or payroll deductions are strictly prohibited');
-      expect(res.body.dossiers).toBeDefined();
+      expect(res.body.disclaimer).toContain('Decisions on salary, incentive or deductions are made by authorised management/accounts');
+      expect(res.body.blockers.raised).toBeGreaterThanOrEqual(1);
     });
   });
 });

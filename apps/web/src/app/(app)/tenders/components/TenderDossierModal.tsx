@@ -42,6 +42,8 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { RelatedRecords } from '@/components/links/RelatedRecords';
+import { GuardedLink } from '@/components/links/GuardedLink';
 
 interface TenderDossierModalProps {
   isOpen: boolean;
@@ -393,6 +395,7 @@ export function TenderDossierModal({
   });
 
   const [actionLoading, setActionLoading] = useState(false);
+  const [linkedRefresh, setLinkedRefresh] = useState(0); // reloads the linked-records panel after a sales order
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Executive Decision state on Overview Tab
@@ -723,6 +726,7 @@ export function TenderDossierModal({
         type: 'success',
         text: `Sales Order registered in Deliveries pipeline: Ref ${res.sales_order?.delivery_no || res.order_number}`,
       });
+      setLinkedRefresh((n) => n + 1);
       onTenderUpdated?.();
     } catch (err: any) {
       setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to create sales order' });
@@ -904,7 +908,13 @@ export function TenderDossierModal({
                 <Card className="p-3.5 space-y-2 border-[#DCD8CE]">
                   <span className="text-[10px] font-bold text-[#4A5568] uppercase block">Authority & Location</span>
                   <div className="space-y-1">
-                    <p className="font-semibold text-xs text-[#14213D]">{tender.organisation_name || tender.organisation}</p>
+                    {tender.organisation_id ? (
+                      <GuardedLink href={`/leads?customer=${tender.organisation_id}`} className="font-semibold text-xs text-[#0F5E63] hover:underline block" title="Open Customer 360">
+                        {tender.organisation_name || tender.organisation}
+                      </GuardedLink>
+                    ) : (
+                      <p className="font-semibold text-xs text-[#14213D]">{tender.organisation_name || tender.organisation}</p>
+                    )}
                     <p className="text-[11px] text-[#4A5568]">{tender.department || 'General Administration'}</p>
                     <p className="text-[11px] text-[#4A5568]">
                       {tender.city || 'Delhi'}, {tender.state || 'Delhi'} • Region: {tender.region_name || 'North'}
@@ -2200,6 +2210,13 @@ export function TenderDossierModal({
                   )}
                 </Card>
               </div>
+
+              <RelatedRecords
+                to={{ kind: 'tender', id: tender.id, organisationId: tender.organisation_id }}
+                sections={['demos', 'deliveries', 'tasks', 'proposals', 'service']}
+                description="Demos run for this bid, sales orders raised from it, its tasks, and the buyer's proposals and service tickets."
+                refreshKey={linkedRefresh}
+              />
             </div>
           )}
 

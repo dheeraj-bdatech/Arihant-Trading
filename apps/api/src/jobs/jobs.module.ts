@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { DeadlineRemindersJob } from './deadline-reminders.job.js';
-import { RecurringTasksJob } from './recurring-tasks.job.js';
 
+// Module 8 task jobs (recurring generation, overdue, reminders, SLA, digest) live in TasksModule (task-jobs.service.ts).
 @Module({
-  providers: [DeadlineRemindersJob, RecurringTasksJob],
-  exports: [DeadlineRemindersJob, RecurringTasksJob],
+  providers: [DeadlineRemindersJob],
+  exports: [DeadlineRemindersJob],
 })
 export class JobsModule {}

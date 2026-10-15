@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useState, useEffect, useTransition, useCallback } from 'react';
 import {
   Bell,
@@ -39,6 +40,9 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useOpenParam } from '@/lib/use-open-param';
+import { canOpen } from '@/lib/route-access';
+import { RelatedRecords } from '@/components/links/RelatedRecords';
 import { getSocket } from '@/lib/socket';
 import {
   Button,
@@ -120,7 +124,7 @@ export default function ProposalsPage() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedProposal, setSelectedProposal] = useState<any | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-  const [detailsTab, setDetailsTab] = useState<'overview' | 'followups' | 'history'>('overview');
+  const [detailsTab, setDetailsTab] = useState<'overview' | 'followups' | 'history' | 'linked'>('overview');
   const [followups, setFollowups] = useState<any[]>([]);
   const [activities, setActivities] = useState<any[]>([]);
 
@@ -323,6 +327,12 @@ export default function ProposalsPage() {
       socket.off('proposal:overdue_alert', handleRealtimeProposalEvent);
     };
   }, [fetchProposals]);
+
+  // Deep link from notifications: /proposals?open=<proposal id>
+  useOpenParam(async (id) => {
+    const proposal = await api.get(`/proposals/${id}`).catch(() => null);
+    if (proposal) openProposalDetails(proposal);
+  });
 
   // Fetch proposal details, follow-ups, and history
   const openProposalDetails = async (proposal: any) => {
@@ -1898,6 +1908,7 @@ export default function ProposalsPage() {
                 { id: 'overview', label: 'Overview & Details', icon: <Briefcase className="h-4 w-4" /> },
                 { id: 'followups', label: `Follow-ups (${followups.length})`, icon: <MessageSquare className="h-4 w-4" /> },
                 { id: 'history', label: `Activity History (${activities.length})`, icon: <History className="h-4 w-4" /> },
+                { id: 'linked', label: 'Linked Records', icon: <Layers className="h-4 w-4" /> },
               ]}
               activeTab={detailsTab}
               onChange={(id) => setDetailsTab(id as any)}
@@ -1916,7 +1927,22 @@ export default function ProposalsPage() {
                   <div className="space-y-2 text-xs">
                     <div>
                       <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Customer Organisation</span>
-                      <span className="font-bold text-[#14213D] text-sm">{selectedProposal.organisation_name}</span>
+                      {canOpen(user?.role, '/leads') && (selectedProposal.customer_id || selectedProposal.organisation_id) ? (
+                        <Link
+                          href={`/leads?customer=${selectedProposal.customer_id || selectedProposal.organisation_id}`}
+                          className="font-bold text-[#0F5E63] text-sm hover:underline"
+                          title="Open Customer 360"
+                        >
+                          {selectedProposal.organisation_name}
+                        </Link>
+                      ) : (
+                        <span className="font-bold text-[#14213D] text-sm">{selectedProposal.organisation_name}</span>
+                      )}
+                      {selectedProposal.lead_id && canOpen(user?.role, '/leads') && (
+                        <Link href={`/leads?open=${selectedProposal.lead_id}`} className="ml-2 text-[11px] font-semibold text-[#0F5E63] hover:underline">
+                          Source lead
+                        </Link>
+                      )}
                       {selectedProposal.organisation_city && (
                         <span className="text-[#4A5568] ml-2">({selectedProposal.organisation_city}, {selectedProposal.organisation_state})</span>
                       )}
@@ -2029,6 +2055,16 @@ export default function ProposalsPage() {
                   </Card>
                 )}
               </div>
+            )}
+
+            {/* Tab 4: everything linked to this proposal across modules */}
+            {detailsTab === 'linked' && (
+              <RelatedRecords
+                to={{ kind: 'proposal', id: selectedProposal.id, organisationId: selectedProposal.customer_id || selectedProposal.organisation_id }}
+                sections={['tasks', 'demos', 'tenders', 'service']}
+                description="Follow-up tasks created from this proposal, and the customer's demos, tenders and service tickets."
+                addTask={{ title: `Proposal follow-up: ${selectedProposal.proposal_no || selectedProposal.proposal_number || ''}`.trim() }}
+              />
             )}
 
             {/* Tab 2: Follow-up Tracking */}

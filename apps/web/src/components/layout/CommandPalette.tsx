@@ -194,7 +194,7 @@ export const CommandPalette: React.FC<{
             title: l.organisation_name || 'Prospect Client',
             subtitle: `${l.product_name || 'Hardware'}${val !== undefined && val !== null ? ` · Est. ${formatLakh(Number(val))}` : ''}`,
             category: 'Lead' as const,
-            href: `/leads?highlight=${l.id}`,
+            href: `/leads?open=${l.id}`,
           };
         });
 

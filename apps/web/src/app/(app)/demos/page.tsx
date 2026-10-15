@@ -39,6 +39,11 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useOpenParam } from '@/lib/use-open-param';
+import { canRead } from '@/lib/module-access';
+import { canOpen } from '@/lib/route-access';
+import { formatINR } from '@arihant/shared';
+import { RelatedRecords } from '@/components/links/RelatedRecords';
 import {
   Button,
   Badge,
@@ -224,6 +229,13 @@ function DemosPageContent() {
   // Expanded table rows (detail panels)
   const router = useRouter();
 
+  // Deep link from visits, tasks and notifications: /demos?open=<demo id> shows that demo's card in a dialog.
+  const [linkedDemo, setLinkedDemo] = useState<any | null>(null);
+  useOpenParam(async (id) => {
+    const demo = await api.get(`/demos/${id}`).catch(() => null);
+    if (demo) setLinkedDemo(demo);
+  });
+
   // Dedicated Failures Tab Filter & Modal States
   const [failSearchQuery, setFailSearchQuery] = useState('');
   const [failReasonFilter, setFailReasonFilter] = useState('all');
@@ -370,7 +382,19 @@ function DemosPageContent() {
     travel_remarks: '',
     service_escort_required: false,
     service_engineer_id: '',
+    tender_id: '',
+    deal_value: '',
   });
+  // Open tenders of the selected customer, for linking a demo to the bid it supports (drives equipment priority).
+  const [orgTenders, setOrgTenders] = useState<any[]>([]);
+  useEffect(() => {
+    setOrgTenders([]);
+    if (!newDemo.organisation_id || !canRead(user?.role, 'tenders')) return;
+    api
+      .get('/tenders', { organisation_id: newDemo.organisation_id, limit: 50 })
+      .then((res: any) => setOrgTenders((res?.data || []).filter((t: any) => !['lost', 'cancelled', 'not_participating', 'LOST', 'CANCELLED'].includes(t.status))))
+      .catch(() => setOrgTenders([]));
+  }, [newDemo.organisation_id, user?.role]);
 
   // Selected demo equipment unit for Create New Demo Modal
   const selectedNewDemoEquipUnit = useMemo(() => {
@@ -478,6 +502,10 @@ function DemosPageContent() {
     remarks: '',
   });
   const [reserveModalError, setReserveModalError] = useState<string | null>(null);
+  // 409 from the API when the unit is booked for another demo: who holds it and which bid is worth more (§16).
+  const [reserveConflict, setReserveConflict] = useState<any | null>(null);
+  const [overrideReason, setOverrideReason] = useState('');
+  const canOverrideConflict = user?.role === 'management' || user?.role === 'admin';
   const [modalEquipmentUnits, setModalEquipmentUnits] = useState<any[]>([]);
   const [isLoadingModalEquipment, setIsLoadingModalEquipment] = useState(false);
 
@@ -564,7 +592,7 @@ function DemosPageContent() {
         api.get('/demos/equipment'),
         api.get('/organisations', { limit: 100 }),
         api.get('/masters/products'),
-        api.get('/demos/analytics').catch(() => null),
+        canRead(user?.role, 'demoAnalytics') ? api.get('/demos/analytics').catch(() => null) : Promise.resolve(null),
         api.get('/demos/team/availability').catch(() => []),
         api.get('/users', { role: 'service_team' }).catch(() => ({ data: [] })),
       ]);
@@ -711,6 +739,8 @@ function DemosPageContent() {
         travel_to: newDemo.travel_required ? newDemo.travel_to : undefined,
         travel_date: newDemo.travel_required ? newDemo.travel_date : undefined,
         travel_remarks: newDemo.travel_required ? newDemo.travel_remarks : undefined,
+        tender_id: newDemo.tender_id || undefined,
+        deal_value: newDemo.deal_value ? Number(newDemo.deal_value) : undefined,
       };
 
       // Strip all empty string properties so class-validator doesn't attempt UUID regex on ""
@@ -742,6 +772,8 @@ function DemosPageContent() {
         travel_remarks: '',
         service_escort_required: false,
         service_engineer_id: '',
+        tender_id: '',
+        deal_value: '',
       });
       await fetchDemosData();
     } catch (err: any) {
@@ -807,6 +839,8 @@ function DemosPageContent() {
   const handleOpenReserve = (demo: any) => {
     setSelectedDemo(demo);
     setReserveModalError(null);
+    setReserveConflict(null);
+    setOverrideReason('');
     const rawDate = demo.confirmed_date || demo.requested_date || new Date().toISOString();
     const dateStr = typeof rawDate === 'string' ? rawDate.split('T')[0] : new Date(rawDate).toISOString().split('T')[0];
     setReserveForm({
@@ -833,11 +867,15 @@ function DemosPageContent() {
     }
   }, [reserveForm.reserved_from, reserveForm.reserved_to, isReserveEquipOpen]);
 
-  const handleReserveSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleReserveSubmit = async (e: React.FormEvent | null, override = false) => {
+    e?.preventDefault();
     if (!selectedDemo) return;
     setReserveModalError(null);
     setActionError(null);
+    if (override && overrideReason.trim().length < 5) {
+      setReserveModalError('Give a reason for overriding the existing reservation (at least 5 characters).');
+      return;
+    }
 
     const fromDate = (reserveForm.reserved_from || '').split('T')[0];
     const toDate = (reserveForm.reserved_to || fromDate).split('T')[0];
@@ -870,14 +908,16 @@ function DemosPageContent() {
         return;
       }
 
+      const inMaintenance = chosenUnit.effective_status === 'maintenance' || chosenUnit.availability_status === 'maintenance';
       const isUnavailable =
         !chosenUnit.is_available_for_dates ||
         chosenUnit.effective_status === 'reserved' ||
-        chosenUnit.effective_status === 'maintenance' ||
         chosenUnit.availability_status === 'reserved' ||
-        chosenUnit.availability_status === 'maintenance';
+        inMaintenance;
 
-      if (isUnavailable) {
+      // A unit booked for another demo goes to the server, which compares the two bids' values and lets
+      // management override in favour of the higher-value one. Units in maintenance are never bookable.
+      if (inMaintenance || (isUnavailable && !canOverrideConflict)) {
         setReserveModalError(
           `Equipment unit ${chosenUnit.model} (${chosenUnit.serial_no || 'Unit'}) is already reserved for the chosen date window (${fromDate} to ${toDate}). Please select an available unit.`,
         );
@@ -892,7 +932,9 @@ function DemosPageContent() {
         ...reserveForm,
         reserved_from: fromDate,
         reserved_to: toDate,
+        ...(override ? { override_conflict: true, override_reason: overrideReason.trim() } : {}),
       });
+      setReserveConflict(null);
 
       if (res.location_mismatch) {
         setActionSuccess(
@@ -904,6 +946,7 @@ function DemosPageContent() {
       setIsReserveEquipOpen(false);
       await fetchDemosData();
     } catch (err: any) {
+      if (err?.status === 409 && err?.data?.priority_analysis) setReserveConflict(err.data);
       setReserveModalError(err.message || 'Failed to reserve equipment unit.');
     } finally {
       setIsSubmitting(false);
@@ -1224,7 +1267,39 @@ function DemosPageContent() {
   };
 
   // Unified, high-fidelity Demonstration Card for both "Demo Pipeline & Requests" and "My Demos"
-  const renderDemoCard = (demo: any) => (
+  // Cross-module chips on a demo card: the tender it supports, the lead it came from, its customer and any service ticket.
+  const renderDemoLinks = (demo: any) => {
+    const role = user?.role;
+    const chip = 'inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border';
+    const linkChip = `${chip} bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/25 hover:underline`;
+    const plainChip = `${chip} bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE]`;
+    const follow = (href: string) => (canOpen(role, href) ? href : null);
+    const items: { key: string; label: string; href: string | null }[] = [
+      demo.tender_id && { key: 'tender', label: `Tender ${demo.tender_no || ''}`.trim(), href: follow(`/tenders?highlight=${demo.tender_id}`) },
+      demo.lead_id && { key: 'lead', label: 'From lead', href: follow(`/leads?open=${demo.lead_id}`) },
+      demo.organisation_id && canOpen(role, '/leads') && { key: 'customer', label: 'Customer 360', href: `/leads?customer=${demo.organisation_id}` },
+      demo.service_ticket_id && { key: 'ticket', label: `Ticket ${demo.service_ticket_no || ''}`.trim(), href: follow(`/service?open=${demo.service_ticket_id}`) },
+    ].filter(Boolean) as any[];
+    if (!items.length && !demo.deal_value) return null;
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 mt-3">
+        {items.map((it) =>
+          it.href ? (
+            <Link key={it.key} href={it.href} className={linkChip}>
+              {it.label}
+            </Link>
+          ) : (
+            <span key={it.key} className={plainChip}>
+              {it.label}
+            </span>
+          ),
+        )}
+        {demo.deal_value ? <span className={`${plainChip} font-mono`}>Deal value {formatINR(Number(demo.deal_value))}</span> : null}
+      </div>
+    );
+  };
+
+  const renderDemoCard = (demo: any, inDialog = false) => (
     <Card
       key={demo.id}
       className="p-5 bg-white hover:border-[#0F5E63] border border-[#DCD8CE] rounded-xl transition-all shadow-2xs"
@@ -1264,6 +1339,7 @@ function DemosPageContent() {
           <span>Logged: {formatDemoDate(demo.created_at)}</span>
         </div>
       </div>
+      {renderDemoLinks(demo)}
 
       {/* Body Specs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 my-4 text-sm">
@@ -1584,6 +1660,17 @@ function DemosPageContent() {
             <History className="h-3.5 w-3.5 mr-1" />
             Audit Trail
           </Button>
+          {!inDialog && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setLinkedDemo(demo)}
+              className="text-xs text-[#4A5568] hover:text-[#0F5E63] hover:bg-[#E3EFEE]"
+            >
+              <Layers className="h-3.5 w-3.5 mr-1" />
+              Linked Records
+            </Button>
+          )}
         </div>
 
         {(() => {
@@ -2917,7 +3004,7 @@ function DemosPageContent() {
                           items={[
                             { key: 'dossier', label: 'Incident Dossier', icon: <Info />, onSelect: () => { setSelectedFailureDetail(demo); setIsFailureDetailModalOpen(true); } },
                             { key: 'audit', label: 'Full Audit Trail', icon: <History />, onSelect: () => handleOpenAudit(demo) },
-                            { key: 'service', label: `Open Service Desk${ticketNo ? ` (${ticketNo})` : ''}`, icon: <Wrench />, hidden: !hasServiceTicket, onSelect: () => router.push('/service') },
+                            { key: 'service', label: `Open Service Desk${ticketNo ? ` (${ticketNo})` : ''}`, icon: <Wrench />, hidden: !hasServiceTicket, onSelect: () => router.push(demo.service_ticket_id ? `/service?open=${demo.service_ticket_id}` : '/service') },
                           ]}
                         />
                       </div>
@@ -2993,6 +3080,7 @@ function DemosPageContent() {
                 ...newDemo,
                 organisation_id: orgId,
                 location: org ? `${org.city || 'Depot Site'}` : newDemo.location,
+                tender_id: '',
               });
             }}
             options={[
@@ -3001,6 +3089,34 @@ function DemosPageContent() {
             ]}
             required
           />
+
+          {/* Opportunity value: when two demos want the same unit, the higher-value one gets priority (§16) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {canRead(user?.role, 'tenders') && (
+              <Select
+                label="Linked tender (optional)"
+                value={newDemo.tender_id}
+                onChange={(e) => setNewDemo({ ...newDemo, tender_id: e.target.value })}
+                options={[
+                  { label: newDemo.organisation_id ? (orgTenders.length ? '— Not for a specific tender —' : 'No open tenders for this customer') : 'Select the customer first', value: '' },
+                  ...orgTenders.map((t) => ({
+                    label: `${t.tender_number || t.tender_no}${t.estimated_value ? ` · ${formatINR(Number(t.estimated_value))}` : ''}`,
+                    value: t.id,
+                  })),
+                ]}
+                disabled={!orgTenders.length}
+              />
+            )}
+            <Input
+              label="Deal value (₹, optional)"
+              type="number"
+              min={0}
+              step="1"
+              placeholder={newDemo.tender_id ? 'Defaults to the tender value' : 'Expected order value'}
+              value={newDemo.deal_value}
+              onChange={(e) => setNewDemo({ ...newDemo, deal_value: e.target.value })}
+            />
+          </div>
 
           {/* A. Live Demonstration Setup Details */}
           <div className="space-y-3">
@@ -3606,6 +3722,47 @@ function DemosPageContent() {
             </div>
           )}
 
+          {reserveConflict?.priority_analysis && (() => {
+            const pa = reserveConflict.priority_analysis;
+            const money = (v: unknown) => (Number(v) > 0 ? formatINR(Number(v)) : 'No value recorded');
+            return (
+              <div className="p-3 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] space-y-3 text-xs">
+                <p className="font-bold text-[#14213D]">Priority by opportunity value (§16)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="p-2.5 rounded-lg bg-white border border-[#ECE9E2] space-y-0.5">
+                    <p className="text-[10px] uppercase font-bold text-[#4A5568]">Holding the unit</p>
+                    <p className="font-semibold text-[#14213D]">{pa.conflicting_demo?.demo_no} · {pa.conflicting_demo?.organisation || '—'}</p>
+                    <p className="text-[#4A5568]">{pa.conflicting_demo?.salesperson || '—'}{pa.conflicting_demo?.tender_no ? ` · Tender ${pa.conflicting_demo.tender_no}` : ''}</p>
+                    <p className="font-mono text-[#14213D]">{money(pa.conflicting_demo?.tender_value)}</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-white border border-[#ECE9E2] space-y-0.5">
+                    <p className="text-[10px] uppercase font-bold text-[#4A5568]">This demo</p>
+                    <p className="font-semibold text-[#14213D]">{pa.current_demo?.demo_no}</p>
+                    <p className="text-[#4A5568]">{pa.current_demo?.tender_no ? `Tender ${pa.current_demo.tender_no}` : 'No tender linked'}</p>
+                    <p className="font-mono text-[#14213D]">{money(pa.current_demo?.tender_value)}</p>
+                  </div>
+                </div>
+                <p className="text-[#4A5568]">{pa.recommendation}</p>
+                {canOverrideConflict ? (
+                  <div className="space-y-2">
+                    <Input
+                      label="Override reason (management)"
+                      placeholder="Why this demo takes the unit"
+                      value={overrideReason}
+                      onChange={(e) => setOverrideReason(e.target.value)}
+                    />
+                    <Button type="button" variant="danger" size="sm" isLoading={isSubmitting} onClick={() => handleReserveSubmit(null, true)}>
+                      Override and reserve for this demo
+                    </Button>
+                    <p className="text-[11px] text-[#4A5568]">The other demo&apos;s reservation is marked &quot;alternative suggested&quot; and the change is audited.</p>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-[#4A5568]">Pick another unit or dates, or ask management to decide.</p>
+                )}
+              </div>
+            );
+          })()}
+
           <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D] grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <span className="text-[10px] text-[#4A5568] uppercase font-bold block">Demo Destination</span>
@@ -4142,6 +4299,19 @@ function DemosPageContent() {
         </form>
       </Modal>
 
+      <Modal isOpen={!!linkedDemo} onClose={() => setLinkedDemo(null)} title={`Demo ${linkedDemo?.demo_no || ''}`} maxWidth="4xl">
+        {linkedDemo && (
+          <div className="space-y-5">
+            {renderDemoCard(linkedDemo, true)}
+            <RelatedRecords
+              to={{ kind: 'demo', id: linkedDemo.id, organisationId: linkedDemo.organisation_id }}
+              sections={['tasks', 'proposals', 'tenders', 'service']}
+              description="Tasks on this demo, and the customer's proposals, tenders and service tickets."
+            />
+          </div>
+        )}
+      </Modal>
+
       {/* 8. Audit Trail Modal (§23) */}
       <Modal
         isOpen={isAuditOpen}
@@ -4675,7 +4845,7 @@ function DemosPageContent() {
                     </div>
                   </div>
                 </div>
-                <Link href="/service">
+                <Link href={selectedFailureDetail.service_ticket_id ? `/service?open=${selectedFailureDetail.service_ticket_id}` : '/service'}>
                   <Button size="sm" variant="primary" className="bg-[#9A3412] hover:bg-[#7C2D12] text-white">
                     Open Ticket in Service Desk &rarr;
                   </Button>

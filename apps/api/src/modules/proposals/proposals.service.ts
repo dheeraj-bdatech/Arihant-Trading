@@ -270,6 +270,11 @@ export class ProposalsService {
       );
     }
 
+    // Proposals raised from a lead (lead detail → linked records)
+    if (query.lead_id) {
+      baseQuery = baseQuery.where('proposals.lead_id', '=', query.lead_id);
+    }
+
     // Product filter
     if (query.product_id) {
       baseQuery = baseQuery.where('proposals.product_id', '=', query.product_id);

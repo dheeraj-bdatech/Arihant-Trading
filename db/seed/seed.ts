@@ -568,17 +568,17 @@ async function runSeed() {
         title, description, assigned_to, reporting_manager_id, department, priority,
         task_type, start_date, deadline, expected_outcome, status
       ) VALUES
-        ('Prepare Bid Documentation for HAL Breath Analyser Tender', 'Collect OEM turnover certificates and test reports for GEM/2026/B/7960533', '${sureshId}', '${rajeshId}', 'Tender', 'critical', 'tender', '2026-09-14', '2026-09-17', 'Full submission before 09:00 AM deadline', 'in_progress'),
-        ('Follow up with BSF Procurement regarding EMD Return', 'Submit formal request for refund of ₹2.79 Lakh EMD for tender #7783548', '${amitId}', '${vikramId}', 'Sales', 'high', 'one_time', '2026-09-10', '2026-09-15', 'Receipt acknowledgement letter', 'overdue'),
-        ('Deploy X-Ray Scanner Software Patch V3.4 at Platform 1', 'Update firmware on Astrophysics scanner to fix display lag', '${anilId}', '${vikramId}', 'Service', 'medium', 'service', '2026-09-12', '2026-09-18', 'System test OK', 'blocked')
+        ('Prepare Bid Documentation for HAL Breath Analyser Tender', 'Collect OEM turnover certificates and test reports for GEM/2026/B/7960533', '${sureshId}', '${rajeshId}', 'Tender', 'critical', 'tender', '2026-09-14', '2026-09-17 23:59:59+05:30', 'Full submission before 09:00 AM deadline', 'in_progress'),
+        ('Follow up with BSF Procurement regarding EMD Return', 'Submit formal request for refund of ₹2.79 Lakh EMD for tender #7783548', '${amitId}', '${vikramId}', 'Sales', 'high', 'one_time', '2026-09-10', '2026-09-15 23:59:59+05:30', 'Receipt acknowledgement letter', 'in_progress'),
+        ('Deploy X-Ray Scanner Software Patch V3.4 at Platform 1', 'Update firmware on Astrophysics scanner to fix display lag', '${anilId}', '${vikramId}', 'Service', 'medium', 'service', '2026-09-12', '2026-09-18 23:59:59+05:30', 'System test OK', 'blocked')
       RETURNING id, title;
     `);
 
     // Blocker on the 3rd task
     const blockedTaskId = taskRes.rows[2].id;
     await client.query(`
-      INSERT INTO task_blockers (task_id, blocker_type, description, raised_by)
-      VALUES ($1, 'customer', 'Station Master permission required for platform work during daytime. Awaiting night shift slot approval.', '${anilId}')
+      INSERT INTO task_blockers (task_id, blocker_type, description, raised_by, status, previous_task_status)
+      VALUES ($1, 'customer_dependency', 'Station Master permission required for platform work during daytime. Awaiting night shift slot approval.', '${anilId}', 'pending_review', 'in_progress')
     `, [blockedTaskId]);
 
     // 16. Seed Notifications

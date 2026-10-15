@@ -62,6 +62,11 @@ export class DeliveriesService {
       baseQuery = baseQuery.where('deliveries.organisation_id', '=', query.organisation_id);
     }
 
+    // Sales orders / deliveries raised against a tender (tender dossier → linked records)
+    if (query.tender_id) {
+      baseQuery = baseQuery.where('deliveries.tender_id', '=', query.tender_id);
+    }
+
     if (query.assigned_to) {
       baseQuery = baseQuery.where('deliveries.assigned_to', '=', query.assigned_to);
     }
@@ -118,7 +123,7 @@ export class DeliveriesService {
         'organisations.name as organisation_name',
         'organisations.city as city',
         'products.name as product_name',
-        'tenders.tender_no',
+        sql<string>`coalesce(tenders.tender_number, tenders.tender_no)`.as('tender_no'),
         'assignee.full_name as assignee_name',
         'installer.full_name as installer_name',
       ])
@@ -146,7 +151,7 @@ export class DeliveriesService {
         'organisations.city as city',
         'organisations.state as state',
         'products.name as product_name',
-        'tenders.tender_no',
+        sql<string>`coalesce(tenders.tender_number, tenders.tender_no)`.as('tender_no'),
         'assignee.full_name as assignee_name',
         'installer.full_name as installer_name',
       ])

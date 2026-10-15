@@ -1222,6 +1222,11 @@ export class TendersService {
           submissionDeadline: submissionDeadline.toISOString(),
           assignedTo,
           owner,
+          // Keys the notification listener reads (assignee alert, skipped when they created it themselves).
+          orgName,
+          assignedPersonId: assignedTo,
+          tenderOwnerId: owner,
+          actorId: user.id,
         },
       });
 
@@ -1488,6 +1493,8 @@ export class TendersService {
           fromStatus: from,
           toStatus: to,
           note: noteText,
+          tenderOwnerId: existing.tender_owner_id || existing.owner || existing.assigned_to || null,
+          actorId: user.id,
         },
       });
     });
@@ -2594,7 +2601,8 @@ export class TendersService {
           event_type: eventType,
           description,
           performed_by: performedBy,
-          metadata: metadata ? (typeof metadata === 'string' ? JSON.parse(metadata) : metadata) : null,
+          // metadata is NOT NULL jsonb: a null here made the insert fail and the activity was silently lost.
+          metadata: metadata ? (typeof metadata === 'string' ? JSON.parse(metadata) : metadata) : {},
         })
         .execute();
     } catch (err: any) {
@@ -4274,20 +4282,30 @@ export class TendersService {
       throw new BadRequestException('Sales Orders can only be generated from WON or PARTIALLY_WON tenders');
     }
 
+    // The delivery belongs to the buying customer; a tender captured by name only must be linked first.
+    if (!tender.organisation_id) {
+      throw new BadRequestException('Link this tender to a customer organisation before generating a Sales Order');
+    }
+
     const cleanRef = (dto.order_number || `ORD-${Date.now()}`).trim();
     const deliveryNo = cleanRef.startsWith('SO-') ? cleanRef : `SO-${cleanRef}`;
+    const duplicate = await this.db.selectFrom('deliveries').select('id').where('delivery_no', '=', deliveryNo).executeTakeFirst();
+    if (duplicate) {
+      throw new ConflictException(`Sales Order ${deliveryNo} already exists — use a different PO/LoA reference`);
+    }
 
     const delivery = await this.db
       .insertInto('deliveries')
       .values({
         delivery_no: deliveryNo,
-        organisation_id: tender.organisation_id || (user as any).default_org_id,
+        organisation_id: tender.organisation_id,
         tender_id: tenderId,
         order_reference: dto.order_number,
         delivery_date: dto.order_date || new Date().toISOString().split('T')[0],
         delivery_location: dto.delivery_location || tender.city || 'Client Site',
         assigned_to: tender.assigned_to || user.id,
-        status: 'order_confirmed' as any,
+        // Order confirmed = delivery scheduled; it then moves through the normal delivery lifecycle.
+        status: 'scheduled',
         remarks: `Auto-generated from won tender ${tender.tender_number || tender.tender_no}. Terms: ${dto.delivery_terms || 'Standard'}`,
         created_by: user.id,
       })

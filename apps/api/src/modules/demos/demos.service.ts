@@ -319,6 +319,9 @@ export class DemosService {
       assigned_to?: string;
       requested_by?: string;
       organisation_id?: string;
+      lead_id?: string;
+      tender_id?: string;
+      service_ticket_id?: string;
       product_id?: string;
       location?: string;
       date_from?: string;
@@ -336,7 +339,8 @@ export class DemosService {
       .leftJoin('users as assignee', 'demos.assigned_to', 'assignee.id')
       .leftJoin('users as serviceEngineer', 'demos.service_engineer_id', 'serviceEngineer.id')
       .leftJoin('service_tickets', 'demos.service_ticket_id', 'service_tickets.id')
-      .leftJoin('visits', 'demos.visit_id', 'visits.id');
+      .leftJoin('visits', 'demos.visit_id', 'visits.id')
+      .leftJoin('tenders', 'demos.tender_id', 'tenders.id');
 
     // Role-based visibility
     if (user.role === 'sales') {
@@ -380,6 +384,16 @@ export class DemosService {
 
     if (query.organisation_id) {
       baseQuery = baseQuery.where('demos.organisation_id', '=', query.organisation_id);
+    }
+
+    // Cross-module lookups: demos for a lead, a tender, or the demo a service ticket came from.
+    for (const [param, column] of [['lead_id', 'demos.lead_id'], ['tender_id', 'demos.tender_id'], ['service_ticket_id', 'demos.service_ticket_id']] as const) {
+      const value = query[param];
+      if (!value) continue;
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+        throw new BadRequestException(`${param} must be a valid UUID`);
+      }
+      baseQuery = baseQuery.where(column, '=', value);
     }
 
     if (query.product_id) {
@@ -475,6 +489,9 @@ export class DemosService {
         'service_tickets.ticket_no as service_ticket_no',
         'visits.planned_date as visit_planned_date',
         'visits.status as visit_status',
+        'demos.tender_id',
+        'demos.deal_value',
+        sql<string>`coalesce(tenders.tender_number, tenders.tender_no)`.as('tender_no'),
       ])
       .orderBy(sql`coalesce(demos.confirmed_date, demos.requested_date)`, 'desc')
       .limit(limit)
@@ -547,8 +564,10 @@ export class DemosService {
       .leftJoin('users as serviceEngineer', 'demos.service_engineer_id', 'serviceEngineer.id')
       .leftJoin('service_tickets', 'demos.service_ticket_id', 'service_tickets.id')
       .leftJoin('visits', 'demos.visit_id', 'visits.id')
+      .leftJoin('tenders', 'demos.tender_id', 'tenders.id')
       .selectAll('demos')
       .select([
+        sql<string>`coalesce(tenders.tender_number, tenders.tender_no)`.as('tender_no'),
         'organisations.name as organisation_name',
         'organisations.city as city',
         'products.name as product_name',

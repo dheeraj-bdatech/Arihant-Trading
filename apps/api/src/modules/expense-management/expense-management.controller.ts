@@ -271,6 +271,11 @@ export class ExpenseReportsController {
     return this.reports.summary(query, user);
   }
 
+  @Get('customers')
+  customers(@CurrentUser() user: AuthUser) {
+    return this.reports.customers(user);
+  }
+
   @Get('export')
   async export(@Query() query: Record<string, unknown>, @CurrentUser() user: AuthUser, @Res() res: Response) {
     this.reports.parse(query); // validate before any bytes are sent

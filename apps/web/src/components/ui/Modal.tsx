@@ -49,6 +49,10 @@ export const Modal: React.FC<ModalProps> = ({
     modalIdRef.current = `modal_${++nextModalId}`;
   }
   const modalId = modalIdRef.current;
+  // Callers usually pass an inline onClose; reading it through a ref keeps the stack entry (and so the
+  // z-index order of nested dialogs) fixed while open instead of re-registering on every render.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -57,7 +61,7 @@ export const Modal: React.FC<ModalProps> = ({
     const baseZ = zIndex ?? (50 + activeModalStack.length * 10);
     const entry: StackEntry = {
       id: modalId,
-      onClose,
+      onClose: () => onCloseRef.current(),
       zIndex: baseZ,
     };
     activeModalStack.push(entry);
@@ -68,7 +72,7 @@ export const Modal: React.FC<ModalProps> = ({
         const top = activeModalStack[activeModalStack.length - 1];
         if (top && top.id === modalId) {
           e.stopPropagation();
-          onClose();
+          onCloseRef.current();
         }
       }
     };
@@ -83,7 +87,7 @@ export const Modal: React.FC<ModalProps> = ({
       }
       updateBodyOverflow();
     };
-  }, [isOpen, onClose, modalId, zIndex]);
+  }, [isOpen, modalId, zIndex]);
 
   if (!isOpen) return null;
 

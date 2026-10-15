@@ -5,6 +5,7 @@ import { AppModule } from '../src/app.module';
 
 import { Kysely } from 'kysely';
 import { Database as DB } from '@arihant/shared';
+import { purgeTaskModule } from './helpers/reset-tasks';
 
 describe('Arihant BOS API E2E Suite', () => {
   let app: INestApplication;
@@ -35,6 +36,8 @@ describe('Arihant BOS API E2E Suite', () => {
     await app.init();
 
     const db = moduleFixture.get<Kysely<DB>>('KYSELY_DB');
+    // Module 8 tasks can reference demos: clear task data before wiping demos.
+    await purgeTaskModule(db);
     await db.deleteFrom('demo_reservations').execute();
     await db.deleteFrom('demos').execute();
     await db.updateTable('demo_equipment').set({ availability_status: 'available', reserved_until: null }).execute();
@@ -450,23 +453,26 @@ describe('Arihant BOS API E2E Suite', () => {
     });
   });
 
-  describe('MODULE 10 & 11: Task Accountability & Salary Evidence Dossier', () => {
+  describe('MODULE 8: Task Accountability & Performance Evidence', () => {
     it('retrieves operational accountability metrics (due today, overdue, repeat delays)', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/tasks/accountability')
+        .get('/api/accountability/dashboard')
         .set('Authorization', `Bearer ${mgmtToken}`);
       expect(res.status).toBe(200);
-      expect(res.body.dueTodayCount).toBeDefined();
-      expect(res.body.overdueCount).toBeDefined();
+      expect(res.body.totals.due_today).toBeDefined();
+      expect(res.body.totals.overdue).toBeDefined();
+      expect(res.body.totals.repeated_delay_flag).toBeDefined();
     });
 
-    it('retrieves salary evidence report with explicit Blueprint §4 no-auto-deduction disclaimer', async () => {
+    it('returns evidence-only performance data with the no-deduction disclaimer (Blueprint §4, §43)', async () => {
+      const me = await request(app.getHttpServer()).get('/api/auth/me').set('Authorization', `Bearer ${mgmtToken}`);
       const res = await request(app.getHttpServer())
-        .get('/api/tasks/salary-evidence')
+        .get('/api/performance/evidence')
+        .query({ employee_id: me.body.id || me.body.user?.id })
         .set('Authorization', `Bearer ${mgmtToken}`);
       expect(res.status).toBe(200);
-      expect(res.body.disclaimer).toContain('automated salary or payroll deductions are strictly prohibited');
-      expect(Array.isArray(res.body.dossiers)).toBe(true);
+      expect(res.body.disclaimer).toContain('supporting evidence only');
+      expect(JSON.stringify(res.body)).not.toMatch(/salary_amount|deduction_amount|penalty|incentive_amount/i);
     });
   });
 

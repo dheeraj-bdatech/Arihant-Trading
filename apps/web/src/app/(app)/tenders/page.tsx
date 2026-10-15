@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   FileText,
@@ -56,6 +56,7 @@ import { TenderSettingsModal } from './components/TenderSettingsModal';
 import { BulkImportWizardModal } from './components/BulkImportWizardModal';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { canRead } from '@/lib/module-access';
 import { getSocket } from '@/lib/socket';
 import {
   PageContainer,
@@ -96,6 +97,7 @@ export default function TendersPage() {
   const { user, hasRole } = useAuth();
   const searchParams = useSearchParams();
   const highlightId = searchParams.get('highlight');
+  const highlightOpened = useRef<string | null>(null);
 
   // Top-Level Navigation Tabs
   const [activeTab, setActiveTab] = useState<
@@ -293,11 +295,13 @@ export default function TendersPage() {
         return;
       }
 
+      // Zone/region/salesperson/organisation breakdowns are management-level reports.
+      const breakdown = (url: string) => (canRead(user?.role, 'tenderReports') ? api.get(url).catch(() => []) : Promise.resolve([]));
       const [zonesRes, regionsRes, salesRes, orgsReportRes, pipelineRes, winLossRes, portalIssuesRes] = await Promise.all([
-        api.get('/tenders/reports/by-zone').catch(() => []),
-        api.get('/tenders/reports/by-region').catch(() => []),
-        api.get('/tenders/reports/by-salesperson').catch(() => []),
-        api.get('/tenders/reports/by-organisation').catch(() => []),
+        breakdown('/tenders/reports/by-zone'),
+        breakdown('/tenders/reports/by-region'),
+        breakdown('/tenders/reports/by-salesperson'),
+        breakdown('/tenders/reports/by-organisation'),
         api.get('/tenders/reports/pipeline').catch(() => ({ total: 0, stages: [], categories: [] })),
         api.get('/tenders/reports/win-loss').catch(() => ({ won: 0, lost: 0, win_rate: 0, loss_reasons: {}, competitors: {} })),
         api.get('/tenders/portal-issues').catch(() => []),
@@ -367,9 +371,10 @@ export default function TendersPage() {
       setTenders(res.data || []);
       setTotalCount(res.total || 0);
 
-      // Auto-open highlight if specified in URL query
-      if (highlightId && res.data) {
-        const found = res.data.find((t: any) => t.id === highlightId);
+      // Auto-open highlight if specified in URL query — once, even when the tender is not on this results page.
+      if (highlightId && highlightOpened.current !== highlightId) {
+        highlightOpened.current = highlightId;
+        const found = (res.data || []).find((t: any) => t.id === highlightId) || (await api.get(`/tenders/${highlightId}`).catch(() => null));
         if (found) {
           openTenderDetails(found);
         }

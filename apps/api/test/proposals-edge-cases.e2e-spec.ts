@@ -10,6 +10,19 @@ import { ProposalsSchedulerService } from '../src/modules/proposals/proposals-sc
 
 jest.setTimeout(90000);
 
+/** Follow-up dates must not be in the past, so these are computed from today (IST calendar). */
+const futureDay = (days: number) => {
+  const d = new Date(Date.now() + 5.5 * 3600000);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+/** Next Sunday strictly after today (for the weekend follow-up case). */
+const nextSunday = () => {
+  const d = new Date(Date.now() + 5.5 * 3600000);
+  d.setUTCDate(d.getUTCDate() + (7 - d.getUTCDay() || 7));
+  return d.toISOString().slice(0, 10);
+};
+
 describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', () => {
   let app: INestApplication;
   let db: Kysely<Database>;
@@ -216,6 +229,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: '00000000-0000-0000-0000-000000000000',
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E5 inactive customer check',
         });
@@ -229,6 +243,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .send({
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E6 missing customer',
         });
@@ -248,6 +263,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
             { product_id: testProduct2Id, is_primary: false },
           ],
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E7 no primary',
         });
@@ -264,6 +280,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
             { product_id: testProductId, is_primary: false },
           ],
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E7 duplicate product',
         });
@@ -280,6 +297,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           reference: 'E8-INITIAL',
           duplicate_override_reason: 'First proposal',
@@ -293,6 +311,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-15',
         });
       expect(resDup.status).toBe(409);
@@ -306,6 +325,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-15',
           duplicate_override_reason: 'Different requirement scope',
         });
@@ -320,6 +340,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E9 test',
         });
@@ -336,6 +357,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           remarks: '  <script>alert("xss")</script> Hindi विवरण: प्रस्ताव परीक्षण  ',
           reference: '   ',
@@ -355,6 +377,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           reference: 'MULTI-EMAIL-REF-001',
           duplicate_override_reason: 'E11 reference test',
@@ -370,6 +393,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           requested_by_id: salesUserId,
           duplicate_override_reason: 'E12 on behalf test',
@@ -394,6 +418,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E13 unassigned test',
         });
@@ -483,6 +508,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           responsible_person_id: salesUserId,
           follow_up_owner_id: salesUserId,
@@ -750,6 +776,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E29 pre-send cancel',
         });
@@ -835,6 +862,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E33 date change test',
         });
@@ -885,6 +913,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E35 soft delete test',
         });
@@ -989,14 +1018,14 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
     });
 
     it('E38: Next follow-up on weekend or holiday -> produces suggestion or warning', async () => {
-      // 2026-10-04 is a Sunday
+      // a Sunday in the future
       const weekendRes = await request(app.getHttpServer())
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           contact_date: '2026-09-26',
           summary: 'Weekend follow-up scheduling',
-          next_follow_up_date: '2026-10-04',
+          next_follow_up_date: nextSunday(),
         });
       expect([200, 201]).toContain(weekendRes.status);
     });
@@ -1009,7 +1038,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           contact_date: '2026-09-26',
           summary: 'Director met client during annual defence summit',
           response: 'Positive',
-          next_follow_up_date: '2026-10-05',
+          next_follow_up_date: futureDay(8),
         });
       expect(otherRes.status).toBe(201);
       expect(otherRes.body.followup.logged_by).toBe(mgmtUserId);
@@ -1044,7 +1073,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${sentPropId}/postpone-follow-up`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          new_follow_up_date: '2026-10-12',
+          new_follow_up_date: futureDay(12),
           postpone_reason: 'Client technical evaluators on annual leave',
         });
       expect([200, 201]).toContain(postpRes.status);
@@ -1079,6 +1108,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E46 test proposal',
         });
@@ -1223,6 +1253,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           duplicate_override_reason: 'E61 optimistic locking test',
         });
@@ -1246,6 +1277,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         customer_id: testOrgId,
         product_id: testProductId,
         sector: 'Defence',
+        request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
         required_date: '2026-10-10',
         duplicate_override_reason: 'E62 idempotency test',
       };
@@ -1298,6 +1330,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
+          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
           required_date: '2026-10-10',
           reference: '=CMD|calc.exe',
           duplicate_override_reason: 'E65 formula injection test',

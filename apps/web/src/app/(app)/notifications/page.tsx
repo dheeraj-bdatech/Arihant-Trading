@@ -24,6 +24,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { canOpen } from '@/lib/route-access';
 import { api } from '@/lib/api';
 import {
   Button,
@@ -162,15 +163,24 @@ export default function NotificationsPage() {
     const type = entityType.toLowerCase();
     switch (type) {
       case 'tender':
-        return { label: 'View Tender War Room', href: '/tenders', icon: FileText };
+        return { label: 'View Tender War Room', href: entityId ? `/tenders?highlight=${entityId}` : '/tenders', icon: FileText };
       case 'proposal':
-        return { label: 'View Commercial Proposal', href: '/proposals', icon: DollarSign };
+        return { label: 'View Commercial Proposal', href: entityId ? `/proposals?open=${entityId}` : '/proposals', icon: DollarSign };
       case 'lead':
-        return { label: 'View CRM Lead', href: '/leads', icon: Briefcase };
+        return { label: 'View CRM Lead', href: entityId ? `/leads?open=${entityId}` : '/leads', icon: Briefcase };
+      case 'follow_up':
+        return { label: 'View Follow-ups', href: '/leads', icon: Briefcase };
       case 'visit':
+      case 'trip':
         return { label: 'View Tour Planner', href: '/visits', icon: Users };
+      case 'demo':
+        return { label: 'Open Demo', href: entityId ? `/demos?open=${entityId}` : '/demos', icon: Briefcase };
       case 'task':
-        return { label: 'View Task & Milestone', href: '/tasks', icon: CheckSquare };
+        return { label: 'Open Task', href: entityId ? `/tasks/${entityId}` : '/tasks', icon: CheckSquare };
+      case 'task_digest':
+        return { label: 'Open Team Tasks', href: '/tasks/team', icon: CheckSquare };
+      case 'performance_review':
+        return { label: 'Open My Performance', href: '/tasks/my-performance', icon: CheckSquare };
       case 'delivery':
         return { label: 'View Delivery Register', href: '/deliveries', icon: Truck };
       case 'expense':
@@ -179,7 +189,8 @@ export default function NotificationsPage() {
       case 'expense_queue':
         return { label: 'Open Expense Approvals', href: '/expenses/approvals', icon: DollarSign };
       case 'service':
-        return { label: 'View Service Desk', href: '/service', icon: Wrench };
+      case 'service_ticket':
+        return { label: 'Open Service Ticket', href: entityId ? `/service?open=${entityId}` : '/service', icon: Wrench };
       default:
         return null;
     }
@@ -303,7 +314,8 @@ export default function NotificationsPage() {
           />
         ) : (
           filteredNotifications.map((n) => {
-            const entityLink = getEntityLink(n.entity_type, n.entity_id);
+            const target = getEntityLink(n.entity_type, n.entity_id);
+            const entityLink = target && canOpen(user?.role, target.href) ? target : null;
             const content = n.message || n.body || '';
 
             return (

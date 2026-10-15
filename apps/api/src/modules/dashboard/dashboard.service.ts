@@ -64,7 +64,7 @@ export class DashboardService {
     ]);
 
     // 3. Tasks metrics
-    let taskQuery = this.db.selectFrom('tasks');
+    let taskQuery = this.db.selectFrom('tasks').where('status', '<>', 'cancelled');
     if (['sales', 'demo_team', 'service_team', 'tender_team'].includes(user.role)) {
       taskQuery = taskQuery.where('assigned_to', '=', user.id);
     } else if (user.role === 'regional_manager') {
@@ -85,10 +85,10 @@ export class DashboardService {
       taskQuery.select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
       taskQuery.select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['not_started', 'in_progress']).executeTakeFirst(),
       taskQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'blocked').executeTakeFirst(),
+      // Module 8: OVERDUE is derived (deadline passed, work open, no accepted blocker) — never stored.
       taskQuery
         .select(sql<number>`count(id)::int`.as('c'))
-        .where('status', '!=', 'completed')
-        .where('deadline', '<', today)
+        .where(sql<boolean>`deadline < now() and (status in ('not_started', 'in_progress') or (status = 'blocked' and not exists (select 1 from task_blockers b where b.task_id = tasks.id and b.status = 'accepted')))`)
         .executeTakeFirst(),
     ]);
 
@@ -114,19 +114,18 @@ export class DashboardService {
         .executeTakeFirst(),
     ]);
 
-    // 5. Service tickets metrics
+    // 5. Service tickets metrics (deleted tickets excluded; cancelled tickets are not open)
+    const tickets = () => this.db.selectFrom('service_tickets').where('deleted_at', 'is', null);
     const [ticketTotal, ticketOpen, ticketCritical] = await Promise.all([
-      this.db.selectFrom('service_tickets').select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
-      this.db
-        .selectFrom('service_tickets')
+      tickets().select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
+      tickets()
         .select(sql<number>`count(id)::int`.as('c'))
-        .where('status', 'not in', ['resolved', 'closed'])
+        .where('status', 'not in', ['resolved', 'closed', 'cancelled'])
         .executeTakeFirst(),
-      this.db
-        .selectFrom('service_tickets')
+      tickets()
         .select(sql<number>`count(id)::int`.as('c'))
         .where('priority', '=', 'critical')
-        .where('status', 'not in', ['resolved', 'closed'])
+        .where('status', 'not in', ['resolved', 'closed', 'cancelled'])
         .executeTakeFirst(),
     ]);
 
@@ -150,13 +149,15 @@ export class DashboardService {
       visitQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'completed').executeTakeFirst(),
     ]);
 
-    // 8. Proposals metrics
+    // 8. Proposals metrics (deleted proposals excluded, as on the proposals list)
+    const proposals = () => this.db.selectFrom('proposals').where('is_deleted', '=', false);
     const [propTotal, propUnderPrep, propSent, propConverted, propLost] = await Promise.all([
-      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
-      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['under_preparation', 'UNDER_PREPARATION']).executeTakeFirst(),
-      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['sent', 'SENT_TO_CUSTOMER']).executeTakeFirst(),
-      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['converted', 'CONVERTED']).executeTakeFirst(),
-      this.db.selectFrom('proposals').select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['lost', 'LOST']).executeTakeFirst(),
+      proposals().select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
+      proposals().select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['under_preparation', 'UNDER_PREPARATION']).executeTakeFirst(),
+      // Submitted = with the customer: sent, or sent and awaiting a follow-up.
+      proposals().select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['sent', 'SENT_TO_CUSTOMER', 'followup_required', 'FOLLOW_UP_REQUIRED']).executeTakeFirst(),
+      proposals().select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['converted', 'CONVERTED']).executeTakeFirst(),
+      proposals().select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['lost', 'LOST']).executeTakeFirst(),
     ]);
 
     // 9. Recent critical exceptions (for management command center)
@@ -192,6 +193,7 @@ export class DashboardService {
       .innerJoin('task_blockers', 'tasks.id', 'task_blockers.task_id')
       .select(['tasks.id', 'tasks.title', 'task_blockers.blocker_type', 'task_blockers.description'])
       .where('tasks.status', '=', 'blocked')
+      .where('task_blockers.status', 'in', ['pending_review', 'accepted'])
       .limit(2)
       .execute();
 
@@ -512,14 +514,13 @@ export class DashboardService {
           empLeadsVal,
           activeBlockers,
         ] = await Promise.all([
-          this.db.selectFrom('tasks').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).executeTakeFirst(),
+          this.db.selectFrom('tasks').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).where('status', '<>', 'cancelled').executeTakeFirst(),
           this.db.selectFrom('tasks').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).where('status', '=', 'completed').executeTakeFirst(),
           this.db
             .selectFrom('tasks')
             .select(sql<number>`count(id)::int`.as('c'))
             .where('assigned_to', '=', emp.id)
-            .where('status', '!=', 'completed')
-            .where('deadline', '<', today)
+            .where(sql<boolean>`deadline < now() and (status in ('not_started', 'in_progress') or (status = 'blocked' and not exists (select 1 from task_blockers b where b.task_id = tasks.id and b.status = 'accepted')))`)
             .executeTakeFirst(),
           this.db.selectFrom('tasks').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).where('status', '=', 'blocked').executeTakeFirst(),
           this.db.selectFrom('visits').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).executeTakeFirst(),
@@ -537,7 +538,7 @@ export class DashboardService {
               'tasks.title as task_title',
             ])
             .where('task_blockers.raised_by', '=', emp.id)
-            .where('task_blockers.manager_decision', 'is', null)
+            .where('task_blockers.status', '=', 'pending_review')
             .execute(),
         ]);
 

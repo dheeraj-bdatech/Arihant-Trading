@@ -3,6 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
+import { purgeTaskModule } from './helpers/reset-tasks';
 
 describe('Module 3: Demo Management E2E Test Suite', () => {
   let app: INestApplication;
@@ -66,6 +67,8 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
     const db = app.get(KYSELY_DB);
     await db.deleteFrom('demo_reschedule_history').execute();
     await db.deleteFrom('demo_outcomes').execute();
+    // Module 8 tasks can reference demos: clear task data before wiping demos.
+    await purgeTaskModule(db);
     await db.deleteFrom('demo_reservations').execute();
     await db.deleteFrom('demos').execute();
     await db.deleteFrom('interactions').where('type', '=', 'demo').execute();

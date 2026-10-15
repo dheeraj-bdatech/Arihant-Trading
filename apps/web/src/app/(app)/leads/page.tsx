@@ -47,6 +47,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useOpenParam } from '@/lib/use-open-param';
+import { RelatedRecords } from '@/components/links/RelatedRecords';
 import {
   Button,
   Badge,
@@ -120,6 +122,7 @@ const INTERACTION_TYPE_OPTIONS = [
   { value: 'call', label: 'Phone Call' },
   { value: 'physical_visit', label: 'Physical Visit' },
   { value: 'meeting', label: 'In-person Meeting' },
+  { value: 'video_conference', label: 'Video Conference' },
   { value: 'email', label: 'Email Correspondence' },
   { value: 'whatsapp', label: 'WhatsApp Message' },
   { value: 'demo', label: 'Demonstration / Trial' },
@@ -210,7 +213,6 @@ export default function LeadsPage() {
 
   // Master Data
   const [productsList, setProductsList] = useState<any[]>([]);
-  const [sectorsList, setSectorsList] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
   const [zonesList, setZonesList] = useState<any[]>([]);
   const [regionsList, setRegionsList] = useState<any[]>([]);
@@ -263,7 +265,7 @@ export default function LeadsPage() {
   // Modal Dialogs State
   const [isCreateLeadOpen, setIsCreateLeadOpen] = useState(false);
   const [isLeadDetailOpen, setIsLeadDetailOpen] = useState(false);
-  const [leadDetailTab, setLeadDetailTab] = useState<'overview' | 'activity' | 'products' | 'ownership'>('overview');
+  const [leadDetailTab, setLeadDetailTab] = useState<'overview' | 'activity' | 'products' | 'ownership' | 'linked'>('overview');
   const [isLogInteractionOpen, setIsLogInteractionOpen] = useState(false);
   const [isCustomer360Open, setIsCustomer360Open] = useState(false);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
@@ -279,7 +281,7 @@ export default function LeadsPage() {
   const [customerLeads, setCustomerLeads] = useState<any[]>([]);
   const [customerTimelineLoading, setCustomerTimelineLoading] = useState(false);
   const [customerManagementSummary, setCustomerManagementSummary] = useState<any | null>(null);
-  const [c360Tab, setC360Tab] = useState<'management' | 'timeline' | 'contacts' | 'deals'>('management');
+  const [c360Tab, setC360Tab] = useState<'management' | 'timeline' | 'contacts' | 'deals' | 'linked'>('management');
   const [selectedFollowup, setSelectedFollowup] = useState<any | null>(null);
 
   // Form States
@@ -599,9 +601,8 @@ export default function LeadsPage() {
   useEffect(() => {
     const loadMasters = async () => {
       try {
-        const [prodRes, secRes, usrRes, znRes, regRes, orgRes, deRes] = await Promise.allSettled([
+        const [prodRes, usrRes, znRes, regRes, orgRes, deRes] = await Promise.allSettled([
           api.get('/masters/products'),
-          api.get('/masters/sectors'),
           api.get('/users'),
           api.get('/masters/zones'),
           api.get('/masters/regions'),
@@ -610,7 +611,6 @@ export default function LeadsPage() {
         ]);
 
         if (prodRes.status === 'fulfilled') setProductsList(prodRes.value.data || prodRes.value || []);
-        if (secRes.status === 'fulfilled') setSectorsList(secRes.value.data || secRes.value || []);
         if (usrRes.status === 'fulfilled') setUsersList(usrRes.value.data || usrRes.value || []);
         if (znRes.status === 'fulfilled') setZonesList(znRes.value.data || znRes.value || []);
         if (regRes.status === 'fulfilled') setRegionsList(regRes.value.data || regRes.value || []);
@@ -899,6 +899,10 @@ export default function LeadsPage() {
       setCustomerTimelineLoading(false);
     }
   };
+
+  // Deep links from the command palette, notifications and tasks: ?open=<lead id>, ?customer=<organisation id>
+  useOpenParam(handleOpenLead);
+  useOpenParam(handleOpenCustomer360, true, 'customer');
 
   // Handle Create Lead Submission (Atomic Sync of all 18 Parameters)
   const handleCreateLead = async (e: React.FormEvent) => {
@@ -3163,6 +3167,7 @@ export default function LeadsPage() {
                 ['activity', 'Activity & Notes', null],
                 ['products', 'Products', (selectedLead.product_interests || []).length || (selectedLead.product_name ? 1 : 0)],
                 ['ownership', 'Ownership History', (selectedLead.assignment_history || []).length],
+                ['linked', 'Linked Records', null],
               ] as const).map(([key, lbl, count]) => (
                 <button
                   key={key}
@@ -3521,6 +3526,16 @@ export default function LeadsPage() {
             </div>
 
               </div>
+            )}
+
+            {leadDetailTab === 'linked' && (
+              <RelatedRecords
+                className="animate-in fade-in duration-150"
+                to={{ kind: 'lead', id: selectedLead.id, organisationId: selectedLead.organisation_id }}
+                sections={['demos', 'proposals', 'tasks', 'visits']}
+                description="Demos and proposals raised from this lead, plus the customer's tasks and field visits."
+                addTask={{ title: `Follow up: ${selectedLead.organisation_name || 'lead'}` }}
+              />
             )}
 
             {/* Action Bar */}
@@ -4631,6 +4646,19 @@ export default function LeadsPage() {
                   {customerLeads.length}
                 </span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setC360Tab('linked')}
+                className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
+                  c360Tab === 'linked'
+                    ? 'bg-[#0F5E63] text-white shadow-xs'
+                    : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                <span>Linked records</span>
+              </button>
             </div>
 
             {/* TAB 1: EXECUTIVE MANAGEMENT INTELLIGENCE HUD */}
@@ -4830,7 +4858,7 @@ export default function LeadsPage() {
                         >
                           <div className="flex items-center justify-between">
                             <Badge variant="outline" size="sm" className="uppercase font-bold text-[9px]">
-                              {m.type === 'physical_visit' ? 'Face-to-Face Visit' : m.type === 'demo' ? 'Demonstration' : m.type}
+                              {m.type === 'physical_visit' ? 'Face-to-Face Visit' : m.type === 'video_conference' ? 'Video Conference' : m.type === 'demo' ? 'Demonstration' : m.type}
                             </Badge>
                             <span className="text-[#4A5568] font-mono text-[10px]">
                               {new Date(m.occurred_on || m.interaction_date).toLocaleDateString('en-IN')}
@@ -5008,6 +5036,7 @@ export default function LeadsPage() {
                       const channelIcons: Record<string, string> = {
                         call: '📞',
                         physical_visit: '🏢',
+                        video_conference: '🎥',
                         demo: '🎯',
                         proposal: '📄',
                         whatsapp: '💬',
@@ -5213,6 +5242,15 @@ export default function LeadsPage() {
               </div>
             )}
 
+            {/* TAB 5: everything other modules hold for this customer */}
+            {c360Tab === 'linked' && (
+              <RelatedRecords
+                to={{ kind: 'customer', id: selectedCustomer.id }}
+                sections={['visits', 'demos', 'proposals', 'tenders', 'deliveries', 'service', 'tasks', 'expenses']}
+                description="Visits, demos, proposals, tenders, deliveries, service, tasks and expenses for this customer."
+              />
+            )}
+
             {/* Modal Footer */}
             <div className="flex items-center justify-between pt-3 border-t border-[#DCD8CE]">
               <Button
@@ -5266,6 +5304,7 @@ export default function LeadsPage() {
               options={[
                 { value: 'call', label: '📞 Phone Call' },
                 { value: 'physical_visit', label: '🏢 Physical Visit (In-Person)' },
+                { value: 'video_conference', label: '🎥 Video Conference' },
                 { value: 'demo', label: '🎯 Product Demonstration / Trial' },
                 { value: 'proposal', label: '📄 Proposal Submission' },
                 { value: 'whatsapp', label: '💬 WhatsApp Message' },

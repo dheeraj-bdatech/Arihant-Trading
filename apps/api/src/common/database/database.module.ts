@@ -1,4 +1,4 @@
-import { Module, Global, OnModuleDestroy } from '@nestjs/common';
+import { Module, Global, Inject, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
@@ -52,9 +52,10 @@ export const KYSELY_DB = 'KYSELY_DB';
   exports: [KYSELY_DB],
 })
 export class DatabaseModule implements OnModuleDestroy {
-  constructor(private readonly configService: ConfigService) {}
+  constructor(@Inject(KYSELY_DB) private readonly db: Kysely<Database>) {}
 
   async onModuleDestroy() {
-    // Graceful teardown handled by Kysely dialect pool
+    // Close the pool on app.close() so shutdowns (and test runs that boot many apps) do not leak connections.
+    await this.db.destroy().catch(() => undefined);
   }
 }

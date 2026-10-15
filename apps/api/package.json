@@ -15,7 +15,8 @@
     "migrate:prod": "tsx ../../db/migrate.ts --prod",
     "test:e2e": "jest --config test/jest-e2e.json --runInBand --forceExit",
     "test:unit": "jest --config test/jest-unit.json",
-    "seed:module9": "tsx ../../db/seed/seed_module9_expenses.ts"
+    "seed:module9": "tsx ../../db/seed/seed_module9_expenses.ts",
+    "seed:module8": "tsx ../../db/seed/seed_module8_tasks.ts"
   },
   "dependencies": {
     "@arihant/shared": "workspace:*",

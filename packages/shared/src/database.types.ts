@@ -69,6 +69,8 @@ export interface UsersTable {
   reporting_manager_id: string | null;
   is_active: Generated<boolean>;
   employee_code: Generated<string | null>;
+  department_id: Generated<string | null>;
+  deactivated_at: Generated<Date | null>;
   password_hash?: string | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
@@ -1419,22 +1421,64 @@ export interface ExpenseApprovalHistoryTable {
   created_at: Generated<Date>;
 }
 
+/** Module 8 — `tasks` evolved in place (v1 columns kept for other modules). Deadlines are timestamptz. */
 export interface TasksTable {
   id: Generated<string>;
+  task_number: Generated<string>;
   title: string;
   description: string | null;
+  expected_outcome: string | null;
+  template_id: string | null;
+  occurrence_date: string | null;
+  group_id: string | null;
+  category_id: Generated<string>;
+  customer_id: string | null;
+  tender_id: string | null;
+  demo_id: string | null;
+  service_ticket_id: string | null;
+  project_id: string | null;
   assigned_to: string | null;
+  assigned_by: string | null;
   reporting_manager_id: string | null;
-  department: string | null;
+  department_id: string | null;
   priority: Generated<string>;
+  start_date: string | null;
+  deadline: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  original_deadline: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  status: Generated<TaskStatus>;
+  progress_percent: Generated<number>;
+  progress_at_completion: number | null;
+  evidence_required: Generated<boolean>;
+  approval_required: Generated<boolean>;
+  completion_remarks: string | null;
+  delay_reason: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  approved_at: Date | null;
+  approved_by: string | null;
+  last_update_at: Generated<Date | null>;
+  first_overdue_at: Date | null;
+  reopen_count: Generated<number>;
+  rework_count: Generated<number>;
+  extension_count: Generated<number>;
+  reassign_count: Generated<number>;
+  excused_delay_minutes: Generated<number>;
+  unexcused_locked_minutes: Generated<number>;
+  cancelled_reason: string | null;
+  cancelled_by: string | null;
+  cancelled_at: Date | null;
+  is_backlog: Generated<boolean>;
+  generated_late: Generated<boolean>;
+  source: Generated<string>;
+  version: Generated<number>;
+  created_by: string | null;
+  updated_by: string | null;
+  // v1 columns, still written by other modules
+  department: string | null;
   task_type: Generated<string>;
   related_entity_type: string | null;
   related_entity_id: string | null;
-  start_date: string | null;
-  deadline: string | null;
-  expected_outcome: string | null;
   evidence_url: string | null;
-  status: Generated<TaskStatus>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
 }
@@ -1442,12 +1486,273 @@ export interface TasksTable {
 export interface TaskBlockersTable {
   id: Generated<string>;
   task_id: string;
-  blocker_type: TaskBlockerType | null;
-  description: string | null;
+  blocker_type: TaskBlockerType;
+  description: string;
   raised_by: string | null;
-  manager_decision: TaskBlockerDecision | null;
+  status: Generated<string>;
+  dependency_user_id: string | null;
+  dependency_customer_id: string | null;
+  vendor_name: string | null;
+  portal_name: string | null;
+  approval_pending_from: string | null;
+  leave_id: string | null;
+  expected_resolution_date: string | null;
+  requested_new_deadline: Date | null;
+  raised_after_deadline: Generated<boolean>;
+  previous_task_status: string | null;
+  decision: TaskBlockerDecision | null;
   decided_by: string | null;
+  decided_at: Date | null;
+  decision_comment: string | null;
+  resolved_at: Date | null;
+  resolved_by: string | null;
+  resolution_note: string | null;
+  deadline_at_raise: Date | null;
+  excused_minutes: Generated<number>;
+  /** v1 column, no longer written. */
+  manager_decision: string | null;
   created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface TaskCategoriesTable {
+  id: Generated<string>;
+  code: string;
+  name: string;
+  is_active: Generated<boolean>;
+  requires_link_type: string | null;
+  default_evidence_required: Generated<boolean>;
+  display_order: Generated<number>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+}
+
+export interface TaskSettingsTable {
+  id: Generated<number>;
+  no_update_days_critical: Generated<number>;
+  no_update_days_high: Generated<number>;
+  no_update_days_medium: Generated<number>;
+  no_update_days_low: Generated<number>;
+  repeated_delay_threshold: Generated<number>;
+  repeated_delay_window_days: Generated<number>;
+  max_extensions_before_flag: Generated<number>;
+  repeated_blocker_threshold: Generated<number>;
+  blocker_review_sla_hours: Generated<number>;
+  approval_sla_hours: Generated<number>;
+  reminder_hours_before_deadline: Generated<number>;
+  allow_self_tasks: Generated<boolean>;
+  allow_indirect_reports: Generated<boolean>;
+  allow_peer_linked_assignment: Generated<boolean>;
+  auto_accept_leave_blockers: Generated<boolean>;
+  evidence_period_basis: Generated<string>;
+  review_rating_scale: Generated<number>;
+  weekly_off_days: Generated<number[]>;
+  default_holiday_policy: Generated<string>;
+  default_leave_policy: Generated<string>;
+  fallback_approver_role: Generated<string>;
+  horizon_days_daily: Generated<number>;
+  horizon_days_weekly: Generated<number>;
+  horizon_days_monthly: Generated<number>;
+  hard_delete_window_minutes: Generated<number>;
+  updated_at: Generated<Date>;
+  updated_by: string | null;
+}
+
+export interface TaskTemplatesTable {
+  id: Generated<string>;
+  title: string;
+  description: string | null;
+  expected_outcome: string | null;
+  category_id: string;
+  customer_id: string | null;
+  tender_id: string | null;
+  demo_id: string | null;
+  service_ticket_id: string | null;
+  project_id: string | null;
+  assigned_to: string;
+  assigned_by: string | null;
+  priority: Generated<string>;
+  evidence_required: Generated<boolean>;
+  approval_required: Generated<boolean>;
+  recurrence_type: string;
+  recurrence_rule: JsonColumn;
+  start_date: string;
+  end_date: string | null;
+  max_occurrences: number | null;
+  due_offset_days: Generated<number>;
+  due_time: Generated<string>;
+  holiday_policy: Generated<string>;
+  leave_policy: Generated<string>;
+  status: Generated<string>;
+  status_reason: string | null;
+  needs_reassignment: Generated<boolean>;
+  last_generated_until: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+}
+
+export interface TaskTemplateSkipsTable {
+  id: Generated<string>;
+  template_id: string;
+  occurrence_date: string;
+  reason: string;
+  detail: string | null;
+  created_at: Generated<Date>;
+}
+
+export interface TaskUpdatesTable {
+  id: Generated<string>;
+  task_id: string;
+  author_id: string | null;
+  kind: string;
+  comment: string | null;
+  progress_percent: number | null;
+  status_from: string | null;
+  status_to: string | null;
+  metadata: NullableJsonColumn;
+  created_at: Generated<Date>;
+}
+
+export interface TaskAttachmentsTable {
+  id: Generated<string>;
+  task_id: string;
+  purpose: string;
+  related_id: string | null;
+  file_name: string;
+  storage_key: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: Generated<Date>;
+  deleted_at: Date | null;
+  deleted_by: string | null;
+}
+
+export interface TaskDeadlineChangesTable {
+  id: Generated<string>;
+  task_id: string;
+  old_deadline: Date | null;
+  new_deadline: Date;
+  reason: string;
+  source: string;
+  blocker_id: string | null;
+  excused_minutes: Generated<number>;
+  locked_unexcused_minutes: Generated<number>;
+  changed_by: string | null;
+  created_at: Generated<Date>;
+}
+
+export interface TaskAssignmentHistoryTable {
+  id: Generated<string>;
+  task_id: string;
+  from_user_id: string | null;
+  to_user_id: string;
+  reason: string;
+  reason_type: Generated<string>;
+  was_overdue: Generated<boolean>;
+  overdue_minutes: Generated<number>;
+  changed_by: string | null;
+  created_at: Generated<Date>;
+}
+
+export interface TaskEscalationsTable {
+  id: Generated<string>;
+  task_id: string;
+  blocker_id: string | null;
+  escalated_by: string | null;
+  escalated_to: string;
+  reason: string;
+  status: Generated<string>;
+  outcome_comment: string | null;
+  acknowledged_at: Date | null;
+  closed_at: Date | null;
+  closed_by: string | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface TaskNotificationLogTable {
+  dedupe_key: string;
+  task_id: string | null;
+  user_id: string | null;
+  created_at: Generated<Date>;
+}
+
+export interface HolidaysTable {
+  id: Generated<string>;
+  holiday_date: string;
+  name: string;
+  region_id: string | null;
+  is_active: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+}
+
+export interface EmployeeLeavesTable {
+  id: Generated<string>;
+  employee_id: string;
+  leave_type: Generated<string>;
+  from_date: string;
+  to_date: string;
+  status: Generated<string>;
+  reason: string | null;
+  approved_by: string | null;
+  cancelled_at: Date | null;
+  cancelled_by: string | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  created_by: string | null;
+  updated_by: string | null;
+}
+
+export interface PerformanceReviewsTable {
+  id: Generated<string>;
+  employee_id: string;
+  reviewer_id: string;
+  period_from: string;
+  period_to: string;
+  rating: number | null;
+  rating_scale: Generated<number>;
+  strengths: string | null;
+  improvement_areas: string | null;
+  comments: string | null;
+  employee_response: string | null;
+  employee_responded_at: Date | null;
+  employee_acknowledged_at: Date | null;
+  status: Generated<string>;
+  submitted_at: Date | null;
+  locked_at: Date | null;
+  supersedes_id: string | null;
+  superseded_by_id: string | null;
+  revision_reason: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export interface PerformanceEvidenceSnapshotsTable {
+  id: Generated<string>;
+  employee_id: string;
+  period_from: string;
+  period_to: string;
+  period_basis: string;
+  snapshot_no: number;
+  generated_by: string;
+  generated_at: Generated<Date>;
+  data: JsonColumn;
+  data_sha256: string;
+  pdf_storage_key: string | null;
+  pdf_sha256: string | null;
+  xlsx_storage_key: string | null;
+  xlsx_sha256: string | null;
 }
 
 export interface AttachmentsTable {
@@ -1488,6 +1793,7 @@ export interface DepartmentsTable {
   code: string;
   name: string;
   description: string | null;
+  head_user_id: Generated<string | null>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
 }
@@ -1637,6 +1943,20 @@ export interface Database {
   expense_approval_history: ExpenseApprovalHistoryTable;
   tasks: TasksTable;
   task_blockers: TaskBlockersTable;
+  task_categories: TaskCategoriesTable;
+  task_settings: TaskSettingsTable;
+  task_templates: TaskTemplatesTable;
+  task_template_skips: TaskTemplateSkipsTable;
+  task_updates: TaskUpdatesTable;
+  task_attachments: TaskAttachmentsTable;
+  task_deadline_changes: TaskDeadlineChangesTable;
+  task_assignment_history: TaskAssignmentHistoryTable;
+  task_escalations: TaskEscalationsTable;
+  task_notification_log: TaskNotificationLogTable;
+  holidays: HolidaysTable;
+  employee_leaves: EmployeeLeavesTable;
+  performance_reviews: PerformanceReviewsTable;
+  performance_evidence_snapshots: PerformanceEvidenceSnapshotsTable;
   attachments: AttachmentsTable;
   notifications: NotificationsTable;
   audit_log: AuditLogTable;

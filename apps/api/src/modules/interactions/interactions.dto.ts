@@ -40,7 +40,7 @@ export class CreateInteractionDto {
   lead_id?: string;
 
   @IsString()
-  @IsNotEmpty({ message: 'Interaction type is required (e.g. call, visit, demo, email, whatsapp, proposal, follow_up, tender_discussion)' })
+  @IsNotEmpty({ message: 'Interaction type is required (e.g. call, visit, video_conference, demo, email, whatsapp, proposal, follow_up, tender_discussion)' })
   type!: string;
 
   @IsDateString()

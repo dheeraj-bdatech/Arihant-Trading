@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Wrench,
@@ -33,6 +34,9 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useOpenParam } from '@/lib/use-open-param';
+import { canOpen } from '@/lib/route-access';
+import { RelatedRecords } from '@/components/links/RelatedRecords';
 import {
   Button,
   Badge,
@@ -193,7 +197,7 @@ export default function ServicePage() {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [detailTab, setDetailTab] = useState<'overview' | 'visits' | 'reports' | 'parts' | 'comments' | 'history'>('overview');
+  const [detailTab, setDetailTab] = useState<'overview' | 'visits' | 'reports' | 'parts' | 'comments' | 'history' | 'linked'>('overview');
 
   // Engineers the current user may pick: everyone for managers, only themselves for an engineer
   const engineers: Engineer[] = useMemo(() => {
@@ -433,6 +437,8 @@ export default function ServicePage() {
       setCardError(errMsg(err, 'Could not open this ticket.'));
     }
   };
+  // Deep link from demos, tasks and notifications: /service?open=<ticket id>
+  useOpenParam((id) => handleOpenDetail({ id }));
   const closeDetail = () => {
     setIsDetailModalOpen(false);
     selectedIdRef.current = null;
@@ -1037,6 +1043,7 @@ export default function ServicePage() {
             { id: 'parts', label: `Spare Parts (${st.part_requests?.length || 0})` },
             { id: 'comments', label: `Notes (${st.comments?.length || 0})` },
             { id: 'history', label: `Audit Timeline (${(st.status_history?.length || 0) + (st.assignment_history?.length || 0)})` },
+            { id: 'linked', label: 'Linked Records' },
           ];
           return (
             <div className="space-y-4">
@@ -1087,7 +1094,17 @@ export default function ServicePage() {
                 </div>
 
                 <div>
-                  <h4 className="font-serif text-base font-bold text-[#14213D]">{unverified ? `${st.claimed_organisation_name} (unverified)` : st.organisation_name}</h4>
+                  <h4 className="font-serif text-base font-bold text-[#14213D]">
+                    {unverified ? (
+                      `${st.claimed_organisation_name} (unverified)`
+                    ) : canOpen(role, '/leads') ? (
+                      <Link href={`/leads?customer=${st.organisation_id}`} className="hover:underline hover:text-[#0F5E63]" title="Open Customer 360">
+                        {st.organisation_name}
+                      </Link>
+                    ) : (
+                      st.organisation_name
+                    )}
+                  </h4>
                   <p className="text-xs text-[#14213D] font-medium mt-1 break-words">{st.complaint || st.complaint_description}</p>
                 </div>
 
@@ -1209,6 +1226,14 @@ export default function ServicePage() {
               {detailTab === 'parts' && <PartsTab ticket={st} role={role} onChanged={refreshAll} />}
               {detailTab === 'comments' && <NotesTab ticket={st} onChanged={refreshAll} />}
               {detailTab === 'history' && <AuditTab ticket={st} engineerNames={engineerNames} />}
+              {detailTab === 'linked' && (
+                <RelatedRecords
+                  // Unverified tickets sit on a shared placeholder customer, so skip the customer-wide sections for them.
+                  to={{ kind: 'ticket', id: st.id, organisationId: unverified ? null : st.organisation_id, serial: st.equipment_serial || st.serial_number || null }}
+                  sections={['demos', 'equipment', 'service', 'tasks', 'deliveries']}
+                  description="The demo this ticket came from, earlier tickets on the same machine and customer, its tasks, and the customer's deliveries."
+                />
+              )}
 
               <div className="pt-2 flex justify-end">
                 <Button size="sm" variant="secondary" onClick={closeDetail}>

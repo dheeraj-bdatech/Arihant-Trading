@@ -129,6 +129,24 @@ export class ExpenseReportsService {
     };
   }
 
+  /**
+   * Customers that appear on expense lines the caller can see — the report's customer filter options.
+   * Lets Accounts filter by customer without read access to the organisations module.
+   */
+  async customers(user: AuthUser) {
+    return this.claims
+      .scopedClaims(user)
+      .innerJoin('expense_items as i', 'i.claim_id', 'c.id')
+      .innerJoin('organisations as o', 'o.id', 'i.customer_id')
+      .where('i.deleted_at', 'is', null)
+      .where('c.status', '<>', 'draft')
+      .select(['o.id', 'o.name'])
+      .distinct()
+      .orderBy('o.name')
+      .limit(500)
+      .execute();
+  }
+
   async summary(query: Record<string, unknown>, user: AuthUser) {
     const f = this.parse(query);
     const pendingStatuses = ['submitted', 'manager_approved', 'accounts_review', 'accounts_approved', 'clarification_required'];

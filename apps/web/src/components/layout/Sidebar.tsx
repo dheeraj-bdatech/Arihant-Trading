@@ -29,11 +29,16 @@ import {
   Landmark,
   BarChart3,
   Settings2,
+  ShieldCheck,
+  Gauge,
+  FileBadge,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useSidebar } from '@/lib/sidebar-context';
 import { ROLE_PROFILES, type UserRole, type BosModuleKey } from '@arihant/shared';
 import { useBadgeCounts, type BadgeCounts } from '@/app/(app)/expenses/_lib/expense-lib';
+import { useTaskSummary, type TaskSummary } from '@/app/(app)/tasks/_lib/task-lib';
 
 interface NavItem {
   label: string;
@@ -800,6 +805,32 @@ function withExpenseItems(groups: NavGroup[], role: UserRole, counts: BadgeCount
   }));
 }
 
+const TASK_SUBROUTES = ['/tasks/team', '/tasks/blockers', '/tasks/approvals', '/tasks/accountability', '/tasks/evidence'];
+
+/**
+ * Module 8: expands each role's single "/tasks" entry into the task pages that role can use, with live
+ * counts (my overdue, blocker reviews and approvals waiting on me).
+ */
+function withTaskItems(groups: NavGroup[], s: TaskSummary | null): NavGroup[] {
+  const n = (v?: number) => (v && v > 0 ? String(v) : undefined);
+  const manager = Boolean(s?.has_team || s?.can_view_all);
+  return groups.map((g) => ({
+    ...g,
+    items: g.items.flatMap((item) => {
+      if (item.href !== '/tasks') return [item];
+      const out: NavItem[] = [
+        { ...item, label: 'My Tasks', badge: s?.my_overdue ? `${s.my_overdue} overdue` : item.badge, badgeVariant: s?.my_overdue ? 'urgent' : item.badgeVariant },
+      ];
+      if (manager) out.push({ label: 'Team Tasks', href: '/tasks/team', icon: Users, moduleKey: 'tasks', badge: n(s?.needs_reassignment), badgeVariant: 'warning' });
+      if (manager || s?.pending_blockers) out.push({ label: 'Blocker Reviews', href: '/tasks/blockers', icon: ShieldCheck, moduleKey: 'tasks', badge: n(s?.pending_blockers), badgeVariant: 'urgent' });
+      if (manager || s?.pending_approvals) out.push({ label: 'Task Approvals', href: '/tasks/approvals', icon: ClipboardCheck, moduleKey: 'tasks', badge: n(s?.pending_approvals), badgeVariant: 'urgent' });
+      if (manager) out.push({ label: 'Accountability', href: '/tasks/accountability', icon: Gauge, moduleKey: 'tasks' });
+      if (s?.can_view_evidence) out.push({ label: 'Performance Evidence', href: '/tasks/evidence', icon: FileBadge, moduleKey: 'tasks' });
+      return out;
+    }),
+  }));
+}
+
 function toSentenceCase(str: string): string {
   if (!str) return '';
   const lower = str.toLowerCase();
@@ -814,7 +845,8 @@ export const Sidebar: React.FC = () => {
   const role = user?.role || 'management';
   const roleProfile = ROLE_PROFILES[role];
   const expenseCounts = useBadgeCounts(Boolean(user));
-  const navGroups = useMemo(() => withExpenseItems(getRoleNavGroups(role), role, expenseCounts), [role, expenseCounts]);
+  const { summary: taskSummary } = useTaskSummary(Boolean(user));
+  const navGroups = useMemo(() => withTaskItems(withExpenseItems(getRoleNavGroups(role), role, expenseCounts), taskSummary), [role, expenseCounts, taskSummary]);
 
   // RBAC clearance validation
   const isModuleAllowed = (moduleKey: BosModuleKey | 'reports') => {
@@ -850,6 +882,8 @@ export const Sidebar: React.FC = () => {
   const isItemActive = (item: NavItem) =>
     item.href === '/expenses'
       ? pathname.startsWith('/expenses') && !EXPENSE_SUBROUTES.some((r) => pathname.startsWith(r))
+      : item.href === '/tasks'
+      ? pathname.startsWith('/tasks') && !TASK_SUBROUTES.some((r) => pathname.startsWith(r))
       : item.href.includes('?')
       ? pathname === item.href.split('?')[0] &&
         typeof window !== 'undefined' &&

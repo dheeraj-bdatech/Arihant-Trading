@@ -286,9 +286,10 @@ export class OrganisationsService {
       new Set([...productInterestsList.map((p) => p.name), ...leadProductNames]),
     );
 
-    // 8. Previous Meetings (Physical visits, demonstrations, in-person discussions)
+    // 8. Previous Meetings (Physical visits, demonstrations, in-person discussions).
+    // Completed field visits are logged by the visits module with type 'visit'.
     const meetings = enrichedInteractions.filter((i) =>
-      ['physical_visit', 'demo', 'meeting'].includes((i.type || '').toLowerCase()),
+      ['physical_visit', 'visit', 'demo', 'meeting'].includes((i.type || '').toLowerCase()),
     );
 
     // 9. First and Latest interaction

@@ -121,6 +121,10 @@ export class DeliveryQueryDto {
   @IsOptional()
   organisation_id?: string;
 
+  @Matches(UUID_REGEX, { message: 'tender_id must be a valid UUID' })
+  @IsOptional()
+  tender_id?: string;
+
   @IsString()
   @IsOptional()
   assigned_to?: string;

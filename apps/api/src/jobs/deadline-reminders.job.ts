@@ -110,36 +110,7 @@ export class DeadlineRemindersJob {
     this.outboxService.triggerImmediate();
   }
 
-  @Cron(CronExpression.EVERY_HOUR)
-  async checkOverdueTasks() {
-    this.logger.log('Running task deadline compliance check...');
-    const today = new Date().toISOString().split('T')[0];
-
-    const overdueTasks = await this.db
-      .selectFrom('tasks')
-      .selectAll()
-      .where('status', 'not in', ['completed'])
-      .where('deadline', 'is not', null)
-      .where('deadline', '<', today)
-      .execute();
-
-    for (const task of overdueTasks) {
-      if (task.status !== 'overdue' && task.status !== 'blocked') {
-        await this.db
-          .updateTable('tasks')
-          .set({ status: 'overdue' })
-          .where('id', '=', task.id)
-          .execute();
-
-        this.eventEmitter.emit(AppEvents.TASK_OVERDUE, {
-          taskId: task.id,
-          title: task.title,
-          assignedTo: task.assigned_to,
-          managerId: task.reporting_manager_id,
-        });
-      }
-    }
-  }
+  // Task overdue detection moved to Module 8 (tasks/task-jobs.service.ts): OVERDUE is derived, never stored.
 
   @Cron(CronExpression.EVERY_HOUR)
   async checkProposalFollowupsAndInactivity() {

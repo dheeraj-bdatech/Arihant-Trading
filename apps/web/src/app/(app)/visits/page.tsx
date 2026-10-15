@@ -44,6 +44,8 @@ import {
 import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useOpenParam } from '@/lib/use-open-param';
+import { GuardedLink } from '@/components/links/GuardedLink';
 import {
   Button,
   Badge,
@@ -499,6 +501,21 @@ export default function VisitsPage() {
   useEffect(() => {
     fetchData();
   }, [filterStatus, filterEmployee, filterDateFrom, filterDateTo, filterTravelOnly, filterDemoOnly]);
+
+  // Deep link from Customer 360 / linked records: /visits?customer=<organisation id> opens that customer's visit history.
+  // Runs after the first load so the default customer selection does not overwrite it.
+  useOpenParam(
+    async (orgId) => {
+      setActiveTab('customer_history');
+      if (!organisations.some((o) => o.id === orgId)) {
+        const org = await api.get(`/organisations/${orgId}`).catch(() => null);
+        if (org?.id) setOrganisations((prev) => [org, ...prev]);
+      }
+      setSelectedOrgId(orgId);
+    },
+    organisations.length > 0,
+    'customer',
+  );
 
   // Load customer history when selectedOrgId changes
   useEffect(() => {
@@ -980,7 +997,13 @@ export default function VisitsPage() {
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-gray-100 pb-2.5">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-extrabold text-[#14213D] text-base">{v.organisation_name}</span>
+            {v.organisation_id ? (
+              <GuardedLink href={`/leads?customer=${v.organisation_id}`} className="font-extrabold text-[#14213D] text-base hover:underline hover:text-[#0F5E63]" title="Open Customer 360">
+                {v.organisation_name}
+              </GuardedLink>
+            ) : (
+              <span className="font-extrabold text-[#14213D] text-base">{v.organisation_name}</span>
+            )}
             {v.trip_base_location && (
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
                 <Route className="h-3 w-3" />
@@ -996,21 +1019,21 @@ export default function VisitsPage() {
             {v.demo_required && (
               <div className="flex items-center gap-1.5">
                 {v.linked_demo_no ? (
-                  <Link
-                    href={`/demos?search=${v.linked_demo_no}`}
+                  <GuardedLink
+                    href={v.linked_demo_id ? `/demos?open=${v.linked_demo_id}` : `/demos`}
                     className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-brand-primary/10 text-brand-primary border border-brand-primary/25 hover:underline flex items-center gap-1"
                   >
                     <Sparkles className="h-3 w-3" />
                     Linked Demo: {v.linked_demo_no}
-                  </Link>
+                  </GuardedLink>
                 ) : (
-                  <Link
+                  <GuardedLink
                     href={`/demos`}
                     className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 flex items-center gap-1"
                   >
                     <Sparkles className="h-3 w-3" />
                     Demo Required • Request Demo
-                  </Link>
+                  </GuardedLink>
                 )}
               </div>
             )}
@@ -1410,13 +1433,13 @@ export default function VisitsPage() {
 
                       {v.demo_required && (
                         v.linked_demo_no ? (
-                          <Link
-                            href={`/demos?search=${v.linked_demo_no}`}
+                          <GuardedLink
+                            href={v.linked_demo_id ? `/demos?open=${v.linked_demo_id}` : `/demos`}
                             className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-brand-primary/10 text-brand-primary border border-brand-primary/25 hover:underline flex items-center gap-1"
                           >
                             <Sparkles className="h-3 w-3" />
                             DEMO: {v.linked_demo_no}
-                          </Link>
+                          </GuardedLink>
                         ) : (
                           <Badge variant="default" size="sm" className="bg-purple-50 text-purple-800 border-purple-200">
                             DEMO TRIAL REQ.
@@ -1424,9 +1447,13 @@ export default function VisitsPage() {
                         )
                       )}
 
-                      <span className="text-sm font-bold text-[#14213D]">
-                        {v.organisation_name || 'Client Agency'}
-                      </span>
+                      {v.organisation_id ? (
+                        <GuardedLink href={`/leads?customer=${v.organisation_id}`} className="text-sm font-bold text-[#14213D] hover:underline hover:text-[#0F5E63]" title="Open Customer 360">
+                          {v.organisation_name || 'Client Agency'}
+                        </GuardedLink>
+                      ) : (
+                        <span className="text-sm font-bold text-[#14213D]">{v.organisation_name || 'Client Agency'}</span>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#4A5568]">
@@ -1603,13 +1630,15 @@ export default function VisitsPage() {
                       </>
                     )}
 
-                    {/* Claim Expense for this visit */}
-                    <Link href={`/expenses/new?visit_id=${v.id}`}>
-                      <Button size="sm" variant="ghost" className="text-[#0F5E63]">
-                        <Receipt className="h-3.5 w-3.5 mr-1 text-[#4A5568]" />
-                        <span>Claim Expense</span>
-                      </Button>
-                    </Link>
+                    {/* Claim Expense for this visit — only the visit's own people can claim against it, and never a cancelled one */}
+                    {v.status !== 'cancelled' && !!user?.id && [v.assigned_to, v.planned_by, v.service_engineer_id].includes(user.id) && (
+                      <Link href={`/expenses/new?visit_id=${v.id}`}>
+                        <Button size="sm" variant="ghost" className="text-[#0F5E63]">
+                          <Receipt className="h-3.5 w-3.5 mr-1 text-[#4A5568]" />
+                          <span>Claim Expense</span>
+                        </Button>
+                      </Link>
+                    )}
 
                     {/* Audit History */}
                     <Button

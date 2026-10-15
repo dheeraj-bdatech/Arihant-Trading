@@ -86,6 +86,7 @@ export type InteractionType =
   | 'email'
   | 'whatsapp'
   | 'physical_visit'
+  | 'video_conference'
   | 'demo'
   | 'proposal'
   | 'follow_up'
@@ -98,6 +99,7 @@ export const INTERACTION_TYPES: InteractionType[] = [
   'email',
   'whatsapp',
   'physical_visit',
+  'video_conference',
   'demo',
   'proposal',
   'follow_up',
@@ -518,30 +520,26 @@ export type ExpenseCategory =
   | 'service'
   | 'other';
 
+/** Module 8 task vocabulary — rules, labels and the transition map live in task-workflow.ts. */
 export type TaskStatus =
   | 'not_started'
   | 'in_progress'
-  | 'completed'
   | 'blocked'
   | 'awaiting_approval'
-  | 'overdue';
+  | 'completed'
+  | 'cancelled';
 
 export type TaskBlockerType =
-  | 'mgmt_approval'
-  | 'customer'
-  | 'vendor'
-  | 'other_employee'
-  | 'missing_info'
-  | 'portal'
-  | 'technical'
-  | 'leave';
+  | 'management_approval'
+  | 'customer_dependency'
+  | 'vendor_dependency'
+  | 'another_employee'
+  | 'missing_information'
+  | 'external_portal_issue'
+  | 'technical_issue'
+  | 'approved_leave';
 
-export type TaskBlockerDecision =
-  | 'accepted'
-  | 'rejected'
-  | 'extended'
-  | 'reassigned'
-  | 'escalated';
+export type TaskBlockerDecision = 'accept_extend' | 'accept_pause' | 'auto_accept_leave' | 'reject';
 
 export type BosModuleKey =
   | 'dashboard'

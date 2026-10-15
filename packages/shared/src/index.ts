@@ -4,3 +4,4 @@ export * from './dtos.js';
 export * from './utils/formatters.js';
 export * from './service-workflow.js';
 export * from './expense-workflow.js';
+export * from './task-workflow.js';

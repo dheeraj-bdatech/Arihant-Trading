@@ -582,6 +582,10 @@ export class ProposalQueryDto {
   @IsOptional()
   organisation_id?: string;
 
+  @Matches(UUID_PATTERN, { message: 'Lead ID must be a valid UUID' })
+  @IsOptional()
+  lead_id?: string;
+
   @Matches(UUID_PATTERN, { message: 'Product ID must be a valid UUID' })
   @IsOptional()
   product_id?: string;

@@ -26,6 +26,7 @@ import {
 import { Badge, Button, Card, InfoCallout, Input, Modal, PageLoader } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { canOpen } from '@/lib/route-access';
 import { formatExpenseAmount, roundMoney } from '@arihant/shared';
 import { errorMessage, fieldErrors, isConflict, notifyExpensesChanged, type ExpenseAttachment, type ExpenseClaim, type ExpenseItem } from './expense-lib';
 import {
@@ -228,7 +229,22 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
         <dl className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm border-t border-[#ECE9E2] pt-4">
           <Meta label="Period">{claim.period_from ? <><DateText value={claim.period_from} /> – <DateText value={claim.period_to} /></> : '—'}</Meta>
           <Meta label="Trip">{claim.trip_id ? <><DateText value={claim.trip_date} /> {claim.trip_location}</> : '—'}</Meta>
-          <Meta label="Visit">{claim.visit_id ? <><DateText value={claim.visit_date} /> {claim.visit_organisation_name}</> : '—'}</Meta>
+          <Meta label="Visit">
+            {claim.visit_id ? (
+              <>
+                <DateText value={claim.visit_date} />{' '}
+                {claim.visit_organisation_id && canOpen(user?.role, '/visits') ? (
+                  <Link href={`/visits?customer=${claim.visit_organisation_id}`} className="text-[#0F5E63] hover:underline" title="Open this customer's visit history">
+                    {claim.visit_organisation_name}
+                  </Link>
+                ) : (
+                  claim.visit_organisation_name
+                )}
+              </>
+            ) : (
+              '—'
+            )}
+          </Meta>
           <Meta label="Approver">{claim.manager_name || '—'}{claim.manager_active === false ? ' (inactive)' : ''}</Meta>
           <Meta label="Submitted"><DateText value={claim.submitted_at} /></Meta>
           {claim.tally_voucher_ref && <Meta label="Tally voucher"><span className="font-mono">{claim.tally_voucher_ref}</span></Meta>}
@@ -411,6 +427,7 @@ const LineRow: React.FC<{
   onDecision: (d: Decision) => void;
   onPreview: (a: ExpenseAttachment) => void;
 }> = ({ item, stage, ceiling, decision, errors, onDecision, onPreview }) => {
+  const { user } = useAuth();
   const det = item.category_details || {};
   const detail =
     item.category_code === 'TRAVEL' ? `${det.from} → ${det.to} · ${String(det.mode || '').replace('_', ' ')}`
@@ -436,7 +453,20 @@ const LineRow: React.FC<{
           </div>
           <div className="font-medium text-[#14213D] break-words">{item.purpose}</div>
           {detail && <div className="text-xs text-[#4A5568]">{detail}</div>}
-          {(item.customer_name || item.project_code) && <div className="text-xs text-[#4A5568]">{[item.customer_name, item.project_code && `${item.project_code} ${item.project_name || ''}`].filter(Boolean).join(' · ')}</div>}
+          {(item.customer_name || item.project_code) && (
+            <div className="text-xs text-[#4A5568]">
+              {item.customer_name &&
+                (item.customer_id && canOpen(user?.role, '/leads') ? (
+                  <Link href={`/leads?customer=${item.customer_id}`} className="text-[#0F5E63] hover:underline" title="Open Customer 360">
+                    {item.customer_name}
+                  </Link>
+                ) : (
+                  item.customer_name
+                ))}
+              {item.customer_name && item.project_code ? ' · ' : ''}
+              {item.project_code && `${item.project_code} ${item.project_name || ''}`}
+            </div>
+          )}
           {item.remarks && <div className="text-xs text-[#4A5568] italic">“{item.remarks}”</div>}
           {item.late_submission_reason && <div className="text-xs text-[#9A3412]">Late: {item.late_submission_reason}</div>}
           {item.reviewer_comment && <div className="text-xs text-[#14213D] bg-[#FBFAF7] border border-[#ECE9E2] rounded-md px-2 py-1">Reviewer: {item.reviewer_comment}</div>}

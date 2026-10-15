@@ -61,14 +61,14 @@ function Reports() {
     const safe = (p: Promise<any>) => p.catch(() => null);
     Promise.all([
       safe(api.get('/users', { limit: 100 })),
-      safe(api.get('/organisations', { limit: 100 })),
+      safe(api.get('/expense-reports/customers')),
       safe(api.get('/projects', { include_inactive: true })),
       safe(api.get('/masters/regions')),
       safe(api.get('/expense-claims/linkable')),
     ]).then(([u, o, p, r, l]) =>
       setMasters({
         users: u?.data || u || [],
-        customers: o?.data || [],
+        customers: Array.isArray(o) ? o : [],
         projects: p || [],
         regions: r?.data || r || [],
         trips: l?.trips || [],

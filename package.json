@@ -16,6 +16,7 @@
     "lint": "pnpm --recursive run lint",
     "seed": "pnpm --filter @arihant/api seed",
     "seed:module5": "pnpm --filter @arihant/api seed:module5",
+    "seed:module8": "pnpm --filter @arihant/api seed:module8",
     "test:e2e": "pnpm --filter @arihant/api test:e2e",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",

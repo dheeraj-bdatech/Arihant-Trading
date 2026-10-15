@@ -10,24 +10,8 @@ import { CommandPalette } from '@/components/layout/CommandPalette';
 import { Shield, ShieldAlert, ArrowLeft, UserCheck } from 'lucide-react';
 import { Button, Spinner } from '@/components/ui';
 import { SidebarProvider } from '@/lib/sidebar-context';
+import { routeRule } from '@/lib/route-access';
 import type { UserRole } from '@arihant/shared';
-
-const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] }[] = [
-  { path: '/regional', name: 'Regional Territory Command', roles: ['regional_manager', 'management', 'admin'] },
-  { path: '/tenders', name: 'GeM Defence Tenders', roles: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'] },
-  { path: '/leads', name: 'Leads & CRM Accounts', roles: ['management', 'regional_manager', 'sales', 'admin'] },
-  { path: '/visits', name: 'Field Tour Planner', roles: ['management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin'] },
-  { path: '/demos', name: 'Demo Fleet Matrix', roles: ['management', 'regional_manager', 'sales', 'demo_team', 'admin'] },
-  { path: '/proposals', name: 'Commercial Proposals', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'admin'] },
-  { path: '/deliveries', name: 'Equipment Logistics & Delivery Register', roles: ['management', 'regional_manager', 'sales', 'service_team', 'admin'] },
-  { path: '/service', name: 'Service Desk & Spares', roles: ['management', 'regional_manager', 'service_team', 'sales', 'demo_team', 'tender_team', 'admin'] },
-  { path: '/expenses/categories', name: 'Expense Categories & Masters', roles: ['management', 'admin'] },
-  { path: '/expenses/accounts', name: 'Expense Accounts Queue', roles: ['accounts', 'management', 'admin'] },
-  { path: '/expenses', name: 'Travel & Expense Reimbursements', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
-  { path: '/tasks', name: 'Task & Productivity Management', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
-  { path: '/reports', name: 'Consolidated Reporting & Exports', roles: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'] },
-  { path: '/admin', name: 'Administration & System Audit', roles: ['management', 'admin'] },
-];
 
 export default function AppLayout({
   children,
@@ -72,9 +56,7 @@ export default function AppLayout({
   }
 
   // Route-Level Security Guard Check
-  const restrictedRoute = ROUTE_PERMISSIONS.find(
-    (r) => pathname === r.path || pathname.startsWith(r.path + '/'),
-  );
+  const restrictedRoute = routeRule(pathname);
   const isUnauthorized =
     restrictedRoute && !restrictedRoute.roles.includes(user.role);
 
