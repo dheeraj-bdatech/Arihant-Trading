@@ -88,7 +88,7 @@ const VisitCard: React.FC<{ visit: any; ticket: any; canWork: boolean; closed: b
 
   return (
     <div className="space-y-2 rounded-xl border border-[#DCD8CE] bg-white p-3">
-      <div className="flex items-center justify-between text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         <span className="font-bold text-[#14213D]">Visit #{v.visit_number}</span>
         <Badge variant={checkedOut ? 'success' : checkedIn ? 'info' : 'default'} size="sm">
           {checkedOut ? v.visit_outcome || 'CHECKED OUT' : checkedIn ? 'ON SITE (CHECKED IN)' : 'SCHEDULED'}
@@ -123,19 +123,20 @@ const VisitCard: React.FC<{ visit: any; ticket: any; canWork: boolean; closed: b
           {!canWork ? (
             <p className="text-[11px] text-[#4A5568]">Only the assigned engineer can check in and out of a visit.</p>
           ) : !checkedIn ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="xs" onClick={checkIn} isLoading={busy} disabled={!statusOk}>
+            // phones: the two buttons share one row as 40px thumb targets, the hint sits underneath
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+              <Button size="xs" onClick={checkIn} isLoading={busy} disabled={!statusOk} className="h-10 w-full sm:h-7 sm:w-auto">
                 <MapPin className="mr-1 h-3 w-3" />
                 GPS check-in
               </Button>
-              <Button size="xs" variant="secondary" disabled title="Check in first">
+              <Button size="xs" variant="secondary" disabled title="Check in first" className="h-10 w-full sm:h-7 sm:w-auto">
                 <LogOut className="mr-1 h-3 w-3" />
                 Check-out
               </Button>
-              <span className="text-[11px] text-[#4A5568]">{statusOk ? 'Check in on arrival; check-out unlocks afterwards.' : `Cannot check in while the ticket is ${String(ticket.status).replace(/_/g, ' ')}.`}</span>
+              <span className="col-span-2 text-[11px] text-[#4A5568]">{statusOk ? 'Check in on arrival; check-out unlocks afterwards.' : `Cannot check in while the ticket is ${String(ticket.status).replace(/_/g, ' ')}.`}</span>
             </div>
           ) : !open ? (
-            <Button size="xs" onClick={() => setOpen(true)}>
+            <Button size="xs" onClick={() => setOpen(true)} className="h-10 w-full sm:h-7 sm:w-auto">
               <LogOut className="mr-1 h-3 w-3" />
               Check-out
             </Button>
@@ -152,10 +153,10 @@ const VisitCard: React.FC<{ visit: any; ticket: any; canWork: boolean; closed: b
                 <p className="text-[11px] text-[#4A5568]">This outcome will also move the ticket status automatically.</p>
               )}
               <div className="flex justify-end gap-2">
-                <Button size="xs" variant="ghost" onClick={() => { setOpen(false); setError(null); }}>
+                <Button size="xs" variant="ghost" onClick={() => { setOpen(false); setError(null); }} className="h-10 shrink-0 sm:h-7">
                   Cancel
                 </Button>
-                <Button size="xs" onClick={checkOut} isLoading={busy}>
+                <Button size="xs" onClick={checkOut} isLoading={busy} className="h-10 flex-1 sm:h-7 sm:flex-initial">
                   Confirm check-out
                 </Button>
               </div>
@@ -212,7 +213,7 @@ export const VisitsTab: React.FC<Props> = ({ ticket, role, userId, onChanged }) 
       )}
 
       {canSchedule && (
-        <form onSubmit={schedule} className="space-y-3 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] p-3.5">
+        <form onSubmit={schedule} className="space-y-3 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] p-3 sm:p-3.5">
           <h6 className="font-serif text-xs font-bold text-[#14213D]">Add a visit slot</h6>
           {error && (
             <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
@@ -224,7 +225,7 @@ export const VisitsTab: React.FC<Props> = ({ ticket, role, userId, onChanged }) 
             <Input label="Visit notes / instructions" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Bring replacement optics assembly" />
           </div>
           <div className="flex justify-end">
-            <Button type="submit" size="xs" isLoading={busy}>
+            <Button type="submit" size="xs" isLoading={busy} className="h-10 w-full sm:h-7 sm:w-auto">
               Add visit
             </Button>
           </div>

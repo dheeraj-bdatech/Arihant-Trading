@@ -1,19 +1,29 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { DashboardService } from './dashboard.service.js';
+import { DashboardWorkspaceService } from './dashboard-workspace.service.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import type { AuthUser, DashboardMetricsDto } from '@arihant/shared';
+import type { AuthUser, DashboardMetricsDto, DashboardWorkspaceDto } from '@arihant/shared';
 
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard)
 export class DashboardController {
-  constructor(private readonly dashboardService: DashboardService) {}
+  constructor(
+    private readonly dashboardService: DashboardService,
+    private readonly workspaceService: DashboardWorkspaceService,
+  ) {}
 
   @Get('metrics')
   async getMetrics(@CurrentUser() user: AuthUser): Promise<DashboardMetricsDto> {
     return this.dashboardService.getMetrics(user);
+  }
+
+  /** The caller's own home screen: role-specific widgets, scoped to their territory. */
+  @Get('workspace')
+  async getWorkspace(@CurrentUser() user: AuthUser): Promise<DashboardWorkspaceDto> {
+    return this.workspaceService.getWorkspace(user);
   }
 
   @Get('regional-performance')

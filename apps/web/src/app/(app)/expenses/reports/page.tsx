@@ -232,55 +232,64 @@ function Reports() {
           </div>
         </div>
 
+        {/* Phones: each filter (date range, amount range, trip) is its own full-width row with its label, so
+            a label never ends a line while its control starts the next. From sm the groups dissolve
+            (`sm:contents`) and everything flows in one wrapping line as before. */}
         {(moreOpen || Object.keys(errors).length > 0) && (
           <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
-            <span className="font-semibold text-[#4A5568]">Date</span>
-            <select
-              aria-label="Date applies to"
-              value={values.date_field || 'expense_date'}
-              onChange={(e) => set({ date_field: e.target.value === 'expense_date' ? null : e.target.value })}
-              className={CONTROL}
-            >
-              <option value="expense_date">Expense date</option>
-              <option value="submitted_at">Submitted date</option>
-            </select>
-            <label className="flex items-center gap-1.5 text-[#4A5568]">
-              From
-              <input type="date" value={values.date_from} onChange={(e) => set({ date_from: e.target.value })} className={`${CONTROL} ${errors.date_from ? 'border-[#881337]' : ''}`} title={errors.date_from} />
-            </label>
-            <label className="flex items-center gap-1.5 text-[#4A5568]">
-              To
-              <input type="date" value={values.date_to} min={values.date_from || undefined} onChange={(e) => set({ date_to: e.target.value })} className={`${CONTROL} ${errors.date_to ? 'border-[#881337]' : ''}`} title={errors.date_to} />
-            </label>
-            <span className="font-semibold text-[#4A5568] lg:ml-2">Amount ₹</span>
-            <input
-              key={`min-${values.amount_min}`}
-              aria-label="Min amount (₹)"
-              placeholder="Min"
-              inputMode="decimal"
-              defaultValue={values.amount_min}
-              onBlur={(e) => e.target.value !== values.amount_min && set({ amount_min: e.target.value })}
-              className={`${CONTROL} w-24 ${errors.amount_min ? 'border-[#881337]' : ''}`}
-              title={errors.amount_min}
-            />
-            <span className="text-[#4A5568]">–</span>
-            <input
-              key={`max-${values.amount_max}`}
-              aria-label="Max amount (₹)"
-              placeholder="Max"
-              inputMode="decimal"
-              defaultValue={values.amount_max}
-              onBlur={(e) => e.target.value !== values.amount_max && set({ amount_max: e.target.value })}
-              className={`${CONTROL} w-24 ${errors.amount_max ? 'border-[#881337]' : ''}`}
-              title={errors.amount_max}
-            />
-            <span className="font-semibold text-[#4A5568] lg:ml-2">Trip</span>
-            <select aria-label="Trip" value={values.trip_id} onChange={(e) => set({ trip_id: e.target.value })} className={`${CONTROL} max-w-[220px]`}>
-              <option value="">Any trip</option>
-              {masters.trips.map((t: any) => (
-                <option key={t.id} value={t.id}>{`${t.trip_date.split('-').reverse().join('-')} · ${t.base_location}`}</option>
-              ))}
-            </select>
+            <div className="grid w-full grid-cols-2 gap-2 sm:contents">
+              <span className="col-span-2 font-semibold text-[#4A5568]">Date</span>
+              <select
+                aria-label="Date applies to"
+                value={values.date_field || 'expense_date'}
+                onChange={(e) => set({ date_field: e.target.value === 'expense_date' ? null : e.target.value })}
+                className={`${CONTROL} col-span-2`}
+              >
+                <option value="expense_date">Expense date</option>
+                <option value="submitted_at">Submitted date</option>
+              </select>
+              <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
+                From
+                <input type="date" value={values.date_from} onChange={(e) => set({ date_from: e.target.value })} className={`${CONTROL} min-w-0 ${errors.date_from ? 'border-[#881337]' : ''}`} title={errors.date_from} />
+              </label>
+              <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
+                To
+                <input type="date" value={values.date_to} min={values.date_from || undefined} onChange={(e) => set({ date_to: e.target.value })} className={`${CONTROL} min-w-0 ${errors.date_to ? 'border-[#881337]' : ''}`} title={errors.date_to} />
+              </label>
+            </div>
+            <div className="flex w-full items-center gap-2 sm:contents">
+              <span className="shrink-0 font-semibold text-[#4A5568] lg:ml-2">Amount ₹</span>
+              <input
+                key={`min-${values.amount_min}`}
+                aria-label="Min amount (₹)"
+                placeholder="Min"
+                inputMode="decimal"
+                defaultValue={values.amount_min}
+                onBlur={(e) => e.target.value !== values.amount_min && set({ amount_min: e.target.value })}
+                className={`${CONTROL} w-0 min-w-0 flex-1 sm:w-24 sm:flex-initial ${errors.amount_min ? 'border-[#881337]' : ''}`}
+                title={errors.amount_min}
+              />
+              <span className="text-[#4A5568]">–</span>
+              <input
+                key={`max-${values.amount_max}`}
+                aria-label="Max amount (₹)"
+                placeholder="Max"
+                inputMode="decimal"
+                defaultValue={values.amount_max}
+                onBlur={(e) => e.target.value !== values.amount_max && set({ amount_max: e.target.value })}
+                className={`${CONTROL} w-0 min-w-0 flex-1 sm:w-24 sm:flex-initial ${errors.amount_max ? 'border-[#881337]' : ''}`}
+                title={errors.amount_max}
+              />
+            </div>
+            <div className="flex w-full items-center gap-2 sm:contents">
+              <span className="shrink-0 font-semibold text-[#4A5568] lg:ml-2">Trip</span>
+              <select aria-label="Trip" value={values.trip_id} onChange={(e) => set({ trip_id: e.target.value })} className={`${CONTROL} w-0 min-w-0 flex-1 sm:w-auto sm:max-w-[220px] sm:flex-initial`}>
+                <option value="">Any trip</option>
+                {masters.trips.map((t: any) => (
+                  <option key={t.id} value={t.id}>{`${t.trip_date.split('-').reverse().join('-')} · ${t.base_location}`}</option>
+                ))}
+              </select>
+            </div>
             {multiMenu('Customer', <Building />, 'customer_ids', 'Any customer', opts.customers)}
             {multiMenu('Project', <FolderKanban />, 'project_ids', 'Any project', opts.projects)}
             {moreActive > 0 && (
@@ -303,9 +312,12 @@ function Reports() {
       {error && !Object.keys(errors).length && <InfoCallout variant="danger" title="Could not load the report">{error}</InfoCallout>}
 
       <Card className="p-4 space-y-3">
+        {/* Phones: the five pills stay one row that swipes sideways instead of wrapping onto two lines.
+            ([overflow-x:auto], not .overflow-x-auto: theme.css resets that class below 1180px.) */}
         <Tabs
           variant="pills"
           size="sm"
+          className="max-sm:flex-nowrap max-sm:[overflow-x:auto] max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden max-sm:[&>button]:shrink-0"
           activeTab={breakdown}
           onChange={(id) => setBreakdown(id as typeof breakdown)}
           tabs={[

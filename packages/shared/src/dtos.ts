@@ -88,6 +88,49 @@ export interface DeliveryFilterDto extends PaginationQueryDto {
   dateTo?: string;
 }
 
+/**
+ * GET /dashboard/workspace — the role's own home screen. Every number and list is computed for the
+ * caller's role and territory (all-India for management / admin / tender / accounts desks, the zone
+ * for a regional manager, the caller's own records for field roles), so two roles never see the same
+ * dashboard. Keys inside `numbers` / `lists` / `bars` depend on `role`.
+ */
+export type WorkspaceTone = 'critical' | 'warning' | 'info' | 'success' | 'neutral';
+
+export interface WorkspaceItem {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  /** ISO date or instant that drives a countdown / "when" label. */
+  date?: string | null;
+  status?: string | null;
+  tone?: WorkspaceTone;
+  /** Rupees. */
+  amount?: number | null;
+  /** Short extra line: owner, location, depot… */
+  meta?: string | null;
+  /** Named figures for scorecard rows (team members, engineers). */
+  figures?: Record<string, number>;
+  href: string;
+}
+
+export interface WorkspaceBar {
+  key: string;
+  label: string;
+  value: number;
+  /** Optional second measure drawn beside the first (e.g. open tenders next to pipeline value). */
+  secondary?: number;
+}
+
+export interface DashboardWorkspaceDto {
+  role: UserRole;
+  /** "All India", "North Zone", "Your accounts"… */
+  scopeLabel: string;
+  generatedAt: string;
+  numbers: Record<string, number>;
+  lists: Record<string, WorkspaceItem[]>;
+  bars: Record<string, WorkspaceBar[]>;
+}
+
 export interface DashboardMetricsDto {
   tendersCount: {
     total: number;

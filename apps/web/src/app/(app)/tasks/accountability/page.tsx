@@ -238,7 +238,9 @@ const WeeklyTrend: React.FC<{ trend: TrendPoint[] }> = ({ trend }) => {
   const summary = trend.map((w, i) => `week of ${formatTaskDate(w.week)}: ${totals[i]} completed (${TREND_SERIES.map((s) => `${s.label} ${w[s.key]}`).join(', ')})`).join('; ');
   return (
     <figure className="space-y-3">
-      <div className="overflow-x-auto">
+      {/* overflowX inline: theme.css resets `.overflow-x-auto` below 1180px (for stacked tables), and the card
+          clips — a long period's weeks would be cut off on a phone instead of scrolling. */}
+      <div className="custom-scrollbar overscroll-x-contain" style={{ overflowX: 'auto' }}>
         <div role="img" aria-label={`Tasks completed per week — ${summary}`} className="flex min-w-full items-end gap-1.5 border-b border-[#ECE9E2] px-1" style={{ height: H + 22 }}>
           {trend.map((w, i) => (
             <div key={w.week} className="flex h-full min-w-[28px] flex-1 flex-col items-center justify-end">
@@ -821,7 +823,7 @@ function Accountability() {
                                   </div>
                                 ))}
                               </dl>
-                              <Button size="xs" variant="secondary" fullWidth rightIcon={<ChevronRight className="h-3.5 w-3.5" />} onClick={() => setDrillId(e.employee_id)}>
+                              <Button size="xs" variant="secondary" fullWidth className="h-10" rightIcon={<ChevronRight className="h-3.5 w-3.5" />} onClick={() => setDrillId(e.employee_id)}>
                                 Details
                               </Button>
                             </li>
@@ -1049,7 +1051,7 @@ const EmployeeDrawer: React.FC<{
           <ul className="grid gap-1.5 sm:grid-cols-2">
             {links.map((l) => (
               <li key={l.label}>
-                <Link href={l.href} className="flex items-center justify-between gap-2 rounded-lg border border-[#ECE9E2] px-3 py-2 text-sm text-[#14213D] hover:border-[#0F5E63] hover:text-[#0F5E63]">
+                <Link href={l.href} className="flex min-h-10 items-center justify-between gap-2 rounded-lg border border-[#ECE9E2] px-3 py-2 text-sm text-[#14213D] hover:border-[#0F5E63] hover:text-[#0F5E63] sm:min-h-0">
                   <span>{l.label}</span>
                   <span className="inline-flex items-center gap-1">
                     {l.count !== undefined && <span className="font-mono text-xs text-[#4A5568]">{l.count}</span>}
@@ -1062,7 +1064,7 @@ const EmployeeDrawer: React.FC<{
           {canEvidence && (
             <Link
               href={isSelf ? `/tasks/my-performance?from=${period.from}&to=${period.to}` : `/tasks/evidence?employee_id=${e.employee_id}&from=${period.from}&to=${period.to}`}
-              className="mt-1 flex items-center justify-between gap-2 rounded-lg border border-[#0F5E63]/30 bg-[#E3EFEE] px-3 py-2 text-sm font-semibold text-[#0F5E63] hover:border-[#0F5E63]"
+              className="mt-1 flex min-h-10 items-center justify-between gap-2 rounded-lg border border-[#0F5E63]/30 bg-[#E3EFEE] px-3 py-2 text-sm font-semibold text-[#0F5E63] hover:border-[#0F5E63] sm:min-h-0"
             >
               <span className="inline-flex items-center gap-2">
                 <FileSearch className="h-4 w-4" aria-hidden />

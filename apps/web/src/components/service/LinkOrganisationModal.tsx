@@ -110,26 +110,27 @@ export const LinkOrganisationModal: React.FC<Props> = ({ ticket, onClose, onDone
                   type="button"
                   key={o.id}
                   onClick={() => setPicked(o)}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors ${on ? 'bg-[#E3EFEE]' : 'hover:bg-[#FBFAF7]'}`}
+                  className={`flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors sm:min-h-0 ${on ? 'bg-[#E3EFEE]' : 'hover:bg-[#FBFAF7]'}`}
                 >
                   <Building className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
                   <span className="min-w-0 flex-1">
                     <strong className="block truncate text-[#14213D]">{o.name}</strong>
                     <span className="text-[10px] text-[#4A5568]">{[o.city, o.state, o.sector].filter(Boolean).join(' · ')}</span>
                   </span>
-                  {on && <Check className="h-4 w-4 text-[#0F5E63]" />}
+                  {on && <Check className="h-4 w-4 shrink-0 text-[#0F5E63]" />}
                 </button>
               );
             })
           )}
         </div>
         <Textarea label="Verification note (optional)" rows={2} value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="e.g. Confirmed by phone with the station in-charge" />
+        {/* phones: 40px targets; the link button takes the rest of the row and a long name is cut, not wrapped */}
         <div className="flex justify-end gap-2 border-t border-[#ECE9E2] pt-3">
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose} className="h-10 shrink-0 sm:h-8">
             Cancel
           </Button>
-          <Button size="sm" isLoading={busy} disabled={!picked} onClick={submit}>
-            {picked ? `Link to ${picked.name}` : 'Link customer'}
+          <Button size="sm" isLoading={busy} disabled={!picked} onClick={submit} title={picked ? `Link to ${picked.name}` : undefined} className="h-10 flex-1 sm:h-8 sm:flex-initial">
+            <span className="truncate">{picked ? `Link to ${picked.name}` : 'Link customer'}</span>
           </Button>
         </div>
       </div>

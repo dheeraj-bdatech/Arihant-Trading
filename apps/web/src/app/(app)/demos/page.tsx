@@ -159,6 +159,13 @@ const DEMO_STATUSES: { key: string; label: string }[] = [
 const demoStatusLabel = (status?: string) =>
   DEMO_STATUSES.find((s) => s.key === status)?.label || String(status || 'Unknown').replace(/_/g, ' ');
 
+// Action row at the end of a dialog form. From `sm` up it is the plain divider row it always was (each
+// dialog adds its own `sm:justify-*` / `sm:gap-*`). Phones (bottom sheet): pinned to the bottom edge of
+// the sheet with the buttons sharing the width, like the FormSteps footer. `!-mb-4` beats the bottom
+// margin a parent `space-y-*` puts on its children.
+const SHEET_FOOTER =
+  'flex items-center gap-2 border-t border-[#DCD8CE] pt-3 max-sm:sticky max-sm:-bottom-4 max-sm:z-10 max-sm:-mx-4 max-sm:!-mb-4 max-sm:bg-white max-sm:px-4 max-sm:pb-3 max-sm:[&>*]:min-w-0 max-sm:[&>*]:flex-1';
+
 const getStandardKitAccessories =(productName?: string, category?: string) => {
   const name = (productName || '').toLowerCase();
   const cat = (category || '').toLowerCase();
@@ -1306,7 +1313,7 @@ function DemosPageContent() {
   // Cross-module chips on a demo card: the tender it supports, the lead it came from, its customer and any service ticket.
   const renderDemoLinks = (demo: any) => {
     const role = user?.role;
-    const chip = 'inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border';
+    const chip = 'inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 sm:py-0.5 rounded-full border';
     const linkChip = `${chip} bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/25 hover:underline`;
     const plainChip = `${chip} bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE]`;
     const follow = (href: string) => (canOpen(role, href) ? href : null);
@@ -1338,15 +1345,22 @@ function DemosPageContent() {
   const renderDemoCard = (demo: any, inDialog = false) => (
     <Card
       key={demo.id}
-      className="p-5 bg-white hover:border-[#0F5E63] border border-[#DCD8CE] rounded-xl transition-all shadow-2xs"
+      className={
+        inDialog
+          ? // In the demo dialog the sheet is already the surface: on phones drop the card box (border, tint,
+            // padding) so the content uses the sheet's own 16px gutter instead of sitting ~36px in.
+            // `!` because the theme restyles any card inside a dialog with a higher-specificity rule.
+            'p-5 bg-white hover:border-[#0F5E63] border border-[#DCD8CE] rounded-xl transition-all shadow-2xs max-sm:p-0 max-sm:!rounded-none max-sm:!border-0 max-sm:!bg-transparent max-sm:!shadow-none'
+          : 'p-4 sm:p-5 bg-white hover:border-[#0F5E63] border border-[#DCD8CE] rounded-xl transition-all shadow-2xs'
+      }
     >
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#DCD8CE] pb-4">
-        <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4 border-b border-[#DCD8CE] pb-3 sm:pb-4">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <span className="font-mono text-xs font-bold text-[#0F5E63] px-2.5 py-1 rounded bg-[#E3EFEE] border border-[#DCD8CE]">
             {demo.demo_no}
           </span>
-          <h3 className="text-lg font-bold text-[#14213D] flex items-center gap-2">
-            <Building className="h-4 w-4 text-[#4A5568]" />
+          <h3 className="text-base sm:text-lg font-bold text-[#14213D] flex items-center gap-2 min-w-0">
+            <Building className="h-4 w-4 shrink-0 text-[#4A5568]" />
             {demo.organisation_name || 'Client Organisation'}
           </h3>
           {renderStatusBadge(demo.status)}
@@ -1369,7 +1383,7 @@ function DemosPageContent() {
           )}
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-[#4A5568]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[#4A5568]">
           <span>Version: {demo.version || 1}</span>
           <span>•</span>
           <span>Logged: {formatDemoDate(demo.created_at)}</span>
@@ -1378,7 +1392,7 @@ function DemosPageContent() {
       {renderDemoLinks(demo)}
 
       {/* Body Specs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 my-4 text-sm">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 my-3 sm:my-4 text-sm">
         <div>
           <span className="text-xs text-[#4A5568] uppercase tracking-wider block font-semibold">
             Equipment / Product
@@ -1435,7 +1449,7 @@ function DemosPageContent() {
           <span className="text-xs text-[#4A5568] uppercase tracking-wider block font-semibold">
             Objective & Audience
           </span>
-          <p className="font-semibold text-[#14213D] mt-0.5 line-clamp-1" title={demo.purpose}>
+          <p className="font-semibold text-[#14213D] mt-0.5 line-clamp-2 sm:line-clamp-1" title={demo.purpose}>
             {demo.purpose || 'Technical procurement qualification'}
           </p>
           <p className="text-xs text-[#4A5568] mt-0.5">
@@ -1480,15 +1494,15 @@ function DemosPageContent() {
                 className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-xs flex flex-col justify-between gap-2"
               >
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-[#14213D]">
+                  <div className="flex items-start justify-between gap-2 sm:items-center">
+                    <span className="min-w-0 font-semibold text-[#14213D]">
                       {res.model} — {res.serial_no || 'Unserialized'}
                     </span>
-                    {res.status === 'approved' && <Badge variant="success">APPROVED</Badge>}
-                    {res.status === 'requested' && <Badge variant="warning">AWAITING CUSTODIAN</Badge>}
-                    {res.status === 'rejected' && <Badge variant="danger">REJECTED</Badge>}
-                    {res.status === 'allocated_alternative' && <Badge variant="info">REALLOCATED</Badge>}
-                    {res.status === 'cancelled' && <Badge variant="outline">CANCELLED</Badge>}
+                    {res.status === 'approved' && <Badge variant="success" className="shrink-0">APPROVED</Badge>}
+                    {res.status === 'requested' && <Badge variant="warning" className="shrink-0">AWAITING CUSTODIAN</Badge>}
+                    {res.status === 'rejected' && <Badge variant="danger" className="shrink-0">REJECTED</Badge>}
+                    {res.status === 'allocated_alternative' && <Badge variant="info" className="shrink-0">REALLOCATED</Badge>}
+                    {res.status === 'cancelled' && <Badge variant="outline" className="shrink-0">CANCELLED</Badge>}
                   </div>
                   <p className="text-[11px] text-[#4A5568]">
                     Depot: <strong>{res.current_location}</strong> • Window: {formatDemoDate(res.reserved_from)} to {formatDemoDate(res.reserved_to)}
@@ -1513,12 +1527,13 @@ function DemosPageContent() {
                 {/* Custodian actions if requested */}
                 {res.status === 'requested' &&
                   hasRole(['demo_team', 'service_team', 'management', 'admin']) && (
-                    <div className="flex items-center gap-1.5 pt-1.5 border-t border-[#ECE9E2]">
+                    // phones: the three custodian actions share the row as 36px targets
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#ECE9E2]">
                       <Button
                         variant="outline"
                         size="xs"
                         onClick={() => handleApproveReservation(res)}
-                        className="bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
+                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
                       >
                         <Check className="h-3 w-3 mr-1" />
                         Approve
@@ -1527,7 +1542,7 @@ function DemosPageContent() {
                         variant="outline"
                         size="xs"
                         onClick={() => handleOpenAllocate(res, demo)}
-                        className="bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
+                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
                       >
                         Allocate Alt Unit
                       </Button>
@@ -1535,7 +1550,7 @@ function DemosPageContent() {
                         variant="outline"
                         size="xs"
                         onClick={() => handleOpenReject(res, demo)}
-                        className="bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
+                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
                       >
                         <X className="h-3 w-3 mr-1" />
                         Reject
@@ -1547,9 +1562,9 @@ function DemosPageContent() {
           </div>
         </div>
       ) : (
-        <div className="mb-3 p-2.5 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#4A5568] flex items-center justify-between">
+        <div className="mb-3 p-2.5 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#4A5568] flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
           <div className="flex items-center gap-2">
-            <Package className="h-3.5 w-3.5 text-[#0F5E63]" />
+            <Package className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
             <span>
               <strong className="text-[#14213D]">Assigned Kit / Product:</strong>{' '}
               {demo.product_name || demo.equipment_required || 'Standard Suite'}
@@ -1571,7 +1586,7 @@ function DemosPageContent() {
           }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/5 pb-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide border ${
                   demo.outcome.result === 'success'
@@ -1743,14 +1758,14 @@ function DemosPageContent() {
   );
 
   const renderCoordinatorCard = (demo: any) => (
-    <Card key={demo.id} className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all">
+    <Card key={demo.id} className="p-4 sm:p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-xs font-bold text-[#0F5E63] px-2 py-0.5 rounded bg-[#E3EFEE] border border-[#DCD8CE]">
               {demo.demo_no}
             </span>
-            <h4 className="font-bold text-[#14213D]">{demo.organisation_name}</h4>
+            <h4 className="min-w-0 font-bold text-[#14213D]">{demo.organisation_name}</h4>
             {renderStatusBadge(demo.status)}
           </div>
           <div className="text-xs text-[#4A5568] mt-2 space-y-1">
@@ -1769,12 +1784,13 @@ function DemosPageContent() {
           </div>
         </div>
   
+        {/* phones: 40px buttons that fill the row (Confirm Date, the primary, ends up full width) */}
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={() => handleOpenAssignTeam(demo)}
-            className="text-xs border-[#DCD8CE] text-indigo-700 hover:bg-indigo-50"
+            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-indigo-700 hover:bg-indigo-50"
           >
             <Users className="h-3.5 w-3.5 mr-1 text-indigo-600" />
             {demo.assigned_to ? 'Change Team' : 'Assign Team'}
@@ -1784,7 +1800,7 @@ function DemosPageContent() {
             variant="outline"
             size="sm"
             onClick={() => handleOpenReserve(demo)}
-            className="text-xs border-[#DCD8CE] text-amber-700 hover:bg-amber-50"
+            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-amber-700 hover:bg-amber-50"
           >
             <Package className="h-3.5 w-3.5 mr-1 text-amber-600" />
             Reserve Depot Unit
@@ -1794,7 +1810,7 @@ function DemosPageContent() {
             variant="primary"
             size="sm"
             onClick={() => openConfirmDate(demo)}
-            className="text-xs"
+            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs"
           >
             <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
             Confirm Date
@@ -1816,15 +1832,15 @@ function DemosPageContent() {
                 className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] text-xs flex flex-col justify-between gap-1.5"
               >
                 <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-[#14213D]">
+                  <div className="flex items-start justify-between gap-2 sm:items-center">
+                    <span className="min-w-0 font-semibold text-[#14213D]">
                       {res.model} ({res.serial_no || 'No Serial'})
                     </span>
-                    {res.status === 'approved' && <Badge variant="success">APPROVED</Badge>}
-                    {res.status === 'requested' && <Badge variant="warning">PENDING APPROVAL</Badge>}
-                    {res.status === 'rejected' && <Badge variant="danger">REJECTED</Badge>}
-                    {res.status === 'allocated_alternative' && <Badge variant="info">REALLOCATED</Badge>}
-                    {res.status === 'cancelled' && <Badge variant="outline">CANCELLED</Badge>}
+                    {res.status === 'approved' && <Badge variant="success" className="shrink-0">APPROVED</Badge>}
+                    {res.status === 'requested' && <Badge variant="warning" className="shrink-0">PENDING APPROVAL</Badge>}
+                    {res.status === 'rejected' && <Badge variant="danger" className="shrink-0">REJECTED</Badge>}
+                    {res.status === 'allocated_alternative' && <Badge variant="info" className="shrink-0">REALLOCATED</Badge>}
+                    {res.status === 'cancelled' && <Badge variant="outline" className="shrink-0">CANCELLED</Badge>}
                   </div>
                   <p className="text-[11px] text-[#4A5568] mt-0.5">
                     Depot: {res.current_location} • {formatDemoDate(res.reserved_from)} to {formatDemoDate(res.reserved_to)}
@@ -1843,12 +1859,12 @@ function DemosPageContent() {
                 </div>
   
                 {res.status === 'requested' && (
-                  <div className="flex items-center gap-1.5 pt-1.5 border-t border-[#E2ECF8]">
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#E2ECF8]">
                     <Button
                       variant="outline"
                       size="xs"
                       onClick={() => handleApproveReservation(res)}
-                      className="bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
+                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
                     >
                       <Check className="h-3 w-3 mr-1" />
                       Approve
@@ -1857,7 +1873,7 @@ function DemosPageContent() {
                       variant="outline"
                       size="xs"
                       onClick={() => handleOpenAllocate(res, demo)}
-                      className="bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
+                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
                     >
                       Allocate Alt Unit
                     </Button>
@@ -1865,7 +1881,7 @@ function DemosPageContent() {
                       variant="outline"
                       size="xs"
                       onClick={() => handleOpenReject(res, demo)}
-                      className="bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
+                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
                     >
                       <X className="h-3 w-3 mr-1" />
                       Reject
@@ -2421,7 +2437,7 @@ function DemosPageContent() {
       {activeTab === 'fleet' && (
         <div className="space-y-6">
           {/* Live Availability Checker Box (§8) */}
-          <Card className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
+          <Card className="p-4 sm:p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#DCD8CE] pb-4">
               <div>
                 <h3 className="text-base font-bold text-[#14213D] flex items-center gap-2">
@@ -2630,7 +2646,7 @@ function DemosPageContent() {
           {analyticsData && (
             <>
               {/* Structured Failure Analysis Breakdown & Recurring Pattern Matrix (§18 & §19) */}
-              <Card className="p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs space-y-6">
+              <Card className="p-4 sm:p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs space-y-6">
                 <SectionHeader
                   icon={<AlertTriangle className="h-5 w-5 text-rose-500" />}
                   title="Management Recurring Failure Pattern Analysis (§17 & §18)"
@@ -2676,7 +2692,7 @@ function DemosPageContent() {
 
                     {/* Executive Root Cause & Mitigation Table */}
                     <div className="space-y-3">
-                      <div className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center justify-between">
+                      <div className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
                         <span>Recurring Pattern Taxonomy & Corrective Countermeasures</span>
                         <span className="text-[11px] font-normal text-[#4A5568]">
                           Covers all 9 operational failure categories
@@ -2759,7 +2775,7 @@ function DemosPageContent() {
 
               {/* Product Failure Correlation (if available) */}
               {analyticsData.product_failures && analyticsData.product_failures.length > 0 && (
-                <Card className="p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs space-y-4">
+                <Card className="p-4 sm:p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs space-y-4">
                   <SectionHeader
                     icon={<Box className="h-5 w-5 text-[#0F5E63]" />}
                     title="Product-Level Trial Failure Distribution"
@@ -2785,7 +2801,7 @@ function DemosPageContent() {
 
               {/* Decision-Maker Attendance Impact Analysis (§17) */}
               {analyticsData.decision_maker_impact && (
-                <Card className="p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
+                <Card className="p-4 sm:p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
                   <SectionHeader
                     icon={<Users className="h-5 w-5 text-[#0F5E63]" />}
                     title="Senior Decision-Maker Attendance Impact"
@@ -2805,7 +2821,7 @@ function DemosPageContent() {
                   />
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-200">
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 mb-2">
                         <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">
                           Decision-Maker Attended Trial
                         </span>
@@ -2834,7 +2850,7 @@ function DemosPageContent() {
                     </div>
 
                     <div className="p-4 rounded-xl bg-slate-50 border border-[#DCD8CE]">
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 mb-2">
                         <span className="text-xs font-bold text-[#4A5568] uppercase tracking-wider">
                           Decision-Maker Absent
                         </span>
@@ -2900,7 +2916,7 @@ function DemosPageContent() {
       {/* =================================================================== */}
       {activeTab === 'history' && (
         <div className="space-y-6">
-          <Card className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
+          <Card className="p-4 sm:p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
             <SectionHeader
               icon={<History className="h-5 w-5 text-[#0F5E63]" />}
               title="Customer Demonstration & Field Trial Timeline"
@@ -2930,7 +2946,7 @@ function DemosPageContent() {
                 />
               ) : (
                 customerHistoryDemos.map((demo) => (
-                  <Card key={demo.id} className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all">
+                  <Card key={demo.id} className="p-4 sm:p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-[#DCD8CE] pb-3">
                       <div>
                         <span className="font-mono text-xs font-bold text-[#0F5E63]">
@@ -2998,8 +3014,8 @@ function DemosPageContent() {
             const total = Math.max(1, failedDemos.length);
             return (
               <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-                <Card className="lg:col-span-3 p-5">
-                  <div className="flex items-center justify-between mb-3">
+                <Card className="lg:col-span-3 p-4 sm:p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 mb-3">
                     <h3 className="font-serif text-base font-bold text-[#14213D]">Root-cause breakdown</h3>
                     <span className="text-[11px] text-[#4A5568]">Click a bar to filter incidents</span>
                   </div>
@@ -3026,7 +3042,7 @@ function DemosPageContent() {
                     })}
                   </div>
                 </Card>
-                <Card className="lg:col-span-2 p-5 space-y-4">
+                <Card className="lg:col-span-2 p-4 sm:p-5 space-y-4">
                   <h3 className="font-serif text-base font-bold text-[#14213D]">Response coverage</h3>
                   {[
                     { label: 'Breakdown ticket logged', n: ticketed, color: '#0F5E63', hint: 'Module 6 auto-ticket' },
@@ -3169,7 +3185,8 @@ function DemosPageContent() {
             onCancel={() => setIsCreateOpen(false)}
             submit={
               <Button variant="primary" type="submit" isLoading={isSubmitting}>
-                Submit Demo Request
+                <span className="sm:hidden">Submit request</span>
+                <span className="hidden sm:inline">Submit Demo Request</span>
               </Button>
             }
             steps={[
@@ -3313,7 +3330,7 @@ function DemosPageContent() {
                 {/* Live Product Fleet Availability & Status HUD */}
                 {activeNewDemoProductFleet && (
                   <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-1.5 text-xs animate-in fade-in">
-                    <div className="flex items-center justify-between gap-1">
+                    <div className="flex flex-wrap items-center justify-between gap-1">
                       <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
                         Live Product Fleet Availability:
                       </span>
@@ -3342,7 +3359,7 @@ function DemosPageContent() {
                           ? `All units currently deployed or reserved.`
                           : `Custom requisition required.`}
                       </span>
-                      <div className="flex items-center gap-2 font-mono text-[10px]">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px]">
                         <span>Fleet: <b>{activeNewDemoProductFleet.total}</b></span>
                         <span className="text-emerald-700">Ready: <b>{activeNewDemoProductFleet.availableCount}</b></span>
                         <span className="text-amber-700">In-Trial: <b>{activeNewDemoProductFleet.reservedCount}</b></span>
@@ -3388,7 +3405,7 @@ function DemosPageContent() {
                 {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) */}
                 {!selectedNewDemoEquipUnit && activeNewDemoProductFleet && activeNewDemoProductFleet.units.length > 0 && (
                   <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
                       <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
                         Available Demo Kits in Fleet ({activeNewDemoProductFleet.units.length}):
                       </span>
@@ -3409,9 +3426,9 @@ function DemosPageContent() {
                                 product_id: u.product_id || prev.product_id,
                               }));
                             }}
-                            className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-colors shadow-xs"
+                            className="flex flex-col items-start gap-1.5 p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-colors shadow-xs sm:flex-row sm:items-center sm:justify-between sm:gap-0"
                           >
-                            <div className="space-y-0.5 pr-2">
+                            <div className="min-w-0 space-y-0.5 sm:pr-2">
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="font-bold text-[#14213D] text-[11px]">{u.model}</span>
                                 <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
@@ -3450,7 +3467,7 @@ function DemosPageContent() {
                 {selectedNewDemoEquipUnit && (
                   <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
                     <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#ECE9E2]">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-bold text-xs text-[#14213D]">{selectedNewDemoEquipUnit.model}</span>
                         <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#14213D] font-bold">
                           S/N: {selectedNewDemoEquipUnit.serial_no}
@@ -3489,9 +3506,9 @@ function DemosPageContent() {
                       </span>
                       <div className="grid grid-cols-1 gap-1 text-[11px] text-[#14213D]">
                         {getStandardKitAccessories(selectedNewDemoEquipUnit.product_name, selectedNewDemoEquipUnit.product_category).map((item, idx) => (
-                          <div key={idx} className="flex items-center gap-1.5 p-1 rounded bg-white border border-[#ECE9E2]">
-                            <CheckCircle className="h-3 w-3 text-emerald-600 shrink-0" />
-                            <span className="truncate">{item}</span>
+                          <div key={idx} className="flex items-start gap-1.5 p-1 rounded bg-white border border-[#ECE9E2] sm:items-center">
+                            <CheckCircle className="mt-0.5 h-3 w-3 text-emerald-600 shrink-0 sm:mt-0" />
+                            <span className="min-w-0 sm:truncate">{item}</span>
                           </div>
                         ))}
                       </div>
@@ -3637,7 +3654,7 @@ function DemosPageContent() {
 
           {/* Service Team Escort for Live Trial Support */}
           <div className="pt-4 border-t border-[#ECE9E2] space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
               <div>
                 <Checkbox
                   checked={newDemo.service_escort_required}
@@ -3655,7 +3672,7 @@ function DemosPageContent() {
                   Optional technical accompaniment. A Service Engineer will accompany the sales rep on this tour to assist with live equipment calibration, field setup, and emergency on-site troubleshooting.
                 </p>
               </div>
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
+              <span className="ml-6 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 sm:ml-0">
                 <Wrench className="w-3 h-3 text-[#0F5E63]" />
                 Module 6 Sync
               </span>
@@ -3734,7 +3751,7 @@ function DemosPageContent() {
                       : 'bg-rose-50 border-rose-200 text-rose-800 opacity-90'
                   }`}
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <input
                       type="radio"
                       name="team_member"
@@ -3742,7 +3759,7 @@ function DemosPageContent() {
                       checked={teamForm.assigned_to === member.id}
                       onChange={() => setTeamForm({ ...teamForm, assigned_to: member.id })}
                     />
-                    <div>
+                    <div className="min-w-0">
                       <p className="font-semibold text-xs text-[#14213D]">{member.full_name}</p>
                       <span className="text-[10px] text-[#4A5568]">
                         {member.role.replace(/_/g, ' ')} • {member.phone || 'No phone'}
@@ -3750,7 +3767,7 @@ function DemosPageContent() {
                     </div>
                   </div>
 
-                  <div>
+                  <div className="shrink-0 pl-2">
                     {member.is_available ? (
                       <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
                         AVAILABLE
@@ -3825,7 +3842,7 @@ function DemosPageContent() {
           </div>
           </FormSection>
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className={`${SHEET_FOOTER} sm:justify-end sm:gap-3`}>
             <Button variant="outline" type="button" onClick={() => setIsAssignTeamOpen(false)}>
               Cancel
             </Button>
@@ -3887,7 +3904,7 @@ function DemosPageContent() {
                       value={overrideReason}
                       onChange={(e) => setOverrideReason(e.target.value)}
                     />
-                    <Button type="button" variant="danger" size="sm" isLoading={isSubmitting} onClick={() => handleReserveSubmit(null, true)}>
+                    <Button type="button" variant="danger" size="sm" isLoading={isSubmitting} onClick={() => handleReserveSubmit(null, true)} className="h-10 w-full sm:h-8 sm:w-auto">
                       Override and reserve for this demo
                     </Button>
                     <p className="text-[11px] text-[#4A5568]">The other demo&apos;s reservation is marked &quot;alternative suggested&quot; and the change is audited.</p>
@@ -3945,7 +3962,8 @@ function DemosPageContent() {
               isLoadingModalEquipment && (
                 <div className="flex items-center gap-1.5 text-[11px] text-[#0F5E63]">
                   <Spinner size="xs" />
-                  <span>Checking live date calendar...</span>
+                  <span className="sm:hidden">Checking…</span>
+                  <span className="hidden sm:inline">Checking live date calendar...</span>
                 </div>
               )
             }
@@ -4003,7 +4021,7 @@ function DemosPageContent() {
                         key={unit.id}
                         className="block p-2.5 rounded-lg border border-gray-200 bg-gray-50/90 text-gray-500 cursor-not-allowed select-none transition-all"
                       >
-                        <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                           <div className="flex items-start gap-2">
                             <input
                               type="radio"
@@ -4116,7 +4134,7 @@ function DemosPageContent() {
           />
           </FormSection>
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className={`${SHEET_FOOTER} sm:justify-end sm:gap-3`}>
             <Button variant="outline" type="button" onClick={() => setIsReserveEquipOpen(false)}>
               Cancel
             </Button>
@@ -4174,7 +4192,7 @@ function DemosPageContent() {
             onChange={(e) => setConfirmForm({ ...confirmForm, remarks: e.target.value })}
           />
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className={`${SHEET_FOOTER} sm:justify-end sm:gap-3`}>
             <Button variant="outline" type="button" onClick={() => setIsConfirmDateOpen(false)}>
               Cancel
             </Button>
@@ -4213,7 +4231,7 @@ function DemosPageContent() {
             required
           />
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className={`${SHEET_FOOTER} sm:justify-end sm:gap-3`}>
             <Button variant="outline" type="button" onClick={() => setIsRescheduleOpen(false)}>
               Cancel
             </Button>
@@ -4263,12 +4281,13 @@ function DemosPageContent() {
             onChange={(e) => setCancelForm({ ...cancelForm, remarks: e.target.value })}
           />
 
-          <div className="flex flex-wrap justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className={`${SHEET_FOOTER} sm:flex-wrap sm:justify-end sm:gap-3`}>
             <Button variant="outline" type="button" onClick={() => setIsCancelOpen(false)}>
               Close
             </Button>
             <Button variant="danger" type="submit" isLoading={isSubmitting}>
-              Confirm Cancellation & Release Resources
+              <span className="sm:hidden">Cancel demo</span>
+              <span className="hidden sm:inline">Confirm Cancellation & Release Resources</span>
             </Button>
           </div>
         </form>
@@ -4287,7 +4306,8 @@ function DemosPageContent() {
             onCancel={() => setIsOutcomeOpen(false)}
             submit={
               <Button variant="primary" type="submit" isLoading={isSubmitting}>
-                Complete Demo & Update Customer History
+                <span className="sm:hidden">Complete demo</span>
+                <span className="hidden sm:inline">Complete Demo & Update Customer History</span>
               </Button>
             }
             steps={[
@@ -4469,7 +4489,7 @@ function DemosPageContent() {
         onClose={() => setIsAuditOpen(false)}
         title={`Audit Trail & Change History — ${selectedDemo?.demo_no}`}
       >
-        <div className="space-y-4 max-h-96 overflow-y-auto pr-1 text-xs">
+        <div className="space-y-4 text-xs sm:max-h-96 sm:overflow-y-auto sm:pr-1">
           {selectedDemoAudit?.reschedule_events?.length > 0 && (
             <div className="space-y-2">
               <h5 className="font-semibold text-[#14213D] text-xs">Rescheduling History:</h5>
@@ -4492,8 +4512,8 @@ function DemosPageContent() {
             <h5 className="font-semibold text-[#14213D] text-xs">System Events:</h5>
             {selectedDemoAudit?.audit_logs?.map((log: any) => (
               <div key={log.id} className="p-2 rounded bg-[#FBFAF7] border border-[#DCD8CE]">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono font-semibold text-[#0F5E63]">{log.action}</span>
+                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+                  <span className="min-w-0 font-mono font-semibold text-[#0F5E63]">{log.action}</span>
                   <span className="text-[10px] text-[#4A5568]">
                     {new Date(log.created_at).toLocaleString()}
                   </span>
@@ -4505,8 +4525,8 @@ function DemosPageContent() {
             ))}
           </div>
 
-          <div className="flex justify-end pt-2 border-t border-[#DCD8CE]">
-            <Button variant="outline" size="sm" onClick={() => setIsAuditOpen(false)}>
+          <div className={`${SHEET_FOOTER} sm:justify-end sm:pt-2`}>
+            <Button variant="outline" size="sm" onClick={() => setIsAuditOpen(false)} className="h-10 sm:h-8">
               Close
             </Button>
           </div>
@@ -4524,7 +4544,8 @@ function DemosPageContent() {
             onCancel={() => setIsEquipmentModalOpen(false)}
             submit={
               <Button variant="primary" type="submit" isLoading={isSubmitting}>
-                Save Equipment Unit
+                <span className="sm:hidden">Save unit</span>
+                <span className="hidden sm:inline">Save Equipment Unit</span>
               </Button>
             }
             steps={[
@@ -4698,7 +4719,7 @@ function DemosPageContent() {
             onChange={(e) => setRejectForm({ ...rejectForm, remarks: e.target.value })}
           />
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className={`${SHEET_FOOTER} sm:justify-end sm:gap-3`}>
             <Button variant="outline" type="button" onClick={() => setIsRejectOpen(false)}>
               Cancel
             </Button>
@@ -4739,8 +4760,8 @@ function DemosPageContent() {
                         : 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#F0F5FF]'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
                         <input
                           type="radio"
                           name="allocate_unit"
@@ -4761,6 +4782,7 @@ function DemosPageContent() {
                       </div>
                       <Badge
                         variant={unit.availability_status === 'available' ? 'success' : 'warning'}
+                        className="shrink-0"
                       >
                         {unit.availability_status.toUpperCase()}
                       </Badge>
@@ -4807,7 +4829,7 @@ function DemosPageContent() {
           />
           </FormSection>
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className={`${SHEET_FOOTER} sm:justify-end sm:gap-3`}>
             <Button variant="outline" type="button" onClick={() => setIsAllocateOpen(false)}>
               Cancel
             </Button>
@@ -4817,7 +4839,8 @@ function DemosPageContent() {
               isLoading={isSubmitting}
               disabled={!allocateForm.equipment_id || !allocateForm.reason}
             >
-              Confirm Reallocation
+              <span className="sm:hidden">Reallocate</span>
+              <span className="hidden sm:inline">Confirm Reallocation</span>
             </Button>
           </div>
         </form>
@@ -4830,7 +4853,7 @@ function DemosPageContent() {
         maxWidth="3xl"
       >
         {selectedFailureDetail && (
-          <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-1 text-xs">
+          <div className="space-y-4 text-xs sm:max-h-[80vh] sm:overflow-y-auto sm:pr-1">
             {/* Incident Summary Banner */}
             <div className="p-3.5 rounded-xl bg-[#FFF8F6] border border-[#FCA5A5] flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -4859,9 +4882,9 @@ function DemosPageContent() {
                   <span>Timeline &amp; Operational Location</span>
                 </h5>
                 <div className="space-y-1.5">
-                  <div className="flex justify-between">
-                    <span className="text-[#4A5568]">Trial Scheduled:</span>
-                    <span className="font-semibold text-[#14213D]">
+                  <div className="flex justify-between gap-3">
+                    <span className="shrink-0 text-[#4A5568]">Trial Scheduled:</span>
+                    <span className="text-right font-semibold text-[#14213D]">
                       {selectedFailureDetail.confirmed_date
                         ? new Date(selectedFailureDetail.confirmed_date).toLocaleDateString('en-IN')
                         : selectedFailureDetail.requested_date
@@ -4869,21 +4892,21 @@ function DemosPageContent() {
                         : 'Not specified'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#4A5568]">Proving Grounds:</span>
-                    <span className="font-semibold text-[#14213D]">
+                  <div className="flex justify-between gap-3">
+                    <span className="shrink-0 text-[#4A5568]">Proving Grounds:</span>
+                    <span className="text-right font-semibold text-[#14213D]">
                       {selectedFailureDetail.location || 'Depot'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#4A5568]">City &amp; Region:</span>
-                    <span className="font-semibold text-[#14213D]">
+                  <div className="flex justify-between gap-3">
+                    <span className="shrink-0 text-[#4A5568]">City &amp; Region:</span>
+                    <span className="text-right font-semibold text-[#14213D]">
                       {selectedFailureDetail.city || 'Delhi'} ({selectedFailureDetail.region_id || 'Zone'})
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#4A5568]">Execution Scope:</span>
-                    <span className="font-semibold text-[#14213D]">
+                  <div className="flex justify-between gap-3">
+                    <span className="shrink-0 text-[#4A5568]">Execution Scope:</span>
+                    <span className="text-right font-semibold text-[#14213D]">
                       {selectedFailureDetail.outcome?.completed ? 'Completed on Site' : 'Aborted Early'}
                     </span>
                   </div>
@@ -4897,21 +4920,21 @@ function DemosPageContent() {
                   <span>Equipment &amp; Quarantine Audit</span>
                 </h5>
                 <div className="space-y-1.5">
-                  <div className="flex justify-between">
-                    <span className="text-[#4A5568]">Product Name:</span>
-                    <span className="font-semibold text-[#14213D]">
+                  <div className="flex justify-between gap-3">
+                    <span className="shrink-0 text-[#4A5568]">Product Name:</span>
+                    <span className="text-right font-semibold text-[#14213D]">
                       {selectedFailureDetail.product_name || 'N/A'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#4A5568]">Catalog Code:</span>
-                    <span className="font-mono text-[#14213D]">
+                  <div className="flex justify-between gap-3">
+                    <span className="shrink-0 text-[#4A5568]">Catalog Code:</span>
+                    <span className="text-right font-mono text-[#14213D]">
                       {selectedFailureDetail.product_code || 'N/A'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#4A5568]">Hardware S/N:</span>
-                    <span className="font-mono text-[#14213D]">
+                  <div className="flex justify-between gap-3">
+                    <span className="shrink-0 text-[#4A5568]">Hardware S/N:</span>
+                    <span className="text-right font-mono text-[#14213D]">
                       {selectedFailureDetail.reservations
                         ?.map((r: any) => r.serial_no)
                         .filter(Boolean)
@@ -5030,7 +5053,7 @@ function DemosPageContent() {
                   </div>
                 </div>
                 <Link href={selectedFailureDetail.service_ticket_id ? `/service?open=${selectedFailureDetail.service_ticket_id}` : '/service'}>
-                  <Button size="sm" variant="primary" className="bg-[#9A3412] hover:bg-[#7C2D12] text-white">
+                  <Button size="sm" variant="primary" className="h-10 w-full sm:h-8 sm:w-auto bg-[#9A3412] hover:bg-[#7C2D12] text-white">
                     Open Ticket in Service Desk &rarr;
                   </Button>
                 </Link>
@@ -5038,21 +5061,24 @@ function DemosPageContent() {
             )}
 
             {/* Modal Actions */}
-            <div className="flex justify-between items-center pt-3 border-t border-[#DCD8CE]">
+            <div className={`${SHEET_FOOTER} sm:justify-between`}>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   handleOpenAudit(selectedFailureDetail);
                 }}
+                className="h-10 sm:h-8"
               >
-                <History className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-                Inspect Full Audit Trail
+                <History className="h-3.5 w-3.5 mr-1 shrink-0 text-[#0F5E63]" />
+                <span className="sm:hidden">Audit trail</span>
+                <span className="hidden sm:inline">Inspect Full Audit Trail</span>
               </Button>
               <Button
                 variant="secondary"
                 size="sm"
                 onClick={() => setIsFailureDetailModalOpen(false)}
+                className="h-10 sm:h-8"
               >
                 Close Dossier
               </Button>

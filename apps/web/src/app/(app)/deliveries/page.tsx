@@ -747,7 +747,10 @@ export default function DeliveriesPage() {
             </FormSection>
           )}
 
-          <div className="flex justify-end gap-2 pt-3 border-t border-[#ECE9E2]">
+          {/* Phones: a sticky footer docked to the sheet's bottom edge, the two buttons sharing its width
+              (same as the Create dialog's FormSteps footer). From sm up: the plain right-aligned row.
+              `!-mb-4`: the form's space-y-5 would otherwise reset the bottom margin that cancels the body padding. */}
+          <div className="sticky -bottom-4 z-10 -mx-4 !-mb-4 flex gap-2 border-t border-[#ECE9E2] bg-white px-4 py-3 [&>*]:min-w-0 [&>*]:flex-1 sm:static sm:mx-0 sm:!mb-0 sm:justify-end sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-3 sm:[&>*]:flex-none">
             <Button variant="outline" type="button" onClick={() => setIsUpdateStatusOpen(false)}>
               Cancel
             </Button>

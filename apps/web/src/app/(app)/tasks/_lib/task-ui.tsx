@@ -249,6 +249,23 @@ export const TasksNav: React.FC = () => {
   );
 };
 
+// ------------------------------------------------------------------ dialogs
+/**
+ * Phones: sticky to the bottom of the sheet, edge to edge (the negative margins cancel the modal body's
+ * px-4 / pb-4). `!-mb-4` because a parent's space-y would otherwise reset that bottom margin.
+ */
+const STICKY_ACTIONS = 'sticky -bottom-4 z-10 -mx-4 !-mb-4 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:static sm:mx-0 sm:!mb-0 sm:border-t-0 sm:bg-transparent sm:p-0';
+
+/**
+ * The action row at the end of a task dialog. Phones (bottom sheet): the buttons share the full width as
+ * big thumb targets, and the row sticks to the bottom of the sheet. From `sm` up: the plain right-aligned
+ * row it always was. Pass the desktop spacing (e.g. `sm:pt-1`) in `className`.
+ * `sticky={false}` for a confirm-only dialog with nothing above the buttons to scroll past.
+ */
+export const DialogActions: React.FC<{ children: React.ReactNode; className?: string; sticky?: boolean }> = ({ children, className, sticky = true }) => (
+  <div className={`flex items-center gap-2 [&>*]:min-w-0 [&>*]:flex-1 sm:justify-end sm:[&>*]:flex-none ${sticky ? STICKY_ACTIONS : ''} ${className || ''}`}>{children}</div>
+);
+
 // ------------------------------------------------------------------ files
 export const FileViewer: React.FC<{ file: TaskAttachment | null; onClose: () => void }> = ({ file, onClose }) => {
   const [url, setUrl] = useState<string | null>(null);
@@ -284,9 +301,9 @@ export const FileViewer: React.FC<{ file: TaskAttachment | null; onClose: () => 
             <Spinner size="lg" />
           ) : isImage ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={url} alt={file.file_name} className="max-h-[70vh] max-w-full h-auto w-auto object-contain" />
+            <img src={url} alt={file.file_name} className="max-h-[60dvh] max-w-full h-auto w-auto object-contain sm:max-h-[70vh]" />
           ) : isPdf ? (
-            <iframe src={url} title={file.file_name} className="w-full h-[70vh]" />
+            <iframe src={url} title={file.file_name} className="w-full h-[60dvh] sm:h-[70vh]" />
           ) : (
             <div className="text-center p-6 space-y-2">
               <FileText className="h-10 w-10 mx-auto text-[#4A5568]" />
@@ -295,7 +312,7 @@ export const FileViewer: React.FC<{ file: TaskAttachment | null; onClose: () => 
           )}
         </div>
         <div className="flex justify-end">
-          <Button variant="secondary" size="sm" disabled={!blob} leftIcon={<Download className="h-4 w-4" />} onClick={() => blob && saveBlob(blob, file.file_name)}>
+          <Button variant="secondary" size="sm" className="h-10 w-full sm:h-8 sm:w-auto" disabled={!blob} leftIcon={<Download className="h-4 w-4" />} onClick={() => blob && saveBlob(blob, file.file_name)}>
             Download
           </Button>
         </div>
@@ -321,7 +338,7 @@ export const FileList: React.FC<{ files: TaskAttachment[]; onOpen: (f: TaskAttac
           </Badge>
           <span className="hidden sm:inline text-[11px] text-[#8A8578] font-mono">{fileSize(f.size_bytes)}</span>
           {onRemove && canRemove?.(f) && (
-            <button type="button" aria-label={`Remove ${f.file_name}`} onClick={() => onRemove(f)} className="p-1 text-[#8A8578] hover:text-[#881337]">
+            <button type="button" aria-label={`Remove ${f.file_name}`} onClick={() => onRemove(f)} className="-my-1 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-1">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}

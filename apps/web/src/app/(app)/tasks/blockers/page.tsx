@@ -157,15 +157,18 @@ export default function BlockerQueuePage() {
                   Deadline <DueText deadline={b.deadline} open compact />
                   {b.is_task_overdue && <Badge variant="urgent" size="sm">Overdue</Badge>}
                 </div>
-                <div className="flex flex-wrap gap-2">
+                {/* phones: Reject / Accept share a row as big thumb targets, the escalation link below */}
+                <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap [&_button]:h-10 sm:[&_button]:h-8">
                   <Button size="sm" variant="secondary" leftIcon={<Ban className="h-4 w-4" />} onClick={() => setDialog({ action: 'reject_blocker', task: toActionTask(b) })}>
                     Reject
                   </Button>
                   <Button size="sm" leftIcon={<CheckCircle2 className="h-4 w-4" />} onClick={() => setDialog({ action: 'accept_blocker', task: toActionTask(b) })}>
                     Accept
                   </Button>
-                  <Link href={`/tasks/${b.task_id}`}>
-                    <Button size="sm" variant="ghost">Reassign / escalate…</Button>
+                  <Link href={`/tasks/${b.task_id}`} className="col-span-2">
+                    <Button size="sm" variant="ghost" className="w-full sm:w-auto">
+                      Reassign / escalate…
+                    </Button>
                   </Link>
                 </div>
               </div>

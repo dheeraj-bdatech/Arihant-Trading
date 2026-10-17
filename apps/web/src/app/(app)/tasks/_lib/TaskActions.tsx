@@ -27,6 +27,7 @@ import {
 } from '@arihant/shared';
 import { errorMessage, fieldErrors, isConflict, istToday, notifyTasksChanged, type AssigneeOption, type TaskDetail } from './task-lib';
 import { DeadlineInput, LinkPicker, UserSelect, useActiveUsers } from './pickers';
+import { DialogActions } from './task-ui';
 
 export type TaskDialogAction =
   | 'start'
@@ -100,11 +101,11 @@ const FilePick: React.FC<{ files: File[]; onChange: (f: File[]) => void; label: 
       <input ref={fileRef} type="file" multiple accept={accept} className="hidden" onChange={(e) => add(e.target.files)} />
       <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => add(e.target.files)} />
       <div className="flex flex-wrap gap-2">
-        <Button type="button" size="sm" variant="secondary" leftIcon={<Paperclip className="h-4 w-4" />} onClick={() => fileRef.current?.click()}>
+        <Button type="button" size="sm" variant="secondary" className="h-10 sm:h-8" leftIcon={<Paperclip className="h-4 w-4" />} onClick={() => fileRef.current?.click()}>
           Attach files
         </Button>
         {isMobileCapable() && (
-          <Button type="button" size="sm" variant="secondary" leftIcon={<Camera className="h-4 w-4" />} onClick={() => camRef.current?.click()}>
+          <Button type="button" size="sm" variant="secondary" className="h-10 sm:h-8" leftIcon={<Camera className="h-4 w-4" />} onClick={() => camRef.current?.click()}>
             Take photo
           </Button>
         )}
@@ -113,10 +114,10 @@ const FilePick: React.FC<{ files: File[]; onChange: (f: File[]) => void; label: 
         <ul className="mt-2 space-y-1">
           {files.map((f, i) => (
             <li key={`${f.name}-${i}`} className="flex items-center gap-2 text-xs text-[#14213D]">
-              <Paperclip className="h-3 w-3 text-[#4A5568]" />
-              <span className="truncate flex-1">{f.name}</span>
-              <span className="text-[#8A8578] font-mono">{Math.max(1, Math.round(f.size / 1024))} KB</span>
-              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => onChange(files.filter((_, j) => j !== i))} className="text-[#8A8578] hover:text-[#881337]">
+              <Paperclip className="h-3 w-3 shrink-0 text-[#4A5568]" />
+              <span className="min-w-0 truncate flex-1">{f.name}</span>
+              <span className="shrink-0 text-[#8A8578] font-mono">{Math.max(1, Math.round(f.size / 1024))} KB</span>
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => onChange(files.filter((_, j) => j !== i))} className="-my-1 shrink-0 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-0">
                 <X className="h-3.5 w-3.5" />
               </button>
             </li>
@@ -456,14 +457,14 @@ export const TaskActionDialog: React.FC<{
         )}
 
         {message && <InfoCallout variant="danger">{message}</InfoCallout>}
-        <div className="flex justify-end gap-2 pt-1">
+        <DialogActions className="sm:pt-1">
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Back
           </Button>
           <Button type="submit" variant={copy.danger ? 'danger' : 'primary'} isLoading={busy} disabled={busy}>
             {copy.confirm}
           </Button>
-        </div>
+        </DialogActions>
       </form>
     </Modal>
   );

@@ -61,19 +61,21 @@ import {
   TaskStatusBadges,
   blockerTypeLabel,
   useToaster,
+  DialogActions,
 } from './task-ui';
 import { TaskActionDialog, uploadTaskFiles, type TaskDialogAction } from './TaskActions';
 import { LinkPicker } from './pickers';
 
-const PRIMARY: { action: TaskDialogAction; label: string; icon: React.ReactNode; variant?: 'primary' | 'secondary' | 'danger' }[] = [
+/** `short`: the label in the phone action bar, where two buttons share the width. */
+const PRIMARY: { action: TaskDialogAction; label: string; short?: string; icon: React.ReactNode; variant?: 'primary' | 'secondary' | 'danger' }[] = [
   { action: 'start', label: 'Start', icon: <Play className="h-4 w-4" /> },
   { action: 'complete', label: 'Complete', icon: <CheckCircle2 className="h-4 w-4" /> },
   { action: 'approve', label: 'Approve', icon: <CheckCircle2 className="h-4 w-4" /> },
-  { action: 'accept_blocker', label: 'Accept blocker', icon: <CheckCircle2 className="h-4 w-4" /> },
-  { action: 'resolve_blocker', label: 'Blocker resolved', icon: <CheckCircle2 className="h-4 w-4" />, variant: 'secondary' },
+  { action: 'accept_blocker', label: 'Accept blocker', short: 'Accept', icon: <CheckCircle2 className="h-4 w-4" /> },
+  { action: 'resolve_blocker', label: 'Blocker resolved', short: 'Resolved', icon: <CheckCircle2 className="h-4 w-4" />, variant: 'secondary' },
   { action: 'raise_blocker', label: 'Raise blocker', icon: <Flag className="h-4 w-4" />, variant: 'secondary' },
   { action: 'send_back', label: 'Send back', icon: <Undo2 className="h-4 w-4" />, variant: 'secondary' },
-  { action: 'reject_blocker', label: 'Reject blocker', icon: <Ban className="h-4 w-4" />, variant: 'secondary' },
+  { action: 'reject_blocker', label: 'Reject blocker', short: 'Reject', icon: <Ban className="h-4 w-4" />, variant: 'secondary' },
 ];
 
 const SECONDARY: { action: TaskDialogAction | 'edit' | 'delete'; label: string; icon: React.ReactNode; danger?: boolean }[] = [
@@ -189,7 +191,7 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
   ].filter(Boolean) as { label: string; value: string; href: string | null }[];
 
   return (
-    <div className="space-y-5 pb-16 md:pb-0">
+    <div className="space-y-5 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">
       {/* Title row */}
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => router.back()}>
@@ -467,17 +469,20 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
 
       {/* Mobile sticky action bar */}
       {(primary.length > 0 || secondary.length > 0) && (
-        <div className="md:hidden fixed bottom-0 inset-x-0 z-30 border-t border-[#DCD8CE] bg-white/95 backdrop-blur px-3 py-2 flex items-center gap-2">
+        <div className="md:hidden fixed bottom-0 inset-x-0 z-30 border-t border-[#DCD8CE] bg-white/95 backdrop-blur px-3 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] flex items-center gap-2">
           {primary.slice(0, 2).map((p, i) => (
-            <Button key={p.action} size="md" className="flex-1" variant={i === 0 ? 'primary' : 'secondary'} leftIcon={p.icon} onClick={() => setDialog(p.action)}>
-              {p.label}
+            <Button key={p.action} size="md" className="flex-1 whitespace-nowrap" variant={i === 0 ? 'primary' : 'secondary'} leftIcon={p.icon} onClick={() => setDialog(p.action)}>
+              <span className="truncate">{p.short || p.label}</span>
             </Button>
           ))}
           {(primary.length > 2 || secondary.length > 0) && (
-            <RowMenu
-              label="More task actions"
-              items={[...primary.slice(2).map((p) => ({ key: p.action, label: p.label, icon: p.icon, onSelect: () => setDialog(p.action) })), ...secondary.map((s) => ({ key: s.action, label: s.label, icon: s.icon, danger: s.danger, onSelect: () => onSecondary(s.action) }))]}
-            />
+            // the ⋮ button matches the 40px action buttons beside it
+            <span className="shrink-0 [&>button]:!h-10 [&>button]:!w-10">
+              <RowMenu
+                label="More task actions"
+                items={[...primary.slice(2).map((p) => ({ key: p.action, label: p.label, icon: p.icon, onSelect: () => setDialog(p.action) })), ...secondary.map((s) => ({ key: s.action, label: s.label, icon: s.icon, danger: s.danger, onSelect: () => onSecondary(s.action) }))]}
+              />
+            </span>
           )}
         </div>
       )}
@@ -486,14 +491,14 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
       <FileViewer file={viewer} onClose={() => setViewer(null)} />
       {editOpen && <EditTaskModal task={task} onClose={() => setEditOpen(false)} onSaved={(d) => done(d, 'Task updated.')} onConflict={() => setConflict(true)} />}
       <Modal isOpen={deleteOpen} onClose={() => setDeleteOpen(false)} title="Delete this task?" description="Only possible within a few minutes of creating it and before anyone worked on it. Otherwise cancel it with a reason." maxWidth="md">
-        <div className="flex justify-end gap-2">
+        <DialogActions sticky={false}>
           <Button variant="ghost" onClick={() => setDeleteOpen(false)} disabled={busy}>
             Keep it
           </Button>
           <Button variant="danger" isLoading={busy} onClick={doDelete}>
             Delete permanently
           </Button>
-        </div>
+        </DialogActions>
       </Modal>
       <Toaster />
     </div>
@@ -566,21 +571,21 @@ const ProgressBox: React.FC<{
         <div className="flex flex-wrap items-center gap-2">
           <input ref={fileRef} type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,image/*" className="hidden" onChange={(e) => e.target.files && setFiles([...files, ...Array.from(e.target.files)].slice(0, 5))} />
           <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => e.target.files && setFiles([...files, ...Array.from(e.target.files)].slice(0, 5))} />
-          <Button type="button" size="sm" variant="secondary" leftIcon={<Camera className="h-4 w-4" />} onClick={() => camRef.current?.click()}>
+          <Button type="button" size="sm" variant="secondary" className="h-10 sm:h-8" leftIcon={<Camera className="h-4 w-4" />} onClick={() => camRef.current?.click()}>
             Photo
           </Button>
-          <Button type="button" size="sm" variant="secondary" leftIcon={<Paperclip className="h-4 w-4" />} onClick={() => fileRef.current?.click()}>
+          <Button type="button" size="sm" variant="secondary" className="h-10 sm:h-8" leftIcon={<Paperclip className="h-4 w-4" />} onClick={() => fileRef.current?.click()}>
             File
           </Button>
           {files.map((f, i) => (
-            <Badge key={`${f.name}-${i}`} variant="outline" size="sm" className="gap-1">
-              {f.name}
-              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles(files.filter((_, j) => j !== i))}>
+            <Badge key={`${f.name}-${i}`} variant="outline" size="sm" className="max-w-full gap-1">
+              <span className="min-w-0 truncate">{f.name}</span>
+              <button type="button" aria-label={`Remove ${f.name}`} className="-my-1 shrink-0 p-1 sm:my-0 sm:p-0" onClick={() => setFiles(files.filter((_, j) => j !== i))}>
                 ×
               </button>
             </Badge>
           ))}
-          <Button type="submit" size="sm" className="ml-auto" isLoading={busy} leftIcon={<Send className="h-4 w-4" />}>
+          <Button type="submit" size="sm" className="ml-auto h-10 sm:h-8" isLoading={busy} leftIcon={<Send className="h-4 w-4" />}>
             {isAssignee ? 'Post update' : 'Post comment'}
           </Button>
         </div>
@@ -659,7 +664,7 @@ const EscalationRow: React.FC<{
           {closing ? (
             <>
               <Textarea label="Outcome *" value={comment} onChange={(e) => setComment(e.target.value)} rows={2} maxLength={1000} />
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button size="xs" variant="ghost" onClick={() => setClosing(false)} disabled={busy}>
                   Back
                 </Button>
@@ -669,7 +674,7 @@ const EscalationRow: React.FC<{
               </div>
             </>
           ) : (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {esc.status === 'open' && (
                 <Button size="xs" variant="secondary" isLoading={busy} onClick={() => act('acknowledge')}>
                   Acknowledge

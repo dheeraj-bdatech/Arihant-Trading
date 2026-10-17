@@ -216,11 +216,11 @@ export const CommentModal: React.FC<{
           placeholder="Explain what is wrong or what you need from the employee"
           error={touched && tooShort ? `At least ${EXPENSE_MIN_COMMENT_LENGTH} characters are required.` : serverError || undefined}
         />
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" variant={danger ? 'danger' : 'primary'} isLoading={busy}>
+          <Button type="submit" variant={danger ? 'danger' : 'primary'} className="w-full sm:w-auto" isLoading={busy}>
             {confirmLabel}
           </Button>
         </div>
@@ -290,11 +290,11 @@ export const ProcessModal: React.FC<{
           <Input label="Payment reference (UTR) *" value={v.payment_reference} onChange={(e) => setV({ ...v, payment_reference: e.target.value })} maxLength={100} placeholder="NEFT / RTGS UTR or cheque no." className="font-mono" error={shown('payment_reference')} />
           <Input label="Payment date *" type="date" max={istToday()} value={v.payment_date} onChange={(e) => setV({ ...v, payment_date: e.target.value })} error={shown('payment_date')} />
         </div>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" isLoading={busy}>
+          <Button type="submit" className="w-full sm:w-auto" isLoading={busy}>
             Mark paid
           </Button>
         </div>
@@ -359,11 +359,11 @@ export const ReassignModal: React.FC<{
           error={errors.approver_id}
         />
         <Textarea label="Reason" value={comment} onChange={(e) => setComment(e.target.value)} rows={3} maxLength={1000} placeholder="e.g. Manager left the company" />
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" isLoading={busy} disabled={!approver} leftIcon={<ArrowRightLeft className="h-4 w-4" />}>
+          <Button type="submit" className="w-full sm:w-auto" isLoading={busy} disabled={!approver} leftIcon={<ArrowRightLeft className="h-4 w-4" />}>
             Reassign
           </Button>
         </div>
@@ -412,9 +412,9 @@ export const ReceiptViewer: React.FC<{ attachment: ExpenseAttachment | null; onC
             <Spinner size="lg" />
           ) : isImage ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={url} alt={attachment.file_name} className="max-h-[70vh] max-w-full h-auto w-auto object-contain" />
+            <img src={url} alt={attachment.file_name} className="max-h-[60vh] sm:max-h-[70vh] max-w-full h-auto w-auto object-contain" />
           ) : isPdf ? (
-            <iframe src={url} title={attachment.file_name} className="w-full h-[70vh]" />
+            <iframe src={url} title={attachment.file_name} className="w-full h-[60vh] sm:h-[70vh]" />
           ) : (
             <div className="text-center p-6 space-y-2">
               <FileText className="h-10 w-10 mx-auto text-[#4A5568]" />
@@ -422,8 +422,10 @@ export const ReceiptViewer: React.FC<{ attachment: ExpenseAttachment | null; onC
             </div>
           )}
         </div>
+        {/* Phones: shorter preview so Download stays on screen, and a full-width 40px button (phone browsers
+            often cannot show a PDF inline, so downloading is the way to read it). */}
         <div className="flex justify-end">
-          <Button variant="secondary" size="sm" disabled={!blob} leftIcon={<Download className="h-4 w-4" />} onClick={() => blob && saveBlob(blob, attachment.file_name)}>
+          <Button variant="secondary" size="sm" disabled={!blob} leftIcon={<Download className="h-4 w-4" />} onClick={() => blob && saveBlob(blob, attachment.file_name)} className="h-10 w-full sm:h-8 sm:w-auto">
             Download
           </Button>
         </div>

@@ -60,7 +60,7 @@ import {
   type TaskReassignReason,
 } from '@arihant/shared';
 import { errorMessage, fieldErrors, istToday, notifyTasksChanged, useTaskCategories, useTaskSummary, type AssigneeOption, type TaskRow } from '../_lib/task-lib';
-import { TaskConflictCallout, TaskViewMenu, TaskViewRow, useToaster, useUrlFilters } from '../_lib/task-ui';
+import { DialogActions, TaskConflictCallout, TaskViewMenu, TaskViewRow, useToaster, useUrlFilters } from '../_lib/task-ui';
 import { DeadlineInput, UserSelect } from '../_lib/pickers';
 import { TaskActionDialog, type TaskDialogAction } from '../_lib/TaskActions';
 import { TaskCards, TaskPagination, TaskSearchInput, TaskTable, rowActorKinds, useTaskList } from '../_lib/TaskList';
@@ -617,9 +617,9 @@ const BulkModal: React.FC<{ mode: 'reassign' | 'extend' | null; rows: TaskRow[];
               );
             })}
           </ul>
-          <div className="flex justify-end">
+          <DialogActions>
             <Button onClick={onClose}>Done</Button>
-          </div>
+          </DialogActions>
         </div>
       ) : (
         <form onSubmit={submit} className="space-y-4" noValidate>
@@ -629,7 +629,7 @@ const BulkModal: React.FC<{ mode: 'reassign' | 'extend' | null; rows: TaskRow[];
                 <li key={r.id} className="flex gap-2 min-w-0">
                   <span className="font-mono font-semibold text-[#0F5E63] shrink-0">{r.task_number}</span>
                   <span className="truncate text-[#14213D]">{r.title}</span>
-                  <span className="ml-auto shrink-0 text-[#4A5568]">{r.assignee_name}</span>
+                  <span className="ml-auto max-w-[40%] shrink-0 truncate text-[#4A5568] sm:max-w-none">{r.assignee_name}</span>
                 </li>
               ))}
             </ul>
@@ -663,14 +663,14 @@ const BulkModal: React.FC<{ mode: 'reassign' | 'extend' | null; rows: TaskRow[];
             error={errors.reason}
           />
           {message && <InfoCallout variant="danger">{message}</InfoCallout>}
-          <div className="flex justify-end gap-2 pt-1">
+          <DialogActions className="sm:pt-1">
             <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
               Back
             </Button>
             <Button type="submit" isLoading={busy} disabled={busy}>
               {mode === 'reassign' ? `Reassign ${snapshot.length}` : `Extend ${snapshot.length}`}
             </Button>
-          </div>
+          </DialogActions>
         </form>
       )}
     </Modal>

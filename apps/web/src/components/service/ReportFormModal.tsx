@@ -152,7 +152,8 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
             )
           }
           submit={
-            <Button type="submit" size="sm" isLoading={busy} disabled={wrongStatus}>
+            // phones: same 40px height as the Back button beside it in the shared footer
+            <Button type="submit" size="sm" isLoading={busy} disabled={wrongStatus} className="h-10 sm:h-8">
               File service report
             </Button>
           }
@@ -171,7 +172,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
                       <span className="text-[#4A5568]">Customer:</span> <strong className="text-[#14213D]">{ticket.organisation_name}</strong>
                     </div>
                     {ticket.equipment_serial && (
-                      <div className="col-span-2">
+                      <div className="sm:col-span-2">
                         <span className="text-[#4A5568]">Machine S/N:</span> <strong className="font-mono text-[#14213D]">{ticket.equipment_serial}</strong>
                       </div>
                     )}
@@ -200,13 +201,13 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
                     {f.parts.map((p, i) => (
                       <div key={i} className="space-y-1">
                         <div className="flex items-start gap-2">
-                          <div className="flex-1">
+                          <div className="min-w-0 flex-1">
                             <Input placeholder="Part name / number" aria-label={`Part ${i + 1} name`} value={p.name} onChange={(e) => set({ parts: f.parts.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)) })} />
                           </div>
-                          <div className="w-24">
+                          <div className="w-20 shrink-0 sm:w-24">
                             <Input type="number" min={1} step={1} aria-label={`Part ${i + 1} quantity`} value={p.qty} onChange={(e) => set({ parts: f.parts.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)) })} />
                           </div>
-                          <Button type="button" size="sm" variant="ghost" aria-label="Remove part" onClick={() => set({ parts: f.parts.filter((_, j) => j !== i) })}>
+                          <Button type="button" size="sm" variant="ghost" aria-label="Remove part" className="h-10 w-10 shrink-0 px-0 sm:h-8 sm:w-auto sm:px-2.5" onClick={() => set({ parts: f.parts.filter((_, j) => j !== i) })}>
                             <Trash2 className="h-3.5 w-3.5 text-[#9A3412]" />
                           </Button>
                         </div>
@@ -235,10 +236,10 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
               content: (
                 <div className="space-y-3">
                   <div className="flex flex-wrap gap-4 text-xs text-[#14213D]">
-                    <label className="flex cursor-pointer items-center gap-1.5">
+                    <label className="flex min-h-10 cursor-pointer items-center gap-1.5 sm:min-h-0">
                       <input type="radio" name="confirm" checked={f.obtained} onChange={() => set({ obtained: true })} /> Obtained
                     </label>
-                    <label className="flex cursor-pointer items-center gap-1.5">
+                    <label className="flex min-h-10 cursor-pointer items-center gap-1.5 sm:min-h-0">
                       <input type="radio" name="confirm" checked={!f.obtained} onChange={() => set({ obtained: false })} /> Not obtained
                     </label>
                   </div>
@@ -272,7 +273,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
                   <Input label="Signed report document URL (optional)" value={f.reportUrl} onChange={(e) => set({ reportUrl: e.target.value })} placeholder="https://…" />
 
                   <div className="space-y-2">
-                    <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-[#14213D]">
+                    <label className="flex min-h-10 cursor-pointer items-center gap-2 text-xs font-semibold text-[#14213D] sm:min-h-0">
                       <input type="checkbox" checked={f.furtherWork} onChange={(e) => set({ furtherWork: e.target.checked })} className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63]" />
                       Further work / revisit required
                     </label>

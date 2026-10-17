@@ -511,6 +511,8 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
         ? 'Add at least one expense'
         : undefined;
   const submitLabel = claim?.status === 'clarification_required' ? 'Resubmit' : 'Submit for approval';
+  // Phone action bars are narrow; the summary card and the confirm dialog keep the full wording.
+  const submitLabelShort = claim?.status === 'clarification_required' ? 'Resubmit' : 'Submit';
 
   const checklist = [
     { done: Boolean(claim) && !headerDirty, text: 'Trip details saved' },
@@ -525,12 +527,13 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
   return (
     <div className={modal ? 'space-y-5' : 'space-y-5'}>
       {modal && claim && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-xs font-semibold text-[#0F5E63]">{claim.claim_number}</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2.5 sm:px-4 sm:py-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="break-all font-mono text-xs font-semibold text-[#0F5E63]">{claim.claim_number}</span>
             <StatusBadge status={claim.status} />
           </div>
-          <div className="text-right">
+          {/* ml-auto: when the row wraps on a phone the total still sits on the right */}
+          <div className="ml-auto text-right">
             <span className="mr-2 text-xs text-[#4A5568]">
               {items.length} expense{items.length === 1 ? '' : 's'}
             </span>
@@ -653,14 +656,16 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
                 ) : (
                   <RevealButton onClick={() => setShowHeaderNote(true)}>Add a note for your approver</RevealButton>
                 )}
-                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#ECE9E2] pt-4">
+                {/* Phones: full-width buttons, primary on top; from sm the right-aligned row. */}
+                <div className="flex flex-col-reverse gap-2 border-t border-[#ECE9E2] pt-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
                   {!isNew && (
-                    <Button variant="ghost" onClick={cancelHeaderEdit} disabled={savingHeader}>
+                    <Button variant="ghost" className="w-full sm:w-auto" onClick={cancelHeaderEdit} disabled={savingHeader}>
                       Cancel
                     </Button>
                   )}
                   <Button
                     size="lg"
+                    className="w-full sm:w-auto"
                     leftIcon={isNew ? undefined : <Save className="h-4 w-4" />}
                     rightIcon={isNew ? <ArrowRight className="h-4 w-4" /> : undefined}
                     isLoading={savingHeader}
@@ -760,10 +765,10 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
         {/* Summary panel (fare-summary style) */}
         <aside className={modal ? 'space-y-4' : 'space-y-4 lg:sticky lg:top-20'}>
           <Card className="overflow-hidden">
-            <div className="border-b border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3">
+            <div className="border-b border-[#ECE9E2] bg-[#FBFAF7] px-3 py-3 sm:px-4">
               <h3 className="font-serif text-base text-[#14213D]">Claim summary</h3>
             </div>
-            <div className="space-y-4 p-4">
+            <div className="space-y-4 p-3 sm:p-4">
               {breakdown.size || editor ? (
                 <ul className="space-y-2.5">
                   {[...breakdown.values()].map((b) => (
@@ -801,7 +806,8 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
                 ))}
               </ul>
               {claim && (
-                <div className={modal ? 'space-y-2' : 'hidden space-y-2 lg:block'}>
+                // Below the breakpoint the sticky action bar (page: < lg, popup: < sm) carries Submit instead.
+                <div className={modal ? 'hidden space-y-2 sm:block' : 'hidden space-y-2 lg:block'}>
                   <Button fullWidth size="lg" leftIcon={<Send className="h-4 w-4" />} disabled={!canSubmit} title={submitBlocker} onClick={() => setConfirmSubmit(true)}>
                     {submitLabel}
                   </Button>
@@ -826,21 +832,41 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
         </aside>
       </div>
 
-      {/* Sticky action bar (thumb-reachable on phones and tablets) */}
+      {/* Sticky action bar (thumb-reachable on phones and tablets). Phones: count over total and a short
+          label, so the button and the figures both fit between the corner buttons. */}
       {claim && !modal && (
         <div className="sticky bottom-0 z-30 -mx-4 flex items-center gap-2 border-t border-[#DCD8CE] bg-white/95 py-3 pl-[4.5rem] pr-20 backdrop-blur lg:hidden">
           <div className="mr-auto min-w-0 text-xs text-[#4A5568]">
-            {items.length} expense{items.length === 1 ? '' : 's'} · <Money value={runningTotal} className="font-semibold text-[#14213D]" />
+            <span className="block sm:inline">
+              {items.length} expense{items.length === 1 ? '' : 's'}
+            </span>
+            <span className="hidden sm:inline"> · </span>
+            <Money value={runningTotal} className="block font-semibold text-[#14213D] sm:inline" />
           </div>
           <Button leftIcon={<Send className="h-4 w-4" />} disabled={!canSubmit} title={submitBlocker} onClick={() => setConfirmSubmit(true)}>
-            {submitLabel}
+            <span className="sm:hidden">{submitLabelShort}</span>
+            <span className="hidden sm:inline">{submitLabel}</span>
+          </Button>
+        </div>
+      )}
+
+      {/* Popup on a phone: Submit pinned to the bottom of the sheet (the summary card's button shows from sm).
+          Hidden while an expense is open — its own Add / Save button is the action then. */}
+      {claim && modal && !editor && (
+        <div className="sticky -bottom-4 z-20 -mx-4 -mb-4 flex items-center gap-3 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:hidden">
+          <div className="min-w-0 flex-1 text-xs leading-tight text-[#4A5568]">
+            <span className="block">{submitBlocker || `${items.length} expense${items.length === 1 ? '' : 's'}`}</span>
+            <Money value={runningTotal} className="text-base font-semibold text-[#14213D]" />
+          </div>
+          <Button leftIcon={<Send className="h-4 w-4" />} disabled={!canSubmit} onClick={() => setConfirmSubmit(true)} className="shrink-0">
+            {submitLabelShort}
           </Button>
         </div>
       )}
 
       <Modal isOpen={confirmSubmit} onClose={() => setConfirmSubmit(false)} title={claim?.status === 'clarification_required' ? 'Resubmit claim?' : 'Submit claim for approval?'} description="Once submitted the claim is locked until your approver acts on it." maxWidth="sm">
         <div className="space-y-4">
-          <div className="rounded-[14px] bg-[#FBFAF7] border border-[#ECE9E2] p-4 flex items-center justify-between">
+          <div className="rounded-[14px] bg-[#FBFAF7] border border-[#ECE9E2] p-3 sm:p-4 flex items-center justify-between gap-3">
             <span className="text-sm text-[#4A5568]">{items.length} expense{items.length === 1 ? '' : 's'}</span>
             <Money value={claim?.total_claimed ?? 0} className="text-xl font-semibold text-[#14213D]" />
           </div>
@@ -850,17 +876,17 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
           {items.some((i) => i.receipt_missing) && (
             <InfoCallout variant="warning">Some expenses still need a receipt — the submission will be rejected until they are attached.</InfoCallout>
           )}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setConfirmSubmit(false)} disabled={submitting}>Cancel</Button>
-            <Button onClick={submit} isLoading={submitting} leftIcon={<Send className="h-4 w-4" />}>Confirm & submit</Button>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="ghost" className="w-full sm:w-auto" onClick={() => setConfirmSubmit(false)} disabled={submitting}>Cancel</Button>
+            <Button className="w-full sm:w-auto" onClick={submit} isLoading={submitting} leftIcon={<Send className="h-4 w-4" />}>Confirm & submit</Button>
           </div>
         </div>
       </Modal>
 
       <Modal isOpen={confirmDelete} onClose={() => setConfirmDelete(false)} title="Delete this draft?" description="The draft and its expenses will be removed. This cannot be undone from the app." maxWidth="sm">
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setConfirmDelete(false)}>Keep</Button>
-          <Button variant="danger" onClick={deleteDraft}>Delete draft</Button>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="ghost" className="w-full sm:w-auto" onClick={() => setConfirmDelete(false)}>Keep</Button>
+          <Button variant="danger" className="w-full sm:w-auto" onClick={deleteDraft}>Delete draft</Button>
         </div>
       </Modal>
 
@@ -940,7 +966,7 @@ function validateEditor(d: ItemDraft, cat?: ExpenseCategory): Record<string, str
 // ======================================================================== category picker
 /** Big icon tiles — the first decision for every expense, like choosing Flights / Hotels / Cabs. */
 const CategoryPicker: React.FC<{ categories: ExpenseCategory[]; hasItems: boolean; onPick: (categoryId: string) => void }> = ({ categories, hasItems, onPick }) => (
-  <div className="rounded-[14px] border border-dashed border-[#C9C4B8] bg-[#FBFAF7] p-4">
+  <div className="rounded-[14px] border border-dashed border-[#C9C4B8] bg-[#FBFAF7] p-3 sm:p-4">
     <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#14213D]">
       <Plus className="h-4 w-4 text-[#0F5E63]" />
       {hasItems ? 'Add another expense' : 'What did you spend on?'}
@@ -1047,7 +1073,7 @@ const ItemEditor: React.FC<{
             );
           })}
         </ScrollStrip>
-        <button type="button" aria-label="Close" onClick={onCancel} className="my-2 inline-flex w-8 shrink-0 items-center justify-center rounded-lg text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#14213D]">
+        <button type="button" aria-label="Close" onClick={onCancel} className="my-2 inline-flex w-10 shrink-0 items-center justify-center rounded-lg text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#14213D] sm:w-8">
           <X className="h-4 w-4" />
         </button>
       </div>
@@ -1057,7 +1083,7 @@ const ItemEditor: React.FC<{
           {errors.category_id ? <span className="font-medium text-[#881337]">{errors.category_id}</span> : 'Pick the type of expense above to continue.'}
         </div>
       ) : (
-        <div className="space-y-4 p-4 sm:p-5">
+        <div className="space-y-4 p-3 sm:p-5">
           {/* Category-specific details */}
           {kind === 'travel' && (
             <>
@@ -1077,14 +1103,15 @@ const ItemEditor: React.FC<{
               <FieldTile label="Hotel name" htmlFor="hotel-name" icon={<Building2 />} required error={d('hotel_name')}>
                 <TileInput id="hotel-name" value={draft.details.hotel_name || ''} maxLength={120} placeholder="e.g. Hotel Clarks Avadh, Lucknow" onChange={(e) => setDetail('hotel_name', e.target.value)} />
               </FieldTile>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_1fr_110px]">
+              {/* Phones: one tile per row — two native date pickers (and their long errors) do not fit side by side. */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_110px]">
                 <FieldTile label="Check-in" htmlFor="hotel-in" icon={<Calendar />} required error={d('check_in')}>
                   <TileInput id="hotel-in" type="date" max={today} value={draft.details.check_in || ''} onChange={(e) => setDetail('check_in', e.target.value)} />
                 </FieldTile>
                 <FieldTile label="Check-out" htmlFor="hotel-out" icon={<Calendar />} required error={d('check_out')}>
                   <TileInput id="hotel-out" type="date" min={draft.details.check_in || undefined} max={today} value={draft.details.check_out || ''} onChange={(e) => setDetail('check_out', e.target.value)} />
                 </FieldTile>
-                <FieldTile label="Nights" readOnly className="col-span-2 sm:col-span-1">
+                <FieldTile label="Nights" readOnly>
                   <div className="mt-0.5 h-7 font-mono text-[15px] leading-7 font-semibold text-[#14213D]">{nights !== null && nights > 0 ? nights : '—'}</div>
                 </FieldTile>
               </div>
@@ -1093,7 +1120,7 @@ const ItemEditor: React.FC<{
           {kind === 'conveyance' && (
             <>
               <RouteFields from={draft.details.from || ''} to={draft.details.to || ''} onChange={setRoute} errors={{ from: d('from'), to: d('to') }} />
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <FieldTile label="Distance (km)" htmlFor="conv-km" error={d('km')}>
                   <TileInput id="conv-km" inputMode="decimal" placeholder="0" className="font-mono" value={draft.details.km || ''} onChange={(e) => setDetail('km', e.target.value.replace(/[^\d.]/g, ''))} />
                 </FieldTile>
@@ -1120,7 +1147,7 @@ const ItemEditor: React.FC<{
                     aria-label="One person fewer"
                     disabled={persons <= 1}
                     onClick={() => setDetail('persons', String(Math.max(1, persons - 1)))}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#C9C4B8] text-[#14213D] hover:border-[#0F5E63] disabled:opacity-40"
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[#C9C4B8] text-[#14213D] hover:border-[#0F5E63] disabled:opacity-40 sm:h-7 sm:w-7"
                   >
                     <Minus className="h-3.5 w-3.5" />
                   </button>
@@ -1136,7 +1163,7 @@ const ItemEditor: React.FC<{
                     aria-label="One more person"
                     disabled={persons >= 50}
                     onClick={() => setDetail('persons', String(Math.min(50, persons + 1)))}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#C9C4B8] text-[#14213D] hover:border-[#0F5E63] disabled:opacity-40"
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[#C9C4B8] text-[#14213D] hover:border-[#0F5E63] disabled:opacity-40 sm:h-7 sm:w-7"
                   >
                     <Plus className="h-3.5 w-3.5" />
                   </button>
@@ -1236,13 +1263,14 @@ const ItemEditor: React.FC<{
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-b-[12px] border-t border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3 sm:px-5">
-        <div className="text-xs text-[#4A5568]">
+      {/* Phones: amount on its own line, then full-width buttons (primary on top); from sm one row. */}
+      <div className="flex flex-col gap-3 rounded-b-[12px] border-t border-[#ECE9E2] bg-[#FBFAF7] px-3 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-5">
+        <div className="flex items-baseline justify-between gap-2 text-xs text-[#4A5568] sm:block">
           This expense <Money value={Number(editorAmount(draft, cat)) || 0} className="ml-1 text-base font-semibold text-[#14213D]" />
         </div>
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>Cancel</Button>
-          <Button onClick={onSave} isLoading={busy} disabled={!cat} leftIcon={<Save className="h-4 w-4" />}>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row">
+          <Button variant="ghost" className="w-full sm:w-auto" onClick={onCancel} disabled={busy}>Cancel</Button>
+          <Button className="w-full sm:w-auto" onClick={onSave} isLoading={busy} disabled={!cat} leftIcon={<Save className="h-4 w-4" />}>
             {draft.id ? 'Save changes' : 'Add expense'}
           </Button>
         </div>
@@ -1306,11 +1334,15 @@ const ItemCard: React.FC<{
         if (e.dataTransfer.files?.length) onUpload(e.dataTransfer.files);
       }}
     >
-      <div className="flex gap-3 p-4">
-        <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#E3EFEE] text-[#0F5E63]">{categoryIcon(item.category_code)}</span>
+      {/* Phones: the big category icon moves into the caption line so the route / hotel name gets the width. */}
+      <div className="flex gap-3 p-3 sm:p-4">
+        <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#E3EFEE] text-[#0F5E63] sm:inline-flex">{categoryIcon(item.category_code)}</span>
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#4A5568]">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[#0F5E63]">{item.category_name}</span>
+            <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[#0F5E63]">
+              <span className="sm:hidden" aria-hidden>{categoryIcon(item.category_code, 'h-3.5 w-3.5')}</span>
+              {item.category_name}
+            </span>
             <span aria-hidden>·</span>
             <DateText value={item.expense_date} />
             {sub && (
@@ -1337,28 +1369,34 @@ const ItemCard: React.FC<{
         <div className="shrink-0 text-right">
           <Money value={item.amount} className="text-base font-semibold text-[#14213D] sm:text-lg" />
           <div className="mt-1 flex justify-end gap-1">
-            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Edit expense" onClick={onEdit} disabled={disabled}><Pencil className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Remove expense" onClick={onDelete} disabled={disabled}><Trash2 className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className="h-10 w-10 sm:h-8 sm:w-8" aria-label="Edit expense" onClick={onEdit} disabled={disabled}><Pencil className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className="h-10 w-10 sm:h-8 sm:w-8" aria-label="Remove expense" onClick={onDelete} disabled={disabled}><Trash2 className="h-4 w-4" /></Button>
           </div>
         </div>
       </div>
 
       {hasErrors && (
-        <div className="space-y-1 px-4 pb-3">
+        <div className="space-y-1 px-3 pb-3 sm:px-4">
           {Object.entries(errors).filter(([, v]) => v).map(([k, v]) => (
             <p key={k} className="flex items-center gap-1 text-xs text-[#881337]"><AlertTriangle className="h-3 w-3" /> {v}</p>
           ))}
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 rounded-b-[14px] border-t border-dashed border-[#DCD8CE] bg-[#FBFAF7] px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 rounded-b-[14px] border-t border-dashed border-[#DCD8CE] bg-[#FBFAF7] px-3 py-2.5 sm:px-4">
         {item.attachments.map((a) => (
-          <span key={a.id} className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${a.duplicate_of_attachment_id ? 'border-[#9A3412]/40 bg-[#FBEBDD]' : 'border-[#DCD8CE] bg-white'}`}>
-            <button type="button" className="inline-flex items-center gap-1 hover:underline" onClick={() => onPreview(a)}>
-              {a.mime_type === 'application/pdf' ? <FileText className="h-3.5 w-3.5" /> : <ImageIcon className="h-3.5 w-3.5" />}
+          <span key={a.id} className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-lg border px-2 py-1 text-xs ${a.duplicate_of_attachment_id ? 'border-[#9A3412]/40 bg-[#FBEBDD]' : 'border-[#DCD8CE] bg-white'}`}>
+            <button type="button" className="inline-flex min-w-0 items-center gap-1 hover:underline" onClick={() => onPreview(a)}>
+              {a.mime_type === 'application/pdf' ? <FileText className="h-3.5 w-3.5 shrink-0" /> : <ImageIcon className="h-3.5 w-3.5 shrink-0" />}
               <span className="max-w-[140px] truncate">{a.file_name}</span>
             </button>
-            <button type="button" aria-label={`Remove ${a.file_name}`} className="text-[#8A8578] hover:text-[#881337]" onClick={() => onRemoveAttachment(a)}>
+            {/* phones: a 28px hit area around the 14px cross (negative margins keep the chip's size) */}
+            <button
+              type="button"
+              aria-label={`Remove ${a.file_name}`}
+              className="-my-1 -mr-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-[#8A8578] hover:text-[#881337] sm:m-0 sm:inline-block sm:h-auto sm:w-auto"
+              onClick={() => onRemoveAttachment(a)}
+            >
               <X className="h-3.5 w-3.5" />
             </button>
           </span>
@@ -1371,11 +1409,26 @@ const ItemCard: React.FC<{
         <input ref={fileRef} type="file" accept={ACCEPT} multiple className="hidden" onChange={(e) => e.target.files && onUpload(e.target.files)} />
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => e.target.files && onUpload(e.target.files)} />
         {item.attachments.length < MAX_FILES && (
-          <span className="ml-auto inline-flex gap-1">
-            <Button size="xs" variant="secondary" isLoading={uploading} leftIcon={<Upload className="h-3 w-3" />} onClick={() => fileRef.current?.click()}>
+          // Phones: Receipt / Photo share their own full-width row as real 36px buttons (the main job on the road).
+          <span className="flex w-full gap-2 sm:ml-auto sm:inline-flex sm:w-auto sm:gap-1">
+            <Button
+              size="xs"
+              variant="secondary"
+              isLoading={uploading}
+              leftIcon={<Upload className="h-4 w-4 sm:h-3 sm:w-3" />}
+              onClick={() => fileRef.current?.click()}
+              className="h-9 flex-1 px-3 text-xs sm:h-7 sm:flex-initial sm:px-2 sm:text-[11px]"
+            >
               Receipt
             </Button>
-            <Button size="xs" variant="secondary" disabled={uploading} leftIcon={<Camera className="h-3 w-3" />} onClick={() => cameraRef.current?.click()} className="sm:hidden">
+            <Button
+              size="xs"
+              variant="secondary"
+              disabled={uploading}
+              leftIcon={<Camera className="h-4 w-4" />}
+              onClick={() => cameraRef.current?.click()}
+              className="h-9 flex-1 px-3 text-xs sm:hidden"
+            >
               Photo
             </Button>
           </span>

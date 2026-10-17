@@ -144,7 +144,7 @@ export default function ApprovalQueuePage() {
                 <div className="text-[11px] uppercase tracking-wide text-[#4A5568] mb-1">Evidence</div>
                 <FileList files={t.evidence} onOpen={setViewer} />
               </div>
-              <div className="flex flex-wrap justify-end gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end [&>button]:h-10 sm:[&>button]:h-8">
                 <Button size="sm" variant="secondary" leftIcon={<Undo2 className="h-4 w-4" />} onClick={() => setDialog({ action: 'send_back', task: t })}>
                   Send back
                 </Button>

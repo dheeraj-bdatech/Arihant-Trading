@@ -8,7 +8,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { TASK_HOLIDAY_POLICIES, TASK_HOLIDAY_POLICY_LABELS, TASK_LEAVE_POLICY_LABELS } from '@arihant/shared';
 import { errorMessage, fieldErrors, useTaskCategories, useTaskSettings, type TaskCategory, type TaskSettings } from '../_lib/task-lib';
-import { TasksNav, useToaster } from '../_lib/task-ui';
+import { DialogActions, TasksNav, useToaster } from '../_lib/task-ui';
 import { useActiveUsers } from '../_lib/pickers';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -150,7 +150,8 @@ export default function TaskSettingsPage() {
             </div>
             <fieldset>
               <legend className="text-xs font-semibold text-[#14213D] mb-1.5">Weekly off days</legend>
-              <div className="flex flex-wrap gap-2">
+              {/* phones: one row of seven equal days instead of a ragged wrap */}
+              <div className="grid grid-cols-7 gap-1.5 sm:flex sm:flex-wrap sm:gap-2">
                 {WEEKDAYS.map((d, i) => {
                   const on = draft.weekly_off_days.includes(i);
                   return (
@@ -159,7 +160,7 @@ export default function TaskSettingsPage() {
                       type="button"
                       aria-pressed={on}
                       onClick={() => setDraft({ ...draft, weekly_off_days: on ? draft.weekly_off_days.filter((x) => x !== i) : [...draft.weekly_off_days, i].sort() })}
-                      className={`h-9 min-w-[48px] rounded-lg border px-3 text-xs font-semibold ${on ? 'border-[#0F5E63] bg-[#0F5E63] text-white' : 'border-[#C9C4B8] bg-white text-[#14213D]'}`}
+                      className={`h-10 min-w-0 rounded-lg border px-0 text-xs font-semibold sm:h-9 sm:min-w-[48px] sm:px-3 ${on ? 'border-[#0F5E63] bg-[#0F5E63] text-white' : 'border-[#C9C4B8] bg-white text-[#14213D]'}`}
                     >
                       {d}
                     </button>
@@ -275,14 +276,14 @@ const CategoriesCard: React.FC<{ onToast: (k: 'success' | 'error', t: string) =>
               <Checkbox checked={Boolean(editing.default_evidence_required)} onChange={(e) => setEditing({ ...editing, default_evidence_required: e.target.checked })} label="Evidence required by default" />
               <Checkbox checked={editing.is_active ?? true} onChange={(e) => setEditing({ ...editing, is_active: e.target.checked })} label="Active" description="Inactive categories cannot be chosen for new tasks; existing tasks keep them." />
             </FormSection>
-            <div className="flex justify-end gap-2">
+            <DialogActions>
               <Button type="button" variant="ghost" onClick={() => setEditing(null)} disabled={busy}>
                 Cancel
               </Button>
               <Button type="submit" isLoading={busy}>
                 Save
               </Button>
-            </div>
+            </DialogActions>
           </form>
         </Modal>
       )}

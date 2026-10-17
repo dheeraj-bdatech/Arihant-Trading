@@ -45,10 +45,10 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h5 className="font-serif text-xs font-bold uppercase tracking-wider text-[#0F5E63]">Filed service reports</h5>
         {canFile && (
-          <Button size="xs" onClick={onNewReport}>
+          <Button size="xs" onClick={onNewReport} className="h-9 shrink-0 sm:h-7">
             <Plus className="mr-1 h-3.5 w-3.5" />
             New report
           </Button>
@@ -64,10 +64,10 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
         reports.map((rep) => {
           const parts = parsePartsReplaced(rep.parts_replaced);
           return (
-            <div key={rep.id} className="space-y-2 rounded-xl border border-[#DCD8CE] bg-white p-3.5">
+            <div key={rep.id} className="space-y-2 rounded-xl border border-[#DCD8CE] bg-white p-3 sm:p-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-bold text-[#14213D]">By {rep.submitted_by_name || 'Service Engineer'}</span>
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                   <span className="text-[#4A5568]">{new Date(rep.created_at).toLocaleDateString('en-IN')}</span>
                   <Badge variant={rep.report_status === 'Approved' ? 'success' : rep.report_status === 'Returned for Correction' ? 'urgent' : 'warning'} size="sm">
                     {rep.report_status || 'Submitted'}
@@ -121,21 +121,22 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
                   {returning === rep.id ? (
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       <Input placeholder="Reason for returning the report (min. 5 characters)" value={reason} onChange={(e) => setReason(e.target.value)} className="flex-1" />
-                      <div className="flex gap-2">
-                        <Button size="xs" variant="danger" isLoading={busy === rep.id} onClick={() => review(rep.id, false)}>
+                      <div className="flex shrink-0 gap-2">
+                        <Button size="xs" variant="danger" isLoading={busy === rep.id} onClick={() => review(rep.id, false)} className="h-10 flex-1 sm:h-7 sm:flex-initial">
                           Confirm return
                         </Button>
-                        <Button size="xs" variant="ghost" onClick={() => { setReturning(null); setError(null); }}>
+                        <Button size="xs" variant="ghost" onClick={() => { setReturning(null); setError(null); }} className="h-10 shrink-0 sm:h-7">
                           Cancel
                         </Button>
                       </div>
                     </div>
                   ) : (
-                    <div className="flex justify-end gap-2">
-                      <Button size="xs" variant="secondary" onClick={() => setReturning(rep.id)}>
+                    // phones: the two review buttons share the row as 40px targets
+                    <div className="flex justify-end gap-2 [&>*]:flex-1 sm:[&>*]:flex-initial">
+                      <Button size="xs" variant="secondary" onClick={() => setReturning(rep.id)} className="h-10 sm:h-7">
                         Return for correction
                       </Button>
-                      <Button size="xs" isLoading={busy === rep.id} onClick={() => review(rep.id, true)}>
+                      <Button size="xs" isLoading={busy === rep.id} onClick={() => review(rep.id, true)} className="h-10 sm:h-7">
                         <Check className="mr-1 h-3.5 w-3.5" />
                         Approve report
                       </Button>

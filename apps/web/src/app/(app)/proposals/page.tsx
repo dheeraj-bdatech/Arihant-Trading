@@ -59,7 +59,7 @@ import {
   toneFor,
   type RecordItem,
   type BoardLane,
-  Tabs, Spinner, FilterMenu, InfoCallout, FormSteps, FormSection } from '@/components/ui';
+  Tabs, Spinner, FilterMenu, InfoCallout, FormSteps, FormSection, ScrollStrip } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
 import {
@@ -71,6 +71,22 @@ import {
 
 /** A proposal DATE value from the API ('YYYY-MM-DD' or a serialized instant) as its IST calendar day. */
 const proposalDay = calendarDay;
+
+/**
+ * Dialog action rows. Phones (bottom sheet): a sticky footer docked to the sheet's bottom edge, the
+ * buttons sharing the full width as 40px thumb targets. From `sm` up: the plain right-aligned row.
+ */
+const DIALOG_FOOTER =
+  'sticky -bottom-4 z-10 -mx-4 -mb-4 flex gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 [&>*]:min-w-0 [&>*]:flex-1 sm:static sm:z-auto sm:mx-0 sm:mb-0 sm:justify-end sm:border-[#F0F5FC] sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-3 sm:[&>*]:flex-none';
+const DIALOG_BTN = 'h-10 sm:h-8';
+/** Workflow buttons in the proposal sheet: phones share the row as 40px targets; `sm` up keeps the compact xs button. */
+const FLOW_BTN = 'h-10 grow basis-[8rem] text-xs sm:h-7 sm:grow-0 sm:basis-auto sm:text-[11px]';
+/**
+ * Filter-row dropdowns on phones: the menus wrap over several lines, so a panel anchored to its button
+ * runs off the left or right screen edge. Below `sm` each panel opens full-width under the menu group
+ * (the group is the positioning box); from `sm` up it stays anchored to its button.
+ */
+const PHONE_MENU = 'max-sm:static max-sm:[&_.filter-menu-panel]:inset-x-0 max-sm:[&_.filter-menu-panel]:max-w-none';
 
 const PROPOSAL_STATUS_FILTERS = [
   { key: 'PROPOSAL_REQUESTED', label: 'Proposal requested' },
@@ -873,19 +889,19 @@ export default function ProposalsPage() {
 
       {/* Success Confirmation Banner */}
       {successMessage && (
-        <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-[14px] text-emerald-900 flex items-center justify-between shadow-xs animate-in fade-in duration-200">
-          <div className="flex items-center gap-3">
+        <div className="p-3 sm:p-4 bg-emerald-50 border border-emerald-300 rounded-[14px] text-emerald-900 flex items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200">
+          <div className="flex min-w-0 items-center gap-3">
             <div className="p-1.5 bg-emerald-600 text-white rounded-full shrink-0">
               <Check className="h-4 w-4" />
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Quotation Registered</p>
-              <p className="text-xs font-medium text-emerald-900">{successMessage}</p>
+              <p className="text-xs font-medium text-emerald-900 [overflow-wrap:anywhere]">{successMessage}</p>
             </div>
           </div>
           <button
             onClick={() => setSuccessMessage(null)}
-            className="text-emerald-700 hover:text-emerald-950 p-1.5 rounded-lg hover:bg-emerald-100 transition-colors"
+            className="shrink-0 text-emerald-700 hover:text-emerald-950 p-2.5 sm:p-1.5 rounded-lg hover:bg-emerald-100 transition-colors"
             title="Dismiss confirmation"
           >
             <X className="h-4 w-4" />
@@ -928,9 +944,10 @@ export default function ProposalsPage() {
               className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
-          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+          <div className="flex flex-wrap items-center gap-2 max-sm:relative lg:flex-nowrap">
             <FilterMenu
               label="Status"
+              className={PHONE_MENU}
               icon={<Layers />}
               options={[{ key: 'all', label: 'All statuses' }, ...PROPOSAL_STATUS_FILTERS].map((o) => ({
                 ...o,
@@ -940,6 +957,7 @@ export default function ProposalsPage() {
             />
             <FilterMenu
               label="Sector"
+              className={PHONE_MENU}
               icon={<Building />}
               options={['all', ...SECTORS].map((s) => ({
                 key: s,
@@ -952,6 +970,7 @@ export default function ProposalsPage() {
             />
             <FilterMenu
               label="Follow-ups"
+              className={PHONE_MENU}
               icon={<Clock />}
               options={[
                 { key: 'all', label: 'All proposals', count: undefined },
@@ -972,7 +991,7 @@ export default function ProposalsPage() {
             <FilterMenu
               label="Owner"
               icon={<User />}
-              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              className={`${PHONE_MENU} [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto`}
               options={[{ id: 'all', full_name: 'Anyone' }, ...users].map((u: any) => ({
                 key: u.id,
                 label: u.full_name,
@@ -985,7 +1004,7 @@ export default function ProposalsPage() {
             <FilterMenu
               label="Follow-up by"
               icon={<Bell />}
-              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              className={`${PHONE_MENU} [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto`}
               options={[{ id: 'all', full_name: 'Anyone' }, ...users].map((u: any) => ({
                 key: u.id,
                 label: u.full_name,
@@ -1007,6 +1026,7 @@ export default function ProposalsPage() {
             </button>
             <FilterMenu
               label="Sort"
+              className={PHONE_MENU}
               icon={<ArrowUpDown />}
               neutralKeys={[...SORT_FIELDS.map((f) => f.key), 'dir_desc', 'dir_asc']}
               align="right"
@@ -1032,21 +1052,24 @@ export default function ProposalsPage() {
         </div>
 
         {isDateFilterOpen && (
-          <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
-            <span className="font-semibold text-[#4A5568]">Date</span>
-            <select
-              value={dateField}
-              onChange={(e) => {
-                setDateField(e.target.value);
-              }}
-              className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-            >
-              <option value="request_date">Request date</option>
-              <option value="required_date">Required completion date</option>
-              <option value="sent_date">Sent date</option>
-              <option value="next_followup">Next follow-up</option>
-            </select>
-            <label className="flex items-center gap-1.5 text-[#4A5568]">
+          // phones: the date field on its own row, From / To side by side under it; from `sm` up: one row
+          <div className="grid grid-cols-2 gap-2 border-t border-[#ECE9E2] pt-2.5 text-xs sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+            <div className="col-span-2 flex min-w-0 items-center gap-3">
+              <span className="font-semibold text-[#4A5568]">Date</span>
+              <select
+                value={dateField}
+                onChange={(e) => {
+                  setDateField(e.target.value);
+                }}
+                className="h-9 min-w-0 flex-1 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-[#14213D] focus:border-[#0F5E63] focus:outline-none sm:h-8 sm:flex-none"
+              >
+                <option value="request_date">Request date</option>
+                <option value="required_date">Required completion date</option>
+                <option value="sent_date">Sent date</option>
+                <option value="next_followup">Next follow-up</option>
+              </select>
+            </div>
+            <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
               From
               <input
                 type="date"
@@ -1054,10 +1077,10 @@ export default function ProposalsPage() {
                 onChange={(e) => {
                   setFromDate(e.target.value);
                 }}
-                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                className="h-9 w-full min-w-0 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none sm:h-8 sm:w-auto"
               />
             </label>
-            <label className="flex items-center gap-1.5 text-[#4A5568]">
+            <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
               To
               <input
                 type="date"
@@ -1065,7 +1088,7 @@ export default function ProposalsPage() {
                 onChange={(e) => {
                   setToDate(e.target.value);
                 }}
-                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                className="h-9 w-full min-w-0 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none sm:h-8 sm:w-auto"
               />
             </label>
             {(fromDate || toDate) && (
@@ -1076,7 +1099,7 @@ export default function ProposalsPage() {
                   setFromDate('');
                   setToDate('');
                 }}
-                className="text-xs text-[#4A5568] hover:text-[#881337]"
+                className="col-span-2 justify-self-start text-xs text-[#4A5568] hover:text-[#881337]"
               >
                 Reset dates
               </Button>
@@ -1183,7 +1206,9 @@ export default function ProposalsPage() {
             }
             submit={
               <Button variant="primary" type="submit" isLoading={isSubmitting}>
-                {duplicateWarning ? 'Override & Create Quote' : 'Create Proposal Request'}
+                {/* phones: the footer buttons share the width, so the full label would wrap onto two lines */}
+                <span className="sm:hidden">{duplicateWarning ? 'Create anyway' : 'Create request'}</span>
+                <span className="hidden sm:inline">{duplicateWarning ? 'Override & Create Quote' : 'Create Proposal Request'}</span>
               </Button>
             }
             steps={[
@@ -1389,7 +1414,7 @@ export default function ProposalsPage() {
         >
           <div className="space-y-6">
             {/* Top Bar with Number, Badges, and Quick Actions */}
-            <div className="p-4 bg-[#FBFAF7] border border-[#DCD8CE] rounded-xl flex flex-wrap items-center justify-between gap-3">
+            <div className="p-3 sm:p-4 bg-[#FBFAF7] border border-[#DCD8CE] rounded-xl flex flex-wrap items-center justify-between gap-3">
               {/* wraps on phones: the number stays on one line and Edit/Delete drop below instead of off the card */}
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <span className="whitespace-nowrap font-mono text-base font-black text-[#0F5E63]">
@@ -1397,7 +1422,7 @@ export default function ProposalsPage() {
                 </span>
                 <button
                   onClick={() => copyProposalNumber(selectedProposal.proposal_number)}
-                  className="text-[#4A5568] hover:text-[#0F5E63] transition-colors p-1"
+                  className="-m-1 p-2 text-[#4A5568] hover:text-[#0F5E63] transition-colors sm:m-0 sm:p-1"
                   title="Copy Proposal Number"
                 >
                   {copiedId === selectedProposal.proposal_number ? (
@@ -1406,7 +1431,7 @@ export default function ProposalsPage() {
                     <Copy className="h-4 w-4" />
                   )}
                 </button>
-                <div className="h-4 w-px bg-[#DCD8CE] mx-1" />
+                <div className="mx-1 hidden h-4 w-px bg-[#DCD8CE] sm:block" />
                 {renderStatusBadge(selectedProposal.status)}
                 <span className="text-xs font-semibold px-2 py-0.5 bg-white border border-[#DCD8CE] rounded-md text-[#4A5568]">
                   Ver: {selectedProposal.version || 'v1.0'}
@@ -1438,12 +1463,13 @@ export default function ProposalsPage() {
                 )}
               </div>
 
-              {/* Workflow advancement actions */}
-              <div className="flex items-center gap-2 flex-wrap">
+              {/* Workflow advancement actions — phones: their own full-width row of 40px buttons */}
+              <div className="flex w-full flex-wrap items-center gap-2 empty:hidden sm:w-auto">
                 {selectedProposal.status === 'PROPOSAL_REQUESTED' && (
                   <Button
                     variant="primary"
                     size="xs"
+                    className={FLOW_BTN}
                     onClick={() => initiateStatusChange('UNDER_PREPARATION')}
                   >
                     <span>Start Preparation</span>
@@ -1455,6 +1481,7 @@ export default function ProposalsPage() {
                   <Button
                     variant="primary"
                     size="xs"
+                    className={FLOW_BTN}
                     onClick={() => initiateStatusChange('READY_FOR_REVIEW')}
                   >
                     <span>Submit for Review</span>
@@ -1493,11 +1520,11 @@ export default function ProposalsPage() {
                   }
 
                   return (
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full items-center gap-2 sm:w-auto">
                       <Button
                         variant="outline"
                         size="xs"
-                        className="text-red-700 border-red-200 hover:bg-red-50"
+                        className={`${FLOW_BTN} text-red-700 border-red-200 hover:bg-red-50`}
                         onClick={() => initiateStatusChange('UNDER_PREPARATION')}
                       >
                         <X className="h-3.5 w-3.5 mr-1" />
@@ -1506,6 +1533,7 @@ export default function ProposalsPage() {
                       <Button
                         variant="success"
                         size="xs"
+                        className={FLOW_BTN}
                         onClick={() => initiateStatusChange('APPROVED')}
                       >
                         <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
@@ -1519,6 +1547,7 @@ export default function ProposalsPage() {
                   <Button
                     variant="primary"
                     size="xs"
+                    className={FLOW_BTN}
                     onClick={() => initiateStatusChange('SENT_TO_CUSTOMER')}
                   >
                     <Send className="h-3.5 w-3.5 mr-1" />
@@ -1531,6 +1560,7 @@ export default function ProposalsPage() {
                     <Button
                       variant="primary"
                       size="xs"
+                      className={`${FLOW_BTN} basis-full sm:basis-auto`}
                       onClick={() => {
                         setFollowupForm({
                           followup_date: istToday(),
@@ -1551,6 +1581,7 @@ export default function ProposalsPage() {
                     <Button
                       variant="success"
                       size="xs"
+                      className={FLOW_BTN}
                       onClick={() => initiateStatusChange('CONVERTED')}
                     >
                       <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
@@ -1559,6 +1590,7 @@ export default function ProposalsPage() {
                     <Button
                       variant="danger"
                       size="xs"
+                      className={FLOW_BTN}
                       onClick={() => initiateStatusChange('LOST')}
                     >
                       <X className="h-3.5 w-3.5 mr-1" />
@@ -1570,11 +1602,17 @@ export default function ProposalsPage() {
             </div>
 
             {/* Visual Lifecycle Stepper */}
-            <div className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
+            <div className="p-3 sm:p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
               <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] mb-3">
                 Lifecycle Progression
               </h4>
-              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+              {/* phones: one sideways row of stage tiles that keeps the current stage in view; `sm` up: the grid.
+                  The 2px pad (cancelled by the wrapper's -2px margin) keeps the current tile's ring unclipped. */}
+              <ScrollStrip
+                activeKey={getStageIndex(selectedProposal.status)}
+                wrapperClassName="-m-0.5"
+                className="gap-2 p-0.5 sm:grid sm:grid-cols-4 md:grid-cols-7"
+              >
                 {STAGES.map((st, i) => {
                   const currentIdx = getStageIndex(selectedProposal.status);
                   const isDone = i < currentIdx;
@@ -1583,7 +1621,8 @@ export default function ProposalsPage() {
                   return (
                     <div
                       key={st.key}
-                      className={`p-2.5 rounded-lg border text-center relative flex flex-col justify-between transition-all ${
+                      data-active={isCurrent ? 'true' : undefined}
+                      className={`w-[7.25rem] shrink-0 sm:w-auto p-2.5 rounded-lg border text-center relative flex flex-col justify-between transition-all ${
                         isCurrent
                           ? 'bg-[#E3EFEE] border-[#0F5E63] text-[#0F5E63] ring-2 ring-[#0F5E63]/20 shadow-xs'
                           : isDone
@@ -1617,7 +1656,7 @@ export default function ProposalsPage() {
                     </div>
                   );
                 })}
-              </div>
+              </ScrollStrip>
             </div>
 
             {/* Tabs for Overview, Follow-ups, and History */}
@@ -1637,7 +1676,7 @@ export default function ProposalsPage() {
             {detailsTab === 'overview' && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Customer & Product Card */}
-                <Card padding="md" className="border-[#DCD8CE] space-y-3">
+                <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] space-y-3">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] flex items-center gap-1.5 border-b border-[#F0F5FC] pb-2">
                     <Building className="h-3.5 w-3.5 text-[#0F5E63]" />
                     <span>Customer & Product Specs</span>
@@ -1686,7 +1725,7 @@ export default function ProposalsPage() {
                 </Card>
 
                 {/* Timeline Card */}
-                <Card padding="md" className="border-[#DCD8CE] space-y-3">
+                <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] space-y-3">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] flex items-center gap-1.5 border-b border-[#F0F5FC] pb-2">
                     <Calendar className="h-3.5 w-3.5 text-[#0F5E63]" />
                     <span>Milestones & Timeline</span>
@@ -1732,7 +1771,7 @@ export default function ProposalsPage() {
 
                 {/* Outcome card if completed */}
                 {['CONVERTED', 'LOST', 'CLOSED'].includes(selectedProposal.status) && (
-                  <Card padding="md" className="border-[#DCD8CE] md:col-span-2 bg-[#FBFAF7]">
+                  <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] md:col-span-2 bg-[#FBFAF7]">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] mb-2">
                       Proposal Outcome Record
                     </h4>
@@ -1765,7 +1804,7 @@ export default function ProposalsPage() {
 
                 {/* Remarks Card */}
                 {selectedProposal.remarks && (
-                  <Card padding="md" className="border-[#DCD8CE] md:col-span-2">
+                  <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] md:col-span-2">
                     <span className="text-[#4A5568] block text-[10px] uppercase font-semibold mb-1">Remarks & Details</span>
                     <p className="text-xs text-[#14213D] whitespace-pre-wrap leading-relaxed">
                       {selectedProposal.remarks}
@@ -1790,7 +1829,7 @@ export default function ProposalsPage() {
               <div className="space-y-4">
                 {/* Active Follow-up Banner */}
                 <div className="p-3 bg-[#F8FAFC] border border-[#DCD8CE] rounded-xl flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-xs">
+                  <div className="min-w-0 text-xs">
                     <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Current Follow-up Status</span>
                     <div className="font-semibold text-[#14213D] mt-0.5">
                       Next Contact: {selectedProposal.next_followup ? new Date(selectedProposal.next_followup).toLocaleDateString('en-GB') : 'No date scheduled'}
@@ -1802,6 +1841,7 @@ export default function ProposalsPage() {
                   <Button
                     variant="primary"
                     size="xs"
+                    className="h-10 w-full text-xs sm:h-7 sm:w-auto sm:text-[11px]"
                     onClick={() => {
                       setFollowupForm({
                         followup_date: istToday(),
@@ -1831,7 +1871,7 @@ export default function ProposalsPage() {
                         key={f.id}
                         className="p-3 bg-white border border-[#DCD8CE] rounded-xl text-xs space-y-1 hover:border-[#0F5E63] transition-colors"
                       >
-                        <div className="flex items-center justify-between font-semibold text-[#14213D]">
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 font-semibold text-[#14213D]">
                           <span className="flex items-center gap-1.5 text-[#0F5E63]">
                             <Calendar className="h-3.5 w-3.5" />
                             {new Date(f.followup_date).toLocaleDateString('en-GB')}
@@ -1874,8 +1914,8 @@ export default function ProposalsPage() {
                       <div className="p-1.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-[#0F5E63] shrink-0 mt-0.5">
                         <History className="h-3.5 w-3.5" />
                       </div>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
                           <span className="font-bold text-[#14213D]">{act.action}</span>
                           <span className="text-[10px] text-[#4A5568]">
                             {new Date(act.created_at).toLocaleString('en-GB')}
@@ -1978,11 +2018,11 @@ export default function ProposalsPage() {
             onChange={(e) => setStatusForm({ ...statusForm, remarks: e.target.value })}
           />
 
-          <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
-            <Button variant="outline" size="sm" type="button" onClick={() => setIsStatusDialogOpen(false)}>
+          <div className={DIALOG_FOOTER}>
+            <Button variant="outline" size="sm" className={DIALOG_BTN} type="button" onClick={() => setIsStatusDialogOpen(false)}>
               Cancel
             </Button>
-            <Button variant="primary" size="sm" type="submit" isLoading={isSubmitting}>
+            <Button variant="primary" size="sm" className={DIALOG_BTN} type="submit" isLoading={isSubmitting}>
               Confirm Transition
             </Button>
           </div>
@@ -2063,11 +2103,11 @@ export default function ProposalsPage() {
             </div>
           </FormSection>
 
-          <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
-            <Button variant="outline" size="sm" type="button" onClick={() => setIsFollowupDialogOpen(false)}>
+          <div className={DIALOG_FOOTER}>
+            <Button variant="outline" size="sm" className={DIALOG_BTN} type="button" onClick={() => setIsFollowupDialogOpen(false)}>
               Cancel
             </Button>
-            <Button variant="primary" size="sm" type="submit" isLoading={isSubmitting}>
+            <Button variant="primary" size="sm" className={DIALOG_BTN} type="submit" isLoading={isSubmitting}>
               Log Follow-up
             </Button>
           </div>
@@ -2171,11 +2211,11 @@ export default function ProposalsPage() {
               </div>
             </FormSection>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
-              <Button variant="outline" size="sm" type="button" onClick={() => setIsEditOpen(false)}>
+            <div className={DIALOG_FOOTER}>
+              <Button variant="outline" size="sm" className={DIALOG_BTN} type="button" onClick={() => setIsEditOpen(false)}>
                 Cancel
               </Button>
-              <Button variant="primary" size="sm" type="submit" isLoading={isSubmitting}>
+              <Button variant="primary" size="sm" className={DIALOG_BTN} type="submit" isLoading={isSubmitting}>
                 Save Changes
               </Button>
             </div>
@@ -2201,11 +2241,11 @@ export default function ProposalsPage() {
             <p className="text-xs text-[#4A5568] leading-relaxed">
               This will soft-delete the proposal record from active views. Historical audit events and logged customer follow-ups will be safely preserved in the database.
             </p>
-            <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
-              <Button variant="outline" size="sm" type="button" onClick={() => setIsDeleteConfirmOpen(false)}>
+            <div className={DIALOG_FOOTER}>
+              <Button variant="outline" size="sm" className={DIALOG_BTN} type="button" onClick={() => setIsDeleteConfirmOpen(false)}>
                 Cancel
               </Button>
-              <Button variant="danger" size="sm" type="button" onClick={handleDeleteProposal} isLoading={isSubmitting}>
+              <Button variant="danger" size="sm" className={DIALOG_BTN} type="button" onClick={handleDeleteProposal} isLoading={isSubmitting}>
                 Delete Proposal
               </Button>
             </div>

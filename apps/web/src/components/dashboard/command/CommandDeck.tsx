@@ -34,6 +34,8 @@ export interface HeroStat {
   tone: Tone;
 }
 export const HeroBanner: React.FC<{
+  /** The desk this dashboard is for, e.g. "Bid desk" (default "Command dashboard"). */
+  eyebrow?: string;
   greeting: string;
   name: string;
   roleLabel: string;
@@ -43,12 +45,12 @@ export const HeroBanner: React.FC<{
   stats: HeroStat[];
   ctaHref: string;
   ctaLabel: string;
-}> = ({ greeting, name, roleLabel, zone, dateLabel, summary, stats, ctaHref, ctaLabel }) => (
+}> = ({ eyebrow = 'Command dashboard', greeting, name, roleLabel, zone, dateLabel, summary, stats, ctaHref, ctaLabel }) => (
   <section className="dx-hero dx-rise">
     <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
       <div className="min-w-0">
         <span className="dx-hero__eyebrow">
-          <span className="dx-hero__live" aria-hidden /> Command dashboard
+          <span className="dx-hero__live" aria-hidden /> {eyebrow}
         </span>
         <h1 className="dx-hero__title">
           {greeting}, <em>{name}</em>
@@ -384,5 +386,178 @@ export const Timeline: React.FC<{ items: TimelineItem[]; empty?: string }> = ({ 
         );
       })}
     </ol>
+  );
+};
+
+/* ------------------------------------------------------------ item list -- */
+/** One row per record from /dashboard/workspace: tone dot, title + subtitle, and the figure that matters on the right. */
+export interface DeckItem {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  date?: string | null;
+  status?: string | null;
+  tone?: 'critical' | 'warning' | 'info' | 'success' | 'neutral';
+  amount?: number | null;
+  meta?: string | null;
+  href: string;
+}
+const ITEM_TONE: Record<NonNullable<DeckItem['tone']>, Tone> = { critical: 'red', warning: 'ochre', info: 'teal', success: 'green', neutral: 'ink' };
+
+/** 'YYYY-MM-DD' → Today / Tomorrow / 2d overdue / Mon 20 Oct (IST calendar day). */
+export function dayLabel(day?: string | null): string {
+  if (!day) return '';
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const diff = Math.round((Date.parse(`${day.slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
+  if (!Number.isFinite(diff)) return '';
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  if (diff === -1) return 'Yesterday';
+  if (diff < 0) return `${-diff}d overdue`;
+  return new Date(`${day.slice(0, 10)}T00:00:00+05:30`).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
+}
+
+export const ItemList: React.FC<{
+  items: DeckItem[];
+  /** countdown: live chip for deadlines; day: calendar day label; ago: "3h ago" for past events. */
+  dateMode?: 'countdown' | 'day' | 'ago' | 'none';
+  /** Formats `amount` (₹) — e.g. formatINR. */
+  money?: (n: number) => string;
+  /** Custom right-hand figure (overrides amount / status). */
+  right?: (item: DeckItem) => React.ReactNode;
+  countdown?: (date: string) => React.ReactNode;
+  empty?: string;
+}> = ({ items, dateMode = 'none', money, right, countdown, empty = 'Nothing here right now' }) => {
+  if (items.length === 0) return <p className="dx-none">{empty}</p>;
+  return (
+    <ul className="dx-items">
+      {items.map((it, i) => {
+        const when =
+          !it.date || dateMode === 'none'
+            ? null
+            : dateMode === 'countdown' && countdown
+              ? countdown(it.date)
+              : dateMode === 'ago'
+                ? <span className="dx-attn__when">{timeAgo(it.date)}</span>
+                : <span className="dx-items__day" data-overdue={/overdue/.test(dayLabel(it.date)) || undefined}>{dayLabel(it.date)}</span>;
+        return (
+          <li key={it.id} className="dx-slide" style={{ animationDelay: `${i * 35}ms` }} data-tone={ITEM_TONE[it.tone ?? 'neutral']}>
+            <Link href={it.href} className="dx-items__row">
+              <span className="dx-items__dot" aria-hidden />
+              <span className="min-w-0 flex-1">
+                <span className="dx-items__t">{it.title}</span>
+                {it.subtitle && <span className="dx-items__d">{it.subtitle}</span>}
+                {(it.meta || it.status) && (
+                  <span className="dx-items__m">
+                    {it.status && <span className="dx-items__status">{it.status}</span>}
+                    {it.meta && <span className="truncate">{it.meta}</span>}
+                  </span>
+                )}
+              </span>
+              <span className="flex shrink-0 flex-col items-end gap-1.5 text-right">
+                {right ? right(it) : it.amount != null && money ? <span className="dx-items__amt">{money(it.amount)}</span> : null}
+                {when}
+              </span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+};
+
+/* -------------------------------------------------------------- bar list -- */
+export interface DeckBar {
+  key: string;
+  label: string;
+  value: number;
+  secondary?: number;
+}
+/** Horizontal bars, longest first as given; `secondaryLabel` names the optional second figure. */
+export const BarList: React.FC<{
+  bars: DeckBar[];
+  format?: (n: number) => string;
+  secondaryLabel?: (n: number) => string;
+  tone?: Tone;
+  empty?: string;
+}> = ({ bars, format = (n) => String(n), secondaryLabel, tone = 'teal', empty = 'Nothing to chart yet' }) => {
+  const mounted = useMounted(200);
+  const max = Math.max(1, ...bars.map((b) => b.value));
+  if (bars.length === 0 || bars.every((b) => !b.value && !b.secondary)) return <p className="dx-none">{empty}</p>;
+  return (
+    <ul className="dx-bars" data-tone={tone}>
+      {bars.map((b) => (
+        <li key={b.key} className="dx-bars__row">
+          <div className="dx-bars__top">
+            <span className="truncate">{b.label}</span>
+            <span className="dx-bars__v">
+              {format(b.value)}
+              {secondaryLabel && b.secondary != null && <i>{secondaryLabel(b.secondary)}</i>}
+            </span>
+          </div>
+          <div className="dx-bars__track">
+            <i style={{ width: mounted ? `${(b.value / max) * 100}%` : '0%' }} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+/* ------------------------------------------------------------ stat strip -- */
+/** A row of small labelled numbers inside a panel (fleet status, hygiene checks…). */
+export const StatStrip: React.FC<{ stats: { label: string; value: React.ReactNode; tone?: Tone; hint?: string }[] }> = ({ stats }) => (
+  <div className="dx-strip">
+    {stats.map((s) => (
+      <div key={s.label} className="dx-strip__cell" data-tone={s.tone ?? 'teal'}>
+        <span className="dx-strip__v">{s.value}</span>
+        <span className="dx-strip__l">{s.label}</span>
+        {s.hint && <span className="dx-strip__h">{s.hint}</span>}
+      </div>
+    ))}
+  </div>
+);
+
+/* ------------------------------------------------------------- scorecard -- */
+/** Team rows: name + role, then a few named figures; tone flags who needs a word today. */
+export const Scorecard: React.FC<{
+  rows: (DeckItem & { figures?: Record<string, number> })[];
+  columns: { key: string; label: string; format?: (n: number) => string; alert?: (n: number) => boolean }[];
+  empty?: string;
+}> = ({ rows, columns, empty = 'No team members in scope' }) => {
+  if (rows.length === 0) return <p className="dx-none">{empty}</p>;
+  return (
+    <ul className="dx-score">
+      {rows.map((r, i) => (
+        <li key={r.id} className="dx-slide" style={{ animationDelay: `${i * 35}ms` }} data-tone={ITEM_TONE[r.tone ?? 'neutral']}>
+          <Link href={r.href} className="dx-score__row">
+            <span className="dx-score__who">
+              <span className="dx-score__av" aria-hidden>
+                {r.title
+                  .split(' ')
+                  .map((w) => w[0])
+                  .slice(0, 2)
+                  .join('')}
+              </span>
+              <span className="min-w-0">
+                <span className="dx-items__t">{r.title}</span>
+                {r.subtitle && <span className="dx-items__d">{r.subtitle}</span>}
+              </span>
+            </span>
+            <span className="dx-score__figs" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
+              {columns.map((c) => {
+                const v = r.figures?.[c.key] ?? 0;
+                return (
+                  <span key={c.key} className="dx-score__fig" data-alert={c.alert?.(v) || undefined}>
+                    <b>{c.format ? c.format(v) : v}</b>
+                    <i>{c.label}</i>
+                  </span>
+                );
+              })}
+            </span>
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 };

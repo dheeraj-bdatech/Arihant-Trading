@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * "New task" as a popup instead of a trip to /tasks/new: the same TaskForm on one scrolling page.
+ * "New task" as a popup instead of a trip to /tasks/new: the same TaskForm in two steps (task & people,
+ * then schedule & rules).
  * After saving, the popup closes and the user stays where they were (lists refresh through
  * notifyTasksChanged). /tasks/new still works for deep links from other modules.
  */
@@ -33,7 +34,7 @@ export const NewTaskModal: React.FC<{
       isOpen={isOpen}
       onClose={requestClose}
       title={recurring ? 'New recurring task' : 'New task'}
-      description="Everything on one page — fill what you need and create it."
+      description="Two short steps — the task and who does it, then when it is due and the rules."
       maxWidth="3xl"
     >
       <TaskForm

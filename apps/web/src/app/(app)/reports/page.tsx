@@ -478,7 +478,9 @@ export default function ConsolidatedReportsPage() {
               label="Status"
               icon={<Layers />}
               align="right"
-              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              // Below `lg` the row stacks and this menu sits at the left edge, where a right-anchored panel
+              // would open off-screen; anchor it left there. From `lg` up it is at the row's right end.
+              className="max-lg:[&_.filter-menu-panel]:left-0 max-lg:[&_.filter-menu-panel]:right-auto [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
               options={[
                 { key: 'all', label: 'All statuses', count: activeRows.length, active: statusFilter === 'all', onSelect: () => setStatusFilter('all') },
                 ...statusOptions.map((st) => ({

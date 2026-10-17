@@ -370,7 +370,10 @@ const ProjectsPanel: React.FC<{ push: (k: 'success' | 'error', t: string) => voi
             <Input label="Code *" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} error={errors.code} />
             <Input label="Name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} error={errors.name} />
             {form.id && <Checkbox label="Active" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />}
-            <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setForm(null)}>Cancel</Button><Button type="submit" isLoading={saving}>Save</Button></div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={() => setForm(null)}>Cancel</Button>
+              <Button type="submit" className="w-full sm:w-auto" isLoading={saving}>Save</Button>
+            </div>
           </form>
         )}
       </Modal>

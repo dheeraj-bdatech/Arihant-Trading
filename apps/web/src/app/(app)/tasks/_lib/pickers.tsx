@@ -102,6 +102,7 @@ export const AssigneePicker: React.FC<{
                 toggle(s.id);
               }}
               onKeyDown={(e) => e.key === 'Enter' && toggle(s.id)}
+              className="-m-1 p-1"
             >
               <X className="h-3 w-3" />
             </span>
@@ -212,7 +213,7 @@ export const LinkPicker: React.FC<{
               onChange('', null);
             }}
             onKeyDown={(e) => e.key === 'Enter' && onChange('', null)}
-            className="text-[#8A8578] hover:text-[#881337]"
+            className="-m-1.5 p-1.5 text-[#8A8578] hover:text-[#881337]"
           >
             <X className="h-3.5 w-3.5" />
           </span>
@@ -270,9 +271,10 @@ export const DeadlineInput: React.FC<{ label: string; value: string; onChange: (
   const emit = (d: string, t: string) => onChange(d ? (t ? `${d}T${t}` : d) : '');
   return (
     <div>
-      <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+      {/* both columns may shrink: on phones the 16px field text makes a fixed 120px time box overflow the sheet */}
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,8.5rem)] gap-2 items-start sm:grid-cols-[1fr_auto]">
         <Input label={`${label}${required ? ' *' : ''}`} type="date" value={date} min={min} onChange={(e) => emit(e.target.value, time)} error={error} />
-        <Input label="Time (optional)" type="time" value={time} onChange={(e) => emit(date, e.target.value)} className="w-[120px]" aria-label={`${label} time`} />
+        <Input label="Time (optional)" type="time" value={time} onChange={(e) => emit(date, e.target.value)} className="w-full min-w-0 sm:w-[120px]" aria-label={`${label} time`} />
       </div>
       <p className="text-[11px] text-[#4A5568] mt-1">{helperText || (date && !time ? 'Without a time the deadline is 11:59 PM IST that day.' : 'Times are IST.')}</p>
     </div>

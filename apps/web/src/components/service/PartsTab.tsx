@@ -88,7 +88,7 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
             return (
               <div key={p.id} className="space-y-2 rounded-xl border border-[#DCD8CE] bg-white p-3 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
+                  <div className="min-w-0">
                     <strong className="text-[#14213D]">{p.part_name}</strong>{' '}
                     <span className="font-mono font-bold text-[#0F5E63]">× {p.quantity}</span>
                     <span className="ml-2 text-[#4A5568]">by {p.requested_by_name || 'Technician'}</span>
@@ -104,7 +104,8 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
                   </p>
                 )}
                 {canUpdate && next.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 border-t border-[#ECE9E2] pt-2">
+                  // phones: two 40px buttons per row instead of a ragged line of small chips
+                  <div className="grid grid-cols-2 gap-1.5 border-t border-[#ECE9E2] pt-2 sm:flex sm:flex-wrap">
                     {next.map((s) => (
                       <Button
                         key={s}
@@ -113,8 +114,16 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
                         isLoading={rowBusy === p.id + s}
                         disabled={!!rowBusy}
                         onClick={() => move(p, s)}
+                        className="h-10 w-full sm:h-7 sm:w-auto"
                       >
-                        {s === 'Unavailable – Ordered' ? 'Mark unavailable / ordered' : s}
+                        {s === 'Unavailable – Ordered' ? (
+                          <>
+                            <span className="sm:hidden">Unavailable / ordered</span>
+                            <span className="hidden sm:inline">Mark unavailable / ordered</span>
+                          </>
+                        ) : (
+                          s
+                        )}
                       </Button>
                     ))}
                   </div>
@@ -131,7 +140,7 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
       )}
 
       {canRequest ? (
-        <form onSubmit={add} className="space-y-3 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] p-3.5">
+        <form onSubmit={add} className="space-y-3 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] p-3 sm:p-3.5">
           <h6 className="font-serif text-xs font-bold text-[#14213D]">Raise a spare part request</h6>
           {error && (
             <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
@@ -144,7 +153,7 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
             <Input label="Remarks for store" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Urgent replacement" />
           </div>
           <div className="flex justify-end">
-            <Button type="submit" size="xs" isLoading={busy}>
+            <Button type="submit" size="xs" isLoading={busy} className="h-10 w-full sm:h-7 sm:w-auto">
               Submit request
             </Button>
           </div>

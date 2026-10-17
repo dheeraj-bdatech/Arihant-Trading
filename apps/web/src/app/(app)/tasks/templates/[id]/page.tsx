@@ -25,7 +25,7 @@ import {
   type TaskTemplateStatus,
 } from '@arihant/shared';
 import { errorMessage, fieldErrors, isConflict, notifyTasksChanged, type AssigneeOption, type TaskRow } from '../../_lib/task-lib';
-import { DelayBadge, DueText, FlagChip, Meta, PriorityBadge, TaskConflictCallout, TaskStatusBadges, TasksNav, useToaster } from '../../_lib/task-ui';
+import { DelayBadge, DialogActions, DueText, FlagChip, Meta, PriorityBadge, TaskConflictCallout, TaskStatusBadges, TasksNav, useToaster } from '../../_lib/task-ui';
 import { UserSelect } from '../../_lib/pickers';
 import { OccurrenceList, TemplateStatusBadge, describeDue, type OccurrencePreviewRow } from '../../_lib/TaskForm';
 
@@ -468,14 +468,14 @@ const StatusActionModal: React.FC<{
           />
         )}
         {message && <InfoCallout variant="danger">{message}</InfoCallout>}
-        <div className="flex justify-end gap-2 pt-1">
+        <DialogActions className="sm:pt-1">
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Back
           </Button>
           <Button type="submit" variant={copy.danger ? 'danger' : 'primary'} isLoading={busy} disabled={busy}>
             {copy.confirm}
           </Button>
-        </div>
+        </DialogActions>
       </form>
     </Modal>
   );
@@ -611,7 +611,7 @@ export default function RecurringTaskDetailPage() {
             </p>
           </div>
           {t.can_manage && t.status !== 'ended' && (
-            <div className="flex flex-wrap gap-2 lg:justify-end shrink-0">
+            <div className="flex flex-wrap gap-2 lg:justify-end shrink-0 [&>button]:h-10 sm:[&>button]:h-8">
               <Button size="sm" variant="secondary" leftIcon={<Pencil className="h-4 w-4" />} onClick={() => setEditOpen(true)}>
                 Edit series
               </Button>

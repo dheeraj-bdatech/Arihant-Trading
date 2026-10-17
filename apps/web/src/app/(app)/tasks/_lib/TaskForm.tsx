@@ -197,6 +197,8 @@ const FIELD_ORDER = [
 ];
 const HANDLED_KEYS = new Set(FIELD_ORDER);
 const anchorId = (key: string) => (key.startsWith('recurrence_rule') ? 'tf-recurrence' : `tf-${key}`);
+/** The popup's two steps: Task + Linked work + Assign, then Schedule + Rules + Documents. */
+const MODAL_STEP_TITLES = ['Task & people', 'Schedule & rules'];
 
 export interface TaskFormPrefill {
   customer_id?: string | null;
@@ -323,7 +325,7 @@ const WeekdayChips: React.FC<{ label: string; value: number[]; onChange: (v: num
     <span className="block text-xs font-semibold text-[#14213D] mb-1.5">{label}</span>
     <div role="group" aria-label={label} className="grid grid-cols-7 gap-1.5">
       {WEEKDAY_ORDER.map((d) => (
-        <Chip key={d} on={value.includes(d)} onClick={() => onChange(toggle(value, d))} className="h-9" ariaLabel={WEEKDAY_SHORT[d]}>
+        <Chip key={d} on={value.includes(d)} onClick={() => onChange(toggle(value, d))} className="h-10 sm:h-9" ariaLabel={WEEKDAY_SHORT[d]}>
           {WEEKDAY_SHORT[d]}
         </Chip>
       ))}
@@ -336,7 +338,8 @@ const WeekdayChips: React.FC<{ label: string; value: number[]; onChange: (v: num
 export interface TaskFormProps {
   prefill?: TaskFormPrefill;
   /**
-   * 'modal': rendered inside a popup — one section per step, and after saving the popup closes
+   * 'modal': rendered inside a popup — two steps (Task / Linked work / Assign, then Schedule / Rules /
+   * Documents), and after saving the popup closes
    * (onCreated gets the message) instead of navigating away. 'page' (default): the full page form.
    */
   variant?: 'page' | 'modal';
@@ -696,11 +699,18 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
   const scrollToFirst = (errs: Record<string, string>) => {
     const key = FIELD_ORDER.find((k) => errs[k]);
     const el = document.getElementById(key ? anchorId(key) : 'tf-form-message');
-    if (el) {
+    if (!el) return;
+    const reveal = () => {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       const focusable = el.querySelector<HTMLElement>('input:not([type=hidden]):not(.sr-only), textarea, button');
       focusable?.focus({ preventScroll: true });
-    }
+    };
+    // In the two-step popup the first error can sit on the step that is not open. FormSteps opens the
+    // step holding an invalid field, so flag the field's anchor, then scroll once that step is shown.
+    if (el.closest('[hidden]')) {
+      el.dispatchEvent(new Event('invalid', { cancelable: true }));
+      window.requestAnimationFrame(reveal);
+    } else reveal();
   };
 
   // ------------------------------------------------------------------ submit
@@ -832,11 +842,15 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
   const ruleErrorList = recurring ? Object.entries({ ...liveErrors, ...errors }).filter(([k]) => k.startsWith('recurrence_rule') && !renderedRuleKeys.has(k)) : [];
   const otherErrors = Object.entries(errors).filter(([k]) => !HANDLED_KEYS.has(k));
   const submitLabel = recurring ? (count > 1 ? `Create ${count} recurring series` : 'Create recurring task') : count > 1 ? `Assign ${count} tasks` : 'Create task';
+  // Phones: the footer buttons share the width, so the long recurring labels get a short form.
+  const submitShort = recurring ? (count > 1 ? `Create ${count} series` : 'Create series') : submitLabel;
   const disabled = submitting || Boolean(created);
 
-  const sections: { title: string; icon: React.ReactNode; description?: string; node: React.ReactNode }[] = [
+  // `page`: which step of the popup the section sits on (0 = what & who, 1 = when & rules). The full page ignores it.
+  const sections: { title: string; icon: React.ReactNode; description?: string; page: number; node: React.ReactNode }[] = [
     {
       title: 'Task',
+      page: 0,
       icon: <ListChecks />,
       description: 'What needs to be done — title, details and category.',
       node: (
@@ -915,6 +929,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     },
     {
       title: 'Linked work',
+      page: 0,
       icon: <Link2 />,
       description: requiredTypes.length ? `${category?.name} tasks must be linked. Linked work can also be requested from colleagues outside your team.` : 'Optional. Linking lets you request work from colleagues outside your team.',
       node: (
@@ -941,6 +956,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     },
     {
       title: 'Assign',
+      page: 0,
       icon: <Users />,
       description: 'Who should do it.',
       node: (
@@ -999,6 +1015,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     },
     {
       title: 'Schedule',
+      page: 1,
       icon: <CalendarClock />,
       description: 'When it is due. Dates and times are IST.',
       node: (
@@ -1011,7 +1028,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                 {TASK_RECURRENCE_TYPES.map((t, i) => (
                   <label
                     key={t}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+                    className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors sm:min-h-0 ${
                       form.frequency === t ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D] hover:border-[#0F5E63]'
                     } ${i === TASK_RECURRENCE_TYPES.length - 1 ? 'col-span-2 sm:col-span-1' : ''}`}
                   >
@@ -1107,16 +1124,16 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                     <span className="block text-xs font-semibold text-[#14213D] mb-1.5">On day(s) of the month *</span>
                     <div role="group" aria-label="Days of the month" className="grid grid-cols-7 gap-1.5">
                       {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                        <Chip key={d} on={rec.monthDays.includes(d)} onClick={() => updateRec({ monthDays: toggle(rec.monthDays, d) })} className="h-8 font-mono" ariaLabel={`Day ${d}`} disabled={disabled}>
+                        <Chip key={d} on={rec.monthDays.includes(d)} onClick={() => updateRec({ monthDays: toggle(rec.monthDays, d) })} className="h-9 font-mono sm:h-8" ariaLabel={`Day ${d}`} disabled={disabled}>
                           {d}
                         </Chip>
                       ))}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      <Chip on={rec.monthLast === 'last_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_day' ? 'none' : 'last_day' })} className="h-8 px-3" disabled={disabled}>
+                      <Chip on={rec.monthLast === 'last_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_day' ? 'none' : 'last_day' })} className="h-10 px-3 sm:h-8" disabled={disabled}>
                         Last day
                       </Chip>
-                      <Chip on={rec.monthLast === 'last_working_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_working_day' ? 'none' : 'last_working_day' })} className="h-8 px-3" disabled={disabled}>
+                      <Chip on={rec.monthLast === 'last_working_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_working_day' ? 'none' : 'last_working_day' })} className="h-10 px-3 sm:h-8" disabled={disabled}>
                         Last working day
                       </Chip>
                     </div>
@@ -1151,7 +1168,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                     ).map(([m, label]) => (
                       <label
                         key={m}
-                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${rec.endMode === m ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D]'}`}
+                        className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold sm:min-h-0 ${rec.endMode === m ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D]'}`}
                       >
                         <input type="radio" name="end_mode" value={m} checked={rec.endMode === m} onChange={() => updateRec({ endMode: m }, ['end_date', 'max_occurrences'])} disabled={disabled} className="accent-[#0F5E63]" />
                         {label}
@@ -1191,7 +1208,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                   {rec.endMode !== 'after' && fe('max_occurrences') && <FieldError message={fe('max_occurrences')} />}
                 </fieldset>
 
-                <div className="grid grid-cols-2 gap-3 items-start">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
                   <div id="tf-due_offset_days">
                     <Input
                       id="tf-due-offset-input"
@@ -1280,6 +1297,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     },
     {
       title: 'Rules',
+      page: 1,
       icon: <ShieldCheck />,
       description: 'What is needed before the task can be closed.',
       node: (
@@ -1330,6 +1348,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     },
     {
       title: 'Documents',
+      page: 1,
       icon: <Paperclip />,
       description: recurring ? undefined : `PDF, Word, Excel, JPG or PNG · up to ${MAX_FILE_MB} MB each, ${MAX_FILES} files.`,
       node: (
@@ -1377,10 +1396,10 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                   }}
                 />
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button type="button" size="sm" variant="secondary" leftIcon={<Upload className="h-4 w-4" />} onClick={() => fileRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
+                  <Button type="button" size="sm" variant="secondary" className="h-10 sm:h-8" leftIcon={<Upload className="h-4 w-4" />} onClick={() => fileRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
                     Attach files
                   </Button>
-                  <Button type="button" size="sm" variant="secondary" className="sm:hidden" leftIcon={<Camera className="h-4 w-4" />} onClick={() => cameraRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
+                  <Button type="button" size="sm" variant="secondary" className="h-10 sm:hidden" leftIcon={<Camera className="h-4 w-4" />} onClick={() => cameraRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
                     Take photo
                   </Button>
                   <span className="hidden sm:inline text-[11px] text-[#8A8578]">or drop files here</span>
@@ -1398,7 +1417,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                           aria-label={`Remove ${f.name}`}
                           disabled={disabled}
                           onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                          className="p-1 text-[#8A8578] hover:text-[#881337]"
+                          className="-my-1 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-1"
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>
@@ -1418,7 +1437,8 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
 
   const submitButton = (
     <Button type="submit" isLoading={submitting} disabled={disabled} leftIcon={recurring ? <Repeat className="h-4 w-4" /> : <Send className="h-4 w-4" />}>
-      {submitLabel}
+      <span className="sm:hidden">{submitShort}</span>
+      <span className="hidden sm:inline">{submitLabel}</span>
     </Button>
   );
   const createdCallout = (
@@ -1477,7 +1497,8 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     return (
       <form onSubmit={submit} noValidate aria-busy={submitting}>
         <FormSteps
-          steps={sections.map((sec) => ({ title: sec.title, icon: sec.icon, description: sec.description, content: sec.node }))}
+          steps={sections.map((sec) => ({ title: sec.title, icon: sec.icon, description: sec.description, page: sec.page, content: sec.node }))}
+          stepTitles={MODAL_STEP_TITLES}
           banner={
             hasBanner ? (
               <>
@@ -1487,7 +1508,6 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
               </>
             ) : undefined
           }
-          maxSteps={1}
           onCancel={() => leave('/tasks')}
           busy={submitting}
           submit={submitButton}
@@ -1515,7 +1535,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
       {messages}
 
       {/* ---------------------------------------------------------------- actions (sticky on phones) */}
-      <div className="sticky md:static bottom-0 z-30 -mx-4 sm:-mx-6 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur md:backdrop-blur-none pl-4 sm:pl-6 pr-20 py-3 md:p-0 flex items-center gap-2 justify-end">
+      <div className="sticky md:static bottom-0 z-30 -mx-4 sm:-mx-6 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur md:backdrop-blur-none pl-4 sm:pl-6 pr-20 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] md:p-0 flex items-center gap-2 justify-end">
         <span className="mr-auto min-w-0 truncate text-xs text-[#4A5568]" aria-live="polite">
           {phase || (count > 1 ? `${count} people selected` : '')}
         </span>

@@ -12,6 +12,7 @@ export const metadata: Metadata = {
   title: 'Arihant BOS | Defence & Security GeM ERP',
   description:
     'Comprehensive Business Operating System for Arihant Trading Corporation - Security & Defence Equipment, GeM Tenders, and Field Operations.',
+  appleWebApp: { capable: true, title: 'Arihant BOS', statusBarStyle: 'default' },
 };
 
 export default function RootLayout({

@@ -184,6 +184,8 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
 
   const items = claim.items || [];
   const isOwner = claim.employee_id === user?.id;
+  // In the Quick view popup the dialog already pads the body, so the cards inset less on phones.
+  const cardPad = inModal ? 'p-3 sm:p-5' : 'p-4 sm:p-5';
   const flagged = items.filter((i) => i.is_late || i.duplicate_flag || i.receipt_missing);
   const commentCopy: Record<CommentAction, { title: string; description: string; confirm: string; danger?: boolean }> = {
     'manager-reject': { title: 'Reject claim', description: 'The employee is notified with your comment. Rejection is final; they can copy the claim into a new draft.', confirm: 'Reject claim', danger: true },
@@ -220,7 +222,7 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
       )}
 
       {/* Header */}
-      <Card className="p-4 sm:p-5">
+      <Card className={cardPad}>
         <div className="flex flex-col lg:flex-row lg:items-start gap-4 lg:justify-between">
           <div className="min-w-0 space-y-1">
             <h2 className="font-serif text-xl text-[#14213D] break-words">{claim.title}</h2>
@@ -229,16 +231,17 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
               {claim.employee_code ? ` (${claim.employee_code})` : ''}
               {claim.region_name ? ` · ${claim.region_name}` : ''}
             </p>
-            {claim.remarks && <p className="text-sm text-[#4A5568] italic">“{claim.remarks}”</p>}
+            {claim.remarks && <p className="text-sm text-[#4A5568] italic break-words">“{claim.remarks}”</p>}
           </div>
+          {/* two short figures side by side; one size down on phones so lakh amounts fit their half */}
           <div className="grid grid-cols-2 gap-4 lg:text-right shrink-0">
-            <div>
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wide text-[#4A5568]">Claimed</div>
-              <Money value={claim.total_claimed} className="text-xl font-semibold text-[#14213D]" />
+              <Money value={claim.total_claimed} className="text-lg font-semibold text-[#14213D] sm:text-xl" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wide text-[#4A5568]">{stage ? 'Will approve' : 'Approved'}</div>
-              <Money value={stage ? projectedTotal : claim.total_approved} className="text-xl font-semibold text-[#0F5E63]" />
+              <Money value={stage ? projectedTotal : claim.total_approved} className="text-lg font-semibold text-[#0F5E63] sm:text-xl" />
             </div>
           </div>
         </div>
@@ -286,7 +289,7 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
       )}
 
       {/* Lines */}
-      <Card className="p-4 sm:p-5 space-y-3">
+      <Card className={`${cardPad} space-y-3`}>
         <div className="flex items-center justify-between">
           <h3 className="font-serif text-lg text-[#14213D]">Expense lines</h3>
           <span className="text-xs text-[#4A5568]">{items.length} line(s)</span>
@@ -305,7 +308,7 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
         ))}
       </Card>
 
-      <Card className="p-4 sm:p-5 space-y-4">
+      <Card className={`${cardPad} space-y-4`}>
         <h3 className="font-serif text-lg text-[#14213D]">Approval history</h3>
         <Timeline history={claim.history || []} />
       </Card>
@@ -316,17 +319,27 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
         </InfoCallout>
       )}
 
-      {/* Actions */}
+      {/* Actions. Phones: buttons grow to fill each wrapped row (no ragged right-aligned leftovers) and the
+          long labels get a short form; from sm the right-aligned row as before. */}
       {actions.length > 0 && (
         <div
           className={
             inModal
-              ? 'sticky -bottom-4 z-10 -mx-4 -mb-4 flex flex-wrap items-center justify-end gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5'
-              : 'sticky md:static bottom-0 z-30 -mx-4 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur pl-4 pr-20 py-3 md:p-0 flex flex-wrap items-center gap-2 justify-end'
+              ? 'sticky -bottom-4 z-10 -mx-4 -mb-4 flex flex-wrap items-center justify-end gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5 [&>button]:flex-auto sm:[&>button]:flex-initial'
+              : 'sticky md:static bottom-0 z-30 -mx-4 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur pl-4 pr-20 py-3 md:p-0 flex flex-wrap items-center gap-2 justify-end [&>button]:flex-auto sm:[&>button]:flex-initial'
           }
         >
           {actions.includes('edit') && (
-            <Button variant="secondary" leftIcon={<Pencil className="h-4 w-4" />} onClick={() => setEditId(claim.id)}>{claim.status === 'clarification_required' ? 'Respond & resubmit' : 'Edit draft'}</Button>
+            <Button variant="secondary" leftIcon={<Pencil className="h-4 w-4" />} onClick={() => setEditId(claim.id)}>
+              {claim.status === 'clarification_required' ? (
+                <>
+                  <span className="sm:hidden">Respond</span>
+                  <span className="hidden sm:inline">Respond & resubmit</span>
+                </>
+              ) : (
+                'Edit draft'
+              )}
+            </Button>
           )}
           {actions.includes('withdraw') && (
             <Button variant="ghost" leftIcon={<Undo2 className="h-4 w-4" />} onClick={() => setWithdrawOpen(true)} disabled={Boolean(busy)}>Withdraw</Button>
@@ -349,15 +362,20 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
                 }
               }}
             >
-              Copy to new draft
+              <span className="sm:hidden">Copy to draft</span>
+              <span className="hidden sm:inline">Copy to new draft</span>
             </Button>
           )}
           {actions.includes('reassign_approver') && (
-            <Button variant="secondary" leftIcon={<ArrowRightLeft className="h-4 w-4" />} onClick={() => { setReassignErrors({}); setReassignOpen(true); }}>Reassign approver</Button>
+            <Button variant="secondary" leftIcon={<ArrowRightLeft className="h-4 w-4" />} onClick={() => { setReassignErrors({}); setReassignOpen(true); }}>
+              <span className="sm:hidden">Reassign</span>
+              <span className="hidden sm:inline">Reassign approver</span>
+            </Button>
           )}
           {actions.includes('request_clarification') && (
             <Button variant="secondary" leftIcon={<HelpCircle className="h-4 w-4" />} onClick={() => { setCommentError(null); setCommentAction('request-clarification'); }} disabled={Boolean(busy)}>
-              Ask for clarification
+              <span className="sm:hidden">Clarify</span>
+              <span className="hidden sm:inline">Ask for clarification</span>
             </Button>
           )}
           {(actions.includes('manager_reject') || actions.includes('accounts_reject')) && (
@@ -423,10 +441,11 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
       />
 
       <Modal isOpen={withdrawOpen} onClose={() => setWithdrawOpen(false)} title="Withdraw this claim?" description="It will be removed from your approver's queue. You can copy it into a new draft later." maxWidth="sm">
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setWithdrawOpen(false)}>Keep</Button>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="ghost" className="w-full sm:w-auto" onClick={() => setWithdrawOpen(false)}>Keep</Button>
           <Button
             variant="danger"
+            className="w-full sm:w-auto"
             isLoading={busy === 'withdraw'}
             onClick={async () => {
               const ok = await run('withdraw', 'withdraw', {}, 'Claim withdrawn.');
@@ -458,7 +477,8 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
 const Meta: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="min-w-0">
     <dt className="text-[11px] uppercase tracking-wide text-[#4A5568]">{label}</dt>
-    <dd className="text-[#14213D] truncate">{children}</dd>
+    {/* phones: wrap (a half-width column would cut a visit's customer name to a few letters) */}
+    <dd className="text-[#14213D] break-words sm:truncate">{children}</dd>
   </div>
 );
 
@@ -484,7 +504,7 @@ const LineRow: React.FC<{
   const set = (patch: Partial<Decision>) => onDecision({ ...decision, ...patch });
 
   return (
-    <div className="rounded-[14px] border border-[#DCD8CE] p-4 space-y-3">
+    <div className="rounded-[14px] border border-[#DCD8CE] p-3 sm:p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -496,7 +516,7 @@ const LineRow: React.FC<{
             {item.receipt_missing && <Badge variant="urgent" size="sm" className="gap-1"><Paperclip className="h-3 w-3" /> No receipt</Badge>}
           </div>
           <div className="font-medium text-[#14213D] break-words">{item.purpose}</div>
-          {detail && <div className="text-xs text-[#4A5568]">{detail}</div>}
+          {detail && <div className="text-xs text-[#4A5568] break-words">{detail}</div>}
           {(item.customer_name || item.project_code) && (
             <div className="text-xs text-[#4A5568]">
               {item.customer_name &&
@@ -534,7 +554,7 @@ const LineRow: React.FC<{
               key={a.id}
               type="button"
               onClick={() => onPreview(a)}
-              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs hover:underline ${a.duplicate_of_attachment_id ? 'border-[#9A3412]/40 bg-[#FBEBDD]' : 'border-[#DCD8CE] bg-[#FBFAF7]'}`}
+              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-2 text-xs hover:underline sm:py-1 ${a.duplicate_of_attachment_id ? 'border-[#9A3412]/40 bg-[#FBEBDD]' : 'border-[#DCD8CE] bg-[#FBFAF7]'}`}
               title={a.duplicate_of_attachment_id ? `Same file as on ${a.duplicate_claim_number}` : undefined}
             >
               {a.mime_type === 'application/pdf' ? <FileText className="h-3.5 w-3.5" /> : <ImageIcon className="h-3.5 w-3.5" />}
@@ -559,6 +579,7 @@ const LineRow: React.FC<{
                     type="button"
                     role="radio"
                     aria-checked={decision.status === s}
+                    className="h-9 sm:h-7"
                     variant={decision.status === s ? (s === 'rejected' ? 'danger' : 'primary') : 'secondary'}
                     onClick={() => set({ status: s, amount: s === 'partially_approved' ? decision.amount : String(ceiling) })}
                   >

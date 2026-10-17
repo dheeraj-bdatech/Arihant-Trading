@@ -503,7 +503,7 @@ const BoardCard: React.FC<{
               <Spinner size="xs" />
             </span>
           ) : (
-            <span className="shrink-0 transition-opacity md:opacity-0 md:focus-within:opacity-100 md:group-hover:opacity-100 [&:has(>button[aria-expanded=true])]:opacity-100 [&>button:hover]:!bg-[#E3EFEE] [&>button]:!h-7 [&>button]:!w-7 [&>button]:!border-transparent [&>button]:!bg-transparent">
+            <span className="-my-1.5 -mr-1.5 shrink-0 transition-opacity md:my-0 md:mr-0 md:opacity-0 md:focus-within:opacity-100 md:group-hover:opacity-100 [&:has(>button[aria-expanded=true])]:opacity-100 [&>button:hover]:!bg-[#E3EFEE] [&>button]:!h-10 [&>button]:!w-10 md:[&>button]:!h-7 md:[&>button]:!w-7 [&>button]:!border-transparent [&>button]:!bg-transparent">
               <RowMenu items={menu} label={`Actions for ${t.task_number}`} />
             </span>
           )}

@@ -11,7 +11,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatTaskDate } from '@arihant/shared';
 import { addDays, errorMessage, fieldErrors, istToday, useTaskSummary, type AssigneeOption } from '../_lib/task-lib';
-import { TasksNav, useToaster } from '../_lib/task-ui';
+import { DialogActions, TasksNav, useToaster } from '../_lib/task-ui';
 import { UserSelect } from '../_lib/pickers';
 
 interface Leave {
@@ -86,7 +86,7 @@ export default function LeaveHolidayPage() {
         title="Leave & Holidays"
         icon={<CalendarDays className="h-5 w-5" />}
         actions={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {canRecordLeave && (
               <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setLeaveOpen(true)}>
                 Record approved leave
@@ -156,7 +156,7 @@ export default function LeaveHolidayPage() {
                     </Badge>
                   )}
                   {isAdminLike && (
-                    <button type="button" aria-label={`Remove ${h.name}`} onClick={() => removeHoliday(h)} className="p-1 text-[#8A8578] hover:text-[#881337]">
+                    <button type="button" aria-label={`Remove ${h.name}`} onClick={() => removeHoliday(h)} className="-my-1 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-1">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -212,14 +212,14 @@ const LeaveModal: React.FC<{ onClose: () => void; onSaved: (skipped: number) => 
         <Select label="Leave type" value={v.leave_type} onChange={(e) => setV({ ...v, leave_type: e.target.value })} options={LEAVE_TYPES} />
         <Textarea label="Reason" value={v.reason} onChange={(e) => setV({ ...v, reason: e.target.value })} rows={2} maxLength={500} />
         {errors._ && <InfoCallout variant="danger">{errors._}</InfoCallout>}
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <Button type="submit" isLoading={busy}>
             Record leave
           </Button>
-        </div>
+        </DialogActions>
       </form>
     </Modal>
   );
@@ -257,14 +257,14 @@ const HolidayModal: React.FC<{ onClose: () => void; onSaved: () => void }> = ({ 
         <Input label="Name *" value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} maxLength={120} placeholder="e.g. Diwali" error={errors.name} />
         <Select label="Applies to" value={v.region_id} onChange={(e) => setV({ ...v, region_id: e.target.value })} options={[{ value: '', label: 'Everyone (national)' }, ...regions.map((r) => ({ value: r.id, label: r.name }))]} />
         {errors._ && <InfoCallout variant="danger">{errors._}</InfoCallout>}
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <Button type="submit" isLoading={busy}>
             Add holiday
           </Button>
-        </div>
+        </DialogActions>
       </form>
     </Modal>
   );
@@ -291,14 +291,14 @@ const CancelLeaveModal: React.FC<{ leave: Leave; onClose: () => void; onSaved: (
       <form onSubmit={save} className="space-y-3">
         <Textarea label="Reason *" value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={500} error={error || undefined} />
         <p className="text-[11px] text-[#4A5568]">Recurring instances already skipped for this leave are not regenerated.</p>
-        <div className="flex justify-end gap-2">
+        <DialogActions>
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Back
           </Button>
           <Button type="submit" variant="danger" isLoading={busy}>
             Cancel leave
           </Button>
-        </div>
+        </DialogActions>
       </form>
     </Modal>
   );

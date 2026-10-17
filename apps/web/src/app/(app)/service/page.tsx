@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { istToday } from '@/lib/ist-date';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { twMerge } from 'tailwind-merge';
 import {
   Wrench,
   Plus,
@@ -522,12 +523,13 @@ export default function ServicePage() {
   const canLinkRole = LINK_ROLES.includes(role);
   const workload: any[] = stats?.employeeWorkload || [];
 
-  const renderAction = (t: any, a: TicketAction, size: 'xs' | 'sm' = 'sm') => (
+  /** `phoneCls`: phone-only sizing (full-width, 40px targets); the desktop look is restored behind `sm:`. */
+  const renderAction = (t: any, a: TicketAction, size: 'xs' | 'sm' = 'sm', phoneCls?: string) => (
     <Button
       key={actionKey(a)}
       size={size}
       variant={a.tone === 'primary' ? 'primary' : a.tone === 'exception' ? 'outline' : 'secondary'}
-      className={a.tone === 'exception' ? 'border-[#9A3412]/40 text-[#7C2D12] hover:bg-[#FBEBDD]' : undefined}
+      className={twMerge(a.tone === 'exception' && 'border-[#9A3412]/40 text-[#7C2D12] hover:bg-[#FBEBDD]', phoneCls)}
       onClick={() => runAction(t, a)}
     >
       {ACTION_ICON[actionKey(a)]}
@@ -597,15 +599,18 @@ export default function ServicePage() {
         title="Service Desk & Installed Base Maintenance"
         icon={<Wrench className="h-5 w-5 text-[#0F5E63]" />}
         actions={
+          // phones: short labels so both actions fit on one row, at the same 40px height
           <div className="flex flex-wrap items-center gap-2.5">
-            <Button onClick={() => setIsWorkloadModalOpen(true)} variant="outline" size="sm" className="border-[#DCD8CE] text-[#14213D] shadow-xs">
+            <Button onClick={() => setIsWorkloadModalOpen(true)} variant="outline" size="sm" className="h-10 border-[#DCD8CE] text-[#14213D] shadow-xs sm:h-8">
               <Users className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-              <span>Engineer Workload ({workload.length || serviceEngineers.length})</span>
+              <span className="sm:hidden">Workload ({workload.length || serviceEngineers.length})</span>
+              <span className="hidden sm:inline">Engineer Workload ({workload.length || serviceEngineers.length})</span>
             </Button>
             {role !== 'accounts' && (
               <Button onClick={() => setIsLogTicketOpen(true)} variant="primary" className="shadow-xs">
                 <Plus className="h-4 w-4 mr-1.5" />
-                <span>Log Breakdown Incident</span>
+                <span className="sm:hidden">Log incident</span>
+                <span className="hidden sm:inline">Log Breakdown Incident</span>
               </Button>
             )}
           </div>
@@ -660,7 +665,8 @@ export default function ServicePage() {
           tabIndex={0}
           onClick={() => toggleStage('closed')}
           onKeyDown={(e) => e.key === 'Enter' && toggleStage('closed')}
-          className={activeRing(activeTab === 'closed')}
+          // phones (2-column grid): the fifth tile spans the row instead of sitting alone at half width
+          className={`col-span-2 md:col-span-1 ${activeRing(activeTab === 'closed')}`}
         />
       </StatGrid>
 
@@ -678,10 +684,13 @@ export default function ServicePage() {
               className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
-          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+          {/* phones: the menus wrap onto two lines, so each menu's list opens under the whole row
+              (left- or right-aligned to it) instead of hanging off the screen edge */}
+          <div className="relative flex flex-wrap items-center gap-2 sm:static lg:flex-nowrap">
             <FilterMenu
               label="Stage"
               icon={<Layers />}
+              className="static sm:relative"
               options={STAGES.map((s) => ({
                 key: s.id,
                 label: s.label,
@@ -693,6 +702,7 @@ export default function ServicePage() {
             <FilterMenu
               label="Priority"
               icon={<Flame />}
+              className="static sm:relative"
               options={PRIORITIES.map((p) => ({
                 ...p,
                 urgent: p.key === 'critical',
@@ -703,7 +713,7 @@ export default function ServicePage() {
             <FilterMenu
               label="Source"
               icon={<Phone />}
-              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              className="static sm:relative [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
               options={SOURCES.map((s) => ({
                 ...s,
                 active: sourceFilter === s.key,
@@ -717,6 +727,7 @@ export default function ServicePage() {
               label="Flags"
               icon={<ShieldAlert />}
               align="right"
+              className="static sm:relative"
               options={[
                 { key: 'all', label: 'No flag filter', icon: undefined, count: undefined },
                 { key: 'portal', label: 'Portal requests to triage', icon: <Globe2 />, count: stats?.portalNew ?? undefined },
@@ -792,8 +803,10 @@ export default function ServicePage() {
               )
             }
             submit={
-              <Button type="submit" size="sm" isLoading={isSubmitting}>
-                Register Incident & Dispatch
+              // phones: same 40px height as Back, and a label that fits half the footer
+              <Button type="submit" size="sm" isLoading={isSubmitting} className="h-10 sm:h-8">
+                <span className="sm:hidden">Register incident</span>
+                <span className="hidden sm:inline">Register Incident & Dispatch</span>
               </Button>
             }
             steps={[
@@ -1051,10 +1064,10 @@ export default function ServicePage() {
               {unverified && <UnverifiedBanner ticket={st} canLink={canLinkRole} onLink={() => setActionCtx({ kind: 'link', ticket: st })} />}
 
               {/* Top Identity Strip */}
-              <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+              <div className="p-3 sm:p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-base font-bold text-[#0F5E63]">{st.ticket_no || st.ticket_number}</span>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="break-all font-mono text-base font-bold text-[#0F5E63]">{st.ticket_no || st.ticket_number}</span>
                     <Badge variant={statusBadgeVariant(st.status)}>{statusLabel(st.status).toUpperCase()}</Badge>
                     {isPortalTicket(st) && (
                       <Badge variant="info" size="sm" className="font-bold">
@@ -1140,7 +1153,7 @@ export default function ServicePage() {
                     role="tab"
                     aria-selected={detailTab === tb.id}
                     onClick={() => setDetailTab(tb.id)}
-                    className={`py-2 px-3 border-b-2 transition-all whitespace-nowrap ${
+                    className={`shrink-0 py-2.5 sm:py-2 px-3 border-b-2 transition-all whitespace-nowrap ${
                       detailTab === tb.id ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg' : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
                     }`}
                   >
@@ -1171,11 +1184,20 @@ export default function ServicePage() {
                       </InfoCallout>
                     ) : (
                       <div className="space-y-2 pt-1">
-                        {progress.length > 0 && <div className="flex flex-wrap gap-2">{progress.map((a) => renderAction(st, a))}</div>}
+                        {/* phones: next steps stack full width; exceptions sit two per row (labels may wrap) */}
+                        {progress.length > 0 && (
+                          <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
+                            {progress.map((a) => renderAction(st, a, 'sm', 'h-10 w-full sm:h-8 sm:w-auto'))}
+                          </div>
+                        )}
                         {exceptions.length > 0 && (
                           <div className="space-y-1">
                             <span className="text-[10px] font-semibold uppercase tracking-wide text-[#4A5568]">Exceptions (reason required)</span>
-                            <div className="flex flex-wrap gap-2">{exceptions.map((a) => renderAction(st, a))}</div>
+                            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+                              {exceptions.map((a) =>
+                                renderAction(st, a, 'sm', 'h-auto min-h-10 w-full py-1.5 text-center sm:h-8 sm:min-h-0 sm:w-auto sm:py-0'),
+                              )}
+                            </div>
                           </div>
                         )}
                         {normalizeServiceStatus(st.status) === 'resolved' && (
@@ -1187,7 +1209,7 @@ export default function ServicePage() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                     <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-[#14213D] block">Intake origin & channel</span>
                         <Badge variant={isPortalTicket(st) ? 'info' : 'outline'} size="sm">
                           {st.complaint_source || 'Phone'}
@@ -1239,7 +1261,7 @@ export default function ServicePage() {
               )}
 
               <div className="pt-2 flex justify-end">
-                <Button size="sm" variant="secondary" onClick={closeDetail}>
+                <Button size="sm" variant="secondary" onClick={closeDetail} className="h-10 w-full sm:h-8 sm:w-auto">
                   Close Dossier
                 </Button>
               </div>
@@ -1257,7 +1279,43 @@ export default function ServicePage() {
         maxWidth="lg"
       >
         <div className="space-y-4">
-          <div className="overflow-x-auto rounded-[14px] border border-[#DCD8CE]">
+          {/* Phones: one card per engineer (the five-column table would only scroll sideways) */}
+          <div className="sm:hidden">
+            {workload.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[#DCD8CE] p-4 text-center text-xs text-[#4A5568]">No engineer workload data available.</div>
+            ) : (
+              <ul className="space-y-2">
+                {workload.map((ew: any) => (
+                  <li key={ew.id} className="space-y-2.5 rounded-xl border border-[#DCD8CE] bg-white p-3 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <strong className="block text-[#14213D]">{ew.name}</strong>
+                        <span className="block truncate text-[10px] text-[#4A5568]">{ew.email}</span>
+                      </div>
+                      <Badge variant={WORKLOAD_BADGE[ew.workloadStatus] || 'default'} size="sm" className="shrink-0">
+                        {ew.workloadStatus || '—'}
+                      </Badge>
+                    </div>
+                    <dl className="grid grid-cols-3 gap-2 border-t border-[#ECE9E2] pt-2.5">
+                      <div>
+                        <dt className="text-[10px] text-[#4A5568]">Active</dt>
+                        <dd className="font-mono font-bold text-[#0F5E63]">{ew.activeTickets}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-[10px] text-[#4A5568]">Overdue</dt>
+                        <dd className="font-mono font-bold text-[#9A3412]">{ew.overdueTickets}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-[10px] text-[#4A5568]">Completed</dt>
+                        <dd className="font-mono text-[#14213D]">{ew.completedTickets}</dd>
+                      </div>
+                    </dl>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="hidden overflow-x-auto rounded-[14px] border border-[#DCD8CE] sm:block">
             <table className="w-full text-xs text-left">
               <thead className="bg-[#FBFAF7] text-[#14213D] border-b border-[#ECE9E2] font-semibold">
                 <tr>
@@ -1297,7 +1355,7 @@ export default function ServicePage() {
             </table>
           </div>
           <div className="pt-2 flex justify-end">
-            <Button size="sm" variant="secondary" onClick={() => setIsWorkloadModalOpen(false)}>
+            <Button size="sm" variant="secondary" onClick={() => setIsWorkloadModalOpen(false)} className="h-10 w-full sm:h-8 sm:w-auto">
               Close Workload HUD
             </Button>
           </div>

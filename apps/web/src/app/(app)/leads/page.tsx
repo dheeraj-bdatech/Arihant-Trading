@@ -1956,7 +1956,7 @@ export default function LeadsPage() {
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
-                <span className="whitespace-nowrap text-xs font-medium text-[#4A5568]">
+                <span className="text-xs font-medium text-[#4A5568] sm:whitespace-nowrap">
                   Showing <strong className="text-[#14213D]">{customers.length}</strong> of{' '}
                   <strong className="text-[#14213D]">{customersTotal}</strong>{' '}
                   {customerSearch ? (
@@ -2234,7 +2234,7 @@ export default function LeadsPage() {
           )}
 
           {customersTotalPages > 1 && (
-            <div className="flex items-center justify-between pt-2">
+            <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-xs text-[#4A5568]">
                 Showing {customers.length > 0 ? (customersPage - 1) * 15 + 1 : 0}–{Math.min(customersPage * 15, customersTotal)} of {customersTotal} accounts • Page {customersPage} of {customersTotalPages}
               </span>
@@ -2242,6 +2242,7 @@ export default function LeadsPage() {
                 <Button
                   size="sm"
                   variant="outline"
+                  className="h-10 flex-1 sm:h-8 sm:flex-none"
                   disabled={customersPage <= 1}
                   onClick={() => setCustomersPage((p) => Math.max(1, p - 1))}
                 >
@@ -2250,6 +2251,7 @@ export default function LeadsPage() {
                 <Button
                   size="sm"
                   variant="outline"
+                  className="h-10 flex-1 sm:h-8 sm:flex-none"
                   disabled={customersPage >= customersTotalPages}
                   onClick={() => setCustomersPage((p) => Math.min(customersTotalPages, p + 1))}
                 >
@@ -2550,7 +2552,7 @@ export default function LeadsPage() {
               {interactionReport.map((ir, idx) => (
                 <div
                   key={idx}
-                  className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all flex flex-col justify-between"
+                  className="p-3 sm:p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all flex flex-col justify-between"
                 >
                   <div>
                     <span className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568] block mb-1">
@@ -2596,7 +2598,8 @@ export default function LeadsPage() {
             }
             submit={
               <Button type="submit" variant="primary" isLoading={actionLoading}>
-                Register Lead Opportunity
+                <span className="sm:hidden">Register Lead</span>
+                <span className="hidden sm:inline">Register Lead Opportunity</span>
               </Button>
             }
             steps={[
@@ -2607,11 +2610,11 @@ export default function LeadsPage() {
                 content: (
           <div className="space-y-3">
             <div>
-              <div className="inline-flex items-center gap-1.5 rounded-lg bg-[#FBFAF7] p-1">
+              <div className="flex w-full items-center gap-1.5 rounded-lg bg-[#FBFAF7] p-1 sm:inline-flex sm:w-auto">
                 <button
                   type="button"
                   onClick={() => setLeadForm({ ...leadForm, organisation_mode: 'new' })}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold transition-all sm:flex-none sm:py-1 ${
                     leadForm.organisation_mode === 'new'
                       ? 'bg-[#0F5E63] text-white shadow-sm'
                       : 'bg-white text-[#4A5568] border border-[#DCD8CE] hover:border-[#0F5E63]'
@@ -2622,7 +2625,7 @@ export default function LeadsPage() {
                 <button
                   type="button"
                   onClick={() => setLeadForm({ ...leadForm, organisation_mode: 'existing' })}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold transition-all sm:flex-none sm:py-1 ${
                     leadForm.organisation_mode === 'existing'
                       ? 'bg-[#0F5E63] text-white shadow-sm'
                       : 'bg-white text-[#4A5568] border border-[#DCD8CE] hover:border-[#0F5E63]'
@@ -2671,9 +2674,9 @@ export default function LeadsPage() {
                       {duplicateMatches.map((m) => (
                         <div
                           key={m.id}
-                          className="flex items-center justify-between p-2 rounded-lg bg-white border border-amber-200"
+                          className="flex flex-col gap-2 p-2 rounded-lg bg-white border border-amber-200 sm:flex-row sm:items-center sm:justify-between"
                         >
-                          <div>
+                          <div className="min-w-0">
                             <span className="font-bold text-[#14213D] block">{m.name}</span>
                             <span className="text-[10px] text-[#4A5568]">
                               {m.city || ''}, {m.state || ''} • Match: {m.matchReason}
@@ -2683,6 +2686,7 @@ export default function LeadsPage() {
                             type="button"
                             size="xs"
                             variant="secondary"
+                            className="h-9 w-full shrink-0 sm:h-7 sm:w-auto"
                             onClick={() => {
                               setLeadForm({
                                 ...leadForm,
@@ -2917,7 +2921,7 @@ export default function LeadsPage() {
                 onChange={(e) => setLeadForm({ ...leadForm, value_lakh: e.target.value })}
                 placeholder="e.g. 45.0"
               />
-              <div className="sm:col-span-2 flex items-center pt-5">
+              <div className="sm:col-span-2 flex items-center sm:pt-5">
                 <span className="text-[11px] text-[#4A5568] italic">
                   💡 Arihant Lead Engine automatically dedupes against account history and tags Fresh vs Re-Approached pipeline cycle.
                 </span>
@@ -3002,7 +3006,7 @@ export default function LeadsPage() {
         {selectedLead && (
           <div className="space-y-5 text-xs">
             {/* Meta Executive Metrics Strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 p-4 rounded-xl bg-white border border-[#DCD8CE]">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE]">
               <div>
                 <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Current Stage</span>
                 <div className="mt-1">{getStatusBadge(selectedLead.lead_status || selectedLead.status)}</div>
@@ -3057,7 +3061,7 @@ export default function LeadsPage() {
                   </Badge>
                 </div>
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Lead Source</span>
                 <span className="font-bold text-[#14213D] mt-1 block capitalize truncate">
                   {LEAD_SOURCE_OPTIONS.find((s) => s.value === selectedLead.source)?.label || selectedLead.source || 'Direct Field Visit'}
@@ -3066,7 +3070,7 @@ export default function LeadsPage() {
             </div>
 
             {/* Allowed Lifecycle Transitions Stepper */}
-            <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+            <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                   <ArrowRight className="h-4 w-4 text-[#0F5E63]" />
@@ -3136,11 +3140,12 @@ export default function LeadsPage() {
                         This lead is in terminal stage ({label(current)}). No further transitions allowed.
                       </div>
                     ) : (
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
                         {nextStage && (
                           <Button
                             size="xs"
                             variant="primary"
+                            className="col-span-2 h-10 text-xs leading-tight sm:col-span-1 sm:h-7 sm:text-[11px]"
                             rightIcon={<ArrowRight className="h-3 w-3" />}
                             isLoading={actionLoading && targetStatus === nextStage}
                             onClick={() => handleDirectAdvanceStatus(nextStage)}
@@ -3153,6 +3158,7 @@ export default function LeadsPage() {
                             key={st}
                             size="xs"
                             variant="outline"
+                            className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
                             isLoading={actionLoading && targetStatus === st}
                             onClick={() => handleDirectAdvanceStatus(st)}
                           >
@@ -3164,6 +3170,7 @@ export default function LeadsPage() {
                             key={st}
                             size="xs"
                             variant={st === 'converted' ? 'success' : 'danger'}
+                            className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
                             isLoading={actionLoading && targetStatus === st}
                             onClick={() => handleDirectAdvanceStatus(st)}
                           >
@@ -3209,7 +3216,7 @@ export default function LeadsPage() {
             {/* Two-Column Grid: 1. Organisation & Jurisdiction | 2. Key Contact Person */}
             <div className="grid grid-cols-1 md:grid-cols-2 rounded-xl bg-white border border-[#DCD8CE] divide-y md:divide-y-0 md:divide-x divide-[#ECE9E2]">
               {/* 1. Organisation & Jurisdiction Intelligence */}
-              <div className="p-5 space-y-3">
+              <div className="p-4 sm:p-5 space-y-3">
                 <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
                   <Building className="h-4 w-4 text-[#0F5E63]" />
                   <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
@@ -3270,7 +3277,7 @@ export default function LeadsPage() {
               </div>
 
               {/* 2. Key Contact Person Details */}
-              <div className="p-5 space-y-3">
+              <div className="p-4 sm:p-5 space-y-3">
                 <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
                   <User className="h-4 w-4 text-[#0F5E63]" />
                   <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
@@ -3291,8 +3298,8 @@ export default function LeadsPage() {
                     </span>
                   </div>
                   <div className="pt-1 border-t border-[#ECE9E2] space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase">Mobile / Phone</span>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase shrink-0">Mobile / Phone</span>
                       {selectedLead.contact_mobile ? (
                         <a
                           href={`tel:${selectedLead.contact_mobile}`}
@@ -3305,12 +3312,12 @@ export default function LeadsPage() {
                         <span className="text-[#4A5568] italic text-[11px]">—</span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase">Email Address</span>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase shrink-0">Email Address</span>
                       {selectedLead.contact_email ? (
                         <a
                           href={`mailto:${selectedLead.contact_email}`}
-                          className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline flex items-center gap-1.5 truncate max-w-[200px]"
+                          className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline flex min-w-0 items-center gap-1.5 truncate max-w-[200px]"
                           title={selectedLead.contact_email}
                         >
                           <Mail className="h-3 w-3 shrink-0" />
@@ -3326,14 +3333,14 @@ export default function LeadsPage() {
             </div>
 
             {/* Ownership & Territorial Jurisdiction Strip */}
-            <div className="p-5 rounded-xl bg-white border border-[#DCD8CE]">
+            <div className="p-4 sm:p-5 rounded-xl bg-white border border-[#DCD8CE]">
               <div className="flex items-center gap-2 border-b border-[#DCD8CE] pb-2 mb-3">
-                <Users className="h-4 w-4 text-[#0F5E63]" />
+                <Users className="h-4 w-4 text-[#0F5E63] shrink-0" />
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
                   Sales Ownership & Managerial Governance
                 </span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Assigned Sales Owner</span>
                   <span className="font-bold text-[#14213D] block mt-0.5">
@@ -3367,9 +3374,9 @@ export default function LeadsPage() {
             {leadDetailTab === 'activity' && (
               <div className="space-y-5 animate-in fade-in duration-150">
             {/* Interactions, Scheduled Follow-Up & Remarks */}
-            <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+            <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
               <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
-                <Clock className="h-4 w-4 text-[#0F5E63]" />
+                <Clock className="h-4 w-4 text-[#0F5E63] shrink-0" />
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
                   Interactions, Follow-Up Schedule & Notes
                 </span>
@@ -3429,7 +3436,7 @@ export default function LeadsPage() {
             {leadDetailTab === 'products' && (
               <div className="space-y-5 animate-in fade-in duration-150">
             {/* Product Interests Section */}
-            <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+            <div className="p-3 sm:p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                   <Briefcase className="h-4 w-4 text-[#0F5E63]" />
@@ -3441,7 +3448,7 @@ export default function LeadsPage() {
                       if (e.target.value) handleAddProductInterest(e.target.value);
                       e.target.value = '';
                     }}
-                    className="max-w-full px-2 py-1 text-[11px] bg-white border border-[#DCD8CE] rounded-lg text-[#14213D]"
+                    className="h-10 w-full max-w-full px-2 py-1 text-xs bg-white border border-[#DCD8CE] rounded-lg text-[#14213D] sm:h-auto sm:w-auto sm:text-[11px]"
                   >
                     <option value="">+ Add Product Interest</option>
                     {productsList.map((p) => (
@@ -3487,7 +3494,7 @@ export default function LeadsPage() {
             {leadDetailTab === 'ownership' && (
               <div className="space-y-5 animate-in fade-in duration-150">
             {/* Salesperson Assignment History Audit */}
-            <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+            <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                   <ShieldCheck className="h-4 w-4 text-[#0F5E63]" />
@@ -3519,9 +3526,9 @@ export default function LeadsPage() {
                   {selectedLead.assignment_history.map((h: any) => (
                     <div
                       key={h.id}
-                      className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] flex items-center justify-between text-[11px]"
+                      className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] flex flex-col gap-1 text-[11px] sm:flex-row sm:items-center sm:justify-between"
                     >
-                      <div>
+                      <div className="min-w-0">
                         <span className="font-semibold text-[#14213D]">
                           {h.previous_salesperson_name || 'Unassigned'} → {h.new_salesperson_name}
                         </span>
@@ -3529,7 +3536,7 @@ export default function LeadsPage() {
                           <span className="text-[#4A5568] block mt-0.5">Reason: {h.reason}</span>
                         )}
                       </div>
-                      <div className="text-right text-[#4A5568] font-mono text-[10px]">
+                      <div className="text-[#4A5568] font-mono text-[10px] sm:shrink-0 sm:text-right">
                         By {h.changed_by_name || 'Admin'} • {new Date(h.changed_at).toLocaleDateString('en-IN')}
                       </div>
                     </div>
@@ -3556,10 +3563,11 @@ export default function LeadsPage() {
             )}
 
             {/* Action Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#DCD8CE]">
+            <div className="flex flex-col gap-2 pt-2 border-t border-[#DCD8CE] sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
               <Button
                 variant="outline"
                 size="sm"
+                className="h-10 w-full sm:h-8 sm:w-auto"
                 onClick={() => {
                   setIsLeadDetailOpen(false);
                   handleOpenCustomer360(selectedLead.organisation_id);
@@ -3568,10 +3576,11 @@ export default function LeadsPage() {
               >
                 Open 360° Account View
               </Button>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 sm:flex-wrap">
                 <Button
                   variant="secondary"
                   size="sm"
+                  className="h-10 flex-1 sm:h-8 sm:flex-none"
                   onClick={() => {
                     setInteractionForm({
                       ...interactionForm,
@@ -3585,7 +3594,7 @@ export default function LeadsPage() {
                 >
                   Log Touchpoint
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => setIsLeadDetailOpen(false)}>
+                <Button variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsLeadDetailOpen(false)}>
                   Close
                 </Button>
               </div>
@@ -3648,12 +3657,13 @@ export default function LeadsPage() {
           </p>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsStatusModalOpen(false)}>
+            <Button type="button" variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsStatusModalOpen(false)}>
               Cancel
             </Button>
             <Button
               type="submit"
               size="sm"
+              className="h-10 flex-1 sm:h-8 sm:flex-none"
               variant={targetStatus === 'lost' ? 'danger' : 'primary'}
               isLoading={actionLoading}
             >
@@ -3684,11 +3694,12 @@ export default function LeadsPage() {
               <p className="text-[11px] text-amber-700 leading-relaxed">
                 Under Arihant BOS territorial governance, lead ownership reassignment is restricted to <strong>Regional Manager</strong>, <strong>Management</strong>, or <strong>Admin</strong> roles to ensure account integrity. Your current active role is <span className="font-mono font-medium px-1.5 py-0.5 rounded bg-amber-100/70 border border-amber-300 text-amber-900">{user?.role}</span>.
               </p>
-              <div className="pt-1 flex flex-wrap items-center gap-2">
+              <div className="pt-1 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                 <Button
                   type="button"
                   size="xs"
                   variant="primary"
+                  className="h-auto min-h-9 w-full py-1.5 leading-tight sm:h-7 sm:min-h-0 sm:w-auto sm:py-0"
                   isLoading={isSwitchingPersona}
                   onClick={() => handleQuickSwitchRole('regional_manager')}
                 >
@@ -3699,6 +3710,7 @@ export default function LeadsPage() {
                   type="button"
                   size="xs"
                   variant="outline"
+                  className="h-auto min-h-9 w-full py-1.5 leading-tight sm:h-7 sm:min-h-0 sm:w-auto sm:py-0"
                   isLoading={isSwitchingPersona}
                   onClick={() => handleQuickSwitchRole('management')}
                 >
@@ -3732,7 +3744,7 @@ export default function LeadsPage() {
             placeholder="e.g. Territory reorganization / officer transferred to Delhi HQ"
           />
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#DCD8CE]">
+          <div className="flex flex-col gap-2 pt-2 border-t border-[#DCD8CE] sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             {!canReassign ? (
               <span className="text-[11px] text-amber-700 font-medium">
                 Switch role above to enable transfer.
@@ -3743,17 +3755,19 @@ export default function LeadsPage() {
               </span>
             )}
             <div className="flex items-center gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setIsReassignModalOpen(false)}>
+              <Button type="button" variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsReassignModalOpen(false)}>
                 Cancel
               </Button>
               <Button
                 type="submit"
                 variant="primary"
                 size="sm"
+                className="h-10 flex-1 sm:h-8 sm:flex-none"
                 isLoading={actionLoading}
                 disabled={!canReassign}
               >
-                Reassign & Dispatch Event
+                <span className="sm:hidden">Reassign Lead</span>
+                <span className="hidden sm:inline">Reassign & Dispatch Event</span>
               </Button>
             </div>
           </div>
@@ -3812,8 +3826,9 @@ export default function LeadsPage() {
               </div>
             }
             submit={
-              <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
-                Schedule Demo & Advance Lifecycle
+              <Button type="submit" variant="primary" size="sm" className="h-10 sm:h-8" isLoading={actionLoading}>
+                <span className="sm:hidden">Schedule Demo</span>
+                <span className="hidden sm:inline">Schedule Demo & Advance Lifecycle</span>
               </Button>
             }
             steps={[
@@ -3921,7 +3936,7 @@ export default function LeadsPage() {
             {/* Fleet Availability Overview by Product (when no product is selected yet) - Full Width */}
             {!activeLeadDemoFleet && (
               <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                   <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
                     Demo Equipment Fleet Availability & Status:
                   </span>
@@ -3939,9 +3954,9 @@ export default function LeadsPage() {
                         onClick={() => {
                           setDemoForm((prev) => ({ ...prev, product_id: p.id }));
                         }}
-                        className="flex items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                        className="flex min-h-10 items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group sm:min-h-0"
                       >
-                        <span className="font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
+                        <span className="min-w-0 font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
                           {p.name}
                         </span>
                         <span
@@ -3966,7 +3981,7 @@ export default function LeadsPage() {
             {activeLeadDemoFleet && (
               <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
                 <div className="flex flex-wrap items-center justify-between gap-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
                       Live Product Fleet Availability:
                     </span>
@@ -3999,7 +4014,7 @@ export default function LeadsPage() {
                       ? `All units currently deployed or reserved.`
                       : `Custom requisition required.`}
                   </span>
-                  <div className="flex items-center gap-2 font-mono text-[10px]">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px]">
                     <span>Fleet: <b>{activeLeadDemoFleet.total}</b></span>
                     <span className="text-emerald-700">Ready: <b>{activeLeadDemoFleet.availableCount}</b></span>
                     <span className="text-amber-700">In-Trial: <b>{activeLeadDemoFleet.reservedCount}</b></span>
@@ -4213,9 +4228,9 @@ export default function LeadsPage() {
                         key={m.id}
                         type="button"
                         onClick={() => setDemoForm((prev) => ({ ...prev, assigned_to: m.id }))}
-                        className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                        className="flex min-h-11 items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group sm:min-h-0"
                       >
-                        <div className="space-y-0.5 truncate pr-1">
+                        <div className="min-w-0 space-y-0.5 truncate pr-1">
                           <span className="font-semibold text-[#14213D] text-[11px] block truncate group-hover:text-[#0F5E63]">
                             {m.full_name}
                           </span>
@@ -4241,7 +4256,7 @@ export default function LeadsPage() {
             {selectedLeadDemoMember && (
               <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
                 <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#ECE9E2]">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span className="font-bold text-xs text-[#14213D]">{selectedLeadDemoMember.full_name}</span>
                     <Badge variant="cyber" className="text-[10px] py-0">
                       {selectedLeadDemoMember.role === 'demo_team' ? 'DEMO SPECIALIST' : selectedLeadDemoMember.role.replace(/_/g, ' ').toUpperCase()}
@@ -4363,12 +4378,12 @@ export default function LeadsPage() {
           )}
 
           {/* Account context strip */}
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between">
-            <div>
+          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between gap-3">
+            <div className="min-w-0">
               <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Opportunity Account</span>
               <span className="text-xs font-bold text-[#14213D]">{selectedLead?.organisation_name}</span>
             </div>
-            <div className="text-right">
+            <div className="shrink-0 text-right">
               <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Current Stage</span>
               <span className="text-xs font-bold text-[#0F5E63]">{selectedLead?.lead_status?.toUpperCase()}</span>
             </div>
@@ -4452,12 +4467,13 @@ export default function LeadsPage() {
             </label>
           </FormSection>
 
-          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsProposalModalOpen(false)}>
+          <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 flex items-center gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:static sm:z-auto sm:mx-0 sm:mb-0 sm:flex-wrap sm:justify-end sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-2">
+            <Button type="button" variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsProposalModalOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
-              Generate Proposal Task & Advance Lifecycle
+            <Button type="submit" variant="primary" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" isLoading={actionLoading}>
+              <span className="sm:hidden">Generate Proposal</span>
+              <span className="hidden sm:inline">Generate Proposal Task & Advance Lifecycle</span>
             </Button>
           </div>
         </form>
@@ -4482,12 +4498,12 @@ export default function LeadsPage() {
           )}
 
           {/* Account context strip */}
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between">
-            <div>
+          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between gap-3">
+            <div className="min-w-0">
               <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Opportunity Account</span>
               <span className="text-xs font-bold text-[#14213D]">{selectedLead?.organisation_name}</span>
             </div>
-            <div className="text-right">
+            <div className="shrink-0 text-right">
               <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Touchpoint Type</span>
               <span className="text-xs font-bold text-[#0F5E63]">{discussionStage === 'tender_discussion' ? 'TENDER DISCUSSION' : 'FOLLOW UP'}</span>
             </div>
@@ -4595,12 +4611,13 @@ export default function LeadsPage() {
             </label>
           </FormSection>
 
-          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsDiscussionModalOpen(false)}>
+          <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 flex items-center gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:static sm:z-auto sm:mx-0 sm:mb-0 sm:flex-wrap sm:justify-end sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-2">
+            <Button type="button" variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsDiscussionModalOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
-              Schedule Touchpoint & Advance Lifecycle
+            <Button type="submit" variant="primary" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" isLoading={actionLoading}>
+              <span className="sm:hidden">Schedule Touchpoint</span>
+              <span className="hidden sm:inline">Schedule Touchpoint & Advance Lifecycle</span>
             </Button>
           </div>
         </form>
@@ -4751,9 +4768,9 @@ export default function LeadsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {/* First Interaction Card */}
                   <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                       <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                        <Activity className="h-3.5 w-3.5 text-[#0F5E63]" />
+                        <Activity className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                         <span>First Interaction (Prospect Onboarding)</span>
                       </span>
                       {customerManagementSummary?.first_interaction?.occurred_on && (
@@ -4764,7 +4781,7 @@ export default function LeadsPage() {
                     </div>
                     {customerManagementSummary?.first_interaction ? (
                       <div className="space-y-1.5 pt-1 text-[11px]">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <Badge variant="outline" size="sm" className="uppercase font-bold text-[9px]">
                             {customerManagementSummary.first_interaction.type}
                           </Badge>
@@ -4793,9 +4810,9 @@ export default function LeadsPage() {
 
                   {/* Latest Interaction Card */}
                   <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                       <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                        <Clock className="h-3.5 w-3.5 text-[#0F5E63]" />
+                        <Clock className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                         <span>Latest Interaction (Recent Touchpoint)</span>
                       </span>
                       {customerManagementSummary?.latest_interaction?.occurred_on && (
@@ -4806,7 +4823,7 @@ export default function LeadsPage() {
                     </div>
                     {customerManagementSummary?.latest_interaction ? (
                       <div className="space-y-1.5 pt-1 text-[11px]">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <Badge variant="outline" size="sm" className="uppercase font-bold text-[9px]">
                             {customerManagementSummary.latest_interaction.type}
                           </Badge>
@@ -4851,8 +4868,8 @@ export default function LeadsPage() {
                       </span>
                     </div>
 
-                    <div className="p-2.5 rounded-lg bg-[#E3EFEE]/50 border border-[#DCD8CE] flex items-center justify-between">
-                      <div>
+                    <div className="p-2.5 rounded-lg bg-[#E3EFEE]/50 border border-[#DCD8CE] flex items-center justify-between gap-2">
+                      <div className="min-w-0">
                         <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Current Active Salesperson</span>
                         <span className="font-bold text-[#0F5E63] text-xs">
                           {customerManagementSummary?.current_salesperson || 'Unassigned'}
@@ -4867,15 +4884,15 @@ export default function LeadsPage() {
                         {customerManagementSummary.previous_salespersons.map((h: any, idx: number) => (
                           <div
                             key={idx}
-                            className="p-2 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] flex items-center justify-between text-[10px]"
+                            className="p-2 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] flex items-center justify-between gap-2 text-[10px]"
                           >
-                            <div>
+                            <div className="min-w-0">
                               <span className="font-semibold text-gray-800">
                                 {h.previous_salesperson_name || 'Unassigned'} → {h.new_salesperson_name}
                               </span>
                               {h.reason && <span className="text-[#4A5568] block">Reason: {h.reason}</span>}
                             </div>
-                            <span className="text-[#4A5568] font-mono text-[9px]">
+                            <span className="shrink-0 text-[#4A5568] font-mono text-[9px]">
                               {new Date(h.changed_at).toLocaleDateString('en-IN')}
                             </span>
                           </div>
@@ -4890,9 +4907,9 @@ export default function LeadsPage() {
 
                   {/* Product Interest Landscape */}
                   <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                       <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                        <Tag className="h-3.5 w-3.5 text-[#0F5E63]" />
+                        <Tag className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                         <span>Product Interest Landscape</span>
                       </span>
                       <Badge variant="outline" size="sm">
@@ -4922,9 +4939,9 @@ export default function LeadsPage() {
 
                 {/* 3. Previous Meetings & Field Demonstrations */}
                 <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                     <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                      <Building className="h-3.5 w-3.5 text-[#0F5E63]" />
+                      <Building className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                       <span>Previous In-Person Meetings & Demonstrations (Face-to-Face Field Touchpoints)</span>
                     </span>
                     <Badge variant="info" size="sm">
@@ -5008,9 +5025,9 @@ export default function LeadsPage() {
 
                 {/* 5. Current Opportunity Status */}
                 <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                     <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                      <Target className="h-3.5 w-3.5 text-[#0F5E63]" />
+                      <Target className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                       <span>Current Opportunity Status Across Account</span>
                     </span>
                     <Badge variant="info" size="sm">
@@ -5023,7 +5040,7 @@ export default function LeadsPage() {
                       {customerManagementSummary.current_opportunity_status.map((opp: any) => (
                         <div key={opp.id} className="p-2.5 bg-white flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between text-[11px] hover:bg-[#F8FAFC]">
                           <div>
-                            <div className="font-bold text-[#14213D] flex items-center gap-2">
+                            <div className="font-bold text-[#14213D] flex flex-wrap items-center gap-x-2 gap-y-1">
                               <span>{opp.product_name}</span>
                               {opp.lead_type === 're_approached' ? (
                                 <Badge variant="warning" size="sm" className="font-bold text-[9px]">
@@ -5062,11 +5079,11 @@ export default function LeadsPage() {
 
             {/* TAB 2: CHRONOLOGICAL CUSTOMER INTERACTION TIMELINE */}
             {c360Tab === 'timeline' && (
-              <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
+              <div className="p-3 sm:p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
                     <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
-                      <History className="h-4 w-4 text-[#0F5E63]" />
+                      <History className="h-4 w-4 text-[#0F5E63] shrink-0" />
                       <span>Chronological Customer Interaction Timeline</span>
                     </span>
                     <span className="text-[10px] text-[#4A5568] block mt-0.5">
@@ -5076,6 +5093,7 @@ export default function LeadsPage() {
                   <Button
                     size="xs"
                     variant="primary"
+                    className="h-10 w-full shrink-0 text-xs sm:h-7 sm:w-auto sm:text-[11px]"
                     onClick={() => {
                       setInteractionForm({
                         ...interactionForm,
@@ -5094,7 +5112,7 @@ export default function LeadsPage() {
                 {customerTimelineLoading ? (
                   <div className="p-8 text-center text-[#4A5568]">Loading chronological customer history...</div>
                 ) : customerTimeline.length === 0 ? (
-                  <div className="p-8 rounded-lg bg-white border border-[#DCD8CE] text-center text-[#4A5568] space-y-2">
+                  <div className="p-5 sm:p-8 rounded-lg bg-white border border-[#DCD8CE] text-center text-[#4A5568] space-y-2">
                     <p>No interactions recorded yet for this organisation.</p>
                     <Button
                       size="xs"
@@ -5133,10 +5151,10 @@ export default function LeadsPage() {
                       return (
                         <div
                           key={it.id}
-                          className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs hover:border-[#0F5E63] transition-colors"
+                          className="p-3 sm:p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs hover:border-[#0F5E63] transition-colors"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                               <span className="text-base">{icon}</span>
                               <Badge variant="outline" size="sm" className="uppercase font-bold text-[10px]">
                                 {it.type?.replace('_', ' ')}
@@ -5145,14 +5163,14 @@ export default function LeadsPage() {
                                 {new Date(it.occurred_on || it.interaction_date || it.created_at).toLocaleDateString('en-IN')}
                               </span>
                             </div>
-                            <div className="text-right text-[10px] text-[#4A5568]">
+                            <div className="text-[10px] text-[#4A5568] sm:text-right">
                               Employee: <strong className="text-[#14213D]">{it.employee_name || it.created_by_name || 'Executive'}</strong>
                             </div>
                           </div>
 
                           {it.contact_name && (
-                            <div className="text-[10px] text-[#4A5568] flex items-center gap-1">
-                              <User className="h-3 w-3 text-[#4A5568]" />
+                            <div className="text-[10px] text-[#4A5568] flex flex-wrap items-center gap-1">
+                              <User className="h-3 w-3 text-[#4A5568] shrink-0" />
                               <span>Contact Person: <strong className="text-[#14213D]">{it.contact_name}</strong></span>
                               {it.contact_mobile && <span className="font-mono">({it.contact_mobile})</span>}
                             </div>
@@ -5211,7 +5229,7 @@ export default function LeadsPage() {
 
             {/* TAB 3: CONTACTS ROSTER */}
             {c360Tab === 'contacts' && (
-              <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+              <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                     <Users className="h-4 w-4 text-[#0F5E63]" />
@@ -5228,8 +5246,8 @@ export default function LeadsPage() {
                         key={c.id}
                         className="p-3 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] space-y-1.5"
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-[#14213D]">{c.name || c.full_name}</span>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 font-bold text-[#14213D]">{c.name || c.full_name}</span>
                           {c.is_primary && (
                             <Badge variant="info" size="sm" className="text-[9px]">PRIMARY</Badge>
                           )}
@@ -5243,6 +5261,7 @@ export default function LeadsPage() {
                           <Button
                             size="xs"
                             variant="secondary"
+                            className="h-9 w-full text-xs sm:h-7 sm:w-auto sm:text-[11px]"
                             onClick={() => {
                               setInteractionForm({
                                 ...interactionForm,
@@ -5265,7 +5284,7 @@ export default function LeadsPage() {
 
             {/* TAB 4: ACTIVE OPPORTUNITIES */}
             {c360Tab === 'deals' && (
-              <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+              <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                     <Briefcase className="h-4 w-4 text-[#0F5E63]" />
@@ -5289,7 +5308,7 @@ export default function LeadsPage() {
                         }}
                       >
                         <div className="space-y-1">
-                          <div className="font-bold text-[#14213D] flex items-center gap-2">
+                          <div className="font-bold text-[#14213D] flex flex-wrap items-center gap-x-2 gap-y-1">
                             <span>{ld.title || ld.product_name || 'Procurement Opportunity'}</span>
                             {ld.lead_type === 're_approached' ? (
                               <Badge variant="warning" size="sm" className="font-bold text-[9px]">
@@ -5335,10 +5354,11 @@ export default function LeadsPage() {
             )}
 
             {/* Modal Footer */}
-            <div className="flex items-center justify-between pt-3 border-t border-[#DCD8CE]">
+            <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#DCD8CE]">
               <Button
                 variant="secondary"
                 size="sm"
+                className="h-10 flex-1 sm:h-8 sm:flex-none"
                 onClick={() => {
                   setInteractionForm({
                     ...interactionForm,
@@ -5352,7 +5372,7 @@ export default function LeadsPage() {
               >
                 Log New Interaction
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setIsCustomer360Open(false)}>
+              <Button variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsCustomer360Open(false)}>
                 Close View
               </Button>
             </div>
@@ -5383,7 +5403,7 @@ export default function LeadsPage() {
               )
             }
             submit={
-              <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
+              <Button type="submit" variant="primary" size="sm" className="h-10 sm:h-8" isLoading={actionLoading}>
                 Save Touchpoint
               </Button>
             }
@@ -5550,7 +5570,7 @@ export default function LeadsPage() {
             icon={<CalendarDays />}
             description="Optionally book the next reminder for this lead."
           >
-            <label className="flex items-center gap-2 cursor-pointer">
+            <label className="flex min-h-10 items-center gap-2 cursor-pointer sm:min-h-0">
               <input
                 type="checkbox"
                 checked={scheduleNextFollowup}
@@ -5583,10 +5603,10 @@ export default function LeadsPage() {
           </FormSection>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsCompleteFollowupOpen(false)}>
+            <Button type="button" variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsCompleteFollowupOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant="success" size="sm" isLoading={actionLoading}>
+            <Button type="submit" variant="success" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" isLoading={actionLoading}>
               Mark Completed
             </Button>
           </div>
@@ -5636,10 +5656,10 @@ export default function LeadsPage() {
           />
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsRescheduleFollowupOpen(false)}>
+            <Button type="button" variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsRescheduleFollowupOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
+            <Button type="submit" variant="primary" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" isLoading={actionLoading}>
               Reschedule
             </Button>
           </div>

@@ -246,7 +246,8 @@ export const StepCard: React.FC<{
   children?: React.ReactNode;
 }> = ({ n, state, title, description, action, className, children }) => (
   <Card className={twMerge('overflow-visible', state === 'pending' && 'opacity-70', className)}>
-    <div className="flex items-start gap-3 px-4 pt-4 sm:px-5 sm:pt-5">
+    {/* Phones: 12px insets — this card usually sits inside the claim popup, which has its own padding. */}
+    <div className="flex items-start gap-3 px-3 pt-3 sm:px-5 sm:pt-5">
       <StepDot n={n} state={state} />
       <div className="min-w-0 flex-1">
         <h2 className="font-serif text-lg leading-7 text-[#14213D]">{title}</h2>
@@ -254,6 +255,6 @@ export const StepCard: React.FC<{
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </div>
-    {children && <div className="px-4 pb-4 pt-4 sm:px-5 sm:pb-5">{children}</div>}
+    {children && <div className="px-3 pb-3 pt-4 sm:px-5 sm:pb-5">{children}</div>}
   </Card>
 );

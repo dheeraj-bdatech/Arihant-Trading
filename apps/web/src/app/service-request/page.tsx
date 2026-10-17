@@ -241,7 +241,7 @@ export default function ServiceRequestPage() {
   }
   if (metaState === 'disabled' || metaState === 'error' || !meta) {
     return (
-      <Card padding="lg" className="text-center">
+      <Card padding="lg" className="p-5 text-center sm:p-7">
         <h1 className="font-serif text-xl font-bold text-[#14213D]">
           {metaState === 'error' ? 'We could not load the form' : 'Online form temporarily unavailable'}
         </h1>
@@ -427,14 +427,14 @@ function SuccessView({ res, onAnother }: { res: Success; onAnother: () => void }
 
   if (res.duplicate || !res.tracking_token) {
     return (
-      <Card padding="lg" className="space-y-4">
+      <Card padding="lg" className="space-y-4 p-5 sm:p-7">
         <h1 className="font-serif text-2xl font-bold text-[#14213D]">We already have this request</h1>
         <InfoCallout variant="info">
           {res.customer_message || 'This looks like a request we have already received.'} Please use the tracking link you received when you first submitted it.
         </InfoCallout>
         <div>
           <p className="text-xs font-semibold text-[#4A5568]">Reference</p>
-          <p className="font-mono text-2xl font-bold text-[#14213D]">{res.reference}</p>
+          <p className="break-all font-mono text-2xl font-bold text-[#14213D]">{res.reference}</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Link href="/service-request/track" className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-[#0F5E63] px-4 text-sm font-semibold text-white">Track a request</Link>
@@ -446,16 +446,16 @@ function SuccessView({ res, onAnother }: { res: Success; onAnother: () => void }
 
   return (
     <div className="space-y-5">
-      <Card padding="lg" className="space-y-5">
+      <Card padding="lg" className="space-y-5 p-5 sm:p-7">
         <div>
           <Badge variant="success">Request received</Badge>
           <h1 className="mt-2 font-serif text-2xl font-bold text-[#14213D] sm:text-3xl">Thank you. Your request is logged.</h1>
         </div>
-        <div className="rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] p-4">
+        <div className="rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] p-3 sm:p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-[#4A5568]">Reference number</p>
           <div className="mt-1 flex flex-wrap items-center gap-3">
-            <p className="break-all font-mono text-3xl font-bold text-[#14213D]">{res.reference}</p>
-            <Button size="md" variant="secondary" onClick={() => copy('ref', res.reference)}>{copied === 'ref' ? 'Copied' : 'Copy'}</Button>
+            <p className="break-all font-mono text-2xl font-bold text-[#14213D] sm:text-3xl">{res.reference}</p>
+            <Button size="md" variant="secondary" onClick={() => copy('ref', res.reference)} className="h-11 sm:h-10">{copied === 'ref' ? 'Copied' : 'Copy'}</Button>
           </div>
         </div>
         {res.response_target_hours ? (
@@ -466,7 +466,7 @@ function SuccessView({ res, onAnother }: { res: Success; onAnother: () => void }
           </p>
         ) : null}
         {res.customer_message && <p className="text-sm text-[#4A5568]">{res.customer_message}</p>}
-        <div className="rounded-lg border border-[#9A3412]/30 bg-[#FBEBDD] p-4">
+        <div className="rounded-lg border border-[#9A3412]/30 bg-[#FBEBDD] p-3 sm:p-4">
           <p className="text-sm font-semibold text-[#7C2D12]">
             Save this link and code. It is the only way to see your request. We do not have a login for customers.
           </p>

@@ -729,3 +729,18 @@ html[data-app-theme] .app-search :is(span, svg) { color: #4A5568; }
 @media (max-width: 767px) { .rec { --rec-tap: 56px; } }
 .rec .rec-tap { min-height: var(--rec-tap); min-width: var(--rec-tap); }
 .rec .rec-row { min-height: calc(var(--rec-tap) + 8px); }
+
+/* ---- dialogs on phones (components/ui/Modal.tsx): a bottom sheet that slides up, top corners rounded ---- */
+@keyframes bos-sheet-up { from { opacity: 0; transform: translateY(32px) } to { opacity: 1; transform: none } }
+@media (max-width: 639.98px) {
+  html [role='dialog'].modal-sheet,
+  html[data-app-theme] [role='dialog'].modal-sheet {
+    border-radius: 20px 20px 0 0;
+    border-bottom-width: 0;
+    animation: bos-sheet-up 280ms var(--ease-out) both;
+  }
+}
+/* phones: 16px text in fields so iOS Safari does not zoom the page (and the sheet) on focus */
+@media (max-width: 639.98px) and (pointer: coarse) {
+  html[data-app-theme] :is(input:not([type='checkbox']):not([type='radio']):not([type='range']), select, textarea) { font-size: 16px; }
+}

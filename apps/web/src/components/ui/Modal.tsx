@@ -114,7 +114,9 @@ export const Modal: React.FC<ModalProps> = ({
 
   return createPortal(
     <div
-      className={twMerge('fixed inset-0 flex items-center justify-center p-3 sm:p-4', className)}
+      // Phones: a bottom sheet (full width, docked to the bottom edge, thumb-reachable actions).
+      // From `sm` up: the centred dialog.
+      className={twMerge('fixed inset-0 flex items-end justify-center sm:items-center sm:p-4', className)}
       style={{ zIndex: resolvedZIndex }}
     >
       {/* Translucent overlay */}
@@ -123,25 +125,30 @@ export const Modal: React.FC<ModalProps> = ({
         onClick={onClose}
       />
 
-      {/* Light Executive Modal Container */}
+      {/* Light Executive Modal Container. `modal-sheet` (theme.css) rounds only the top corners on phones;
+          the bottom padding keeps the sticky footers above the iPhone home indicator. */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
         className={twMerge(
-          'relative z-10 flex max-h-[calc(100dvh-1.5rem)] w-full flex-col overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white text-[#14213D] shadow-2xl animate-in zoom-in-95 duration-150 sm:max-h-[calc(100dvh-2rem)]',
+          'modal-sheet relative z-10 flex max-h-[calc(100dvh-2.5rem)] w-full flex-col overflow-hidden rounded-t-[20px] border border-b-0 border-[#DCD8CE] bg-white pb-[env(safe-area-inset-bottom)] text-[#14213D] shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:rounded-[14px] sm:border-b sm:pb-0',
           maxWidths[maxWidth],
         )}
       >
         {/* Dialog Header — a <header> (not a div) so the theme's "first div is transparent" rule keeps its divider line */}
         <header className="modal-header shrink-0 border-b border-[#DCD8CE] bg-white">
-          <div className="flex items-start justify-between gap-3 px-5 pb-3.5 pt-4">
+          {/* grab handle: tells a phone user this is a sheet over the page */}
+          <div className="flex justify-center pt-2 sm:hidden" aria-hidden="true">
+            <span className="h-1 w-10 rounded-full bg-[#DCD8CE]" />
+          </div>
+          <div className="flex items-start justify-between gap-3 px-4 pb-3 pt-1.5 sm:px-5 sm:pb-3.5 sm:pt-4">
             <div className="min-w-0 border-l-[3px] border-[#0F5E63] pl-3">
-              <h3 className="font-serif text-[18px] font-semibold leading-snug tracking-tight text-[#14213D]">
+              <h3 className="line-clamp-2 font-serif text-[16px] font-semibold leading-snug tracking-tight text-[#14213D] [overflow-wrap:anywhere] sm:line-clamp-none sm:text-[18px]">
                 {title}
               </h3>
               {description && (
-                <p className="mt-0.5 text-xs font-normal leading-relaxed text-[#4A5568]">
+                <p className="mt-0.5 line-clamp-2 text-xs font-normal leading-relaxed text-[#4A5568] sm:line-clamp-none">
                   {description}
                 </p>
               )}
@@ -153,7 +160,7 @@ export const Modal: React.FC<ModalProps> = ({
               onClick={onClose}
               size="sm"
               variant="ghost"
-              className="shrink-0"
+              className="-mr-1.5 -mt-1 shrink-0 sm:mr-0 sm:mt-0"
             />
           </div>
           <div ref={setHeaderSlot} className="empty:hidden" />
@@ -162,7 +169,7 @@ export const Modal: React.FC<ModalProps> = ({
         {/* Dialog Body with custom-scrollbar. It only ever scrolls down: wide content (tab rows, tables)
             slides inside its own box, and a long code or URL wraps, so a sideways swipe can never pan
             the whole body off-screen and leave the dialog looking empty. */}
-        <div className="modal-body min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 [overflow-wrap:anywhere] sm:px-5 sm:py-5 custom-scrollbar">
+        <div className="modal-body min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-4 [overflow-wrap:anywhere] sm:px-5 sm:py-5 custom-scrollbar">
           <ModalSlotContext.Provider value={{ header: headerSlot }}>{children}</ModalSlotContext.Provider>
         </div>
       </div>

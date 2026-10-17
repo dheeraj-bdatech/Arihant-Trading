@@ -130,7 +130,7 @@ function TrackView({ reference, token }: { reference: string; token: string }) {
       : state === 'limited' ? 'Too many lookups from this connection. Please wait a few minutes and try again.'
       : 'We could not load your request right now. Please check your connection and try again.';
     return (
-      <Card padding="lg" className="space-y-4 text-center">
+      <Card padding="lg" className="space-y-4 p-5 text-center sm:p-7">
         <h1 className="font-serif text-xl font-bold text-[#14213D]">{state === 'notfound' ? 'Request not found' : 'Unable to show your request'}</h1>
         <p className="text-sm text-[#4A5568]">{text}</p>
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
@@ -294,7 +294,7 @@ function MessageBox({ reference, token, onSent }: { reference: string; token: st
         disabled={sending} className="text-sm" helperText={`${len}/1500`} />
       {err.length > 0 && <div role="alert" className="text-xs font-medium text-[#881337]">{err.map((m, i) => <p key={i}>{m}</p>)}</div>}
       {ok && <p role="status" className="text-xs font-medium text-[#0F5E63]">{ok}</p>}
-      <Button size="lg" onClick={send} isLoading={sending} disabled={sending || len < 3} className="min-h-[44px]">Send message</Button>
+      <Button size="lg" onClick={send} isLoading={sending} disabled={sending || len < 3} className="min-h-[44px] w-full sm:w-auto">Send message</Button>
     </div>
   );
 }
@@ -370,7 +370,7 @@ function FeedbackPanel({ reference, token, onDone }: { reference: string; token:
 
       {err.length > 0 && <div role="alert" className="text-xs font-medium text-[#881337]">{err.map((m, i) => <p key={i}>{m}</p>)}</div>}
 
-      {choice && !confirming && <Button size="lg" onClick={review} className="min-h-[44px]">Continue</Button>}
+      {choice && !confirming && <Button size="lg" onClick={review} className="min-h-[44px] w-full sm:w-auto">Continue</Button>}
       {choice && confirming && (
         <div className="space-y-2 rounded-lg border border-[#C98A1B] bg-[#FFF6E6] p-3">
           <p className="text-sm text-[#14213D]">

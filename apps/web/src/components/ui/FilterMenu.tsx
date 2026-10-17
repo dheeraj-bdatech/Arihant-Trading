@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { useActionDock } from './ToolbarBox';
@@ -32,7 +32,9 @@ export const FilterMenu: React.FC<{
   className?: string;
 }> = ({ label, icon, options, neutralKeys = ['all'], align = 'left', className }) => {
   const [open, setOpen] = useState(false);
+  const [nudge, setNudge] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   // Page actions (New, Import…) dock at the end of this filter row — the "View" menu's row first.
   useActionDock(ref, label === 'View' ? 3 : 2);
 
@@ -48,6 +50,21 @@ export const FilterMenu: React.FC<{
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
+  }, [open]);
+
+  // On a phone the filter row wraps, so a menu can sit at either edge of the screen: slide its panel
+  // sideways until it is fully on-screen (8px gutter). `translate` leaves the open animation's transform alone.
+  useLayoutEffect(() => {
+    if (!open) {
+      setNudge(0);
+      return;
+    }
+    const el = panelRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const gutter = 8;
+    setNudge(r.left < gutter ? gutter - r.left : r.right > vw - gutter ? vw - gutter - r.right : 0);
   }, [open]);
 
   const applied = options.filter((o) => o.active && !neutralKeys.includes(o.key));
@@ -75,7 +92,12 @@ export const FilterMenu: React.FC<{
       </button>
 
       {open && (
-        <div role="listbox" className={twMerge('filter-menu-panel', align === 'right' ? 'right-0' : 'left-0')}>
+        <div
+          ref={panelRef}
+          role="listbox"
+          className={twMerge('filter-menu-panel max-w-[min(320px,calc(100vw-16px))]', align === 'right' ? 'right-0' : 'left-0')}
+          style={nudge ? { translate: `${nudge}px 0` } : undefined}
+        >
           {options.map((o) => (
             <button
               key={o.key}

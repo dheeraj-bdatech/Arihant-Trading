@@ -648,14 +648,15 @@ function Evidence() {
                   <p className="text-xs text-[#4A5568]">
                     Exports and snapshots use exactly this employee, period and basis. Each one is recorded in the audit log and carries the disclaimer.
                   </p>
-                  <div className="flex flex-wrap gap-2 shrink-0">
+                  {/* phones: the two exports side by side, the snapshot on its own full-width row */}
+                  <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap [&>button]:h-10 sm:[&>button]:h-8">
                     <Button size="sm" variant="secondary" leftIcon={<FileText className="h-4 w-4" />} isLoading={busy === 'export:pdf'} disabled={!report || busy !== null} onClick={() => exportAs('pdf')}>
                       Export PDF
                     </Button>
                     <Button size="sm" variant="secondary" leftIcon={<FileSpreadsheet className="h-4 w-4" />} isLoading={busy === 'export:xlsx'} disabled={!report || busy !== null} onClick={() => exportAs('xlsx')}>
                       Export Excel
                     </Button>
-                    <Button size="sm" leftIcon={<Camera className="h-4 w-4" />} disabled={!report || busy !== null} onClick={() => setConfirmSnapshot(true)}>
+                    <Button size="sm" className="col-span-2" leftIcon={<Camera className="h-4 w-4" />} disabled={!report || busy !== null} onClick={() => setConfirmSnapshot(true)}>
                       Generate snapshot
                     </Button>
                   </div>

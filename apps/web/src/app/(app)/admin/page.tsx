@@ -222,7 +222,7 @@ export default function AdminPage() {
       });
       return (
         <span
-          className="font-sans text-[11px] text-gray-700 truncate block max-w-[280px]"
+          className="font-sans text-[11px] text-gray-700 line-clamp-2 max-w-[280px] sm:line-clamp-none sm:truncate"
           title={parts.join(' · ')}
         >
           {parts.join(' · ') || 'Updated record attributes'}
@@ -277,7 +277,7 @@ export default function AdminPage() {
 
   if (!hasRole(['management', 'admin'])) {
     return (
-      <div className="mx-auto my-12 max-w-xl p-8 text-center text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl space-y-3 shadow-xs">
+      <div className="mx-auto my-12 max-w-xl p-6 text-center text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl space-y-3 shadow-xs sm:p-8">
         <ShieldAlert className="h-12 w-12 text-[#9A3412] mx-auto" />
         <h2 className="text-lg font-bold text-[#14213D]">Access Restricted</h2>
         <p className="text-xs">
@@ -347,7 +347,7 @@ export default function AdminPage() {
                   label="Department"
                   icon={<Building2 />}
                   align="right"
-                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  className="flex-1 lg:flex-none [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
                   options={[
                     { key: 'all', label: 'All departments', count: usersList.length, active: selectedDept === 'all', onSelect: () => setSelectedDept('all') },
                     ...USER_ROLES.map((r) => ({
@@ -399,7 +399,7 @@ export default function AdminPage() {
                 <Key className="w-5 h-5" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <h3 className="text-sm font-bold text-gray-950">Enterprise Role & Access Control Policy</h3>
                   <Badge variant="cyber" size="sm">Active Baseline</Badge>
                 </div>
@@ -429,7 +429,7 @@ export default function AdminPage() {
                   onClick={() => setSelectedRoleForConfig(r)}
                   className="text-left flex flex-col justify-between cursor-pointer"
                 >
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568] truncate">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568] line-clamp-2 sm:line-clamp-none sm:truncate">
                     {DEPARTMENT_NAMES[r]}
                   </div>
                   <div className={`text-xs font-bold mt-1 truncate ${isSelected ? 'text-[#0F5E63]' : 'text-[#14213D]'}`}>
@@ -458,15 +458,15 @@ export default function AdminPage() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Left Col: Scope & Functional Responsibilities */}
             <div className="lg:col-span-1 space-y-4">
-              <div className="rounded-xl border border-[#DCD8CE] bg-white p-5 shadow-xs space-y-4">
-                <div className="flex items-center justify-between pb-3 border-b border-[#DCD8CE]">
-                  <div>
+              <div className="rounded-xl border border-[#DCD8CE] bg-white p-4 shadow-xs space-y-4 sm:p-5">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#DCD8CE]">
+                  <div className="min-w-0">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568]">
                       Role Definition
                     </span>
                     <h3 className="text-base font-black text-gray-950">{activeRoleProfile.title}</h3>
                   </div>
-                  <Badge variant="outline" size="sm" className="uppercase font-mono">
+                  <Badge variant="outline" size="sm" className="uppercase font-mono shrink-0">
                     {activeRoleProfile.role}
                   </Badge>
                 </div>
@@ -536,15 +536,15 @@ export default function AdminPage() {
               <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
                 <div className="p-4 sm:p-5 border-b border-[#DCD8CE] bg-[#FBFAF7] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-bold text-gray-950 flex items-center gap-2">
-                      <Sliders className="w-4 h-4 text-[#0F5E63]" />
+                    <h3 className="text-sm font-bold text-gray-950 flex items-start gap-2 sm:items-center">
+                      <Sliders className="w-4 h-4 text-[#0F5E63] mt-0.5 shrink-0 sm:mt-0" />
                       <span>Configurable Capabilities Matrix: {activeRoleProfile.title}</span>
                     </h3>
                     <p className="text-xs text-[#4A5568] mt-0.5">
                       Preview operational and financial permissions for this persona. This is a draft view; the backend RBAC guards remain the source of truth.
                     </p>
                   </div>
-                  <Button size="sm" variant="primary" onClick={handleSavePermissions} className="shrink-0">
+                  <Button size="sm" variant="primary" onClick={handleSavePermissions} className="shrink-0 w-full h-10 sm:w-auto sm:h-8">
                     <Save className="w-3.5 h-3.5 mr-1.5" />
                     <span>Apply Draft</span>
                   </Button>
@@ -561,8 +561,8 @@ export default function AdminPage() {
                           isEnabled ? 'bg-white' : 'bg-gray-50/50'
                         }`}
                       >
-                        <div className="space-y-0.5">
-                          <div className="flex items-center gap-2">
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                             <span className="text-xs font-bold text-gray-950">{info.label}</span>
                             <span
                               className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
@@ -583,7 +583,7 @@ export default function AdminPage() {
                           aria-checked={!!isEnabled}
                           aria-label={`${info.label}: ${isEnabled ? 'permitted' : 'restricted'}`}
                           onClick={() => handleToggleCapability(capKey)}
-                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full max-sm:before:absolute max-sm:before:-inset-2.5 border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
                             isEnabled ? 'bg-[#0F5E63]' : 'bg-gray-300'
                           }`}
                         >
@@ -610,7 +610,7 @@ export default function AdminPage() {
                 Enterprise Role Governance Matrix
               </h4>
             </div>
-            <Table className="table-fixed !min-w-0 [&_td]:px-2.5 [&_th]:h-auto [&_th]:px-2.5 [&_th]:py-2.5 [&_th]:text-[10px] [&_th]:leading-tight">
+            <Table className="table-fixed !min-w-0 max-sm:[&_tbody_tr]:!grid-cols-2 [&_td]:px-2.5 [&_th]:h-auto [&_th]:px-2.5 [&_th]:py-2.5 [&_th]:text-[10px] [&_th]:leading-tight">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[240px]">Enterprise Role</TableHead>
@@ -713,7 +713,7 @@ export default function AdminPage() {
                         size="sm"
                         variant="ghost"
                         onClick={() => handleToggleUserActive(u.id, u.is_active)}
-                        className="text-xs text-[#0F5E63]"
+                        className="h-10 text-xs text-[#0F5E63] sm:h-8"
                       >
                         {u.is_active ? 'Deactivate' : 'Activate'}
                       </Button>
@@ -755,7 +755,7 @@ export default function AdminPage() {
               </div>
 
               {p.spec_ref && (
-                <div className="pt-2 border-t border-[#DCD8CE] text-[10px] font-mono text-[#4A5568]">
+                <div className="pt-2 border-t border-[#DCD8CE] text-[10px] font-mono text-[#4A5568] break-words">
                   QR Ref: {p.spec_ref}
                 </div>
               )}
@@ -773,8 +773,8 @@ export default function AdminPage() {
               padding="md"
               className="space-y-2"
             >
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-[#14213D] text-sm">{show(z.name)} Zone</span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 font-bold text-[#14213D] text-sm">{show(z.name)} Zone</span>
                 <span className="font-mono text-xs text-[#0F5E63] uppercase font-bold">{show(z.code)}</span>
               </div>
               <p className="text-xs text-[#4A5568]">
@@ -797,7 +797,7 @@ export default function AdminPage() {
           {auditLogs.length === 0 ? (
             <EmptyState icon={History} title="No audit entries" description="The security audit trail returned no records for your role." />
           ) : (
-          <div className="max-h-[600px] overflow-y-auto">
+          <div className="sm:max-h-[600px] sm:overflow-y-auto">
             <Table className="[&_td]:px-3 [&_th]:px-3">
               <TableHeader>
                 <TableRow>

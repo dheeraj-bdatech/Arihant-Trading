@@ -9,11 +9,11 @@ export const UnverifiedBanner: React.FC<{ ticket: any; canLink: boolean; onLink:
   const i = ticket.intake || {};
   const place = [i.claimed_department, i.claimed_city, i.claimed_state].filter(Boolean).join(', ');
   return (
-    <div className="rounded-xl border-2 border-[#9A3412]/50 bg-[#FBEBDD] p-3.5 space-y-2.5 text-xs text-[#7C2D12]">
+    <div className="rounded-xl border-2 border-[#9A3412]/50 bg-[#FBEBDD] p-3 sm:p-3.5 space-y-2.5 text-xs text-[#7C2D12]">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="flex items-start gap-2">
+        <div className="flex min-w-0 items-start gap-2">
           <ShieldQuestion className="h-5 w-5 shrink-0 text-[#9A3412]" />
-          <div>
+          <div className="min-w-0">
             <p className="text-sm font-bold">Unverified customer — claims to be {ticket.claimed_organisation_name}</p>
             <p className="mt-0.5 text-[11px]">
               Raised through the public service portal. Details below are unchecked; confirm who this is before dispatching.
@@ -22,7 +22,7 @@ export const UnverifiedBanner: React.FC<{ ticket: any; canLink: boolean; onLink:
           </div>
         </div>
         {canLink && (
-          <Button size="sm" variant="primary" onClick={onLink}>
+          <Button size="sm" variant="primary" onClick={onLink} className="h-10 w-full sm:h-8 sm:w-auto">
             <Link2 className="h-3.5 w-3.5 mr-1" />
             Link to customer
           </Button>

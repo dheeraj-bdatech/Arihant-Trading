@@ -162,7 +162,7 @@ const Primary: React.FC<{ action?: RecordAction; className?: string }> = ({ acti
         action.onClick?.();
       }}
       className={twMerge(
-        'rec-tap inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-[10px] bg-[#0F5E63] px-3 text-[13px] font-semibold text-white hover:bg-[#0B4A4E] disabled:opacity-50',
+        'rec-tap inline-flex min-w-[10rem] flex-1 items-center justify-center gap-2 rounded-[10px] bg-[#0F5E63] px-3 text-[13px] font-semibold text-white hover:bg-[#0B4A4E] disabled:opacity-50',
         className,
       )}
     >
@@ -305,7 +305,7 @@ export const RecordCard: React.FC<{ item: RecordItem }> = ({ item }) => {
         </p>
       )}
       {(item.primary || item.quick?.length) && (
-        <div className="mt-auto flex items-center gap-2 pt-1">
+        <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
           <Quick actions={item.quick} />
           <Primary action={item.primary} />
         </div>
@@ -367,7 +367,7 @@ const MiniCard: React.FC<{ item: RecordItem }> = ({ item }) => {
         </div>
       )}
       {(item.primary || item.quick?.length) && (
-        <div className="flex items-center gap-2 pt-1">
+        <div className="flex flex-wrap items-center gap-2 pt-1">
           <Quick actions={item.quick} />
           <Primary action={item.primary} />
         </div>
@@ -416,13 +416,13 @@ export const StageBoard: React.FC<{
                 aria-selected={on}
                 onClick={() => setLane(l.key)}
                 className={twMerge(
-                  'rec-tap flex items-center justify-between gap-2 rounded-[10px] border px-3 text-left text-[13px] font-semibold',
+                  'rec-tap flex items-center justify-between gap-2 rounded-[10px] border px-3 py-1.5 text-left text-[13px] font-semibold leading-tight',
                   on ? 'border-[#0F5E63] bg-[#0F5E63] text-white' : 'border-[#C9C4B8] bg-white text-[#14213D]',
                   !n && !on && 'opacity-60',
                 )}
               >
-                <span className="truncate">{l.label}</span>
-                <span className="font-mono text-xs">{n}</span>
+                <span className="line-clamp-2 min-w-0">{l.label}</span>
+                <span className="shrink-0 font-mono text-xs">{n}</span>
               </button>
             );
           })}
@@ -477,6 +477,22 @@ const textOf = (node: React.ReactNode): string => {
  */
 export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => void }> = ({ item, onClose }) => {
   const closeThen = (a: RecordAction): RecordAction => ({ ...a, onClick: () => (onClose(), a.onClick?.()) });
+  // Raw rows often carry the same value twice (tender_no + tender_number, publish_date + publication_date)
+  // or repeat the heading; on a phone every repeat is another screen of scrolling.
+  const details = useMemo(() => {
+    if (!item?.details?.length) return [];
+    const shown = new Set([item.title, item.code].filter(Boolean).map((t) => String(t).trim().toLowerCase()));
+    const seen = new Map<string, string>();
+    return item.details.filter((d) => {
+      const v = textOf(d.value).trim().toLowerCase();
+      if (!v) return true;
+      if (shown.has(v)) return false;
+      const stem = d.label.toLowerCase().split(/\s+/)[0];
+      if (seen.get(v) === stem) return false;
+      seen.set(v, stem);
+      return true;
+    });
+  }, [item]);
   const summary = item
     ? ([
         item.value && { label: 'Value', value: <span className="font-mono">{item.value}</span> },
@@ -518,17 +534,20 @@ export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => v
               ))}
             </dl>
           )}
-          {item.details?.length ? (
+          {details.length ? (
             <section aria-label="All details">
               <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#4A5568]">All details</h3>
-              {/* phones: label over value, left-aligned; wider screens: two columns of label · value rows */}
+              {/* label · value on one row (two columns of rows on wider screens); a long value drops under its label */}
               <dl className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
-                {item.details.map((d) => (
-                  <div key={d.label} className="min-w-0 border-b border-[#ECE9E2] py-[7px] sm:flex sm:items-baseline sm:justify-between sm:gap-3">
-                    <dt className="text-[11.5px] leading-[16px] text-[#4A5568] sm:shrink-0 sm:text-[12px]">{d.label}</dt>
-                    <dd className="mt-[2px] min-w-0 break-words text-[13.5px] font-semibold leading-[20px] text-[#14213D] sm:mt-0 sm:text-right sm:text-[13px]">{d.value}</dd>
-                  </div>
-                ))}
+                {details.map((d) => {
+                  const long = textOf(d.value).length > 30;
+                  return (
+                    <div key={d.label} className={twMerge('min-w-0 border-b border-[#ECE9E2] py-2', !long && 'flex items-baseline justify-between gap-3')}>
+                      <dt className="shrink-0 text-[12px] leading-[16px] text-[#4A5568]">{d.label}</dt>
+                      <dd className={twMerge('min-w-0 break-words text-[13px] font-semibold leading-[20px] text-[#14213D]', long ? 'mt-0.5' : 'text-right')}>{d.value}</dd>
+                    </div>
+                  );
+                })}
               </dl>
             </section>
           ) : null}

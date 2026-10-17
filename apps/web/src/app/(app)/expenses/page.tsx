@@ -32,7 +32,8 @@ import { useUrlFilters } from './_lib/use-url-filters';
 import { ClaimFormModal } from './_lib/ClaimFormModal';
 
 const FILTER_KEYS = ['statuses', 'date_from', 'date_to', 'trip_id', 'search', 'page'] as const;
-const DATE_INPUT = 'h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none';
+// Phones: a full-width 40px picker under its label; from sm the compact inline control.
+const DATE_INPUT = 'h-10 w-full min-w-0 sm:h-8 sm:w-auto rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none';
 
 function MyExpenses() {
   const router = useRouter();
@@ -166,19 +167,20 @@ function MyExpenses() {
           </div>
         </div>
 
+        {/* Phones: heading, then From / To as two equal columns (labels above the pickers); from sm one row. */}
         {datesOpen && (
-          <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
-            <span className="font-semibold text-[#4A5568]">Expense date</span>
-            <label className="flex items-center gap-1.5 text-[#4A5568]">
+          <div className="grid grid-cols-2 gap-2 border-t border-[#ECE9E2] pt-2.5 text-xs sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+            <span className="col-span-2 font-semibold text-[#4A5568]">Expense date</span>
+            <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
               From
               <input type="date" value={values.date_from} onChange={(e) => set({ date_from: e.target.value })} className={DATE_INPUT} />
             </label>
-            <label className="flex items-center gap-1.5 text-[#4A5568]">
+            <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
               To
               <input type="date" value={values.date_to} min={values.date_from || undefined} onChange={(e) => set({ date_to: e.target.value })} className={DATE_INPUT} />
             </label>
             {(values.date_from || values.date_to) && (
-              <Button variant="ghost" size="xs" onClick={() => set({ date_from: null, date_to: null })} className="text-xs text-[#4A5568] hover:text-[#881337]">
+              <Button variant="ghost" size="xs" onClick={() => set({ date_from: null, date_to: null })} className="col-span-2 justify-self-start text-xs text-[#4A5568] hover:text-[#881337]">
                 Reset dates
               </Button>
             )}
@@ -388,8 +390,9 @@ const ImportModal: React.FC<{ open: boolean; onClose: () => void; onImported: (i
         <Input label="Claim title *" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} placeholder="e.g. Lucknow trip, 3–5 Oct" error={errors.title} />
         <div>
           <input ref={inputRef} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          <Button type="button" variant="outline" onClick={() => inputRef.current?.click()} leftIcon={<Upload className="h-4 w-4" />}>
-            {file ? file.name : 'Choose .xlsx file'}
+          {/* full width on phones; a long file name truncates instead of overflowing the button */}
+          <Button type="button" variant="outline" className="w-full max-w-full sm:w-auto" onClick={() => inputRef.current?.click()} leftIcon={<Upload className="h-4 w-4" />}>
+            <span className="min-w-0 truncate">{file ? file.name : 'Choose .xlsx file'}</span>
           </Button>
           {errors.file && <p className="text-xs text-[#881337] mt-1">{errors.file}</p>}
         </div>
@@ -403,9 +406,9 @@ const ImportModal: React.FC<{ open: boolean; onClose: () => void; onImported: (i
             </ul>
           </InfoCallout>
         )}
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button type="submit" isLoading={busy}>Import as draft</Button>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button type="submit" className="w-full sm:w-auto" isLoading={busy}>Import as draft</Button>
         </div>
       </form>
     </Modal>

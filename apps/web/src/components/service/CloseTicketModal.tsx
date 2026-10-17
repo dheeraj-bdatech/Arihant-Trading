@@ -85,11 +85,12 @@ export const CloseTicketModal: React.FC<Props> = ({ ticket, role, onClose, onDon
           onChange={(e) => setRemarks(e.target.value)}
           placeholder="Anything worth recording at sign-off"
         />
+        {/* phones: 40px targets; the close button takes the rest of the row, within thumb reach */}
         <div className="flex justify-end gap-2 border-t border-[#ECE9E2] pt-3">
-          <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+          <Button type="button" variant="ghost" size="sm" onClick={onClose} className="h-10 shrink-0 sm:h-8">
             Cancel
           </Button>
-          <Button type="submit" size="sm" isLoading={busy} disabled={!!blocker}>
+          <Button type="submit" size="sm" isLoading={busy} disabled={!!blocker} className="h-10 flex-1 sm:h-8 sm:flex-initial">
             Close ticket
           </Button>
         </div>

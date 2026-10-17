@@ -25,6 +25,11 @@ export interface FormStep {
   content: React.ReactNode;
   /** Skip this step (e.g. a section that does not apply to the chosen type). */
   hidden?: boolean;
+  /**
+   * Put this section on a fixed page (0-based) instead of spreading sections evenly. Use it on every
+   * step or none; a hidden section then never moves its neighbours onto another page.
+   */
+  page?: number;
 }
 
 export interface FormStepsProps {
@@ -40,6 +45,8 @@ export interface FormStepsProps {
    * and keep their own headings inside. 1 = a single page with no tracker.
    */
   maxSteps?: number;
+  /** Names for the merged pages, in order (default: the section titles joined with " & "). */
+  stepTitles?: string[];
   /** While saving: Cancel / Back are disabled so the dialog cannot be left mid-request. */
   busy?: boolean;
   className?: string;
@@ -55,7 +62,14 @@ interface StepPage {
 }
 
 /** Spread the visible sections over at most `max` pages, earlier pages taking the extra one. */
-function toPages(visible: FormStep[], max: number): StepPage[] {
+function toPages(visible: FormStep[], max: number, titles?: string[]): StepPage[] {
+  if (visible.some((s) => s.page != null)) {
+    const keys = Array.from(new Set(visible.map((s) => s.page ?? 0))).sort((a, b) => a - b);
+    return keys.map((k) => {
+      const parts = visible.filter((s) => (s.page ?? 0) === k);
+      return { title: titles?.[k] || parts.map((p) => p.title).join(' & '), parts };
+    });
+  }
   const n = Math.max(1, Math.min(max, visible.length));
   const base = Math.floor(visible.length / n);
   const extra = visible.length % n;
@@ -64,15 +78,16 @@ function toPages(visible: FormStep[], max: number): StepPage[] {
   for (let i = 0; i < n; i++) {
     const parts = visible.slice(at, at + base + (i < extra ? 1 : 0));
     at += parts.length;
-    pages.push({ title: parts.map((p) => p.title).join(' & '), parts });
+    pages.push({ title: titles?.[i] || parts.map((p) => p.title).join(' & '), parts });
   }
   return pages;
 }
 
-export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, onCancel, banner, maxSteps = 3, busy, className }) => {
+export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, onCancel, banner, maxSteps = 3, stepTitles, busy, className }) => {
   const steps = toPages(
     allSteps.filter((s) => !s.hidden),
     maxSteps,
+    stepTitles,
   );
   const single = steps.length === 1;
   const [active, setActive] = useState(0);
@@ -163,7 +178,7 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
   const progress = steps.length > 1 ? (current / (steps.length - 1)) * 100 : 100;
 
   const tracker = (
-    <div className="px-5 pb-0 pt-1">
+    <div className="px-4 pb-0 pt-1 sm:px-5">
       {/* Desktop: every step, joined by a line */}
       <ol className="hidden items-center gap-2 pb-3 sm:flex">
         {steps.map((s, i) => {
@@ -212,7 +227,7 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
         </span>
       </div>
       {/* The progress line along the bottom of the header */}
-      <div className="-mx-5 h-[3px] bg-[#ECE9E2]">
+      <div className="-mx-4 h-[3px] bg-[#ECE9E2] sm:-mx-5">
         <div className="h-full bg-[#0F5E63] transition-[width] duration-300" style={{ width: `${Math.max(progress, 4)}%` }} />
       </div>
     </div>
@@ -220,7 +235,7 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
 
   return (
     <div ref={rootRef} className={twMerge('flex min-h-full flex-col', className)} onInvalidCapture={onInvalidCapture}>
-      {!single && (header ? createPortal(tracker, header) : <div className="-mx-5 -mt-1 mb-4 border-b border-[#DCD8CE]">{tracker}</div>)}
+      {!single && (header ? createPortal(tracker, header) : <div className="-mx-4 -mt-1 mb-4 border-b border-[#DCD8CE] sm:-mx-5">{tracker}</div>)}
 
       {banner && <div className="mb-4 space-y-3">{banner}</div>}
 
@@ -258,7 +273,8 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
             Step {current + 1} of {steps.length}
           </span>
         )}
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        {/* phones: the buttons share the full width, so each is a big thumb target */}
+        <div className="ml-auto flex w-full items-center justify-end gap-2 [&>*]:min-w-0 [&>*]:flex-1 sm:w-auto sm:flex-wrap sm:[&>*]:flex-none">
           {current === 0 ? (
             onCancel && (
               <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
@@ -274,7 +290,8 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
             submit
           ) : (
             <Button type="button" rightIcon={<ArrowRight className="h-4 w-4" />} onClick={() => go(current + 1)}>
-              Next: {steps[current + 1]?.parts[0]?.title}
+              <span className="sm:hidden">Next</span>
+              <span className="hidden sm:inline">Next: {stepTitles ? steps[current + 1]?.title : steps[current + 1]?.parts[0]?.title}</span>
             </Button>
           )}
         </div>
