@@ -6,6 +6,7 @@ import { api, ApiError } from '@/lib/api';
 import { Button, Card, Checkbox, Input, Select, Textarea, InfoCallout, Badge } from '@/components/ui';
 import { Spinner } from '@/components/ui/Spinner';
 import { apiMessages, copyText, fmtDateTime } from './shared';
+import { addIsoDays, istToday } from '@/lib/ist-date';
 
 interface Meta {
   enabled: boolean;
@@ -54,11 +55,6 @@ const EMPTY: FormState = {
   preferred_visit_date: '', site_access_notes: '', consent: false,
 };
 
-function ymd(d: Date) {
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
 function validate(f: FormState, m: Meta): Record<string, string> {
   const e: Record<string, string> = {};
   const L = m.limits;
@@ -89,8 +85,9 @@ function validate(f: FormState, m: Meta): Record<string, string> {
   else if (c.split(/\s+/).filter(Boolean).length < 3) e.complaint = 'Please write at least 3 words.';
   if (!f.urgency) e.urgency = 'Select how urgent this is.';
   if (f.preferred_visit_date) {
-    const today = ymd(new Date());
-    const max = ymd(new Date(Date.now() + 90 * 86400000));
+    // IST calendar days, matching the server check (the visitor's browser may not be on IST).
+    const today = istToday();
+    const max = addIsoDays(today, 90);
     if (f.preferred_visit_date < today || f.preferred_visit_date > max) e.preferred_visit_date = 'Choose a date from today up to 90 days ahead.';
   }
   if (f.site_access_notes.length > 500) e.site_access_notes = 'Keep this under 500 characters.';
@@ -268,8 +265,8 @@ export default function ServiceRequestPage() {
   const urgencyHours = (u: string) => meta.response_targets.find((t) => t.urgency === u)?.response_hours;
   const selectedUrgencyHours = f.urgency ? urgencyHours(f.urgency) : undefined;
   const L = meta.limits;
-  const today = ymd(new Date());
-  const maxDate = ymd(new Date(Date.now() + 90 * 86400000));
+  const today = istToday();
+  const maxDate = addIsoDays(today, 90);
 
   return (
     <form onSubmit={submit} noValidate className="space-y-5">

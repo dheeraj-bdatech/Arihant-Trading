@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   ConflictException,
@@ -12,6 +13,28 @@ import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import type { Database, PaginatedResult } from '@arihant/shared';
 import type { CreateUserDto, UpdateUserDto, BulkInviteUsersDto } from './users.dto.js';
+
+/** Columns safe to return to clients — never password_hash. */
+const PUBLIC_USER_COLUMNS = [
+  'id',
+  'full_name',
+  'email',
+  'phone',
+  'role',
+  'region_id',
+  'zone_id',
+  'reporting_manager_id',
+  'is_active',
+  'employee_code',
+  'department_id',
+  'deactivated_at',
+  'created_at',
+  'updated_at',
+] as const;
+
+function generateTemporaryPassword(): string {
+  return crypto.randomBytes(9).toString('base64url');
+}
 
 @Injectable()
 export class UsersService {
@@ -136,24 +159,29 @@ export class UsersService {
       throw new ConflictException('A user with this email already exists');
     }
 
-    const id = crypto.randomUUID();
-    const passwordHash = bcrypt.hashSync(dto.password || 'password123', 10);
+    if (dto.reporting_manager_id) await this.assertActiveUser(dto.reporting_manager_id, 'Reporting manager');
+    const zoneId = await this.resolveZone(dto.region_id, dto.zone_id);
+
+    // No shared default password: an admin-supplied password is used as-is, otherwise a one-time random
+    // password is generated and returned once in this response for the admin to hand over.
+    const temporaryPassword = dto.password ? null : generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(dto.password || temporaryPassword!, 10);
 
     const user = await this.db
       .insertInto('users')
       .values({
-        id,
+        id: crypto.randomUUID(),
         email,
         full_name: dto.full_name.trim(),
         phone: dto.phone || null,
         role: dto.role,
         region_id: dto.region_id || null,
-        zone_id: dto.zone_id || null,
+        zone_id: zoneId,
         reporting_manager_id: dto.reporting_manager_id || null,
         password_hash: passwordHash,
         is_active: true,
       })
-      .returningAll()
+      .returning(PUBLIC_USER_COLUMNS)
       .executeTakeFirstOrThrow();
 
     this.eventEmitter.emit('audit.log', {
@@ -164,27 +192,67 @@ export class UsersService {
       newValue: { email: user.email, role: user.role, name: user.full_name },
     });
 
-    return user;
+    return temporaryPassword ? { ...user, temporary_password: temporaryPassword } : user;
   }
 
   async update(id: string, dto: UpdateUserDto, actorId?: string) {
     const existing = await this.findOne(id);
 
-    const updatePayload: any = { ...dto };
-    if (updatePayload.full_name) updatePayload.full_name = updatePayload.full_name.trim();
+    const updatePayload: Record<string, unknown> = { ...dto, updated_at: new Date() };
+    if (typeof dto.full_name === 'string') {
+      const name = dto.full_name.trim();
+      if (!name) throw new BadRequestException('Full name cannot be blank');
+      updatePayload.full_name = name;
+    }
+
+    if (actorId && actorId === id) {
+      // An admin locking themselves out (or demoting themselves) leaves nobody able to undo it.
+      if (dto.is_active === false) throw new BadRequestException('You cannot deactivate your own account');
+      if (dto.role && dto.role !== existing.role) throw new BadRequestException('You cannot change your own role');
+    }
+
+    if (dto.reporting_manager_id) {
+      if (dto.reporting_manager_id === id) throw new BadRequestException('A user cannot report to themselves');
+      await this.assertActiveUser(dto.reporting_manager_id, 'Reporting manager');
+      await this.assertNoReportingCycle(id, dto.reporting_manager_id);
+    }
+
+    if (dto.region_id !== undefined || dto.zone_id !== undefined) {
+      updatePayload.zone_id = await this.resolveZone(
+        dto.region_id === undefined ? existing.region_id : dto.region_id,
+        dto.zone_id === undefined ? (dto.region_id !== undefined ? undefined : existing.zone_id) : dto.zone_id,
+      );
+    }
+
+    if (dto.is_active === false && existing.is_active) updatePayload.deactivated_at = new Date();
+    if (dto.is_active === true && !existing.is_active) updatePayload.deactivated_at = null;
+
+    if (dto.is_active === false && existing.is_active) {
+      const reports = await this.db
+        .selectFrom('users')
+        .select(sql<number>`count(*)::int`.as('n'))
+        .where('reporting_manager_id', '=', id)
+        .where('is_active', '=', true)
+        .executeTakeFirst();
+      if ((reports?.n ?? 0) > 0) {
+        throw new BadRequestException(
+          `This user is the reporting manager of ${reports!.n} active employee(s). Reassign them before deactivating.`,
+        );
+      }
+    }
 
     const updated = await this.db
       .updateTable('users')
-      .set(updatePayload)
+      .set(updatePayload as any)
       .where('id', '=', id)
-      .returningAll()
+      .returning(PUBLIC_USER_COLUMNS)
       .executeTakeFirstOrThrow();
 
     this.eventEmitter.emit('audit.log', {
       actorId: actorId || null,
       entityType: 'user',
       entityId: id,
-      action: 'update',
+      action: dto.is_active === false && existing.is_active ? 'deactivate' : 'update',
       previousValue: existing,
       newValue: updated,
     });
@@ -193,11 +261,22 @@ export class UsersService {
   }
 
   async bulkInvite(dto: BulkInviteUsersDto, actorId?: string) {
-    const results = { created: 0, skipped: 0 };
-    const defaultHash = bcrypt.hashSync('password123', 10);
+    const results = {
+      created: 0,
+      skipped: 0,
+      invited: [] as { email: string; temporary_password: string }[],
+      errors: [] as { email: string; reason: string }[],
+    };
+    const seen = new Set<string>();
 
     for (const item of dto.users) {
       const email = item.email.trim().toLowerCase();
+      if (seen.has(email)) {
+        results.skipped++;
+        continue;
+      }
+      seen.add(email);
+
       const exists = await this.db
         .selectFrom('users')
         .select('id')
@@ -209,6 +288,34 @@ export class UsersService {
         continue;
       }
 
+      let region: { id: string; zone_id: string | null } | undefined;
+      if (item.region_name?.trim()) {
+        region = await this.db
+          .selectFrom('regions')
+          .select(['id', 'zone_id'])
+          .where(sql<boolean>`lower(name) = ${item.region_name.trim().toLowerCase()}`)
+          .executeTakeFirst();
+        if (!region) {
+          results.errors.push({ email, reason: `Unknown region "${item.region_name}"` });
+          continue;
+        }
+      }
+
+      let managerId: string | null = null;
+      if (item.manager_email?.trim()) {
+        const manager = await this.db
+          .selectFrom('users')
+          .select(['id', 'is_active'])
+          .where('email', '=', item.manager_email.trim().toLowerCase())
+          .executeTakeFirst();
+        if (!manager || !manager.is_active) {
+          results.errors.push({ email, reason: `Unknown or inactive manager "${item.manager_email}"` });
+          continue;
+        }
+        managerId = manager.id;
+      }
+
+      const temporaryPassword = generateTemporaryPassword();
       await this.db
         .insertInto('users')
         .values({
@@ -216,12 +323,16 @@ export class UsersService {
           email,
           full_name: item.full_name.trim(),
           role: item.role,
-          password_hash: defaultHash,
+          region_id: region?.id ?? null,
+          zone_id: region?.zone_id ?? null,
+          reporting_manager_id: managerId,
+          password_hash: await bcrypt.hash(temporaryPassword, 10),
           is_active: true,
         })
         .execute();
 
       results.created++;
+      results.invited.push({ email, temporary_password: temporaryPassword });
     }
 
     this.eventEmitter.emit('audit.log', {
@@ -229,9 +340,46 @@ export class UsersService {
       entityType: 'user',
       entityId: 'bulk',
       action: 'bulk_invite',
-      newValue: results,
+      newValue: { created: results.created, skipped: results.skipped, errors: results.errors.length },
     });
 
     return results;
+  }
+
+  private async assertActiveUser(id: string, label: string) {
+    const row = await this.db.selectFrom('users').select(['id', 'is_active']).where('id', '=', id).executeTakeFirst();
+    if (!row) throw new BadRequestException(`${label} does not exist`);
+    if (!row.is_active) throw new BadRequestException(`${label} is deactivated`);
+  }
+
+  /** Walks up the proposed manager's chain; if it reaches `userId` the assignment would create a loop. */
+  private async assertNoReportingCycle(userId: string, managerId: string) {
+    let cursor: string | null = managerId;
+    for (let depth = 0; cursor && depth < 50; depth++) {
+      if (cursor === userId) {
+        throw new BadRequestException('This reporting manager assignment would create a reporting loop');
+      }
+      const row = await this.db
+        .selectFrom('users')
+        .select('reporting_manager_id')
+        .where('id', '=', cursor)
+        .executeTakeFirst();
+      cursor = row?.reporting_manager_id ?? null;
+    }
+  }
+
+  /** Keeps users.zone_id consistent with the chosen region (the region row owns its zone). */
+  private async resolveZone(regionId?: string | null, zoneId?: string | null): Promise<string | null> {
+    if (!regionId) return zoneId || null;
+    const region = await this.db
+      .selectFrom('regions')
+      .select(['id', 'zone_id'])
+      .where('id', '=', regionId)
+      .executeTakeFirst();
+    if (!region) throw new BadRequestException('Region does not exist');
+    if (zoneId && region.zone_id && zoneId !== region.zone_id) {
+      throw new BadRequestException('The selected region does not belong to the selected zone');
+    }
+    return region.zone_id ?? zoneId ?? null;
   }
 }

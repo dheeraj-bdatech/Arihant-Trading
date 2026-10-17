@@ -62,6 +62,9 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
   const [commentError, setCommentError] = useState<string | null>(null);
   const [processOpen, setProcessOpen] = useState(false);
   const [processErrors, setProcessErrors] = useState<Record<string, string>>({});
+  const [processServerError, setProcessServerError] = useState<string | null>(null);
+  /** Last refusal from an approve / process call, shown on the page (not only as a toast). */
+  const [actionError, setActionError] = useState<string | null>(null);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassignErrors, setReassignErrors] = useState<Record<string, string>>({});
   const [withdrawOpen, setWithdrawOpen] = useState(false);
@@ -120,6 +123,8 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
   const run = async (key: string, path: string, body: Record<string, unknown>, okText: string) => {
     if (!claim) return false;
     setBusy(key);
+    setActionError(null);
+    if (path === 'process') setProcessServerError(null);
     try {
       const updated = await api.post<ExpenseClaim>(`/expense-claims/${claim.id}/${path}`, { version: claim.version, ...body });
       setClaim(updated);
@@ -135,7 +140,14 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
       } else {
         const errs = fieldErrors(e);
         setDecisionErrors(errs);
-        if (path === 'process') setProcessErrors(errs);
+        const paymentFields = ['tally_voucher_ref', 'payment_reference', 'payment_date'];
+        const onlyPaymentFields = Object.keys(errs).length > 0 && Object.keys(errs).every((k) => paymentFields.includes(k));
+        if (path === 'process') {
+          setProcessErrors(errs);
+          // Anything that is not a payment-field error (future-dated lines, line decisions…) is shown in the dialog.
+          if (!onlyPaymentFields) setProcessServerError(errorMessage(e));
+        }
+        if (['manager-approve', 'accounts-approve', 'process'].includes(path) && !onlyPaymentFields) setActionError(errorMessage(e));
         if (path === 'reassign-approver') setReassignErrors(errs);
         if (errs.comment) setCommentError(errs.comment);
         if (!Object.keys(errs).length || Object.keys(errs).some((k) => k.startsWith('items'))) push('error', errorMessage(e));
@@ -248,8 +260,12 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
           <Meta label="Approver">{claim.manager_name || '—'}{claim.manager_active === false ? ' (inactive)' : ''}</Meta>
           <Meta label="Submitted"><DateText value={claim.submitted_at} /></Meta>
           {claim.tally_voucher_ref && <Meta label="Tally voucher"><span className="font-mono">{claim.tally_voucher_ref}</span></Meta>}
-          {claim.payment_reference && <Meta label="Payment ref"><span className="font-mono">{claim.payment_reference}</span></Meta>}
-          {claim.payment_date && <Meta label="Paid on"><DateText value={claim.payment_date} /></Meta>}
+          {(claim.status === 'processed' || claim.payment_reference) && (
+            <Meta label="Payment ref (UTR)">
+              {claim.payment_reference ? <span className="font-mono">{claim.payment_reference}</span> : <span className="text-[#9A3412]">Not recorded</span>}
+            </Meta>
+          )}
+          {(claim.status === 'processed' || claim.payment_date) && <Meta label="Paid on">{claim.payment_date ? <DateText value={claim.payment_date} /> : '—'}</Meta>}
         </dl>
       </Card>
 
@@ -289,6 +305,12 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
         <h3 className="font-serif text-lg text-[#14213D]">Approval history</h3>
         <Timeline history={claim.history || []} />
       </Card>
+
+      {actionError && (
+        <InfoCallout variant="danger" title="Action not completed" onClose={() => setActionError(null)}>
+          {actionError}
+        </InfoCallout>
+      )}
 
       {/* Actions */}
       {actions.length > 0 && (
@@ -339,7 +361,7 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
             </Button>
           )}
           {actions.includes('process') && (
-            <Button variant={actions.includes('accounts_approve') ? 'secondary' : 'primary'} leftIcon={<Receipt className="h-4 w-4" />} disabled={Boolean(busy)} onClick={() => { setProcessErrors({}); setProcessOpen(true); }}>
+            <Button variant={actions.includes('accounts_approve') ? 'secondary' : 'primary'} leftIcon={<Receipt className="h-4 w-4" />} disabled={Boolean(busy)} onClick={() => { setProcessErrors({}); setProcessServerError(null); setProcessOpen(true); }}>
               {claim.status === 'accounts_review' ? 'Approve & process' : 'Mark processed'}
             </Button>
           )}
@@ -369,9 +391,10 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
         busy={busy === 'process'}
         total={claim.status === 'accounts_review' ? projectedTotal : claim.total_approved}
         errors={processErrors}
+        serverError={processServerError}
         onClose={() => setProcessOpen(false)}
         onConfirm={async (v) => {
-          const ok = await run('process', 'process', { ...v, payment_reference: v.payment_reference || undefined, payment_date: v.payment_date || undefined, items: claim.status === 'accounts_review' ? decisionPayload() : undefined }, 'Marked as processed.');
+          const ok = await run('process', 'process', { ...v, items: claim.status === 'accounts_review' ? decisionPayload() : undefined }, 'Marked as paid — payment reference saved.');
           if (ok) setProcessOpen(false);
         }}
       />
@@ -478,6 +501,10 @@ const LineRow: React.FC<{
           )}
         </div>
       </div>
+
+      {(err('expense_date') || err('category_details.check_in') || err('category_details.check_out')) && (
+        <p className="text-xs font-medium text-[#881337]">{[err('expense_date'), err('category_details.check_in'), err('category_details.check_out')].filter(Boolean).join(' ')}</p>
+      )}
 
       {item.attachments.length > 0 && (
         <div className="flex flex-wrap gap-2">

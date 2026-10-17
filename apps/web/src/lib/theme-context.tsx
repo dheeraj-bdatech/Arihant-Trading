@@ -11,7 +11,7 @@ export type AppSize = 'md' | 'lg' | 'xl';
  * (and widen THEME_BOOT_SCRIPT) to offer them again.
  */
 export const APP_THEMES: { key: AppTheme; label: string; hint: string; swatch: string }[] = [
-  { key: 'material', label: 'Material You', hint: 'Tonal purple, rounded', swatch: 'linear-gradient(135deg,#eaddff,#f3edf7 50%,#6750a4)' },
+  { key: 'material', label: 'Executive Linen', hint: 'Warm Linen & Deep Teal', swatch: 'linear-gradient(135deg,#0F5E63,#E3EFEE 50%,#F6F5F1)' },
 ];
 
 export const DEFAULT_THEME: AppTheme = 'material';

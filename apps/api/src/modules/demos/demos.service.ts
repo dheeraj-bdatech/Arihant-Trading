@@ -1,3 +1,4 @@
+import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -800,7 +801,7 @@ export class DemosService {
   // =========================================================================
 
   async getTeamAvailability(date: string) {
-    const demoDate = date || new Date().toISOString().split('T')[0];
+    const demoDate = date || todayInKolkata();
 
     // Fetch team members eligible for demos
     const teamMembers = await this.db
@@ -1343,7 +1344,7 @@ export class DemosService {
         .returningAll()
         .executeTakeFirstOrThrow();
 
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = todayInKolkata();
 
       // Check if equipment has any other active approved reservations
       const otherActiveReservations = await trx
@@ -1407,7 +1408,7 @@ export class DemosService {
         throw new NotFoundException('Target equipment unit not found');
       }
 
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = todayInKolkata();
 
       // Release previous equipment unit if no other active reservation
       const oldEquipId = reservation.equipment_id;
@@ -1949,7 +1950,7 @@ export class DemosService {
         .execute();
 
       // 3. Customer timeline interaction (§20: idempotent using demo_id unique constraint)
-      const occurredDate = demo.confirmed_date || demo.requested_date || new Date().toISOString().split('T')[0];
+      const occurredDate = demo.confirmed_date || demo.requested_date || todayInKolkata();
       const interactionRemarks = `Product Demonstration (${demo.demo_no}): Result = ${dto.result.toUpperCase()}${dto.failure_reason ? ' | Failure: ' + dto.failure_reason : ''}${dto.remarks ? ' | Notes: ' + dto.remarks : ''}`;
 
       const existingInteraction = await trx

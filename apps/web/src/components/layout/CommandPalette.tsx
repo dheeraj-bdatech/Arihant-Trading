@@ -42,7 +42,7 @@ export const CommandPalette: React.FC<{
   const isHrefAllowed = (href: string) => {
     if (!user) return false;
     const path = href.split('?')[0];
-    if (path === '/dashboard') return true;
+    if (path === '/dashboard' || path === '/feedback') return true;
     if (path === '/reports') {
       return ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'].includes(user.role);
     }
@@ -121,6 +121,20 @@ export const CommandPalette: React.FC<{
       subtitle: 'Users directory, department hierarchy, equipment masters & audit logs',
       category: 'Page',
       href: '/admin',
+    },
+    {
+      id: 'page-feedback',
+      title: 'UI/UX & Field Ergonomics Review Hub',
+      subtitle: 'Review Blueprint §4 rules, submit field usability feedback, and view logs',
+      category: 'Page',
+      href: '/feedback',
+    },
+    {
+      id: 'action-feedback',
+      title: 'Action: Submit UI/UX Field Ergonomics Feedback',
+      subtitle: 'Rate mobile usability, typing friction, and 1-tap accelerators',
+      category: 'Action',
+      href: '/feedback',
     },
     {
       id: 'action-visit',

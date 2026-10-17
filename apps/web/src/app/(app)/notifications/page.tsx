@@ -2,16 +2,10 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import {
   Bell,
   CheckCircle2,
-  AlertTriangle,
   Clock,
-  ShieldCheck,
-  Send,
-  MessageSquare,
-  Sparkles,
   Search,
   ExternalLink,
   RotateCw,
@@ -22,6 +16,8 @@ import {
   Truck,
   Wrench,
   Users,
+  Layers,
+  MailOpen,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { canOpen } from '@/lib/route-access';
@@ -33,8 +29,8 @@ import {
   PageContainer,
   PageHeader,
   EmptyState,
-  Tabs,
-  Input, PageLoader, ToolbarBox, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, RowMenu } from '@/components/ui';
+  FilterMenu,
+} from '@/components/ui';
 
 interface NotificationItem {
   id: string;
@@ -49,13 +45,42 @@ interface NotificationItem {
   created_at: string;
 }
 
+type NotificationCategory = 'tender' | 'proposal' | 'lead' | 'task' | 'expense' | 'delivery' | 'system';
+
+const CATEGORY_ORDER: NotificationCategory[] = ['tender', 'proposal', 'lead', 'task', 'expense', 'delivery', 'system'];
+
+const CATEGORY_META: Record<
+  NotificationCategory,
+  { label: string; badgeLabel: string; badge: 'warning' | 'info' | 'cyber' | 'urgent' | 'default' }
+> = {
+  tender: { label: 'Tender alerts', badgeLabel: 'Tender Alert', badge: 'warning' },
+  proposal: { label: 'Proposals', badgeLabel: 'Proposal', badge: 'info' },
+  lead: { label: 'Lead activity', badgeLabel: 'Lead Activity', badge: 'cyber' },
+  task: { label: 'Tasks & blockers', badgeLabel: 'Task Milestone', badge: 'urgent' },
+  expense: { label: 'Expense claims', badgeLabel: 'Expense Claim', badge: 'warning' },
+  delivery: { label: 'Logistics', badgeLabel: 'Logistics', badge: 'info' },
+  system: { label: 'System', badgeLabel: 'System Notification', badge: 'default' },
+};
+
+/** Same precedence as the type badge: the first keyword that matches wins. */
+function categorize(type: string | null | undefined): NotificationCategory {
+  const t = (type || '').toLowerCase();
+  if (t.includes('tender')) return 'tender';
+  if (t.includes('proposal')) return 'proposal';
+  if (t.includes('lead')) return 'lead';
+  if (t.includes('task') || t.includes('blocker')) return 'task';
+  if (t.includes('expense')) return 'expense';
+  if (t.includes('delivery')) return 'delivery';
+  return 'system';
+}
+
 export default function NotificationsPage() {
   const { user } = useAuth();
-  const router = useRouter();
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'all' | 'unread' | 'read'>('all');
+  const [typeFilter, setTypeFilter] = useState<NotificationCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
   const fetchNotifications = useCallback(async (quiet = false) => {
@@ -131,10 +156,16 @@ export default function NotificationsPage() {
   const counts = useMemo(() => {
     const unread = notifications.filter((n) => !n.is_read).length;
     const read = notifications.filter((n) => n.is_read).length;
+    const byType = {} as Record<NotificationCategory, number>;
+    for (const n of notifications) {
+      const c = categorize(n.type);
+      byType[c] = (byType[c] || 0) + 1;
+    }
     return {
       all: notifications.length,
       unread,
       read,
+      byType,
     };
   }, [notifications]);
 
@@ -143,6 +174,9 @@ export default function NotificationsPage() {
       // Tab filter
       if (activeTab === 'unread' && item.is_read) return false;
       if (activeTab === 'read' && !item.is_read) return false;
+
+      // Type filter
+      if (typeFilter !== 'all' && categorize(item.type) !== typeFilter) return false;
 
       // Search filter
       if (searchQuery.trim()) {
@@ -155,7 +189,14 @@ export default function NotificationsPage() {
 
       return true;
     });
-  }, [notifications, activeTab, searchQuery]);
+  }, [notifications, activeTab, typeFilter, searchQuery]);
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || activeTab !== 'all' || typeFilter !== 'all');
+  const clearFilters = () => {
+    setSearchQuery('');
+    setActiveTab('all');
+    setTypeFilter('all');
+  };
 
 
   const getEntityLink = (entityType?: string | null, entityId?: string | null) => {
@@ -197,26 +238,8 @@ export default function NotificationsPage() {
   };
 
   const getTypeBadge = (type: string) => {
-    const t = type.toLowerCase();
-    if (t.includes('tender')) {
-      return <Badge variant="warning" size="sm">Tender Alert</Badge>;
-    }
-    if (t.includes('proposal')) {
-      return <Badge variant="info" size="sm">Proposal</Badge>;
-    }
-    if (t.includes('lead')) {
-      return <Badge variant="cyber" size="sm">Lead Activity</Badge>;
-    }
-    if (t.includes('task') || t.includes('blocker')) {
-      return <Badge variant="urgent" size="sm">Task Milestone</Badge>;
-    }
-    if (t.includes('expense')) {
-      return <Badge variant="warning" size="sm">Expense Claim</Badge>;
-    }
-    if (t.includes('delivery')) {
-      return <Badge variant="info" size="sm">Logistics</Badge>;
-    }
-    return <Badge variant="default" size="sm">System Notification</Badge>;
+    const meta = CATEGORY_META[categorize(type)];
+    return <Badge variant={meta.badge} size="sm">{meta.badgeLabel}</Badge>;
   };
 
   return (
@@ -248,35 +271,54 @@ export default function NotificationsPage() {
         }
       />
 
-      {/* Tabs & Search Filter Controls */}
-      <ToolbarBox row>
-        <Tabs
-          tabs={[
-            { id: 'all', label: 'All Alerts', count: counts.all },
-            {
-              id: 'unread',
-              label: 'Unread',
-              count: counts.unread,
-              badgeVariant: counts.unread > 0 ? 'urgent' : 'default',
-            },
-            { id: 'read', label: 'Archived', count: counts.read },
-          ]}
-          activeTab={activeTab}
-          onChange={(tab) => setActiveTab(tab as 'all' | 'unread' | 'read')}
-          variant="segmented"
-          size="sm"
-        />
-
-        <div className="w-full sm:w-72 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#4A5568] pointer-events-none" />
-          <Input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Filter notifications..."
-            className="pl-9 h-9"
-          />
+      {/* One filter row: search, then compact dropdowns. */}
+      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <input
+              type="search"
+              aria-label="Search notifications"
+              placeholder="Search title, message, type…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Status"
+              icon={<MailOpen />}
+              options={[
+                { key: 'all', label: 'All alerts', count: counts.all },
+                { key: 'unread', label: 'Unread', count: counts.unread, urgent: true },
+                { key: 'read', label: 'Read (archived)', count: counts.read },
+              ].map((o) => ({
+                ...o,
+                active: activeTab === o.key,
+                onSelect: () => setActiveTab(o.key as 'all' | 'unread' | 'read'),
+              }))}
+            />
+            <FilterMenu
+              label="Type"
+              icon={<Layers />}
+              options={[
+                { key: 'all', label: 'All types', count: counts.all },
+                ...CATEGORY_ORDER.map((c) => ({ key: c, label: CATEGORY_META[c].label, count: counts.byType[c] || 0 })),
+              ].map((o) => ({
+                ...o,
+                active: typeFilter === o.key,
+                onSelect: () => setTypeFilter(o.key as NotificationCategory | 'all'),
+              }))}
+            />
+            {hasActiveFilters && (
+              <Button variant="ghost" size="xs" onClick={clearFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                Clear
+              </Button>
+            )}
+          </div>
         </div>
-      </ToolbarBox>
+      </Card>
 
       {/* Notifications List */}
       <div className="space-y-3 pt-1">
@@ -289,7 +331,7 @@ export default function NotificationsPage() {
           <EmptyState
             icon={Bell}
             title={
-              searchQuery
+              searchQuery || typeFilter !== 'all'
                 ? 'No matching notifications found'
                 : activeTab === 'unread'
                 ? 'All caught up!'
@@ -299,15 +341,17 @@ export default function NotificationsPage() {
             }
             description={
               searchQuery
-                ? `No alerts match your filter "${searchQuery}". Clear your search or switch tabs.`
+                ? `No alerts match your filter "${searchQuery}". Clear your search or change the filters.`
+                : typeFilter !== 'all'
+                ? `No ${CATEGORY_META[typeFilter].label.toLowerCase()} notifications in this view.`
                 : activeTab === 'unread'
                 ? 'You have zero pending unread alerts or directives across all territorial operations.'
                 : 'You are fully caught up with all regional alerts, GeM bid updates, and corporate directives.'
             }
             action={
-              searchQuery ? (
-                <Button variant="outline" size="sm" onClick={() => setSearchQuery('')}>
-                  Clear Search Filter
+              hasActiveFilters ? (
+                <Button variant="outline" size="sm" onClick={clearFilters}>
+                  Clear filters
                 </Button>
               ) : undefined
             }

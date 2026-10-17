@@ -55,21 +55,47 @@ import {
   PageContainer,
   PageHeader,
   EmptyState,
-  StatGrid,
-  StatCard,
   Table,
   TableHeader,
   TableBody,
   TableHead,
   TableRow,
   TableCell,
-  Tabs, Spinner, ToolbarBox, ToolbarSlot, FilterMenu } from '@/components/ui';
+  StatGrid,
+  StatCard,
+  Tabs, Spinner, FilterMenu, InfoCallout } from '@/components/ui';
+import { addIsoDays, istToday } from '@/lib/ist-date';
+import { calendarDay } from '@/lib/calendar-day';
 import {
   PROPOSAL_STATUS_LABELS,
   PROPOSAL_LOST_REASONS,
   type ProposalStatus,
   type ProposalLostReason,
 } from '@arihant/shared';
+
+/** A proposal DATE value from the API ('YYYY-MM-DD' or a serialized instant) as its IST calendar day. */
+const proposalDay = calendarDay;
+
+const PROPOSAL_STATUS_FILTERS = [
+  { key: 'PROPOSAL_REQUESTED', label: 'Proposal requested' },
+  { key: 'UNDER_PREPARATION', label: 'Under preparation' },
+  { key: 'READY_FOR_REVIEW', label: 'Ready for review' },
+  { key: 'APPROVED', label: 'Approved' },
+  { key: 'SENT_TO_CUSTOMER', label: 'Sent to customer' },
+  { key: 'FOLLOW_UP_REQUIRED', label: 'Follow-up required' },
+  { key: 'CONVERTED', label: 'Converted' },
+  { key: 'CLOSED', label: 'Closed' },
+  { key: 'LOST', label: 'Lost' },
+];
+const SORT_FIELDS = [
+  { key: 'updated_at', label: 'Recently updated' },
+  { key: 'request_date', label: 'Request date' },
+  { key: 'required_date', label: 'Due date' },
+  { key: 'sent_date', label: 'Sent date' },
+  { key: 'next_followup', label: 'Next follow-up' },
+  { key: 'proposal_number', label: 'Proposal no.' },
+];
+
 
 export default function ProposalsPage() {
   const { user } = useAuth();
@@ -138,13 +164,14 @@ export default function ProposalsPage() {
     remarks: '',
     responsible_id: '',
     followup_owner_id: '',
+    required_date_change_reason: '',
   });
 
   // Action dialogs
   const [isStatusDialogOpen, setIsStatusDialogOpen] = useState(false);
   const [targetStatus, setTargetStatus] = useState<string>('');
   const [statusForm, setStatusForm] = useState({
-    sent_date: new Date().toISOString().split('T')[0],
+    sent_date: istToday(),
     lost_reason: 'Price' as ProposalLostReason,
     lost_remarks: '',
     converted_to: '',
@@ -154,7 +181,7 @@ export default function ProposalsPage() {
 
   const [isFollowupDialogOpen, setIsFollowupDialogOpen] = useState(false);
   const [followupForm, setFollowupForm] = useState({
-    followup_date: new Date().toISOString().split('T')[0],
+    followup_date: istToday(),
     owner_id: '',
     remarks: '',
     outcome: '',
@@ -167,8 +194,8 @@ export default function ProposalsPage() {
     product_id: '',
     sector: 'Defence',
     responsible_id: '',
-    request_date: new Date().toISOString().split('T')[0],
-    required_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    request_date: istToday(),
+    required_date: addIsoDays(istToday(), 7),
     version: 'v1.0',
     reference: '',
     followup_owner_id: '',
@@ -177,6 +204,11 @@ export default function ProposalsPage() {
   });
 
   const [formError, setFormError] = useState<string | null>(null);
+  // Server refusals are shown inside the open dialog (never alert() / silent failure).
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [followupError, setFollowupError] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [duplicateWarning, setDuplicateWarning] = useState<{ detected: boolean; message: string; proposalNo?: string } | null>(null);
   const [duplicateOverrideReason, setDuplicateOverrideReason] = useState('');
@@ -189,8 +221,8 @@ export default function ProposalsPage() {
       product_id: '',
       sector: 'Defence',
       responsible_id: '',
-      request_date: new Date().toISOString().split('T')[0],
-      required_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      request_date: istToday(),
+      required_date: addIsoDays(istToday(), 7),
       version: 'v1.0',
       reference: '',
       followup_owner_id: '',
@@ -358,13 +390,15 @@ export default function ProposalsPage() {
   const openEditProposal = (proposal: any) => {
     setSelectedProposal(proposal);
     setEditForm({
-      required_date: proposal.required_date ? String(proposal.required_date).split('T')[0] : '',
+      required_date: proposal.required_date ? proposalDay(proposal.required_date) : '',
       version: proposal.version || 'v1.0',
       reference: proposal.reference || '',
       remarks: proposal.remarks || '',
       responsible_id: proposal.responsible_id || '',
       followup_owner_id: proposal.followup_owner_id || '',
+      required_date_change_reason: '',
     });
+    setEditError(null);
     setIsEditOpen(true);
   };
 
@@ -372,6 +406,7 @@ export default function ProposalsPage() {
   const handleEditProposal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProposal) return;
+    setEditError(null);
     try {
       setIsSubmitting(true);
       const payload: any = {
@@ -381,6 +416,7 @@ export default function ProposalsPage() {
         remarks: editForm.remarks || undefined,
         responsible_id: editForm.responsible_id || undefined,
         followup_owner_id: editForm.followup_owner_id || undefined,
+        required_date_change_reason: editForm.required_date_change_reason.trim() || undefined,
       };
       const updated = await api.patch(`/proposals/${selectedProposal.id}`, payload);
       setSelectedProposal(updated);
@@ -390,7 +426,7 @@ export default function ProposalsPage() {
       const hRes = await api.get(`/proposals/${selectedProposal.id}/history`).catch(() => []);
       setActivities(hRes);
     } catch (err: any) {
-      alert(err.message || 'Failed to update proposal details');
+      setEditError(err?.message || 'Failed to update proposal details');
     } finally {
       setIsSubmitting(false);
     }
@@ -399,6 +435,7 @@ export default function ProposalsPage() {
   // Delete Proposal (Soft Delete)
   const handleDeleteProposal = async () => {
     if (!selectedProposal) return;
+    setDeleteError(null);
     try {
       setIsSubmitting(true);
       await api.delete(`/proposals/${selectedProposal.id}`);
@@ -408,7 +445,7 @@ export default function ProposalsPage() {
       await fetchProposals();
       await fetchStats();
     } catch (err: any) {
-      alert(err.message || 'Failed to delete proposal');
+      setDeleteError(err?.message || 'Failed to delete proposal');
     } finally {
       setIsSubmitting(false);
     }
@@ -421,26 +458,6 @@ export default function ProposalsPage() {
     } else {
       setSortBy(field);
       setSortOrder('desc');
-    }
-    setPage(1);
-  };
-
-  // Handle clicking on HUD stat cards to auto-filter
-  const handleStatCardClick = (filterType: string, value: string, hudKey: string) => {
-    if (activeHudCard === hudKey) {
-      // Toggle off
-      setActiveHudCard(null);
-      setSelectedStatus('all');
-      setSelectedFollowupCondition('all');
-    } else {
-      setActiveHudCard(hudKey);
-      if (filterType === 'status') {
-        setSelectedStatus(value);
-        setSelectedFollowupCondition('all');
-      } else if (filterType === 'followup') {
-        setSelectedFollowupCondition(value);
-        setSelectedStatus('all');
-      }
     }
     setPage(1);
   };
@@ -487,12 +504,7 @@ export default function ProposalsPage() {
       setFormError('Request date is required');
       return;
     }
-    const todayStr = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date());
+    const todayStr = istToday();
 
     if (newProposal.request_date > todayStr) {
       setFormError('Request date cannot be in the future');
@@ -572,8 +584,9 @@ export default function ProposalsPage() {
   // Trigger Status Transition Dialog
   const initiateStatusChange = (nextStatus: string) => {
     setTargetStatus(nextStatus);
+    setStatusError(null);
     setStatusForm({
-      sent_date: new Date().toISOString().split('T')[0],
+      sent_date: istToday(),
       lost_reason: 'Price',
       lost_remarks: '',
       converted_to: '',
@@ -587,6 +600,25 @@ export default function ProposalsPage() {
   const handleStatusSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProposal) return;
+    setStatusError(null);
+
+    if (targetStatus === 'SENT_TO_CUSTOMER') {
+      // Mirror the server guard on IST calendar days: today (IST) is always allowed, even just after midnight.
+      const today = istToday();
+      const requestDay = proposalDay(selectedProposal.request_date);
+      if (!statusForm.sent_date) {
+        setStatusError('Sent date is required');
+        return;
+      }
+      if (statusForm.sent_date > today) {
+        setStatusError(`Sent date cannot be in the future (today is ${today} IST)`);
+        return;
+      }
+      if (requestDay && statusForm.sent_date < requestDay) {
+        setStatusError(`Sent date cannot be earlier than the proposal request date (${requestDay})`);
+        return;
+      }
+    }
 
     try {
       setIsSubmitting(true);
@@ -613,7 +645,7 @@ export default function ProposalsPage() {
       const hRes = await api.get(`/proposals/${selectedProposal.id}/history`).catch(() => []);
       setActivities(hRes);
     } catch (err: any) {
-      alert(err.message || 'Failed to update proposal status');
+      setStatusError(err?.message || 'Failed to update proposal status');
     } finally {
       setIsSubmitting(false);
     }
@@ -623,6 +655,7 @@ export default function ProposalsPage() {
   const handleAddFollowup = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProposal) return;
+    setFollowupError(null);
 
     try {
       setIsSubmitting(true);
@@ -637,7 +670,7 @@ export default function ProposalsPage() {
       setSelectedProposal(res.proposal);
       setIsFollowupDialogOpen(false);
       setFollowupForm({
-        followup_date: new Date().toISOString().split('T')[0],
+        followup_date: istToday(),
         owner_id: user?.id || '',
         remarks: '',
         outcome: '',
@@ -654,7 +687,7 @@ export default function ProposalsPage() {
       await fetchProposals();
       await fetchStats();
     } catch (err: any) {
-      alert(err.message || 'Failed to log follow-up');
+      setFollowupError(err?.message || 'Failed to log follow-up');
     } finally {
       setIsSubmitting(false);
     }
@@ -731,11 +764,39 @@ export default function ProposalsPage() {
     'Corporate',
   ];
 
+  // Pipeline strip + filter row helpers
+  const headlineCards: { key: string; label: string; count: number; subtext: string; icon: React.ReactNode; kind: 'status' | 'followup'; value: string; color?: 'primary' | 'amber' | 'rose' | 'emerald' }[] = [
+    { key: 'all', label: 'Total Proposals', count: stats.total_proposals || 0, subtext: 'Active & historical register', icon: <FileSpreadsheet className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'all' },
+    { key: 'prep', label: 'Under Preparation', count: stats.pending_preparation || 0, subtext: 'Technical & price drafting', icon: <Clock className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'UNDER_PREPARATION', color: 'primary' },
+    { key: 'review', label: 'Ready for Review', count: stats.ready_for_review || 0, subtext: 'Awaiting manager sign-off', icon: <AlertCircle className="h-4 w-4 text-amber-600" />, kind: 'status', value: 'READY_FOR_REVIEW', color: 'amber' },
+    { key: 'overdue', label: 'Overdue Follow-ups', count: stats.overdue || 0, subtext: 'Requires immediate contact', icon: <AlertTriangle className="h-4 w-4 text-red-600" />, kind: 'followup', value: 'overdue', color: 'rose' },
+    { key: 'converted', label: 'Converted to Orders', count: stats.converted || 0, subtext: 'Purchase orders secured', icon: <CheckCircle2 className="h-4 w-4 text-emerald-600" />, kind: 'status', value: 'CONVERTED', color: 'emerald' },
+  ];
+  const pickStatus = (status: string) => {
+    setSelectedStatus(status);
+    setActiveHudCard(null);
+    setPage(1);
+  };
+  const pickFollowup = (key: string) => {
+    setSelectedFollowupCondition((cur: string) => (cur === key ? 'all' : key));
+    setActiveHudCard(null);
+    setPage(1);
+  };
+  const hasActiveFilters = Boolean(
+    search || selectedStatus !== 'all' || selectedSector !== 'all' || selectedFollowupCondition !== 'all' || selectedResponsibleId || selectedFollowupOwnerId || fromDate || toDate,
+  );
+  const sortHead = (label: string, field: string) => (
+    <TableHead className="cursor-pointer whitespace-nowrap text-xs hover:text-[#0F5E63]" onClick={() => handleSort(field)} aria-sort={sortBy === field ? (sortOrder === 'asc' ? 'ascending' : 'descending') : undefined}>
+      <span>{label}</span>
+      {sortBy === field && (sortOrder === 'asc' ? <ChevronUp className="ml-1 inline h-3 w-3 text-[#0F5E63]" /> : <ChevronDown className="ml-1 inline h-3 w-3 text-[#0F5E63]" />)}
+    </TableHead>
+  );
+
   return (
     <PageContainer>
       {/* 1. Page Header */}
       <PageHeader
-        title="Commercial Proposal Register"
+        title="Commercial Proposals"
         icon={<FileSpreadsheet className="h-6 w-6 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2">
@@ -794,306 +855,168 @@ export default function ProposalsPage() {
         </div>
       )}
 
-      {/* 2. Executive Metric HUD (StatCards with click-to-filter capability) */}
+      {/* 2. Key metrics — five cards, each filters the register (click again to clear). */}
       <StatGrid cols={5} className="gap-3">
-        <StatCard
-          label="Total Proposals"
-          value={stats.total_proposals || 0}
-          subtext="Active & historical register"
-          icon={<FileSpreadsheet className="h-4 w-4 text-[#0F5E63]" />}
-          className={activeHudCard === 'all' ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('status', 'all', 'all')}
-        />
-        <StatCard
-          label="Under Preparation"
-          value={stats.pending_preparation || 0}
-          valueColor="primary"
-          subtext="Technical & price drafting"
-          icon={<Clock className="h-4 w-4 text-[#0F5E63]" />}
-          className={activeHudCard === 'prep' ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('status', 'UNDER_PREPARATION', 'prep')}
-        />
-        <StatCard
-          label="Ready for Review"
-          value={stats.ready_for_review || 0}
-          valueColor="amber"
-          subtext="Awaiting manager sign-off"
-          icon={<AlertCircle className="h-4 w-4 text-amber-600" />}
-          className={activeHudCard === 'review' ? 'ring-2 ring-amber-500 border-amber-500' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('status', 'READY_FOR_REVIEW', 'review')}
-        />
-        <StatCard
-          label="Follow-ups Due Today"
-          value={stats.due_today || 0}
-          valueColor="amber"
-          subtext="Scheduled for contact today"
-          icon={<Calendar className="h-4 w-4 text-amber-600" />}
-          className={activeHudCard === 'due_today' ? 'ring-2 ring-amber-500 border-amber-500 bg-amber-50/30' : 'cursor-pointer hover:bg-amber-50/20'}
-          onClick={() => handleStatCardClick('followup', 'due_today', 'due_today')}
-        />
-        <StatCard
-          label="Overdue Follow-ups"
-          value={stats.overdue || 0}
-          valueColor="rose"
-          subtext="Requires immediate contact"
-          icon={<AlertTriangle className="h-4 w-4 text-red-600" />}
-          className={activeHudCard === 'overdue' ? 'ring-2 ring-red-500 border-red-500 bg-red-50/40' : 'cursor-pointer hover:bg-red-50/20'}
-          onClick={() => handleStatCardClick('followup', 'overdue', 'overdue')}
-        />
-        <StatCard
-          label="Sent to Customer"
-          value={stats.sent_to_customer || 0}
-          valueColor="primary"
-          subtext="Delivered offers"
-          icon={<Send className="h-4 w-4 text-[#0F5E63]" />}
-          className={activeHudCard === 'sent' ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('status', 'SENT_TO_CUSTOMER', 'sent')}
-        />
-        <StatCard
-          label="Without Follow-up"
-          value={stats.no_followup || 0}
-          subtext="No next follow-up date"
-          icon={<AlertCircle className="h-4 w-4 text-[#4A5568]" />}
-          className={activeHudCard === 'no_followup' ? 'ring-2 ring-slate-500 border-slate-500' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('followup', 'no_followup', 'no_followup')}
-        />
-        <StatCard
-          label="Old / No Movement"
-          value={stats.old_no_movement || 0}
-          subtext="Inactive for 7+ days"
-          icon={<Clock className="h-4 w-4 text-amber-600" />}
-          className={activeHudCard === 'old_inactivity' ? 'ring-2 ring-amber-500 border-amber-500' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('followup', 'old_inactivity', 'old_inactivity')}
-        />
-        <StatCard
-          label="Converted to Orders"
-          value={stats.converted || 0}
-          valueColor="emerald"
-          subtext="Purchase orders secured"
-          icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
-          className={activeHudCard === 'converted' ? 'ring-2 ring-emerald-500 border-emerald-500' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('status', 'CONVERTED', 'converted')}
-        />
-        <StatCard
-          label="Lost / Closed"
-          value={(stats.lost || 0) + (stats.closed || 0)}
-          subtext="Recorded lost reasons"
-          icon={<X className="h-4 w-4 text-slate-500" />}
-          className={activeHudCard === 'lost' ? 'ring-2 ring-slate-500 border-slate-500' : 'cursor-pointer'}
-          onClick={() => handleStatCardClick('status', 'LOST', 'lost')}
-        />
+        {headlineCards.map((c) => {
+          const active = c.kind === 'status' ? selectedStatus === c.value && c.value !== 'all' : selectedFollowupCondition === c.value;
+          return (
+            <StatCard
+              key={c.key}
+              label={c.label}
+              value={c.count}
+              valueColor={c.color}
+              subtext={c.subtext}
+              icon={c.icon}
+              className={active ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+              onClick={() => (c.kind === 'status' ? pickStatus(active ? 'all' : c.value) : pickFollowup(c.value))}
+            />
+          );
+        })}
       </StatGrid>
 
-      {/* 3. Filter & Search Controls */}
-      <ToolbarBox defaultOpen>
-<ToolbarSlot><Card padding="sm" className="bg-white border-[#DCD8CE] shadow-xs space-y-2.5 filter-oneline">
-        <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-center justify-between">
-          <div className="flex flex-1 flex-wrap items-center gap-2.5">
-            {/* Search Box */}
-            <div className="relative min-w-[220px] flex-1 max-w-xs">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#4A5568]" />
-              <input
-                type="text"
-                placeholder="Search proposal #, customer, product, rep..."
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setPage(1);
-                }}
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg focus:border-[#0F5E63] focus:outline-none placeholder-[#4A5568]/70"
-              />
-              {search && (
-                <button
-                  onClick={() => setSearch('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#4A5568] hover:text-[#14213D]"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-
-            {/* Status Dropdown */}
-            <select
-              value={selectedStatus}
+      {/* 3. One filter row: search, then compact dropdowns. */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <input
+              type="search"
+              aria-label="Search proposals"
+              placeholder="Search proposal no., customer, product…"
+              value={search}
               onChange={(e) => {
-                setSelectedStatus(e.target.value);
-                setActiveHudCard(null);
+                setSearch(e.target.value);
                 setPage(1);
               }}
-              className="text-xs py-1.5 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-            >
-              <option value="all">All Statuses</option>
-              <option value="PROPOSAL_REQUESTED">Proposal Requested</option>
-              <option value="UNDER_PREPARATION">Under Preparation</option>
-              <option value="READY_FOR_REVIEW">Ready for Review</option>
-              <option value="APPROVED">Approved</option>
-              <option value="SENT_TO_CUSTOMER">Sent to Customer</option>
-              <option value="FOLLOW_UP_REQUIRED">Follow-up Required</option>
-              <option value="CONVERTED">Converted</option>
-              <option value="CLOSED">Closed</option>
-              <option value="LOST">Lost</option>
-            </select>
-
-            {/* Sector Dropdown */}
-            <select
-              value={selectedSector}
-              onChange={(e) => {
-                setSelectedSector(e.target.value);
-                setPage(1);
-              }}
-              className="text-xs py-1.5 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-            >
-              <option value="all">All Sectors</option>
-              {SECTORS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-
-            {/* Responsible Person Dropdown */}
-            <select
-              value={selectedResponsibleId}
-              onChange={(e) => {
-                setSelectedResponsibleId(e.target.value);
-                setPage(1);
-              }}
-              className="text-xs py-1.5 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none max-w-[160px] truncate"
-              title="Filter by Responsible Person"
-            >
-              <option value="">All Responsible</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.full_name} ({u.role})
-                </option>
-              ))}
-            </select>
-
-            {/* Follow-up Owner Dropdown */}
-            <select
-              value={selectedFollowupOwnerId}
-              onChange={(e) => {
-                setSelectedFollowupOwnerId(e.target.value);
-                setPage(1);
-              }}
-              className="text-xs py-1.5 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none max-w-[160px] truncate"
-              title="Filter by Follow-up Owner"
-            >
-              <option value="">All Follow-up Owners</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.full_name} ({u.role})
-                </option>
-              ))}
-            </select>
-
-            {/* Date Filters Toggle */}
-            <Button
-              variant={fromDate || toDate ? 'secondary' : 'outline'}
-              size="xs"
-              onClick={() => setIsDateFilterOpen((prev) => !prev)}
-              className="text-xs text-[#4A5568] hover:text-[#14213D]"
-            >
-              <CalendarDays className="h-3.5 w-3.5 mr-1" />
-              <span>Dates</span>
-              {(fromDate || toDate) && (
-                <span className="ml-1 px-1.5 py-0.2 bg-[#0F5E63] text-white rounded-full text-[10px]">
-                  Active
-                </span>
-              )}
-            </Button>
-
-            {/* Sorting controls */}
-            <div className="flex items-center gap-1 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg p-0.5">
-              <select
-                value={sortBy}
-                onChange={(e) => {
-                  setSortBy(e.target.value);
-                  setPage(1);
-                }}
-                className="text-xs py-1 px-2 bg-transparent text-[#14213D] focus:outline-none"
-                title="Sort Proposals By"
-              >
-                <option value="updated_at">Recently Updated</option>
-                <option value="request_date">Request Date</option>
-                <option value="required_date">Required Date</option>
-                <option value="sent_date">Sent Date</option>
-                <option value="next_followup">Next Follow-up</option>
-                <option value="proposal_number">Proposal No.</option>
-              </select>
-              <button
-                onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
-                className="p-1 text-[#4A5568] hover:text-[#0F5E63] rounded transition-colors"
-                title={`Sort Direction: ${sortOrder === 'asc' ? 'Ascending' : 'Descending'}`}
-              >
-                <ArrowUpDown className="h-3.5 w-3.5" />
-              </button>
-            </div>
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+            />
           </div>
-
-          {/* Follow-up Condition Quick Buttons */}
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
             <FilterMenu
-              label="Alerts"
-              icon={<Bell className="h-3.5 w-3.5" />}
-              options={[
-                { key: 'all', label: 'All proposals' },
-                { key: 'due_today', label: 'Due today' },
-                { key: 'overdue', label: 'Overdue' },
-                { key: 'upcoming', label: 'Upcoming' },
-                { key: 'no_followup', label: 'No follow-up' },
-                { key: 'old_inactivity', label: 'Inactive 7d+' },
-              ].map((f) => ({
-                ...f,
-                active: selectedFollowupCondition === f.key,
-                urgent: f.key === 'overdue',
+              label="Status"
+              icon={<Layers />}
+              options={[{ key: 'all', label: 'All statuses' }, ...PROPOSAL_STATUS_FILTERS].map((o) => ({
+                ...o,
+                active: selectedStatus === o.key,
+                onSelect: () => pickStatus(o.key),
+              }))}
+            />
+            <FilterMenu
+              label="Sector"
+              icon={<Building />}
+              options={['all', ...SECTORS].map((s) => ({
+                key: s,
+                label: s === 'all' ? 'All sectors' : s,
+                active: selectedSector === s,
                 onSelect: () => {
-                  setSelectedFollowupCondition(f.key);
-                  setActiveHudCard(null);
+                  setSelectedSector(s);
                   setPage(1);
                 },
               }))}
             />
-
-            {(search ||
-              selectedStatus !== 'all' ||
-              selectedSector !== 'all' ||
-              selectedFollowupCondition !== 'all' ||
-              selectedResponsibleId ||
-              selectedFollowupOwnerId ||
-              fromDate ||
-              toDate) && (
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={handleClearFilters}
-                className="text-xs text-[#4A5568] hover:text-red-700 ml-1"
-              >
+            <FilterMenu
+              label="Follow-ups"
+              icon={<Clock />}
+              options={[
+                { key: 'all', label: 'All proposals', count: undefined },
+                { key: 'overdue', label: 'Overdue', count: stats.overdue || 0 },
+                { key: 'due_today', label: 'Due today', count: stats.due_today || 0 },
+                { key: 'upcoming', label: 'Upcoming', count: undefined },
+                { key: 'no_followup', label: 'Not scheduled', count: stats.no_followup || 0 },
+                { key: 'old_inactivity', label: 'Inactive 7d+', count: stats.old_no_movement || 0 },
+              ].map((f) => ({
+                ...f,
+                urgent: f.key === 'overdue',
+                active: selectedFollowupCondition === f.key,
+                onSelect: () => {
+                  setSelectedFollowupCondition(f.key);
+                  setPage(1);
+                },
+              }))}
+            />
+            <FilterMenu
+              label="Owner"
+              icon={<User />}
+              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              options={[{ id: 'all', full_name: 'Anyone' }, ...users].map((u: any) => ({
+                key: u.id,
+                label: u.full_name,
+                active: (selectedResponsibleId || 'all') === u.id,
+                onSelect: () => {
+                  setSelectedResponsibleId(u.id === 'all' ? '' : u.id);
+                  setPage(1);
+                },
+              }))}
+            />
+            <FilterMenu
+              label="Follow-up by"
+              icon={<Bell />}
+              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              options={[{ id: 'all', full_name: 'Anyone' }, ...users].map((u: any) => ({
+                key: u.id,
+                label: u.full_name,
+                active: (selectedFollowupOwnerId || 'all') === u.id,
+                onSelect: () => {
+                  setSelectedFollowupOwnerId(u.id === 'all' ? '' : u.id);
+                  setPage(1);
+                },
+              }))}
+            />
+            <button
+              type="button"
+              onClick={() => setIsDateFilterOpen((prev) => !prev)}
+              aria-expanded={isDateFilterOpen}
+              className={`filter-menu-btn ${isDateFilterOpen || fromDate || toDate ? 'filter-menu-btn--on' : ''}`}
+            >
+              <CalendarDays className="h-3.5 w-3.5" />
+              <span>Dates</span>
+              {(fromDate || toDate) && <span className="filter-menu-chip">On</span>}
+            </button>
+            <FilterMenu
+              label="Sort"
+              icon={<ArrowUpDown />}
+              neutralKeys={[...SORT_FIELDS.map((f) => f.key), 'dir_desc', 'dir_asc']}
+              align="right"
+              options={[
+                ...SORT_FIELDS.map((f) => ({
+                  key: f.key,
+                  label: f.label,
+                  active: sortBy === f.key,
+                  onSelect: () => {
+                    setSortBy(f.key);
+                    setPage(1);
+                  },
+                })),
+                { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: sortOrder === 'desc', onSelect: () => setSortOrder('desc') },
+                { key: 'dir_asc', label: 'Ascending', icon: <ChevronUp />, active: sortOrder === 'asc', onSelect: () => setSortOrder('asc') },
+              ]}
+            />
+            {hasActiveFilters && (
+              <Button variant="ghost" size="xs" onClick={handleClearFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
                 Clear
               </Button>
             )}
           </div>
         </div>
 
-        {/* Collapsible Date Range Filter Bar */}
         {isDateFilterOpen && (
-          <div className="pt-2 border-t border-[#F0F5FC] flex flex-wrap items-center gap-3 text-xs">
-            <span className="font-semibold text-[#4A5568]">Filter by Date:</span>
+          <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
+            <span className="font-semibold text-[#4A5568]">Date</span>
             <select
               value={dateField}
               onChange={(e) => {
                 setDateField(e.target.value);
                 setPage(1);
               }}
-              className="py-1 px-2.5 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+              className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
             >
-              <option value="request_date">Request Date</option>
-              <option value="required_date">Required Completion Date</option>
-              <option value="sent_date">Proposal Sent Date</option>
-              <option value="next_followup">Next Follow-up Date</option>
+              <option value="request_date">Request date</option>
+              <option value="required_date">Required completion date</option>
+              <option value="sent_date">Sent date</option>
+              <option value="next_followup">Next follow-up</option>
             </select>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[#4A5568]">From:</span>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              From
               <input
                 type="date"
                 value={fromDate}
@@ -1101,11 +1024,11 @@ export default function ProposalsPage() {
                   setFromDate(e.target.value);
                   setPage(1);
                 }}
-                className="py-1 px-2.5 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none text-xs"
+                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
               />
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[#4A5568]">To:</span>
+            </label>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              To
               <input
                 type="date"
                 value={toDate}
@@ -1113,9 +1036,9 @@ export default function ProposalsPage() {
                   setToDate(e.target.value);
                   setPage(1);
                 }}
-                className="py-1 px-2.5 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none text-xs"
+                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
               />
-            </div>
+            </label>
             {(fromDate || toDate) && (
               <Button
                 variant="ghost"
@@ -1125,279 +1048,160 @@ export default function ProposalsPage() {
                   setToDate('');
                   setPage(1);
                 }}
-                className="text-xs text-[#4A5568] hover:text-red-700"
+                className="text-xs text-[#4A5568] hover:text-[#881337]"
               >
-                Reset Dates
+                Reset dates
               </Button>
             )}
           </div>
         )}
-      </Card></ToolbarSlot>
-</ToolbarBox>
+      </Card>
 
-      {/* 4. Commercial Price Quotes Table */}
-      <div className="flex items-center justify-between pt-1 pb-0.5">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-bold text-[#14213D] font-serif">Commercial Price Quotes</h2>
-          <span className="text-xs px-2.5 py-0.5 rounded-full bg-[#E3EFEE] text-[#0F5E63] font-mono font-bold">
-            {total} {total === 1 ? 'quote' : 'quotes'}
+      {/* 4. Register */}
+      <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
+        <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
+          <h2 className="font-serif text-sm font-bold text-[#14213D]">Proposal register</h2>
+          <span className="font-mono text-xs text-[#4A5568]">
+            {total} {total === 1 ? 'proposal' : 'proposals'}
           </span>
         </div>
-      </div>
-      <Card padding="none" className="bg-white border-[#DCD8CE] overflow-x-auto shadow-xs">
-        <Table>
+        <Table className="[&_td]:px-3 [&_th]:px-3">
           <TableHeader>
-            <TableRow className="bg-[#FBFAF7] border-b border-[#DCD8CE]">
-              <TableHead
-                className="font-bold text-[#14213D] text-xs py-3 cursor-pointer hover:text-[#0F5E63] whitespace-nowrap"
-                onClick={() => handleSort('proposal_number')}
-              >
-                <span>Proposal No.</span>
-                {sortBy === 'proposal_number' && (
-                  sortOrder === 'asc' ? <ChevronUp className="h-3 w-3 inline ml-1 text-[#0F5E63]" /> : <ChevronDown className="h-3 w-3 inline ml-1 text-[#0F5E63]" />
-                )}
+            <TableRow className="bg-[#FBFAF7]">
+              {sortHead('Proposal', 'proposal_number')}
+              <TableHead className="whitespace-nowrap text-xs">Customer</TableHead>
+              <TableHead className="whitespace-nowrap text-xs">Product</TableHead>
+              <TableHead className="whitespace-nowrap text-xs">Owner</TableHead>
+              {sortHead('Due', 'required_date')}
+              {sortHead('Status', 'status')}
+              {sortHead('Follow-up', 'next_followup')}
+              <TableHead className="w-16 text-right text-xs">
+                <span className="sr-only">Actions</span>
               </TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Customer</TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Sector</TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Product</TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Requested By</TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Responsible</TableHead>
-              <TableHead
-                className="font-bold text-[#14213D] text-xs py-3 cursor-pointer hover:text-[#0F5E63] whitespace-nowrap"
-                onClick={() => handleSort('request_date')}
-              >
-                <span>Req. Date</span>
-                {sortBy === 'request_date' && (
-                  sortOrder === 'asc' ? <ChevronUp className="h-3 w-3 inline ml-1 text-[#0F5E63]" /> : <ChevronDown className="h-3 w-3 inline ml-1 text-[#0F5E63]" />
-                )}
-              </TableHead>
-              <TableHead
-                className="font-bold text-[#14213D] text-xs py-3 cursor-pointer hover:text-[#0F5E63] whitespace-nowrap"
-                onClick={() => handleSort('required_date')}
-              >
-                <span>Due Date</span>
-                {sortBy === 'required_date' && (
-                  sortOrder === 'asc' ? <ChevronUp className="h-3 w-3 inline ml-1 text-[#0F5E63]" /> : <ChevronDown className="h-3 w-3 inline ml-1 text-[#0F5E63]" />
-                )}
-              </TableHead>
-              <TableHead
-                className="font-bold text-[#14213D] text-xs py-3 cursor-pointer hover:text-[#0F5E63] whitespace-nowrap"
-                onClick={() => handleSort('sent_date')}
-              >
-                <span>Sent Date</span>
-                {sortBy === 'sent_date' && (
-                  sortOrder === 'asc' ? <ChevronUp className="h-3 w-3 inline ml-1 text-[#0F5E63]" /> : <ChevronDown className="h-3 w-3 inline ml-1 text-[#0F5E63]" />
-                )}
-              </TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Ver.</TableHead>
-              <TableHead
-                className="font-bold text-[#14213D] text-xs py-3 cursor-pointer hover:text-[#0F5E63] whitespace-nowrap"
-                onClick={() => handleSort('status')}
-              >
-                <span>Status</span>
-                {sortBy === 'status' && (
-                  sortOrder === 'asc' ? <ChevronUp className="h-3 w-3 inline ml-1 text-[#0F5E63]" /> : <ChevronDown className="h-3 w-3 inline ml-1 text-[#0F5E63]" />
-                )}
-              </TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Follow-up Owner</TableHead>
-              <TableHead
-                className="font-bold text-[#14213D] text-xs py-3 cursor-pointer hover:text-[#0F5E63] whitespace-nowrap"
-                onClick={() => handleSort('next_followup')}
-              >
-                <span>Next Follow-up</span>
-                {sortBy === 'next_followup' && (
-                  sortOrder === 'asc' ? <ChevronUp className="h-3 w-3 inline ml-1 text-[#0F5E63]" /> : <ChevronDown className="h-3 w-3 inline ml-1 text-[#0F5E63]" />
-                )}
-              </TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 whitespace-nowrap">Outcome</TableHead>
-              <TableHead className="font-bold text-[#14213D] text-xs py-3 text-right whitespace-nowrap">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={15} className="py-12 text-center text-xs text-[#4A5568]">
+                <TableCell colSpan={8} className="py-12 text-center text-xs text-[#4A5568]">
                   <Spinner size="md" className="mx-auto mb-2" />
-                  Loading proposal register...
+                  Loading proposals…
                 </TableCell>
               </TableRow>
             ) : proposals.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={15} className="py-12">
+                <TableCell colSpan={8} className="py-12">
                   <EmptyState
                     icon={FileSpreadsheet}
                     title="No proposals found"
-                    description={
-                      search || selectedStatus !== 'all' || selectedFollowupCondition !== 'all' || selectedResponsibleId || selectedFollowupOwnerId || fromDate || toDate
-                        ? 'Try clearing active filters to see all proposals.'
-                        : 'Create your first proposal request to begin tracking.'
-                    }
+                    description={hasActiveFilters ? 'Try clearing the filters to see every proposal.' : 'Create your first proposal request to begin tracking.'}
                     action={
-                      <Button variant="primary" size="sm" onClick={() => setIsCreateOpen(true)}>
-                        <Plus className="h-4 w-4 mr-1.5" />
-                        <span>Create Proposal Request</span>
-                      </Button>
+                      hasActiveFilters ? (
+                        <Button variant="secondary" size="sm" onClick={handleClearFilters}>
+                          Clear filters
+                        </Button>
+                      ) : (
+                        <Button variant="primary" size="sm" onClick={() => setIsCreateOpen(true)}>
+                          <Plus className="mr-1.5 h-4 w-4" />
+                          <span>New proposal request</span>
+                        </Button>
+                      )
                     }
                   />
                 </TableCell>
               </TableRow>
             ) : (
               proposals.map((p) => {
-                const todayStr = new Date().toISOString().split('T')[0];
-                const nextFollowupStr = p.next_followup ? String(p.next_followup).split('T')[0] : null;
-                const isOverdue =
-                  nextFollowupStr &&
-                  nextFollowupStr < todayStr &&
-                  !['CONVERTED', 'CLOSED', 'LOST', 'converted', 'closed', 'lost'].includes(p.status);
-                const isDueToday =
-                  nextFollowupStr === todayStr &&
-                  !['CONVERTED', 'CLOSED', 'LOST', 'converted', 'closed', 'lost'].includes(p.status);
+                const todayStr = istToday();
+                const nextFollowupStr = p.next_followup ? proposalDay(p.next_followup) || null : null;
+                const closed = ['CONVERTED', 'CLOSED', 'LOST', 'converted', 'closed', 'lost'].includes(p.status);
+                const isOverdue = Boolean(nextFollowupStr && nextFollowupStr < todayStr && !closed);
+                const isDueToday = nextFollowupStr === todayStr && !closed;
+                const upper = String(p.status || '').toUpperCase();
+                const fmt = (d?: string | null) => (d ? new Date(d).toLocaleDateString('en-GB') : '—');
 
                 return (
-                  <TableRow
-                    key={p.id}
-                    className="hover:bg-[#F8FAFC] border-b border-[#F0F5FC] transition-colors cursor-pointer group"
-                    onClick={() => openProposalDetails(p)}
-                  >
-                    {/* Proposal Number */}
-                    <TableCell className="font-mono text-xs font-bold text-[#0F5E63] whitespace-nowrap">
-                      <span>{p.proposal_number}</span>
+                  <TableRow key={p.id} className="group cursor-pointer" onClick={() => openProposalDetails(p)}>
+                    <TableCell className="whitespace-nowrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs font-bold text-[#0F5E63]">{p.proposal_number}</span>
+                        <span className="rounded bg-[#E3EFEE] px-1 py-px font-mono text-[10px] text-[#0F5E63]">{p.version || 'v1.0'}</span>
+                      </div>
                       {p.reference && (
-                        <div className="text-[10px] text-[#4A5568] font-normal truncate max-w-[120px]" title={p.reference}>
-                          ref: {p.reference}
+                        <div className="max-w-[130px] truncate text-[11px] text-[#4A5568]" title={p.reference}>
+                          Ref: {p.reference}
                         </div>
                       )}
                     </TableCell>
-
-                    {/* Customer */}
-                    <TableCell className="text-xs font-semibold text-[#14213D]">
-                      <div className="line-clamp-1 max-w-[140px]" title={p.organisation_name}>{p.organisation_name}</div>
-                      {p.organisation_city && (
-                        <div className="text-[10px] text-[#4A5568] font-normal flex items-center gap-1">
-                          <Building className="h-2.5 w-2.5" />
-                          <span>{p.organisation_city}</span>
-                        </div>
+                    <TableCell>
+                      <div className="max-w-[160px] truncate text-xs font-semibold text-[#14213D]" title={p.organisation_name}>
+                        {p.organisation_name}
+                      </div>
+                      <div className="max-w-[160px] truncate text-[11px] text-[#4A5568]">{[p.organisation_city, p.sector || 'General'].filter(Boolean).join(' · ')}</div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="max-w-[130px] truncate text-xs font-medium text-[#14213D]" title={p.product_name}>
+                        {p.product_name}
+                      </div>
+                      {p.requested_by_name && <div className="max-w-[130px] truncate text-[11px] text-[#4A5568]">Requested by {p.requested_by_name}</div>}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <div className="max-w-[120px] truncate text-xs font-medium text-[#14213D]" title={p.responsible_name}>
+                        {p.responsible_name || 'Unassigned'}
+                      </div>
+                      {p.followup_owner_name && p.followup_owner_name !== p.responsible_name && (
+                        <div className="max-w-[120px] truncate text-[11px] text-[#4A5568]">Follow-up: {p.followup_owner_name}</div>
                       )}
                     </TableCell>
-
-                    {/* Sector */}
-                    <TableCell className="text-xs text-[#4A5568] whitespace-nowrap">
-                      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#F0F5FC] text-[#4A5568]">
-                        {p.sector || 'General'}
-                      </span>
+                    <TableCell className="whitespace-nowrap">
+                      <div className="font-mono text-xs text-[#14213D]">{fmt(p.required_date)}</div>
+                      <div className="text-[11px] text-[#4A5568]">
+                        Req. <span className="font-mono">{fmt(p.request_date)}</span>
+                      </div>
                     </TableCell>
-
-                    {/* Product */}
-                    <TableCell className="text-xs text-[#14213D]">
-                      <div className="line-clamp-1 max-w-[130px] font-medium" title={p.product_name}>{p.product_name}</div>
-                    </TableCell>
-
-                    {/* Requested By */}
-                    <TableCell className="text-xs text-[#4A5568] whitespace-nowrap">
-                      <div className="truncate max-w-[100px]" title={p.requested_by_name}>{p.requested_by_name || '-'}</div>
-                    </TableCell>
-
-                    {/* Responsible Rep */}
-                    <TableCell className="text-xs text-[#14213D] whitespace-nowrap">
-                      <div className="font-medium truncate max-w-[110px]" title={p.responsible_name}>{p.responsible_name || 'Unassigned'}</div>
-                    </TableCell>
-
-                    {/* Request Date */}
-                    <TableCell className="text-xs text-[#4A5568] whitespace-nowrap">
-                      {p.request_date ? new Date(p.request_date).toLocaleDateString('en-GB') : '-'}
-                    </TableCell>
-
-                    {/* Required Date */}
-                    <TableCell className="text-xs text-[#4A5568] whitespace-nowrap">
-                      {p.required_date ? new Date(p.required_date).toLocaleDateString('en-GB') : '-'}
-                    </TableCell>
-
-                    {/* Sent Date */}
-                    <TableCell className="text-xs text-[#4A5568] whitespace-nowrap">
-                      {p.sent_date ? new Date(p.sent_date).toLocaleDateString('en-GB') : '-'}
-                    </TableCell>
-
-                    {/* Version */}
-                    <TableCell className="text-xs text-[#4A5568] whitespace-nowrap">
-                      <span className="text-[10px] font-mono bg-[#E3EFEE] text-[#0F5E63] px-1.5 py-0.5 rounded">
-                        {p.version || 'v1.0'}
-                      </span>
-                    </TableCell>
-
-                    {/* Workflow Status */}
-                    <TableCell className="text-xs whitespace-nowrap">
+                    <TableCell className="whitespace-nowrap">
                       {renderStatusBadge(p.status)}
+                      <div className="mt-0.5 max-w-[180px] truncate text-[11px] text-[#4A5568]" title={upper === 'LOST' && p.lost_remarks ? p.lost_remarks : undefined}>
+                        {upper === 'LOST' && p.lost_reason ? (
+                          p.lost_reason
+                        ) : p.sent_date ? (
+                          <>
+                            Sent <span className="font-mono">{fmt(p.sent_date)}</span>
+                          </>
+                        ) : null}
+                      </div>
                     </TableCell>
-
-                    {/* Follow-up Owner */}
-                    <TableCell className="text-xs text-[#4A5568] whitespace-nowrap">
-                      <div className="truncate max-w-[110px]" title={p.followup_owner_name}>{p.followup_owner_name || '-'}</div>
-                    </TableCell>
-
-                    {/* Next Follow-up State */}
-                    <TableCell className="text-xs whitespace-nowrap">
+                    <TableCell className="whitespace-nowrap">
                       {isOverdue ? (
-                        <div className="flex items-center gap-1 text-red-700 font-bold bg-red-50 px-2 py-0.5 rounded text-[10px] border border-red-200 w-fit">
+                        <span title={`Was due ${fmt(nextFollowupStr)}`} className="inline-flex items-center gap-1 rounded-full bg-[#FBEBDD] px-2 py-0.5 text-[11px] font-semibold text-[#9A3412]">
                           <AlertTriangle className="h-3 w-3" />
-                          <span>Overdue ({nextFollowupStr})</span>
-                        </div>
+                          Overdue
+                        </span>
                       ) : isDueToday ? (
-                        <div className="flex items-center gap-1 text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded text-[10px] border border-amber-200 w-fit">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[#FFF8EB] px-2 py-0.5 text-[11px] font-semibold text-[#A15C07]">
                           <Clock className="h-3 w-3" />
-                          <span>Due Today</span>
-                        </div>
+                          Today
+                        </span>
                       ) : nextFollowupStr ? (
-                        <div className="text-[11px] text-[#4A5568] font-medium">
-                          {new Date(nextFollowupStr).toLocaleDateString('en-GB')}
-                        </div>
-                      ) : ['SENT_TO_CUSTOMER', 'sent', 'FOLLOW_UP_REQUIRED', 'followup_required'].includes(p.status) ? (
-                        <span className="text-[10px] text-amber-600 italic">No date set</span>
+                        <span className="font-mono text-xs text-[#14213D]">{fmt(nextFollowupStr)}</span>
+                      ) : ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(upper) ? (
+                        <span className="text-[11px] font-medium text-[#A15C07]">Not scheduled</span>
                       ) : (
-                        <span className="text-slate-400">-</span>
+                        <span className="text-[#8A8578]">—</span>
                       )}
                     </TableCell>
-
-                    {/* Outcome */}
-                    <TableCell className="text-xs whitespace-nowrap">
-                      {['CONVERTED', 'converted'].includes(p.status) ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                          Converted
-                        </span>
-                      ) : ['LOST', 'lost'].includes(p.status) ? (
-                        <span
-                          className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800"
-                          title={p.lost_remarks ? `${p.lost_reason}: ${p.lost_remarks}` : p.lost_reason || ''}
-                        >
-                          Lost {p.lost_reason ? `(${p.lost_reason})` : ''}
-                        </span>
-                      ) : ['CLOSED', 'closed'].includes(p.status) ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
-                          Closed
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 text-[11px]">-</span>
-                      )}
-                    </TableCell>
-
-                    {/* Actions */}
-                    <TableCell className="text-xs text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <TableCell className="whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          className="text-[#0F5E63] hover:bg-[#E3EFEE] font-semibold"
-                          onClick={() => openProposalDetails(p)}
-                        >
-                          <span>View</span>
-                          <ChevronRight className="h-3.5 w-3.5 ml-0.5" />
-                        </Button>
                         <button
+                          type="button"
                           onClick={() => openEditProposal(p)}
-                          className="p-1 text-[#4A5568] hover:text-[#0F5E63] hover:bg-[#E3EFEE] rounded transition-colors"
-                          title="Edit Proposal"
+                          className="rounded-md p-1.5 text-[#4A5568] opacity-0 transition-opacity hover:bg-[#E3EFEE] hover:text-[#0F5E63] focus:opacity-100 group-hover:opacity-100"
+                          title="Edit proposal"
+                          aria-label={`Edit ${p.proposal_number}`}
                         >
                           <Edit2 className="h-3.5 w-3.5" />
                         </button>
+                        <ChevronRight className="h-4 w-4 text-[#C9C4B8] transition-colors group-hover:text-[#0F5E63]" aria-hidden />
                       </div>
                     </TableCell>
                   </TableRow>
@@ -1711,7 +1515,10 @@ export default function ProposalsPage() {
                   <Button
                     variant="ghost"
                     size="xs"
-                    onClick={() => setIsDeleteConfirmOpen(true)}
+                    onClick={() => {
+                      setDeleteError(null);
+                      setIsDeleteConfirmOpen(true);
+                    }}
                     className="text-xs text-red-600 hover:text-red-800 hover:bg-red-50"
                     title="Soft Delete Proposal"
                   >
@@ -1816,14 +1623,15 @@ export default function ProposalsPage() {
                       size="xs"
                       onClick={() => {
                         setFollowupForm({
-                          followup_date: new Date().toISOString().split('T')[0],
+                          followup_date: istToday(),
                           owner_id: selectedProposal.followup_owner_id || user?.id || '',
                           remarks: '',
                           outcome: '',
                           next_followup_date: selectedProposal.next_followup
-                            ? String(selectedProposal.next_followup).split('T')[0]
+                            ? proposalDay(selectedProposal.next_followup)
                             : '',
                         });
+                        setFollowupError(null);
                         setIsFollowupDialogOpen(true);
                       }}
                     >
@@ -2086,13 +1894,14 @@ export default function ProposalsPage() {
                     size="xs"
                     onClick={() => {
                       setFollowupForm({
-                        followup_date: new Date().toISOString().split('T')[0],
+                        followup_date: istToday(),
                         owner_id: selectedProposal.followup_owner_id || user?.id || '',
                         remarks: '',
                         outcome: '',
                         next_followup_date: '',
                       });
-                      setIsFollowupDialogOpen(true);
+                      setFollowupError(null);
+                        setIsFollowupDialogOpen(true);
                     }}
                   >
                     <Plus className="h-3.5 w-3.5 mr-1" />
@@ -2189,11 +1998,18 @@ export default function ProposalsPage() {
         maxWidth="md"
       >
         <form onSubmit={handleStatusSubmit} className="space-y-4">
+          {statusError && (
+            <InfoCallout variant="danger" title="Could not save" onClose={() => setStatusError(null)}>
+              {statusError}
+            </InfoCallout>
+          )}
           {targetStatus === 'SENT_TO_CUSTOMER' && (
             <Input
               type="date"
               label="Proposal Sent Date"
               required
+              max={istToday()}
+              helperText="Defaults to today (IST). Cannot be in the future or before the request date."
               value={statusForm.sent_date}
               onChange={(e) => setStatusForm({ ...statusForm, sent_date: e.target.value })}
             />
@@ -2272,11 +2088,17 @@ export default function ProposalsPage() {
         maxWidth="md"
       >
         <form onSubmit={handleAddFollowup} className="space-y-4">
+          {followupError && (
+            <InfoCallout variant="danger" title="Could not save" onClose={() => setFollowupError(null)}>
+              {followupError}
+            </InfoCallout>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Input
               type="date"
               label="Follow-up Date"
               required
+              max={istToday()}
               value={followupForm.followup_date}
               onChange={(e) => setFollowupForm({ ...followupForm, followup_date: e.target.value })}
             />
@@ -2344,12 +2166,18 @@ export default function ProposalsPage() {
           maxWidth="md"
         >
           <form onSubmit={handleEditProposal} className="space-y-4">
+            {editError && (
+              <InfoCallout variant="danger" title="Could not save" onClose={() => setEditError(null)}>
+                {editError}
+              </InfoCallout>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Input
                 type="date"
                 label="Required Completion Date"
                 required
                 value={editForm.required_date}
+                min={proposalDay(selectedProposal.request_date) || undefined}
                 onChange={(e) => setEditForm({ ...editForm, required_date: e.target.value })}
               />
               <Input
@@ -2359,6 +2187,16 @@ export default function ProposalsPage() {
                 onChange={(e) => setEditForm({ ...editForm, version: e.target.value })}
               />
             </div>
+
+            {editForm.required_date !== proposalDay(selectedProposal.required_date) && (
+              <Input
+                label="Reason for changing the required date"
+                required
+                placeholder="e.g. Customer extended the submission window"
+                value={editForm.required_date_change_reason}
+                onChange={(e) => setEditForm({ ...editForm, required_date_change_reason: e.target.value })}
+              />
+            )}
 
             <Input
               label="Email / Tender Reference"
@@ -2429,6 +2267,11 @@ export default function ProposalsPage() {
           maxWidth="sm"
         >
           <div className="space-y-4">
+            {deleteError && (
+              <InfoCallout variant="danger" title="Could not delete" onClose={() => setDeleteError(null)}>
+                {deleteError}
+              </InfoCallout>
+            )}
             <p className="text-xs text-[#4A5568] leading-relaxed">
               This will soft-delete the proposal record from active views. Historical audit events and logged customer follow-ups will be safely preserved in the database.
             </p>

@@ -45,37 +45,59 @@ html[data-app-theme='ios'] {
   --app-zoom-base: 1;
 }
 
-/* ---------------------------------------------------------- MATERIAL YOU -- */
+/* ---------------------------------------------------- CLIENT EXECUTIVE LINEN -- */
 html[data-app-theme='material'] {
-  --font-body: 'IBM Plex Sans', 'Roboto', system-ui, -apple-system, sans-serif;
-  --font-display: 'IBM Plex Sans', 'Roboto', system-ui, sans-serif;
-  --th-bg-flat: #fef7ff;
-  --th-wallpaper: linear-gradient(180deg, #fef7ff, #f8f0fb);
-  --th-card: #f3edf7;
-  --th-pop: #f7f2fa;
-  --th-header: rgba(254, 247, 255, 0.92);
-  --th-thead: #ece6f0;
-  --th-soft: #ece6f0;
-  --th-line: #d9d1e0; --th-line2: #e7e0ec; --th-ctrl: #79747e;
-  --th-ink: #1d1b20; --th-mute: #49454f; --th-faint: #625b71;
-  --th-primary: #6750a4; --th-primary-hover: #553d95; --th-primary-fg: #ffffff;
-  --th-primary-bg: #6750a4;
-  --th-primary-soft: #e8def8; --th-primary-text: #5a43a0;
-  --th-accent: #b3261e; --th-accent-strong: #8c1d18; --th-accent-soft: #f9dedc;
-  --th-warn-soft: #ffdea3; --th-warn-text: #7d5700;
-  --th-navy: #322f37; --th-input-bg: transparent;
-  --th-r: 16px; --th-r-md: 12px; --th-r-sm: 8px; --th-btn-r: 9999px;
-  --md-outline: #79747e; --md-outline-variant: #cac4d0;
-  --md-surface-low: #f7f2fa; --md-surface: #f3edf7; --md-surface-high: #ece6f0; --md-surface-highest: #e6e0e9;
-  --md-secondary-container: #e8def8; --md-on-secondary-container: #1d192b; --md-primary-container: #eaddff; --md-on-primary-container: #21005d;
-  --md-state-hover: rgba(103, 80, 164, 0.08); --md-state-press: rgba(103, 80, 164, 0.12);
-  --th-shadow: none;
-  --th-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.18), 0 1px 3px 1px rgba(0, 0, 0, 0.1);
-  --th-shadow-lift: 0 1px 3px 1px rgba(0, 0, 0, 0.15), 0 2px 6px 2px rgba(0, 0, 0, 0.1);
-  --th-btn-shadow: 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  --font-body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --th-bg-flat: #F6F5F1;
+  --th-wallpaper: none;
+  --th-card: #FFFFFF;
+  --th-pop: #FBFAF7;
+  --th-header: #FFFFFF;
+  --th-thead: #FBFAF7;
+  --th-soft: #FBFAF7;
+  --th-line: #DCD8CE;
+  --th-line2: #ECE9E2;
+  --th-ctrl: #C9C4B8;
+  --th-ink: #14213D;
+  --th-mute: #4A5568;
+  --th-faint: #6B7280;
+  --th-primary: #0F5E63;
+  --th-primary-hover: #0B4A4E;
+  --th-primary-fg: #FFFFFF;
+  --th-primary-bg: #0F5E63;
+  --th-primary-soft: #E3EFEE;
+  --th-primary-text: #0F5E63;
+  --th-accent: #9A3412;
+  --th-accent-strong: #7C2D12;
+  --th-accent-soft: #FBEBDD;
+  --th-warn-soft: #FFF8EB;
+  --th-warn-text: #A15C07;
+  --th-navy: #14213D;
+  --th-input-bg: #FFFFFF;
+  --th-r: 14px;
+  --th-r-md: 10px;
+  --th-r-sm: 8px;
+  --th-btn-r: 8px;
+  --md-outline: #DCD8CE;
+  --md-outline-variant: #ECE9E2;
+  --md-surface-low: #FBFAF7;
+  --md-surface: #FFFFFF;
+  --md-surface-high: #FBFAF7;
+  --md-surface-highest: #F6F5F1;
+  --md-secondary-container: #E3EFEE;
+  --md-on-secondary-container: #0F5E63;
+  --md-primary-container: #E3EFEE;
+  --md-on-primary-container: #0F5E63;
+  --md-state-hover: rgba(15, 94, 99, 0.08);
+  --md-state-press: rgba(15, 94, 99, 0.12);
+  --th-shadow: 0 1px 3px rgba(20, 33, 61, 0.05), 0 1px 2px rgba(20, 33, 61, 0.03);
+  --th-shadow-sm: 0 1px 2px rgba(20, 33, 61, 0.05);
+  --th-shadow-lift: 0 8px 24px -6px rgba(15, 94, 99, 0.14);
+  --th-btn-shadow: 0 1px 2px rgba(20, 33, 61, 0.08);
   --th-input-shadow: none;
   --th-blur: none;
-  --th-row-hover: rgba(103, 80, 164, 0.08);
+  --th-row-hover: rgba(15, 94, 99, 0.04);
 }
 
 /* ------------------------------------------------------------ SOFT CLAY -- */
@@ -158,10 +180,6 @@ html[data-app-theme='material'] :is(.ui-card, .ui-stat, .toolbar-box) { border-c
 html[data-app-theme] aside { background-color: var(--th-card); border-color: var(--th-line); -webkit-backdrop-filter: var(--th-blur); backdrop-filter: var(--th-blur); }
 html[data-app-theme] aside.fixed { background-color: var(--th-pop); }
 html[data-app-theme] aside .bg-white { background-color: transparent; }
-html[data-app-theme] aside :is(.bg-\[\#9A3412\], .bg-\[\#C98A1B\]) { background-color: var(--th-primary); border-color: var(--th-primary); }
-html[data-app-theme] aside .border-\[\#9A3412\] { border-color: var(--th-primary); }
-html[data-app-theme] aside .text-\[\#9A3412\] { color: var(--th-primary-text); }
-html[data-app-theme] aside .bg-\[\#9A3412\] svg, html[data-app-theme] aside .text-\[\#FFFCF5\] { color: #fff; }
 html[data-app-theme] aside a:hover { transform: none; }
 html[data-app-theme] .app-logo { background: var(--th-primary-bg); border-radius: var(--th-r-sm); color: #fff; box-shadow: var(--th-btn-shadow); }
 html[data-app-theme] .app-pill { background: var(--th-primary-soft); color: var(--th-primary-text); }
@@ -621,3 +639,9 @@ html[data-app-theme] tbody tr:hover { background-color: var(--md-state-hover); }
 html[data-app-theme] [role='dialog'] button[aria-label='Close modal'] { width: 40px; height: 40px; min-width: 40px; border-radius: 9999px; color: var(--th-mute); background: transparent; border: 0; box-shadow: none; }
 html[data-app-theme] [role='dialog'] button[aria-label='Close modal']:hover { background: var(--md-state-hover); color: var(--th-ink); }
 html[data-app-theme] [role='dialog'] button[aria-label='Close modal'] svg { width: 22px; height: 22px; }
+
+/* ---- booking-style field tiles (expense claim form): the tile draws the box, its controls stay bare ---- */
+html .field-tile :is(input, textarea, button[aria-haspopup='listbox']).field-tile-control,
+html .field-tile :is(input, textarea, button[aria-haspopup='listbox']).field-tile-control:is(:hover, :focus) {
+  border-width: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; outline: none;
+}

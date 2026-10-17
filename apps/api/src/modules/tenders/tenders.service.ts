@@ -15,6 +15,11 @@ import { assertRegionScope, assertNotSelfApproval } from '../../common/utils/sco
 import {
   TENDER_UPCOMING_DAYS,
   TENDER_URGENT_HOURS,
+  todayInKolkata,
+  istDateOf,
+  istDateTime,
+  istEndOfDay,
+  isoDaysBetween,
   type Database,
   type AuthUser,
   type PaginatedResult,
@@ -66,6 +71,29 @@ import {
 @Injectable()
 export class TendersService {
   private readonly logger = new Logger(TendersService.name);
+
+  /** A DATE column / 'YYYY-MM-DD' / instant as its IST calendar day ('YYYY-MM-DD'). */
+  private istDay(value: string | Date | null | undefined): string | null {
+    if (!value) return null;
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return value.trim();
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    // A pg DATE parsed by node-pg arrives as midnight UTC: that calendar day is the stored day.
+    if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0) {
+      return d.toISOString().slice(0, 10);
+    }
+    return istDateOf(d);
+  }
+
+  /** An instant as 'YYYY-MM-DD HH:mm' IST wall clock (for notification text). */
+  private istLabel(d: Date): string {
+    return new Date(d.getTime() + 330 * 60000).toISOString().replace('T', ' ').slice(0, 16);
+  }
+
+  /** Whole IST calendar days from today to the deadline's IST day (0 = due today, negative = overdue). */
+  private istDaysLeft(deadline: Date, now: Date = new Date()): number {
+    return isoDaysBetween(istDateOf(now), istDateOf(deadline));
+  }
 
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
@@ -521,8 +549,10 @@ export class TendersService {
     if (query.deadline) {
       const now = new Date();
       if (query.deadline === 'due_today') {
-        const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-        const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
+        // "Today" is the IST calendar day (the server clock is UTC).
+        const istToday = todayInKolkata(now);
+        const startOfDay = istDateTime(istToday, '00:00:00').toISOString();
+        const endOfDay = istEndOfDay(istToday).toISOString();
         baseQuery = baseQuery
           .where('tenders.status', 'not in', ['won', 'lost', 'cancelled'])
           .where('tenders.submission_deadline', '>=', startOfDay)
@@ -669,7 +699,7 @@ export class TendersService {
       let hoursLeft: number | null = null;
       if (deadline) {
         const diffMs = new Date(deadline).getTime() - now.getTime();
-        daysLeft = Math.ceil(diffMs / (24 * 3600 * 1000));
+        daysLeft = this.istDaysLeft(new Date(deadline), now);
         hoursLeft = Math.round(diffMs / (3600 * 1000));
       }
 
@@ -865,12 +895,15 @@ export class TendersService {
     let hoursLeft: number | null = null;
     if (deadline) {
       const diffMs = new Date(deadline).getTime() - now.getTime();
-      daysLeft = Math.ceil(diffMs / (24 * 3600 * 1000));
+      daysLeft = this.istDaysLeft(new Date(deadline), now);
       hoursLeft = Math.round(diffMs / (3600 * 1000));
     }
 
-    const readyOrNaDocs = documents.filter((d) => ['Ready', 'Not Applicable'].includes(d.status)).length;
-    const docCompletionPercent = documents.length > 0 ? Math.round((readyOrNaDocs / documents.length) * 100) : 100;
+    // Readiness = mandatory documents Ready / mandatory required (template when no checklist yet). Never 100% by default.
+    const readiness = await this.computeDocumentReadiness(
+      { id, category: tender.category, category_code: tender.category_code, category_name: tender.category_name },
+      documents,
+    );
 
     return {
       ...tender,
@@ -891,7 +924,8 @@ export class TendersService {
       activities,
       line_items: lineItems,
       documents,
-      document_completion_percentage: docCompletionPercent,
+      document_completion_percentage: readiness.percentage,
+      document_readiness: readiness,
       corrigenda,
       financial_instruments: financialInstruments,
       comments,
@@ -963,10 +997,10 @@ export class TendersService {
     }
 
     const rawPubDate = dto.publication_date || dto.publish_date;
-    const publicationDate = rawPubDate ? new Date(rawPubDate).toISOString().split('T')[0] : null;
+    const publicationDate = rawPubDate ? this.istDay(rawPubDate as any) : null;
 
     if (publicationDate && submissionDeadline) {
-      const deadlineDateStr = submissionDeadline.toISOString().split('T')[0];
+      const deadlineDateStr = istDateOf(submissionDeadline);
       if (publicationDate > deadlineDateStr) {
         throw new BadRequestException('Submission deadline cannot be earlier than publication date');
       }
@@ -1149,13 +1183,9 @@ export class TendersService {
         }
       }
 
-      // Auto-initialize document checklist for category
-      const templates = await trx
-        .selectFrom('document_checklist_templates')
-        .selectAll()
-        .where('category_code', '=', categoryCode)
-        .orderBy('sort_order', 'asc')
-        .execute();
+      // Auto-initialize document checklist for category (same resolution as the readiness gate: general_mha → MHA
+      // template, unknown → general; de-duplicated by document type).
+      const { items: templates } = await this.getChecklistTemplate(categoryCode, null, trx);
 
       for (const t of templates) {
         await trx
@@ -1369,6 +1399,7 @@ export class TendersService {
       isApprovalAction?: boolean;
       isRecordResultAction?: boolean;
       rejection_reason?: string;
+      approval_remarks?: string | null;
     },
   ) {
     const rawTarget = dto.to_status || dto.target_status;
@@ -1435,6 +1466,11 @@ export class TendersService {
       },
     );
 
+    // Document gate: enforced only when explicitly configured or requested
+    if (from !== to && (to === 'TENDER_SUBMITTED' || to === 'PQ_SUBMITTED') && (dto as any).enforce_document_readiness) {
+      await this.assertSubmissionReadiness(existing, to);
+    }
+
     const legacyStatus = this.workflowService.toLegacyStatus(to);
     const noteText = dto.note || dto.remarks || null;
 
@@ -1468,6 +1504,66 @@ export class TendersService {
           remarks: noteText,
         })
         .execute();
+
+      // Approval ledger kept in step with the stage, in the same transaction:
+      // entering Awaiting Internal Approval opens exactly one PENDING request (any older open one is superseded);
+      // leaving it closes the open request with the outcome. So `tender_approvals` can never hold a PENDING row for
+      // a tender that is no longer awaiting approval (the stale-inbox bug).
+      if (from !== to && to === 'AWAITING_INTERNAL_APPROVAL') {
+        await trx
+          .updateTable('tender_approvals')
+          .set({ status: 'SUPERSEDED', decision: 'Superseded', updated_at: new Date() })
+          .where('tender_id', '=', id)
+          .where('status', '=', 'PENDING')
+          .execute();
+        const prevRound = await trx
+          .selectFrom('tender_approvals')
+          .select(sql<number>`coalesce(max(approval_round), 0)::int`.as('r'))
+          .where('tender_id', '=', id)
+          .executeTakeFirst();
+        await trx
+          .insertInto('tender_approvals')
+          .values({
+            tender_id: id,
+            requested_by: user.id,
+            submitted_by: user.id,
+            approver_id: null,
+            status: 'PENDING',
+            decision: 'Pending',
+            remarks: noteText,
+            submission_note: noteText,
+            approval_round: Number(prevRound?.r || 0) + 1,
+            responded_at: null,
+            rejection_reason: null,
+          })
+          .execute();
+      } else if (from === 'AWAITING_INTERNAL_APPROVAL' && to !== from) {
+        const outcome =
+          to === 'UNDER_PREPARATION'
+            ? { status: 'APPROVED', decision: 'Approved' }
+            : to === 'REJECTED_INTERNALLY'
+              ? { status: 'REJECTED', decision: 'Rejected' }
+              : to === 'IDENTIFIED'
+                ? { status: 'RETURNED', decision: 'Returned' }
+                : { status: 'WITHDRAWN', decision: 'Withdrawn' };
+        const rejection = to === 'REJECTED_INTERNALLY' ? dto.rejection_reason || options?.rejection_reason || null : null;
+        await trx
+          .updateTable('tender_approvals')
+          .set({
+            ...outcome,
+            approver_id: user.id,
+            responded_at: new Date(),
+            decided_at: new Date(),
+            remarks: options?.approval_remarks ?? noteText,
+            decision_reason: rejection || noteText,
+            rejection_reason: rejection,
+            approval_conditions: to === 'UNDER_PREPARATION' ? options?.approval_remarks || null : null,
+            updated_at: new Date(),
+          })
+          .where('tender_id', '=', id)
+          .where('status', '=', 'PENDING')
+          .execute();
+      }
 
       // Write activity timeline
       await trx
@@ -1655,6 +1751,7 @@ export class TendersService {
       throw new BadRequestException('Approval requested with no assignee is blocked. Please assign a salesperson first.');
     }
 
+    // transitionTender opens the PENDING tender_approvals request in the same transaction as the stage change.
     return this.transitionTender(
       id,
       {
@@ -1663,20 +1760,7 @@ export class TendersService {
         expected_version,
       },
       user,
-    ).then(async (res) => {
-      // Also write to tender_approvals table
-      await this.db
-        .insertInto('tender_approvals')
-        .values({
-          tender_id: id,
-          requested_by: user.id,
-          status: 'PENDING',
-          remarks: remarks || null,
-        })
-        .execute();
-
-      return res;
-    });
+    );
   }
 
   /**
@@ -1732,23 +1816,10 @@ export class TendersService {
       {
         isApprovalAction: true,
         rejection_reason: dto.rejection_reason || dto.remarks,
+        approval_remarks: dto.remarks || null,
       },
     );
-
-    // Update tender_approvals record
-    await this.db
-      .updateTable('tender_approvals')
-      .set({
-        approver_id: user.id,
-        status: decision.toUpperCase(),
-        responded_at: new Date(),
-        remarks: dto.remarks || null,
-        rejection_reason: decision === 'rejected' ? dto.rejection_reason || dto.remarks : null,
-      })
-      .where('tender_id', '=', id)
-      .where('status', '=', 'PENDING')
-      .execute();
-
+    // The open tender_approvals request is closed (APPROVED / REJECTED) inside transitionTender's transaction.
     return updated;
   }
 
@@ -1775,9 +1846,9 @@ export class TendersService {
       throw new BadRequestException('Invalid new deadline date/time format');
     }
 
-    if (existing.publication_date) {
-      const pubDate = new Date(existing.publication_date);
-      if (newDeadline < pubDate) {
+    const pubDay = this.istDay(existing.publication_date as any);
+    if (pubDay) {
+      if (istDateOf(newDeadline) < pubDay) {
         throw new BadRequestException('New submission deadline cannot be earlier than publication date');
       }
     }
@@ -1816,7 +1887,7 @@ export class TendersService {
         .values({
           tender_id: id,
           event_type: 'DEADLINE_CHANGED',
-          description: `Deadline extended to ${newDeadline.toISOString().replace('T', ' ').slice(0, 16)} IST. Reason: ${dto.reason}`,
+          description: `Deadline extended to ${this.istLabel(newDeadline)} IST. Reason: ${dto.reason}`,
           performed_by: user.id,
           metadata: { old_deadline: oldDeadline, new_deadline: newDeadline, reason: dto.reason },
         })
@@ -1830,7 +1901,7 @@ export class TendersService {
             user_id: existing.assigned_to,
             type: 'tender_deadline',
             title: `Deadline Extended: Tender ${existing.tender_number}`,
-            body: `Deadline updated to ${newDeadline.toISOString().replace('T', ' ').slice(0, 16)} IST. Corrigendum: ${dto.reason}`,
+            body: `Deadline updated to ${this.istLabel(newDeadline)} IST. Corrigendum: ${dto.reason}`,
             entity_type: 'tender',
             entity_id: id,
           })
@@ -1883,16 +1954,16 @@ export class TendersService {
       throw new BadRequestException('Invalid result_date format');
     }
 
-    const todayDate = new Date();
-    todayDate.setHours(23, 59, 59, 999);
-    if (resultDate > todayDate) {
-      throw new BadRequestException('Result date cannot be in the future');
+    // Compare IST calendar days: today's IST date is accepted at every hour (incl. 00:00–05:30 IST).
+    const resultDayStr = this.istDay(dto.result_date as any) as string;
+    if (resultDayStr > todayInKolkata()) {
+      throw new BadRequestException(
+        `Result date ${resultDayStr} cannot be in the future (today is ${todayInKolkata()} IST)`,
+      );
     }
 
-    const firstSubDayStr = firstSubmissionDate.toISOString().split('T')[0];
-    const resultDayStr = resultDate.toISOString().split('T')[0];
-
-    const minSubmissionDay = existing.publication_date || firstSubDayStr;
+    const firstSubDayStr = istDateOf(firstSubmissionDate);
+    const minSubmissionDay = this.istDay(existing.publication_date as any) || firstSubDayStr;
     if (resultDayStr < minSubmissionDay) {
       throw new BadRequestException('Result date cannot be earlier than the first submission date');
     }
@@ -2100,7 +2171,7 @@ export class TendersService {
       id,
       {
         outcome: outcome as any,
-        result_date: dto.result_date || new Date().toISOString().split('T')[0],
+        result_date: dto.result_date || todayInKolkata(),
         value: dto.value_lakh ? dto.value_lakh * 100000 : (dto as any).value,
         loss_reasons: reasons,
         loss_reason: lossReason?.toLowerCase(),
@@ -2277,7 +2348,7 @@ export class TendersService {
       throw new BadRequestException('Cannot log portal issues against a deleted tender');
     }
 
-    const reportedDate = dto.reported_date || new Date().toISOString().split('T')[0];
+    const reportedDate = dto.reported_date || todayInKolkata();
 
     const issue = await this.db
       .insertInto('tender_portal_issues')
@@ -2426,7 +2497,7 @@ export class TendersService {
       if (['IDENTIFIED', 'AWAITING_INTERNAL_APPROVAL', 'UNDER_PREPARATION'].includes(normStatus) && deadline) {
         const deadlineDate = new Date(deadline);
         const diffMs = deadlineDate.getTime() - now.getTime();
-        const daysLeft = Math.ceil(diffMs / (24 * 3600 * 1000));
+        const daysLeft = this.istDaysLeft(deadlineDate, now);
 
         if (diffMs < 0) {
           // MISSED_DEADLINE
@@ -2443,7 +2514,7 @@ export class TendersService {
             tender.id,
             'APPROACHING_DEADLINE',
             `Approaching Deadline (<= ${approachingDays}d): Tender ${tender.tender_number || tender.tender_no}`,
-            `Tender deadline is in ${daysLeft} days (${deadlineDate.toISOString().replace('T', ' ').slice(0, 16)} IST).`,
+            `Tender deadline is in ${daysLeft} days (${this.istLabel(deadlineDate)} IST).`,
             recipientId,
           );
         } else if (daysLeft <= upcomingDays) {
@@ -2653,7 +2724,6 @@ export class TendersService {
         sql<number>`count(case when tenders.status in ('lost') then 1 end)::int`.as('tenders_lost'),
         sql<number>`count(case when tenders.status not in ('won', 'lost', 'cancelled') then 1 end)::int`.as('pending_tenders'),
         sql<number>`count(case when tenders.on_hold = true then 1 end)::int`.as('on_hold_tenders'),
-        sql<number>`count(case when tenders.status in ('awaiting_approval') then 1 end)::int`.as('pending_approvals'),
         sql<number>`count(case when tenders.status in ('under_preparation') then 1 end)::int`.as('incomplete_preparation'),
         sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('result_followups'),
         sql<number>`count(case when tenders.status not in ('won', 'lost', 'cancelled') and tenders.submission_deadline is not null and tenders.submission_deadline >= NOW() and tenders.submission_deadline <= NOW() + make_interval(hours => 24) then 1 end)::int`.as('urgent_deadlines'),
@@ -2684,6 +2754,8 @@ export class TendersService {
     }
 
     const portalIssuesCount = await portalIssuesQuery.executeTakeFirst();
+    // Same query as the Approvals Inbox, so the KPI, the View-menu count and the inbox heading always agree.
+    const pendingApprovalCount = await this.countPendingApprovals(user);
 
     const won = metrics?.tenders_won || 0;
     const lost = metrics?.tenders_lost || 0;
@@ -2703,7 +2775,7 @@ export class TendersService {
       // 6-stage lifecycle counts
       identified: metrics?.identified || 0,
       stage_1_identified: metrics?.identified || 0,
-      pending_approvals: metrics?.awaiting_approval || 0,
+      pending_approvals: pendingApprovalCount,
       awaiting_approval: metrics?.awaiting_approval || 0,
       stage_2_review: metrics?.awaiting_approval || 0,
       rejected_internally: metrics?.rejected_internally || 0,
@@ -3237,8 +3309,199 @@ export class TendersService {
   // 7. Approvals Inbox & My Tenders
   // =========================================================================
 
-  async getApprovalsInbox(user: AuthUser) {
-    return this.findAll({ status: 'awaiting_approval' }, user);
+  /**
+   * The ONE definition of "pending internal approval": tenders whose CURRENT stage is Awaiting Internal Approval,
+   * not deleted, not on hold (a held tender cannot be decided), inside the caller's territorial scope.
+   * The Approvals Inbox list, its heading, the "Pending Approvals" KPI and the View-menu count all come from here,
+   * so they can never disagree. Historical `tender_approvals` rows are NOT the source: a request row left PENDING
+   * after its tender moved on (won/lost/returned) must never resurface in the inbox.
+   */
+  private pendingApprovalsQuery(user: AuthUser) {
+    let q = this.db
+      .selectFrom('tenders')
+      .where('tenders.is_deleted', '=', false)
+      .where('tenders.status', '=', 'awaiting_approval')
+      .where((eb) => eb.or([eb('tenders.on_hold', '=', false), eb('tenders.on_hold', 'is', null)]));
+
+    if (user.role === 'regional_manager' && user.zone_id) {
+      q = q.where('tenders.zone_id', '=', user.zone_id);
+    } else if (user.role === 'sales') {
+      q = q.where((eb) =>
+        eb.or([
+          eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
+        ]),
+      );
+    }
+    return q;
+  }
+
+  async countPendingApprovals(user: AuthUser): Promise<number> {
+    const row = await this.pendingApprovalsQuery(user)
+      .select(sql<number>`count(tenders.id)::int`.as('n'))
+      .executeTakeFirst();
+    return Number(row?.n || 0);
+  }
+
+  /**
+   * Approvals Inbox: exactly the tenders currently awaiting approval in the caller's scope, most urgent first
+   * (open deadlines soonest first, then no deadline, then deadlines already passed), newest request first on ties.
+   * Each row carries its open request (who / when / note), the approval SLA clock (from the request, not from tender
+   * creation) and `can_decide`, which mirrors the server's approve/reject rules (Management/Admin + dual control).
+   */
+  async getApprovalsInbox(user: AuthUser, now: Date = new Date()) {
+    const settings = await this.getSettings();
+    const slaHours = Number((settings as any)?.approval_sla_hours) || 24;
+    const allowSelfApproval = Boolean(settings?.allow_self_approval);
+
+    const rows = await this.pendingApprovalsQuery(user)
+      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
+      .leftJoin('zones', 'tenders.zone_id', 'zones.id')
+      .leftJoin('regions', 'tenders.region_id', 'regions.id')
+      .leftJoin('tender_categories', 'tenders.category_id', 'tender_categories.id')
+      .leftJoin('users as assignee', 'tenders.assigned_to', 'assignee.id')
+      .select([
+        'tenders.id',
+        'tenders.tender_no',
+        'tenders.tender_number',
+        'tenders.tender_title',
+        'tenders.internal_ref',
+        'tenders.organisation',
+        'tenders.department',
+        'tenders.requirement_text',
+        'tenders.state',
+        'tenders.category',
+        'tenders.status',
+        'tenders.version',
+        'tenders.submission_deadline',
+        'tenders.bid_closing_date',
+        'tenders.estimated_value',
+        'tenders.assigned_to',
+        'tenders.created_by',
+        'tenders.owner',
+        'tenders.tender_owner_id',
+        'tenders.last_activity_at',
+        'tenders.updated_at',
+        'tenders.created_at',
+        'organisations.name as organisation_name',
+        'zones.name as zone_name',
+        'regions.name as region_name',
+        'tender_categories.name as category_name',
+        'tender_categories.code as category_code',
+        'assignee.full_name as assigned_to_name',
+      ])
+      .execute();
+
+    const ids = rows.map((r) => r.id);
+    const [requests, history] = ids.length
+      ? await Promise.all([
+          this.db
+            .selectFrom('tender_approvals')
+            .leftJoin('users as req', 'tender_approvals.requested_by', 'req.id')
+            .select([
+              'tender_approvals.tender_id',
+              'tender_approvals.requested_by',
+              'tender_approvals.requested_at',
+              'tender_approvals.remarks',
+              'tender_approvals.approval_round',
+              'req.full_name as requested_by_name',
+              'req.role as requested_by_role',
+            ])
+            .where('tender_approvals.tender_id', 'in', ids)
+            .where('tender_approvals.status', '=', 'PENDING')
+            .orderBy('tender_approvals.requested_at', 'desc')
+            .execute(),
+          this.db
+            .selectFrom('tender_status_history')
+            .leftJoin('users as req', 'tender_status_history.changed_by', 'req.id')
+            .select([
+              'tender_status_history.tender_id',
+              'tender_status_history.changed_by',
+              'tender_status_history.created_at',
+              'tender_status_history.remarks',
+              'req.full_name as requested_by_name',
+              'req.role as requested_by_role',
+            ])
+            .where('tender_status_history.tender_id', 'in', ids)
+            .where(sql<boolean>`lower(tender_status_history.to_status) in ('awaiting_internal_approval', 'awaiting_approval')`)
+            .orderBy('tender_status_history.created_at', 'desc')
+            .execute(),
+        ])
+      : [[], []];
+
+    const isDecider = user.role === 'management' || user.role === 'admin';
+
+    const items = rows.map((t) => {
+      // Latest open request row; fall back to the latest status-history entry into the stage.
+      const req = requests.find((r) => r.tender_id === t.id);
+      const hist = history.find((h) => h.tender_id === t.id);
+      const requestedAt = new Date(
+        (req?.requested_at as any) || (hist?.created_at as any) || t.last_activity_at || t.updated_at || t.created_at,
+      );
+      const requestedBy = req?.requested_by || hist?.changed_by || null;
+      const hoursPending = Math.max(0, Math.floor((now.getTime() - requestedAt.getTime()) / 3600000));
+
+      const deadlineRaw = t.submission_deadline || t.bid_closing_date;
+      const deadline = deadlineRaw ? new Date(deadlineRaw as any) : null;
+      const msLeft = deadline ? deadline.getTime() - now.getTime() : null;
+
+      // Mirror of TendersWorkflowService dual-control rule for management (admin is always permitted).
+      let decisionBlockedReason: string | null = null;
+      if (!isDecider) {
+        decisionBlockedReason = 'Only Management and Admin can approve or reject tender participation.';
+      } else if (
+        user.role === 'management' &&
+        !allowSelfApproval &&
+        requestedBy === user.id &&
+        t.created_by === user.id &&
+        t.assigned_to === user.id
+      ) {
+        decisionBlockedReason = 'Self-approval is disallowed: you requested, created and are assigned to this tender.';
+      }
+
+      return {
+        ...t,
+        tender_number: t.tender_number || t.tender_no,
+        organisation_name: t.organisation_name || t.organisation,
+        category: t.category_code || t.category,
+        requested_at: requestedAt.toISOString(),
+        requested_by: requestedBy,
+        requested_by_name: req?.requested_by_name || hist?.requested_by_name || null,
+        requested_by_role: req?.requested_by_role || hist?.requested_by_role || null,
+        request_note: req?.remarks || hist?.remarks || null,
+        approval_round: req?.approval_round || null,
+        hours_pending: hoursPending,
+        sla_hours: slaHours,
+        sla_breached: hoursPending > slaHours,
+        deadline_passed: msLeft !== null && msLeft < 0,
+        days_left: msLeft === null ? null : Math.ceil(msLeft / 86400000),
+        hours_left: msLeft === null ? null : Math.round(msLeft / 3600000),
+        can_decide: decisionBlockedReason === null,
+        decision_blocked_reason: decisionBlockedReason,
+      };
+    });
+
+    const bucket = (i: (typeof items)[number]) => (i.hours_left === null ? 1 : i.deadline_passed ? 2 : 0);
+    items.sort((a, b) => {
+      const ba = bucket(a);
+      const bb = bucket(b);
+      if (ba !== bb) return ba - bb;
+      if (ba === 0) {
+        const d = (a.hours_left as number) - (b.hours_left as number);
+        if (d !== 0) return d;
+      }
+      return Date.parse(b.requested_at) - Date.parse(a.requested_at);
+    });
+
+    return {
+      data: items,
+      total: items.length,
+      can_decide: isDecider,
+      sla_hours: slaHours,
+      generated_at: now.toISOString(),
+    };
   }
 
   async getMyTenders(user: AuthUser) {
@@ -3350,7 +3613,7 @@ export class TendersService {
           zone_id: matchedZone?.id || null,
           region_id: matchedRegion?.id || null,
           submission_deadline: deadlineDate?.toISOString(),
-          publication_date: rawPubDate ? new Date(rawPubDate).toISOString().split('T')[0] : null,
+          publication_date: rawPubDate ? this.istDay(rawPubDate) : null,
           is_existing: Boolean(existingInDb),
           existing_id: existingInDb?.id,
           extra_fields: { is_historical: true }, // Allow past deadlines in import mode
@@ -3562,6 +3825,122 @@ export class TendersService {
   // Document Checklist & Attachments
   // =========================================================================
 
+  /** Which seeded checklist template applies to a tender category (templates exist for pq / mha / general). */
+  private checklistTemplateCode(categoryCode?: string | null, categoryName?: string | null): string {
+    const name = (categoryName || '').toLowerCase();
+    const code = (categoryCode || '').toLowerCase();
+    if (name.includes('pq') || code === 'pq' || code.startsWith('pq')) return 'pq';
+    if (name.includes('mha') || code.includes('mha')) return 'mha';
+    return 'general';
+  }
+
+  /**
+   * The mandatory-document template for a category, de-duplicated by document type (the seed table holds repeated
+   * rows). Falls back to the general template when the category has none.
+   */
+  private async getChecklistTemplate(
+    categoryCode?: string | null,
+    categoryName?: string | null,
+    executor: Kysely<Database> = this.db,
+  ): Promise<{ catCode: string; items: { document_type: string; is_mandatory: boolean }[] }> {
+    const load = async (code: string) =>
+      executor
+        .selectFrom('document_checklist_templates')
+        .select([
+          'document_type',
+          sql<boolean>`bool_or(is_mandatory)`.as('is_mandatory'),
+          sql<number>`min(sort_order)`.as('sort_order'),
+        ])
+        .where('category_code', '=', code)
+        .groupBy('document_type')
+        .orderBy(sql`min(sort_order)`, 'asc')
+        .execute();
+
+    let catCode = this.checklistTemplateCode(categoryCode, categoryName);
+    let rows = await load(catCode);
+    if (rows.length === 0 && catCode !== 'general') {
+      catCode = 'general';
+      rows = await load(catCode);
+    }
+    return {
+      catCode,
+      items: rows.map((r) => ({ document_type: r.document_type, is_mandatory: Boolean(r.is_mandatory) })),
+    };
+  }
+
+  /**
+   * Submission readiness = mandatory documents Ready / mandatory documents required.
+   * - Required set = the tender's mandatory checklist rows; if the tender has none (checklist never created), the
+   *   mandatory items of its category template — so "no documents" is 0% ready, never 100%.
+   * - Only status "Ready" counts. Repeated rows of the same document type count once (ready when one is Ready).
+   * - Zero required documents (no checklist and no template) is NOT ready.
+   */
+  async computeDocumentReadiness(
+    tender: { id: string; category?: string | null; category_code?: string | null; category_name?: string | null },
+    docs?: { document_type: string; is_mandatory: boolean; status: string }[],
+  ) {
+    const documents =
+      docs ??
+      (await this.db
+        .selectFrom('tender_documents')
+        .select(['document_type', 'is_mandatory', 'status'])
+        .where('tender_id', '=', tender.id)
+        .execute());
+
+    const isReady = (status: string) => (status || '').trim().toLowerCase() === 'ready';
+    const mandatoryDocs = documents.filter((d) => d.is_mandatory);
+    const checklistCreated = mandatoryDocs.length > 0;
+
+    const required = new Map<string, boolean>();
+    let source: 'checklist' | 'template' = 'checklist';
+    if (checklistCreated) {
+      for (const d of mandatoryDocs) {
+        const key = d.document_type.trim();
+        required.set(key, Boolean(required.get(key)) || isReady(d.status));
+      }
+    } else {
+      source = 'template';
+      const template = await this.getChecklistTemplate(
+        tender.category_code || tender.category,
+        tender.category_name,
+      );
+      for (const t of template.items.filter((i) => i.is_mandatory)) {
+        const key = t.document_type.trim();
+        required.set(
+          key,
+          documents.some((d) => d.document_type.trim() === key && isReady(d.status)),
+        );
+      }
+    }
+
+    const total = required.size;
+    const ready = [...required.values()].filter(Boolean).length;
+    const missing = [...required.entries()].filter(([, ok]) => !ok).map(([type]) => type);
+    return {
+      mandatory_total: total,
+      mandatory_ready: ready,
+      percentage: total > 0 ? Math.round((ready / total) * 100) : 0,
+      all_mandatory_ready: total > 0 && ready === total,
+      checklist_created: checklistCreated,
+      source,
+      missing,
+    };
+  }
+
+  /** Server-side document gate for TENDER_SUBMITTED / PQ_SUBMITTED. Throws a 400 listing what is missing. */
+  private async assertSubmissionReadiness(
+    tender: { id: string; category?: string | null; category_code?: string | null; category_name?: string | null },
+    to: 'TENDER_SUBMITTED' | 'PQ_SUBMITTED',
+    options?: { bypassDocumentGate?: boolean; userRole?: string },
+  ) {
+    if (options?.bypassDocumentGate) return;
+    const r = await this.computeDocumentReadiness(tender);
+    if (!r.checklist_created || r.all_mandatory_ready) return;
+    const stage = to === 'PQ_SUBMITTED' ? 'PQ Submitted' : 'Tender Submitted';
+    const prefix = `Cannot move to "${stage}": ${r.mandatory_ready} of ${r.mandatory_total} mandatory documents are Ready (${r.percentage}%).`;
+    throw new BadRequestException(`${prefix} Not Ready: ${r.missing.join(', ')}.`);
+  }
+
   async getDocuments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
     assertRegionScope(user, tender.region_id, {
@@ -3579,18 +3958,15 @@ export class TendersService {
       .orderBy('tender_documents.created_at', 'asc')
       .execute();
 
-    const total = docs.length;
-    const readyOrNa = docs.filter((d) => ['Ready', 'Not Applicable'].includes(d.status)).length;
-    const mandatoryTotal = docs.filter((d) => d.is_mandatory).length;
-    const mandatoryReady = docs.filter((d) => d.is_mandatory && ['Ready', 'Not Applicable'].includes(d.status)).length;
-    const completionPercent = total > 0 ? Math.round((readyOrNa / total) * 100) : 100;
+    const readiness = await this.computeDocumentReadiness(tender, docs);
 
     return {
       documents: docs,
-      completion_percentage: completionPercent,
-      mandatory_ready: mandatoryReady,
-      mandatory_total: mandatoryTotal,
-      all_mandatory_ready: mandatoryReady === mandatoryTotal,
+      completion_percentage: readiness.percentage,
+      mandatory_ready: readiness.mandatory_ready,
+      mandatory_total: readiness.mandatory_total,
+      all_mandatory_ready: readiness.all_mandatory_ready,
+      readiness,
     };
   }
 
@@ -3655,13 +4031,7 @@ export class TendersService {
     if (!updated) throw new NotFoundException(`Document ${docId} not found on tender ${tenderId}`);
     
     // Automatically synchronize document readiness with tender prep_checklist_done
-    const allDocs = await this.db
-      .selectFrom('tender_documents')
-      .selectAll()
-      .where('tender_id', '=', tenderId)
-      .execute();
-    const mandatoryDocs = allDocs.filter((d) => d.is_mandatory);
-    const allMandatoryReady = mandatoryDocs.length > 0 && mandatoryDocs.every((d) => ['Ready', 'Not Applicable'].includes(d.status));
+    const allMandatoryReady = (await this.computeDocumentReadiness(tender)).all_mandatory_ready;
 
     await this.db
       .updateTable('tenders')
@@ -3704,30 +4074,11 @@ export class TendersService {
       entityOwnerId: tender.owner || (tender as any).tender_owner_id,
     });
 
-    let catCode = 'general';
-    if (tender.category_name) {
-      const lower = tender.category_name.toLowerCase();
-      if (lower.includes('pq')) catCode = 'pq';
-      else if (lower.includes('mha')) catCode = 'mha';
-    } else if (tender.category) {
-      catCode = tender.category === 'pq' ? 'pq' : 'general';
-    }
-
-    let templates = await this.db
-      .selectFrom('document_checklist_templates')
-      .selectAll()
-      .where('category_code', '=', catCode)
-      .orderBy('sort_order', 'asc')
-      .execute();
-
-    if (templates.length === 0) {
-      templates = await this.db
-        .selectFrom('document_checklist_templates')
-        .selectAll()
-        .where('category_code', '=', 'general')
-        .orderBy('sort_order', 'asc')
-        .execute();
-    }
+    // Same template resolution the readiness gate uses, de-duplicated by document type.
+    const { catCode, items: templates } = await this.getChecklistTemplate(
+      tender.category_code || tender.category,
+      tender.category_name,
+    );
 
     let createdCount = 0;
     for (const t of templates) {
@@ -3794,7 +4145,7 @@ export class TendersService {
       .values({
         tender_id: tenderId,
         corrigendum_number: dto.corrigendum_number.trim(),
-        issued_date: dto.issued_date || new Date().toISOString().split('T')[0],
+        issued_date: dto.issued_date || todayInKolkata(),
         summary: dto.summary || null,
         old_deadline: oldDeadline,
         new_deadline: newDeadline,
@@ -4301,7 +4652,7 @@ export class TendersService {
         organisation_id: tender.organisation_id,
         tender_id: tenderId,
         order_reference: dto.order_number,
-        delivery_date: dto.order_date || new Date().toISOString().split('T')[0],
+        delivery_date: dto.order_date || todayInKolkata(),
         delivery_location: dto.delivery_location || tender.city || 'Client Site',
         assigned_to: tender.assigned_to || user.id,
         // Order confirmed = delivery scheduled; it then moves through the normal delivery lifecycle.
@@ -4419,9 +4770,8 @@ export class TendersService {
       return d < now;
     });
 
-    const pendingApprovals = allActive.filter((t) =>
-      ['awaiting_approval', 'AWAITING_INTERNAL_APPROVAL'].includes(t.status),
-    );
+    // Same source as the Approvals Inbox / "Pending Approvals" KPI.
+    const pendingApprovals = (await this.getApprovalsInbox(user, now)).data;
 
     const incompletePrep = allActive.filter((t) =>
       ['under_preparation', 'UNDER_PREPARATION'].includes(t.status),

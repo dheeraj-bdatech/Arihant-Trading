@@ -12,6 +12,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@arihant/api", "dev"],
       "port": 4000
+    },
+    {
+      "name": "api-sandbox",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd apps/api && PORT=4100 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arihant_sandbox DIRECT_URL=postgresql://postgres:postgres@localhost:5432/arihant_sandbox exec node --watch --watch-path=dist dist/main.js"],
+      "port": 4100
     }
   ]
 }

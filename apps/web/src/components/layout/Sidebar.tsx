@@ -25,14 +25,8 @@ import {
   AlertTriangle,
   Search,
   ChevronDown,
-  ClipboardCheck,
-  Landmark,
-  BarChart3,
-  Settings2,
-  ShieldCheck,
-  Gauge,
-  FileBadge,
   Users,
+  MessageSquarePlus,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useSidebar } from '@/lib/sidebar-context';
@@ -631,6 +625,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               icon: Bell,
               moduleKey: 'notifications',
             },
+            {
+              label: 'UI/UX Ergonomics Hub',
+              href: '/feedback',
+              icon: MessageSquarePlus,
+              moduleKey: 'admin',
+              badge: 'Blueprint §4',
+              badgeVariant: 'cyber',
+            },
           ],
         },
       ];
@@ -762,72 +764,55 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               icon: Bell,
               moduleKey: 'notifications',
             },
+            {
+              label: 'UI/UX Ergonomics Hub',
+              href: '/feedback',
+              icon: MessageSquarePlus,
+              moduleKey: 'admin',
+              badge: 'Blueprint §4',
+              badgeVariant: 'cyber',
+            },
           ],
         },
       ];
   }
 }
 
-const EXPENSE_SUBROUTES = ['/expenses/approvals', '/expenses/accounts', '/expenses/reports', '/expenses/categories'];
-
 /**
- * Module 9: expands each role's single "/expenses" entry into the sub-pages that role can use,
- * with live counts (pending approvals, Accounts queue, clarifications to answer).
+ * Module 9: each role gets one "Expenses" entry. Approvals, Accounts queue, reports and categories are reached from
+ * the module's View menu (ExpenseViewMenu), so the badge sums what is waiting on this user there.
  */
 function withExpenseItems(groups: NavGroup[], role: UserRole, counts: BadgeCounts | null): NavGroup[] {
-  const n = (v?: number) => (v && v > 0 ? String(v) : undefined);
   const isAdminLike = role === 'admin' || role === 'management';
+  const approver = role === 'regional_manager' || isAdminLike || Boolean(counts?.has_team);
+  const waiting =
+    (counts?.my_clarifications || 0) +
+    (approver ? counts?.manager_pending || 0 : 0) +
+    (role === 'accounts' ? (counts?.accounts_pending || 0) + (counts?.accounts_ready || 0) : 0) +
+    (isAdminLike ? counts?.approver_inactive || 0 : 0);
   return groups.map((g) => ({
     ...g,
-    items: g.items.flatMap((item) => {
-      if (item.href !== '/expenses') return [item];
-      const out: NavItem[] = [
-        {
-          ...item,
-          badge: counts?.my_clarifications ? `${counts.my_clarifications} to fix` : item.badge,
-          badgeVariant: counts?.my_clarifications ? 'urgent' : item.badgeVariant,
-        },
-      ];
-      if (role === 'regional_manager' || isAdminLike || counts?.has_team) {
-        out.push({ label: 'Expense Approvals', href: '/expenses/approvals', icon: ClipboardCheck, moduleKey: 'expenses', badge: n(counts?.manager_pending), badgeVariant: 'urgent' });
-      }
-      if (role === 'accounts') {
-        out.push({ label: 'Accounts Queue', href: '/expenses/accounts', icon: Landmark, moduleKey: 'expenses', badge: n((counts?.accounts_pending || 0) + (counts?.accounts_ready || 0)), badgeVariant: 'urgent' });
-      }
-      if (['management', 'admin', 'accounts', 'regional_manager'].includes(role)) {
-        out.push({ label: 'Expense Reports', href: '/expenses/reports', icon: BarChart3, moduleKey: 'expenses' });
-      }
-      if (isAdminLike) {
-        out.push({ label: 'Expense Categories', href: '/expenses/categories', icon: Settings2, moduleKey: 'expenses', badge: n(counts?.approver_inactive), badgeVariant: 'urgent' });
-      }
-      return out;
-    }),
+    items: g.items.map((item) =>
+      item.href === '/expenses'
+        ? { ...item, label: 'Expenses', badge: waiting > 0 ? String(waiting) : item.badge, badgeVariant: waiting > 0 ? 'urgent' : item.badgeVariant }
+        : item,
+    ),
   }));
 }
 
-const TASK_SUBROUTES = ['/tasks/team', '/tasks/blockers', '/tasks/approvals', '/tasks/accountability', '/tasks/evidence'];
-
 /**
- * Module 8: expands each role's single "/tasks" entry into the task pages that role can use, with live
- * counts (my overdue, blocker reviews and approvals waiting on me).
+ * Module 8: each role gets one "Tasks" entry. Team, blockers, approvals, accountability and evidence are
+ * reached from the module's View menu (TaskViewMenu), so the badge sums everything waiting on this user.
  */
 function withTaskItems(groups: NavGroup[], s: TaskSummary | null): NavGroup[] {
-  const n = (v?: number) => (v && v > 0 ? String(v) : undefined);
-  const manager = Boolean(s?.has_team || s?.can_view_all);
+  const waiting = (s?.my_overdue || 0) + (s?.pending_blockers || 0) + (s?.pending_approvals || 0);
   return groups.map((g) => ({
     ...g,
-    items: g.items.flatMap((item) => {
-      if (item.href !== '/tasks') return [item];
-      const out: NavItem[] = [
-        { ...item, label: 'My Tasks', badge: s?.my_overdue ? `${s.my_overdue} overdue` : item.badge, badgeVariant: s?.my_overdue ? 'urgent' : item.badgeVariant },
-      ];
-      if (manager) out.push({ label: 'Team Tasks', href: '/tasks/team', icon: Users, moduleKey: 'tasks', badge: n(s?.needs_reassignment), badgeVariant: 'warning' });
-      if (manager || s?.pending_blockers) out.push({ label: 'Blocker Reviews', href: '/tasks/blockers', icon: ShieldCheck, moduleKey: 'tasks', badge: n(s?.pending_blockers), badgeVariant: 'urgent' });
-      if (manager || s?.pending_approvals) out.push({ label: 'Task Approvals', href: '/tasks/approvals', icon: ClipboardCheck, moduleKey: 'tasks', badge: n(s?.pending_approvals), badgeVariant: 'urgent' });
-      if (manager) out.push({ label: 'Accountability', href: '/tasks/accountability', icon: Gauge, moduleKey: 'tasks' });
-      if (s?.can_view_evidence) out.push({ label: 'Performance Evidence', href: '/tasks/evidence', icon: FileBadge, moduleKey: 'tasks' });
-      return out;
-    }),
+    items: g.items.map((item) =>
+      item.href === '/tasks'
+        ? { ...item, label: 'Tasks', badge: waiting > 0 ? String(waiting) : item.badge, badgeVariant: waiting > 0 ? 'urgent' : item.badgeVariant }
+        : item,
+    ),
   }));
 }
 
@@ -880,11 +865,7 @@ export const Sidebar: React.FC = () => {
     });
 
   const isItemActive = (item: NavItem) =>
-    item.href === '/expenses'
-      ? pathname.startsWith('/expenses') && !EXPENSE_SUBROUTES.some((r) => pathname.startsWith(r))
-      : item.href === '/tasks'
-      ? pathname.startsWith('/tasks') && !TASK_SUBROUTES.some((r) => pathname.startsWith(r))
-      : item.href.includes('?')
+    item.href.includes('?')
       ? pathname === item.href.split('?')[0] &&
         typeof window !== 'undefined' &&
         window.location.search.includes(item.href.split('?')[1])
@@ -1069,6 +1050,15 @@ export const Sidebar: React.FC = () => {
               </div>
             )}
             <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent('open-uiux-feedback'))}
+              className="md-icon-btn h-10 w-10 ml-3 flex items-center justify-center cursor-pointer text-[#0F5E63] hover:bg-[#E3EFEE]"
+              title="UI/UX & Field Ergonomics Feedback"
+              aria-label="UI/UX & Field Ergonomics Feedback"
+            >
+              <MessageSquarePlus className="h-4 w-4" />
+            </button>
+            <button
               onClick={logout}
               title="Sign Out"
               aria-label="Sign Out"
@@ -1078,7 +1068,22 @@ export const Sidebar: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="md-side-foot p-3 shrink-0">
+          <div className="md-side-foot p-3 space-y-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent('open-uiux-feedback'))}
+              className="w-full flex items-center justify-between px-3 py-1.5 rounded-[8px] border border-[#DCD8CE] bg-[#FBFAF7] hover:bg-[#E3EFEE] hover:border-[#0F5E63]/40 text-[#14213D] text-[12px] font-medium transition-all cursor-pointer group shadow-xs"
+              title="Give UI/UX & Field Ergonomics Feedback"
+            >
+              <span className="flex items-center gap-2">
+                <MessageSquarePlus className="w-3.5 h-3.5 text-[#0F5E63] group-hover:scale-110 transition-transform" />
+                <span className="font-semibold text-xs">UI/UX Feedback</span>
+              </span>
+              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#0F5E63]">
+                Ergonomics
+              </span>
+            </button>
+
             {user && (
               <div className="md-userrow flex items-center gap-3 p-2">
                 <div className="md-avatar h-10 w-10 flex items-center justify-center text-sm font-semibold shrink-0">
@@ -1173,6 +1178,23 @@ export const Sidebar: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  closeMobile();
+                  window.dispatchEvent(new CustomEvent('open-uiux-feedback'));
+                }}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-[8px] border border-[#DCD8CE] bg-[#FBFAF7] hover:bg-[#E3EFEE] text-[#14213D] text-[12px] font-medium transition-all cursor-pointer group"
+              >
+                <span className="flex items-center gap-2">
+                  <MessageSquarePlus className="w-4 h-4 text-[#0F5E63]" />
+                  <span className="font-semibold">UI/UX Feedback Section</span>
+                </span>
+                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#0F5E63]">
+                  Field Review
+                </span>
+              </button>
 
               <button
                 onClick={() => {

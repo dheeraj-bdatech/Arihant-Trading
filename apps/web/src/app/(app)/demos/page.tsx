@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { addIsoDays, istToday } from '@/lib/ist-date';
+import { calendarDay } from '@/lib/calendar-day';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
@@ -20,7 +22,6 @@ import {
   Sparkles,
   Users,
   Search,
-  Filter,
   RefreshCw,
   Building,
   Layers,
@@ -36,6 +37,8 @@ import {
   Package,
   ExternalLink,
   FileText,
+  CalendarDays,
+  LayoutList,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -56,11 +59,10 @@ import {
   StatCard,
   StatGrid,
   SectionHeader,
-  FilterBar,
+  FilterMenu,
   EmptyState,
   InfoCallout,
-  Tabs,
-  Checkbox, Spinner, PageLoader, ToolbarBox,
+  Checkbox, Spinner, PageLoader,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu } from '@/components/ui';
 
 // =========================================================================
@@ -327,12 +329,13 @@ function DemosPageContent() {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [filterResult, setFilterResult] = useState('');
   const [filterFailureReason, setFilterFailureReason] = useState('');
+  const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
 
   // Live Equipment Availability Checker State
   const [availFilterProduct, setAvailFilterProduct] = useState('');
   const [availFilterLocation, setAvailFilterLocation] = useState('');
   const [availFilterDate, setAvailFilterDate] = useState(
-    new Date().toISOString().split('T')[0],
+    istToday(),
   );
   const [availabilityResults, setAvailabilityResults] = useState<any | null>(null);
   const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
@@ -367,7 +370,7 @@ function DemosPageContent() {
     organisation_id: '',
     product_id: '',
     location: '',
-    requested_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
+    requested_date: addIsoDays(istToday(), 5),
     assigned_to: '', // Salesperson
     purpose: '',
     expected_audience: '',
@@ -709,6 +712,25 @@ function DemosPageContent() {
   ]);
 
 
+  // Pipeline filter-row helpers
+  const demoLocations = Array.from(new Set(demos.map((d) => d.location).filter(Boolean) as string[])).sort();
+  const hasPipelineFilters = Boolean(
+    filterSearch || filterStatus || filterProduct || filterLocation || filterDateFrom || filterDateTo || filterResult || filterFailureReason,
+  );
+  const clearPipelineFilters = () => {
+    setFilterSearch('');
+    setFilterStatus('');
+    setFilterProduct('');
+    setFilterLocation('');
+    setFilterDateFrom('');
+    setFilterDateTo('');
+    setFilterResult('');
+    setFilterFailureReason('');
+  };
+  const hasFailureFilters = Boolean(
+    failSearchQuery || failReasonFilter !== 'all' || failEscortFilter !== 'all' || failServiceTicketFilter !== 'all',
+  );
+
   const coordinatorDemos = demos.filter((d) =>
     ['requested', 'under_planning', 'team_assigned', 'equipment_reserved'].includes(d.status),
   );
@@ -757,7 +779,7 @@ function DemosPageContent() {
         organisation_id: '',
         product_id: '',
         location: '',
-        requested_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
+        requested_date: addIsoDays(istToday(), 5),
         assigned_to: '',
         purpose: '',
         expected_audience: '',
@@ -841,8 +863,7 @@ function DemosPageContent() {
     setReserveModalError(null);
     setReserveConflict(null);
     setOverrideReason('');
-    const rawDate = demo.confirmed_date || demo.requested_date || new Date().toISOString();
-    const dateStr = typeof rawDate === 'string' ? rawDate.split('T')[0] : new Date(rawDate).toISOString().split('T')[0];
+    const dateStr = calendarDay(demo.confirmed_date || demo.requested_date) || istToday();
     setReserveForm({
       equipment_id: '',
       reserved_from: dateStr,
@@ -1245,7 +1266,7 @@ function DemosPageContent() {
   const openConfirmDate = (demo: any) => {
     setSelectedDemo(demo);
     setConfirmForm({
-      confirmed_date: demo.confirmed_date || demo.requested_date || new Date().toISOString().split('T')[0],
+      confirmed_date: demo.confirmed_date || demo.requested_date || istToday(),
       remarks: demo.remarks || '',
     });
     setIsConfirmDateOpen(true);
@@ -1254,7 +1275,7 @@ function DemosPageContent() {
   const openRescheduleDemo = (demo: any) => {
     setSelectedDemo(demo);
     setRescheduleForm({
-      new_date: demo.confirmed_date || demo.requested_date || new Date().toISOString().split('T')[0],
+      new_date: demo.confirmed_date || demo.requested_date || istToday(),
       reason: '',
     });
     setIsRescheduleOpen(true);
@@ -1852,6 +1873,18 @@ function DemosPageContent() {
     );
   }
 
+  // The View menu (first control of the filter row) replaces the old row of view tabs.
+  const pendingPlanningCount = demos.filter((d) => ['requested', 'under_planning'].includes(d.status)).length;
+  const viewOptions = [
+    { key: 'pipeline', label: 'Demo pipeline & requests', icon: <Layers />, count: demos.length },
+    { key: 'my_demos', label: 'My demos', icon: <Users />, count: myDemosList.length },
+    { key: 'coordinator', label: 'Coordinator planning queue', icon: <Wrench />, count: pendingPlanningCount },
+    { key: 'failures', label: 'Field failures & incidents', icon: <AlertTriangle />, count: failedDemos.length, urgent: true },
+    { key: 'fleet', label: 'Depot fleet & availability', icon: <Package />, count: equipmentList.length },
+    { key: 'analytics', label: 'Analytics & failure insights', icon: <BarChart3 /> },
+    { key: 'history', label: 'Customer trial history', icon: <History /> },
+  ].map((o) => ({ ...o, active: activeTab === o.key, onSelect: () => setActiveTab(o.key as typeof activeTab) }));
+
   return (
     <PageContainer>
       {/* Top Banner & Header */}
@@ -1886,6 +1919,292 @@ function DemosPageContent() {
         }
       />
 
+      {/* Key metrics (views that have them) sit directly under the header, above the filter row. */}
+      {activeTab === 'analytics' && analyticsData && (
+        <StatGrid cols={4} className="gap-3">
+          <StatCard
+            label="Total Demos"
+            value={analyticsData.overview.total_demos}
+            subtext={`${analyticsData.overview.active_pipeline} active in pipeline`}
+            icon={<Layers className="h-4 w-4" />}
+          />
+
+          <StatCard
+            label="Completed Trials"
+            value={analyticsData.overview.completed_demos}
+            valueColor="emerald"
+            subtext={`${analyticsData.overview.successful} successful trials`}
+            icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+          />
+
+          <StatCard
+            label="Trial Success Rate"
+            value={`${analyticsData.overview.success_rate_percent}%`}
+            valueColor="primary"
+            progress={analyticsData.overview.success_rate_percent}
+            progressColor="primary"
+            icon={<Sparkles className="h-4 w-4 text-[#0F5E63]" />}
+          />
+
+          <StatCard
+            label="Cancelled / Rescheduled"
+            value={`${analyticsData.overview.cancelled_demos} / ${analyticsData.overview.rescheduled_demos}`}
+            valueColor="amber"
+            subtext="Fleet reallocations logged"
+            icon={<Clock className="h-4 w-4 text-amber-600" />}
+          />
+        </StatGrid>
+      )}
+
+      {activeTab === 'failures' && (
+        <StatGrid cols={4} className="gap-3">
+          <StatCard
+            label="Total Trial Failures"
+            value={failedDemos.length}
+            subtext="Field deficiencies & objections"
+            valueColor="rose"
+            icon={<AlertTriangle className="h-4 w-4 text-rose-600" />}
+          />
+          <StatCard
+            label="Technical Breakdowns"
+            value={failedDemos.filter((d) => d.outcome?.failure_reason === 'TECHNICAL_FAILURE').length}
+            subtext="Hardware / calibration / defect"
+            valueColor="rose"
+            icon={<Wrench className="h-4 w-4 text-rose-600" />}
+          />
+          <StatCard
+            label="Module 6 Auto-Tickets"
+            value={failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length}
+            subtext="Breakdown tickets auto-logged"
+            valueColor="amber"
+            icon={<ShieldAlert className="h-4 w-4 text-amber-600" />}
+          />
+          <StatCard
+            label="Quarantined Fleet Units"
+            value={equipmentList.filter((e) => e.availability_status === 'maintenance').length}
+            subtext="Protected from reassignment"
+            valueColor="primary"
+            icon={<Package className="h-4 w-4 text-[#0F5E63]" />}
+          />
+        </StatGrid>
+      )}
+
+      {/* One filter row on every view: the View menu first, then that view's own search and filters. */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <FilterMenu label="View" icon={<LayoutList />} neutralKeys={[]} options={viewOptions} className="shrink-0" />
+          {activeTab === 'pipeline' && (
+            <>
+              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <input
+                  type="search"
+                  aria-label="Search demos"
+                  placeholder="Search demo ID, client, product, assignee…"
+                  value={filterSearch}
+                  onChange={(e) => setFilterSearch(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+                <FilterMenu
+                  label="Status"
+                  icon={<Layers />}
+                  options={[
+                    { key: '', label: 'All statuses' },
+                    { key: 'requested', label: 'Requested' },
+                    { key: 'under_planning', label: 'Under planning' },
+                    { key: 'team_assigned', label: 'Team assigned' },
+                    { key: 'equipment_reserved', label: 'Equipment reserved' },
+                    { key: 'confirmed', label: 'Confirmed' },
+                    { key: 'completed', label: 'Completed' },
+                    { key: 'rescheduled', label: 'Rescheduled' },
+                    { key: 'cancelled', label: 'Cancelled' },
+                  ].map((o) => ({
+                    ...o,
+                    count: o.key ? demos.filter((d) => d.status === o.key).length : demos.length,
+                    active: filterStatus === o.key,
+                    onSelect: () => setFilterStatus(o.key),
+                  }))}
+                  neutralKeys={['']}
+                />
+                <FilterMenu
+                  label="Product"
+                  icon={<Package />}
+                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  neutralKeys={['']}
+                  options={[{ id: '', name: 'All products' }, ...products].map((p: any) => ({
+                    key: p.id,
+                    label: p.name,
+                    active: filterProduct === p.id,
+                    onSelect: () => setFilterProduct(p.id),
+                  }))}
+                />
+                <FilterMenu
+                  label="Location"
+                  icon={<MapPin />}
+                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  neutralKeys={['']}
+                  options={[
+                    { key: '', label: 'All locations', active: !filterLocation, onSelect: () => setFilterLocation('') },
+                    ...demoLocations.map((loc) => ({
+                      key: loc,
+                      label: loc,
+                      count: demos.filter((d) => d.location === loc).length,
+                      active: filterLocation === loc,
+                      onSelect: () => setFilterLocation(loc),
+                    })),
+                  ]}
+                />
+                <FilterMenu
+                  label="Outcome"
+                  icon={<CheckCircle2 />}
+                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  neutralKeys={['']}
+                  options={[
+                    { key: '', label: 'All outcomes', active: !filterResult, onSelect: () => { setFilterResult(''); setFilterFailureReason(''); } },
+                    { key: 'success', label: 'Successful pass', active: filterResult === 'success', onSelect: () => { setFilterResult('success'); setFilterFailureReason(''); } },
+                    { key: 'partial', label: 'Partial trial', active: filterResult === 'partial', onSelect: () => { setFilterResult('partial'); setFilterFailureReason(''); } },
+                    {
+                      key: 'fail',
+                      label: 'Failed (any reason)',
+                      urgent: true,
+                      count: demos.filter((d) => d.outcome?.result === 'fail').length,
+                      active: filterResult === 'fail' && !filterFailureReason,
+                      onSelect: () => { setFilterResult('fail'); setFilterFailureReason(''); },
+                    },
+                    ...Object.entries(FAILURE_REASON_METADATA).map(([key, meta]) => ({
+                      key: `fail:${key}`,
+                      label: `Failed · ${meta.label}`,
+                      active: filterResult === 'fail' && filterFailureReason === key,
+                      onSelect: () => { setFilterResult('fail'); setFilterFailureReason(key); },
+                    })),
+                  ]}
+                />
+                <button
+                  type="button"
+                  onClick={() => setIsDateFilterOpen((prev) => !prev)}
+                  aria-expanded={isDateFilterOpen}
+                  className={`filter-menu-btn ${isDateFilterOpen || filterDateFrom || filterDateTo ? 'filter-menu-btn--on' : ''}`}
+                >
+                  <CalendarDays className="h-3.5 w-3.5" />
+                  <span>Dates</span>
+                  {(filterDateFrom || filterDateTo) && <span className="filter-menu-chip">On</span>}
+                </button>
+                {hasPipelineFilters && (
+                  <Button variant="ghost" size="xs" onClick={clearPipelineFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+          {activeTab === 'failures' && (
+            <>
+              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <input
+                  type="search"
+                  aria-label="Search incidents"
+                  placeholder="Search client, location, product, S/N, ticket #…"
+                  value={failSearchQuery}
+                  onChange={(e) => setFailSearchQuery(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+                <FilterMenu
+                  label="Reason"
+                  icon={<AlertTriangle />}
+                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  options={[
+                    { key: 'all', label: 'All failure reasons', count: failedDemos.length },
+                    ...Object.entries(FAILURE_REASON_METADATA).map(([k, v]) => ({
+                      key: k,
+                      label: v.label,
+                      count: failedDemos.filter((d) => d.outcome?.failure_reason === k).length,
+                    })),
+                  ].map((o) => ({ ...o, active: failReasonFilter === o.key, onSelect: () => setFailReasonFilter(o.key) }))}
+                />
+                <FilterMenu
+                  label="Escort"
+                  icon={<ShieldCheck />}
+                  options={[
+                    { key: 'all', label: 'All escort scenarios', count: undefined },
+                    { key: 'escorted', label: 'Service escorted', count: failedDemos.filter((d) => d.service_escort_required).length },
+                    { key: 'unescorted', label: 'Unescorted (solo sales)', count: failedDemos.filter((d) => !d.service_escort_required).length },
+                  ].map((o) => ({ ...o, active: failEscortFilter === o.key, onSelect: () => setFailEscortFilter(o.key) }))}
+                />
+                <FilterMenu
+                  label="Ticket"
+                  icon={<Wrench />}
+                  options={[
+                    { key: 'all', label: 'All ticket states', count: undefined },
+                    { key: 'ticket_logged', label: 'Ticket logged', count: failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length },
+                    { key: 'no_ticket', label: 'No ticket', count: failedDemos.filter((d) => !(d.service_ticket_id || d.outcome?.service_ticket_id)).length },
+                  ].map((o) => ({ ...o, active: failServiceTicketFilter === o.key, onSelect: () => setFailServiceTicketFilter(o.key) }))}
+                />
+                {hasFailureFilters && (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => {
+                      setFailSearchQuery('');
+                      setFailReasonFilter('all');
+                      setFailEscortFilter('all');
+                      setFailServiceTicketFilter('all');
+                    }}
+                    className="text-xs text-[#4A5568] hover:text-[#881337]"
+                  >
+                    Clear
+                  </Button>
+                )}
+                <span className="whitespace-nowrap pl-1 text-[11px] text-[#4A5568]">
+                  <b className="font-mono text-[#14213D]">{displayedFailures.length}</b> of {failedDemos.length}
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {activeTab === 'pipeline' && isDateFilterOpen && (
+          <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
+            <span className="font-semibold text-[#4A5568]">Demo date (confirmed or requested)</span>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              From
+              <input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              To
+              <input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+              />
+            </label>
+            {(filterDateFrom || filterDateTo) && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  setFilterDateFrom('');
+                  setFilterDateTo('');
+                }}
+                className="text-xs text-[#4A5568] hover:text-[#881337]"
+              >
+                Reset dates
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
+
       {/* Global Alerts / Feedback */}
       {actionSuccess && (
         <InfoCallout
@@ -1907,187 +2226,11 @@ function DemosPageContent() {
         </InfoCallout>
       )}
 
-      {/* Module 3 Primary Navigation Tabs */}
-      <ToolbarBox>
-      <Tabs
-        variant="pills"
-        tabs={[
-          {
-            id: 'pipeline',
-            label: 'Demo Pipeline & Requests',
-            icon: <Layers className="h-4 w-4" />,
-            count: demos.length,
-          },
-          {
-            id: 'my_demos',
-            label: 'My Demos',
-            icon: <Users className="h-4 w-4" />,
-            count: myDemosList.length,
-            badgeVariant: 'info',
-          },
-          {
-            id: 'coordinator',
-            label: 'Coordinator Planning Queue',
-            icon: <Wrench className="h-4 w-4" />,
-            count: demos.filter((d) => ['requested', 'under_planning'].includes(d.status)).length,
-            badgeVariant: 'warning',
-          },
-          {
-            id: 'failures',
-            label: 'Field Failures & Incident Log',
-            icon: <AlertTriangle className="h-4 w-4 text-[#9A3412]" />,
-            count: failedDemos.length,
-            badgeVariant: 'urgent',
-          },
-          {
-            id: 'fleet',
-            label: 'Depot Fleet & Live Availability',
-            icon: <Package className="h-4 w-4" />,
-            count: equipmentList.length,
-          },
-          {
-            id: 'analytics',
-            label: 'Analytics & Failure Insights',
-            icon: <BarChart3 className="h-4 w-4" />,
-          },
-          {
-            id: 'history',
-            label: 'Customer Trial History',
-            icon: <History className="h-4 w-4" />,
-          },
-        ]}
-        activeTab={activeTab}
-        onChange={(id) => setActiveTab(id as any)}
-      />
-      </ToolbarBox>
-
       {/* =================================================================== */}
       {/* TAB 1: DEMO PIPELINE & REQUESTS                                    */}
       {/* =================================================================== */}
       {activeTab === 'pipeline' && (
         <div className="space-y-4">
-          {/* Filter Bar */}
-          <FilterBar>
-            <div className="filter-row">
-              <div className="relative min-w-[240px] flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#4A5568]" />
-                <Input
-                  placeholder="Search Demo ID, Client, Product, Assignee..."
-                  value={filterSearch}
-                  onChange={(e) => setFilterSearch(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-
-              <div className="w-[140px] shrink-0">
-                <Select
-                  value={filterStatus}
-                  onChange={(e) => setFilterStatus(e.target.value)}
-                  options={[
-                    { label: 'All Statuses', value: '' },
-                    { label: 'Requested', value: 'requested' },
-                    { label: 'Under Planning', value: 'under_planning' },
-                    { label: 'Team Assigned', value: 'team_assigned' },
-                    { label: 'Equipment Reserved', value: 'equipment_reserved' },
-                    { label: 'Confirmed', value: 'confirmed' },
-                    { label: 'Completed', value: 'completed' },
-                    { label: 'Rescheduled', value: 'rescheduled' },
-                    { label: 'Cancelled', value: 'cancelled' },
-                  ]}
-                />
-              </div>
-
-              <div className="w-[150px] shrink-0">
-                <Select
-                  value={filterProduct}
-                  onChange={(e) => setFilterProduct(e.target.value)}
-                  options={[
-                    { label: 'All Products', value: '' },
-                    ...products.map((p) => ({ label: p.name, value: p.id })),
-                  ]}
-                />
-              </div>
-
-              <div className="w-[120px] shrink-0">
-                <Input
-                  placeholder="Location"
-                  value={filterLocation}
-                  onChange={(e) => setFilterLocation(e.target.value)}
-                />
-              </div>
-
-              <div className="w-[140px] shrink-0">
-                <Select
-                  value={filterResult}
-                  onChange={(e) => {
-                    setFilterResult(e.target.value);
-                    if (e.target.value !== 'fail') setFilterFailureReason('');
-                  }}
-                  options={[
-                    { label: 'All Outcomes', value: '' },
-                    { label: 'Successful Pass Only', value: 'success' },
-                    { label: 'Unsuccessful / Fail Only', value: 'fail' },
-                    { label: 'Partial Trials', value: 'partial' },
-                  ]}
-                />
-              </div>
-
-              {filterResult === 'fail' && (
-                <div className="w-[180px] shrink-0">
-                  <Select
-                    value={filterFailureReason}
-                    onChange={(e) => setFilterFailureReason(e.target.value)}
-                    options={[
-                      { label: 'All Failure Reasons', value: '' },
-                      ...Object.entries(FAILURE_REASON_METADATA).map(([key, meta]) => ({
-                        label: `${meta.label}`,
-                        value: key,
-                      })),
-                    ]}
-                  />
-                </div>
-              )}
-
-              <div className="flex shrink-0 items-center gap-1.5">
-                <Input
-                  type="date"
-                  value={filterDateFrom}
-                  onChange={(e) => setFilterDateFrom(e.target.value)}
-                  title="From date"
-                  className="w-[128px]"
-                />
-                <span className="text-xs text-[#4A5568]">to</span>
-                <Input
-                  type="date"
-                  value={filterDateTo}
-                  onChange={(e) => setFilterDateTo(e.target.value)}
-                  title="To date"
-                  className="w-[128px]"
-                />
-              </div>
-
-              {(filterSearch || filterStatus || filterProduct || filterLocation || filterDateFrom || filterDateTo || filterResult || filterFailureReason) && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setFilterSearch('');
-                    setFilterStatus('');
-                    setFilterProduct('');
-                    setFilterLocation('');
-                    setFilterDateFrom('');
-                    setFilterDateTo('');
-                    setFilterResult('');
-                    setFilterFailureReason('');
-                  }}
-                  className="text-xs"
-                >
-                  Reset
-                </Button>
-              )}
-            </div>
-          </FilterBar>
-
           {/* Demos Table */}
           {filteredDemos.length === 0 ? (
             <EmptyState
@@ -2402,41 +2545,6 @@ function DemosPageContent() {
         <div className="space-y-6">
           {analyticsData && (
             <>
-              {/* Overview Metrics Cards */}
-              <StatGrid columns={4}>
-                <StatCard
-                  label="Total Demos"
-                  value={analyticsData.overview.total_demos}
-                  subtext={`${analyticsData.overview.active_pipeline} active in pipeline`}
-                  icon={<Layers className="h-4 w-4" />}
-                />
-
-                <StatCard
-                  label="Completed Trials"
-                  value={analyticsData.overview.completed_demos}
-                  valueColor="emerald"
-                  subtext={`${analyticsData.overview.successful} successful trials`}
-                  icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
-                />
-
-                <StatCard
-                  label="Trial Success Rate"
-                  value={`${analyticsData.overview.success_rate_percent}%`}
-                  valueColor="primary"
-                  progress={analyticsData.overview.success_rate_percent}
-                  progressColor="primary"
-                  icon={<Sparkles className="h-4 w-4 text-[#0F5E63]" />}
-                />
-
-                <StatCard
-                  label="Cancelled / Rescheduled"
-                  value={`${analyticsData.overview.cancelled_demos} / ${analyticsData.overview.rescheduled_demos}`}
-                  valueColor="amber"
-                  subtext="Fleet reallocations logged"
-                  icon={<Clock className="h-4 w-4 text-amber-600" />}
-                />
-              </StatGrid>
-
               {/* Structured Failure Analysis Breakdown & Recurring Pattern Matrix (§18 & §19) */}
               <Card className="p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs space-y-6">
                 <SectionHeader
@@ -2791,38 +2899,6 @@ function DemosPageContent() {
       {/* =================================================================== */}
       {activeTab === 'failures' && (
         <div className="space-y-6 animate-in fade-in duration-200">
-          {/* Executive Failure Metrics HUD */}
-          <StatGrid columns={4}>
-            <StatCard
-              label="Total Trial Failures"
-              value={failedDemos.length}
-              subtext="Field deficiencies & objections"
-              valueColor="rose"
-              icon={<AlertTriangle className="h-4 w-4 text-rose-600" />}
-            />
-            <StatCard
-              label="Technical Breakdowns"
-              value={failedDemos.filter((d) => d.outcome?.failure_reason === 'TECHNICAL_FAILURE').length}
-              subtext="Hardware / calibration / defect"
-              valueColor="rose"
-              icon={<Wrench className="h-4 w-4 text-rose-600" />}
-            />
-            <StatCard
-              label="Module 6 Auto-Tickets"
-              value={failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length}
-              subtext="Breakdown tickets auto-logged"
-              valueColor="amber"
-              icon={<ShieldAlert className="h-4 w-4 text-amber-600" />}
-            />
-            <StatCard
-              label="Quarantined Fleet Units"
-              value={equipmentList.filter((e) => e.availability_status === 'maintenance').length}
-              subtext="Protected from reassignment"
-              valueColor="primary"
-              icon={<Package className="h-4 w-4 text-[#0F5E63]" />}
-            />
-          </StatGrid>
-
           {/* Root-cause breakdown + response status (real data only) */}
           {(() => {
             const byReason = Object.entries(
@@ -2888,71 +2964,6 @@ function DemosPageContent() {
               </div>
             );
           })()}
-
-          {/* One-line filter bar */}
-          <div className="flex flex-wrap items-center gap-2.5 rounded-[14px] border border-[#DCD8CE] bg-white p-3">
-            <div className="relative min-w-[220px] flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#4A5568]" />
-              <Input
-                placeholder="Search client, location, product, S/N, ticket #..."
-                value={failSearchQuery}
-                onChange={(e) => setFailSearchQuery(e.target.value)}
-                className="pl-9 text-xs"
-              />
-            </div>
-            <div className="w-[190px] shrink-0">
-              <Select
-                value={failReasonFilter}
-                onChange={(e) => setFailReasonFilter(e.target.value)}
-                className="text-xs font-semibold"
-                options={[
-                  { label: 'All failure reasons', value: 'all' },
-                  ...Object.entries(FAILURE_REASON_METADATA).map(([k, v]) => ({ label: v.label, value: k })),
-                ]}
-              />
-            </div>
-            <div className="w-[170px] shrink-0">
-              <Select
-                value={failEscortFilter}
-                onChange={(e) => setFailEscortFilter(e.target.value)}
-                className="text-xs font-semibold"
-                options={[
-                  { label: 'All escort scenarios', value: 'all' },
-                  { label: 'Service escorted', value: 'escorted' },
-                  { label: 'Unescorted (solo sales)', value: 'unescorted' },
-                ]}
-              />
-            </div>
-            <div className="w-[170px] shrink-0">
-              <Select
-                value={failServiceTicketFilter}
-                onChange={(e) => setFailServiceTicketFilter(e.target.value)}
-                className="text-xs font-semibold"
-                options={[
-                  { label: 'All ticket states', value: 'all' },
-                  { label: 'Ticket logged', value: 'ticket_logged' },
-                  { label: 'No ticket', value: 'no_ticket' },
-                ]}
-              />
-            </div>
-            {(failSearchQuery || failReasonFilter !== 'all' || failEscortFilter !== 'all' || failServiceTicketFilter !== 'all') && (
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => {
-                  setFailSearchQuery('');
-                  setFailReasonFilter('all');
-                  setFailEscortFilter('all');
-                  setFailServiceTicketFilter('all');
-                }}
-              >
-                Reset
-              </Button>
-            )}
-            <span className="ml-auto text-[11px] text-[#4A5568]">
-              <b className="font-mono text-[#14213D]">{displayedFailures.length}</b> of {failedDemos.length} incidents
-            </span>
-          </div>
 
           {/* Incident feed */}
           {displayedFailures.length === 0 ? (

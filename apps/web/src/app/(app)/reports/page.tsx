@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { istToday } from '@/lib/ist-date';
 import {
   FileSpreadsheet,
   Download,
@@ -16,6 +17,8 @@ import {
   ArrowUpRight,
   TrendingUp,
   RefreshCw,
+  Layers,
+  LayoutList,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -28,16 +31,13 @@ import {
   CardContent,
   Badge,
   Button,
-  Tabs,
   PageContainer,
   PageHeader,
   StatGrid,
   StatCard,
   PageLoader,
-  ToolbarBox,
-  ToolbarSlot,
   InfoCallout,
-  Select,
+  FilterMenu,
 } from '@/components/ui';
 import { formatLakh, formatINR } from '@arihant/shared';
 
@@ -60,6 +60,14 @@ const DATASETS = [
   { key: 'expenses', label: 'Expense Claims', url: '/expense-reports', access: null },
   { key: 'service', label: 'Service Desk', url: '/service/tickets', access: 'service' },
 ] as const satisfies readonly { key: string; label: string; url: string; access: ReadableModule | null }[];
+
+const KPI_CARDS: { key: string; title: string; icon: React.ReactNode; variant: 'primary' | 'amber' | 'emerald' }[] = [
+  { key: 'tenders', title: 'Live GeM Bids', icon: <FileText className="h-4 w-4" />, variant: 'primary' },
+  { key: 'leads', title: 'Active Leads', icon: <Target className="h-4 w-4" />, variant: 'primary' },
+  { key: 'visits', title: 'Field Visits', icon: <Calendar className="h-4 w-4" />, variant: 'primary' },
+  { key: 'expenses', title: 'Expense Claims', icon: <Receipt className="h-4 w-4" />, variant: 'amber' },
+  { key: 'service', title: 'Service Tickets', icon: <Wrench className="h-4 w-4" />, variant: 'emerald' },
+];
 
 export default function ConsolidatedReportsPage() {
   const { user } = useAuth();
@@ -122,6 +130,12 @@ export default function ConsolidatedReportsPage() {
   const activeRows: any[] = { tenders, leads, visits, expenses, service: tickets }[activeTab] || [];
   const statusOptions = Array.from(new Set(activeRows.map((r) => String(r.status || '').toLowerCase()).filter(Boolean))).sort();
 
+  const switchTab = (id: string) => {
+    setActiveTab(id);
+    setStatusFilter('all');
+  };
+  const counts: Record<string, number> = { tenders: tenders.length, leads: leads.length, visits: visits.length, expenses: expenses.length, service: tickets.length };
+
   // Generic CSV Exporter
   const exportToCsv = (filename: string, rows: Record<string, any>[]) => {
     if (!rows || rows.length === 0) return;
@@ -144,7 +158,7 @@ export default function ConsolidatedReportsPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `${filename}_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `${filename}_${istToday()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -265,59 +279,82 @@ export default function ConsolidatedReportsPage() {
         }
       />
 
-      {/* KPI Highlights Bar */}
-      <StatGrid cols={Math.min(5, Math.max(2, visible.size)) as 2 | 3 | 4 | 5}>
-        {visible.has('tenders') && <StatCard title="Live GeM Bids" value={tenders.length} icon={<FileText className="h-4 w-4" />} variant="primary" />}
-        {visible.has('leads') && <StatCard title="Active Leads" value={leads.length} icon={<Target className="h-4 w-4" />} variant="primary" />}
-        {visible.has('visits') && <StatCard title="Field Visits" value={visits.length} icon={<Calendar className="h-4 w-4" />} variant="primary" />}
-        {visible.has('expenses') && <StatCard title="Expense Claims" value={expenses.length} icon={<Receipt className="h-4 w-4" />} variant="amber" />}
-        {visible.has('service') && <StatCard title="Service Tickets" value={tickets.length} icon={<Wrench className="h-4 w-4" />} variant="emerald" />}
+      {/* KPI Highlights — one row; each card opens its report (click again keeps it). */}
+      <StatGrid cols={Math.min(5, Math.max(2, visible.size)) as 2 | 3 | 4 | 5} className="gap-3">
+        {KPI_CARDS.filter((c) => visible.has(c.key)).map((c) => (
+          <StatCard
+            key={c.key}
+            title={c.title}
+            value={counts[c.key]}
+            icon={c.icon}
+            variant={c.variant}
+            className={activeTab === c.key ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+            onClick={() => switchTab(c.key)}
+          />
+        ))}
       </StatGrid>
 
-      {/* Tabs + search + filter: one box */}
-      <ToolbarBox>
-        <Tabs
-          tabs={[
-            { id: 'tenders', label: 'GeM Bids', count: tenders.length },
-            { id: 'leads', label: 'Sales Pipeline', count: leads.length },
-            { id: 'visits', label: 'Field Itineraries', count: visits.length },
-            { id: 'expenses', label: 'Expense Claims', count: expenses.length },
-            { id: 'service', label: 'Service Desk', count: tickets.length },
-          ].filter((t) => visible.has(t.id))}
-          activeTab={activeTab}
-          onChange={(id) => {
-            setActiveTab(id);
-            setStatusFilter('all');
-          }}
-        />
-        <div className="flex flex-wrap items-center gap-2.5">
-          <div className="relative min-w-[220px] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#4A5568]" />
+      {/* One filter row: report View first, then search + status dropdown */}
+      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <FilterMenu
+            label="View"
+            icon={<LayoutList />}
+            neutralKeys={[]}
+            className="shrink-0"
+            options={DATASETS.filter((ds) => visible.has(ds.key)).map((ds) => ({
+              key: ds.key,
+              label: ds.label,
+              icon: KPI_CARDS.find((c) => c.key === ds.key)?.icon,
+              count: counts[ds.key],
+              active: activeTab === ds.key,
+              onSelect: () => switchTab(ds.key),
+            }))}
+          />
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
             <input
-              type="text"
+              type="search"
+              aria-label="Search this report"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search this report — number, organisation, person, status…"
-              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder-[#4A5568]/70"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
-        </div>
-        <ToolbarSlot>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#4A5568]">Status</span>
-          <Select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="w-44 text-xs font-semibold"
-          >
-            <option value="all">All statuses</option>
-            {statusOptions.map((st) => (
-              <option key={st} value={st}>{st.replace(/_/g, ' ')}</option>
-            ))}
-          </Select>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Status"
+              icon={<Layers />}
+              align="right"
+              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              options={[
+                { key: 'all', label: 'All statuses', count: activeRows.length, active: statusFilter === 'all', onSelect: () => setStatusFilter('all') },
+                ...statusOptions.map((st) => ({
+                  key: st,
+                  label: st.replace(/_/g, ' '),
+                  count: activeRows.filter((r) => String(r.status || '').toLowerCase() === st).length,
+                  active: statusFilter === st,
+                  onSelect: () => setStatusFilter(st),
+                })),
+              ]}
+            />
+            {(searchTerm || statusFilter !== 'all') && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  setSearchTerm('');
+                  setStatusFilter('all');
+                }}
+                className="text-xs text-[#4A5568] hover:text-[#881337]"
+              >
+                Clear
+              </Button>
+            )}
           </div>
-        </ToolbarSlot>
-      </ToolbarBox>
+        </div>
+      </Card>
 
       {failed.length > 0 && (
         <InfoCallout variant="danger" title="Some report data could not be loaded">
@@ -335,31 +372,31 @@ export default function ConsolidatedReportsPage() {
               <table className="w-full text-left text-xs">
                 <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
                   <tr>
-                    <th className="p-3.5">Bid Number</th>
-                    <th className="p-3.5">Department / Org</th>
-                    <th className="p-3.5">Category</th>
-                    <th className="p-3.5 text-right">Qty</th>
-                    <th className="p-3.5 text-right">EMD Fee</th>
-                    <th className="p-3.5">Bid Closing</th>
-                    <th className="p-3.5">Status</th>
+                    <th className="whitespace-nowrap px-3 py-3">Bid Number</th>
+                    <th className="whitespace-nowrap px-3 py-3">Department / Org</th>
+                    <th className="whitespace-nowrap px-3 py-3">Category</th>
+                    <th className="whitespace-nowrap px-3 py-3 text-right">Qty</th>
+                    <th className="whitespace-nowrap px-3 py-3 text-right">EMD Fee</th>
+                    <th className="whitespace-nowrap px-3 py-3">Bid Closing</th>
+                    <th className="whitespace-nowrap px-3 py-3">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {vTenders.map((t) => (
                     <tr key={t.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5 font-semibold text-[#0F5E63]">{t.tender_no}</td>
-                      <td className="p-3.5 text-[#14213D]">{txt(t.organisation_name || t.organisation || t.department)}</td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3 font-semibold text-[#0F5E63]">{t.tender_no}</td>
+                      <td className="px-3 py-3 text-[#14213D]"><div className="max-w-[260px] truncate" title={txt(t.organisation_name || t.organisation || t.department)}>{txt(t.organisation_name || t.organisation || t.department)}</div></td>
+                      <td className="px-3 py-3">
                         <Badge variant={t.category === 'pq' ? 'urgent' : 'outline'}>
                           {t.category?.toUpperCase() || 'GENERAL'}
                         </Badge>
                       </td>
-                      <td className="p-3.5 text-right font-medium">{t.quantity || '-'}</td>
-                      <td className="p-3.5 text-right font-medium text-emerald-700">
+                      <td className="px-3 py-3 text-right font-medium">{t.quantity || '-'}</td>
+                      <td className="px-3 py-3 text-right font-medium text-emerald-700">
                         {t.emd_fee ? formatINR(t.emd_fee) : 'Exempt'}
                       </td>
-                      <td className="p-3.5 text-[#4A5568]">{fmtDate(t.bid_closing_date || t.submission_deadline)}</td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3 text-[#4A5568]">{fmtDate(t.bid_closing_date || t.submission_deadline)}</td>
+                      <td className="px-3 py-3">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700">
                           {pretty(t.status)}
                         </span>
@@ -376,29 +413,29 @@ export default function ConsolidatedReportsPage() {
               <table className="w-full text-left text-xs">
                 <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
                   <tr>
-                    <th className="p-3.5">Customer Organisation</th>
-                    <th className="p-3.5">Product</th>
-                    <th className="p-3.5">Classification</th>
-                    <th className="p-3.5">Probability</th>
-                    <th className="p-3.5 text-right">Value (Lakh)</th>
-                    <th className="p-3.5">Assigned Rep</th>
-                    <th className="p-3.5">Status</th>
+                    <th className="whitespace-nowrap px-3 py-3">Customer Organisation</th>
+                    <th className="whitespace-nowrap px-3 py-3">Product</th>
+                    <th className="whitespace-nowrap px-3 py-3">Classification</th>
+                    <th className="whitespace-nowrap px-3 py-3">Probability</th>
+                    <th className="whitespace-nowrap px-3 py-3 text-right">Value (Lakh)</th>
+                    <th className="whitespace-nowrap px-3 py-3">Assigned Rep</th>
+                    <th className="whitespace-nowrap px-3 py-3">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {vLeads.map((l) => (
                     <tr key={l.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5 font-medium text-[#14213D]">{txt(l.organisation_name)}</td>
-                      <td className="p-3.5 text-[#4A5568]">{txt(l.product_name)}</td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3 font-medium text-[#14213D]"><div className="max-w-[220px] truncate" title={txt(l.organisation_name)}>{txt(l.organisation_name)}</div></td>
+                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[200px] truncate" title={txt(l.product_name)}>{txt(l.product_name)}</div></td>
+                      <td className="px-3 py-3">
                         <Badge variant="outline">{txt(l.category).toUpperCase()}</Badge>
                       </td>
-                      <td className="p-3.5 capitalize">{txt(l.probability)}</td>
-                      <td className="p-3.5 text-right font-bold text-[#14213D]">
+                      <td className="px-3 py-3 capitalize">{txt(l.probability)}</td>
+                      <td className="px-3 py-3 text-right font-bold text-[#14213D]">
                         {l.value_lakh || l.estimated_value_lakh ? `₹ ${l.value_lakh || l.estimated_value_lakh} L` : '—'}
                       </td>
-                      <td className="p-3.5 text-[#4A5568]">{l.assigned_to_name || 'Unassigned'}</td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3 text-[#4A5568]">{l.assigned_to_name || 'Unassigned'}</td>
+                      <td className="px-3 py-3">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700">
                           {pretty(l.status)}
                         </span>
@@ -415,25 +452,25 @@ export default function ConsolidatedReportsPage() {
               <table className="w-full text-left text-xs">
                 <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
                   <tr>
-                    <th className="p-3.5">Client & Destination</th>
-                    <th className="p-3.5">Planned Date</th>
-                    <th className="p-3.5">Sales Engineer</th>
-                    <th className="p-3.5">Purpose</th>
-                    <th className="p-3.5">Manager Also-Meet Directive</th>
-                    <th className="p-3.5">Status</th>
+                    <th className="whitespace-nowrap px-3 py-3">Client & Destination</th>
+                    <th className="whitespace-nowrap px-3 py-3">Planned Date</th>
+                    <th className="whitespace-nowrap px-3 py-3">Sales Engineer</th>
+                    <th className="whitespace-nowrap px-3 py-3">Purpose</th>
+                    <th className="whitespace-nowrap px-3 py-3">Manager Also-Meet Directive</th>
+                    <th className="whitespace-nowrap px-3 py-3">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {vVisits.map((v) => (
                     <tr key={v.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5">
-                        <p className="font-semibold text-[#14213D]">{txt(v.organisation_name)}</p>
+                      <td className="px-3 py-3">
+                        <p className="max-w-[220px] truncate font-semibold text-[#14213D]" title={txt(v.organisation_name)}>{txt(v.organisation_name)}</p>
                         <p className="text-[11px] text-[#4A5568]">{txt(v.location || v.city)}</p>
                       </td>
-                      <td className="p-3.5 text-[#4A5568]">{fmtDate(v.planned_date)}</td>
-                      <td className="p-3.5 text-[#14213D] font-medium">{txt(v.assignee_name || v.assigned_to_name || v.planned_by_name)}</td>
-                      <td className="p-3.5 text-[#4A5568]">{v.purpose || 'Client meeting'}</td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3 text-[#4A5568]">{fmtDate(v.planned_date)}</td>
+                      <td className="px-3 py-3 text-[#14213D] font-medium">{txt(v.assignee_name || v.assigned_to_name || v.planned_by_name)}</td>
+                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[220px] truncate" title={v.purpose || 'Client meeting'}>{v.purpose || 'Client meeting'}</div></td>
+                      <td className="px-3 py-3">
                         {v.manager_name ? (
                           <span className="text-[11px] font-medium text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-200">
                             Directive by {v.manager_name}
@@ -442,7 +479,7 @@ export default function ConsolidatedReportsPage() {
                           <span className="text-[#A1B3D3]">—</span>
                         )}
                       </td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700">
                           {pretty(v.status)}
                         </span>
@@ -459,23 +496,23 @@ export default function ConsolidatedReportsPage() {
               <table className="w-full text-left text-xs">
                 <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
                   <tr>
-                    <th className="p-3.5">Employee</th>
-                    <th className="p-3.5">Date</th>
-                    <th className="p-3.5">Category</th>
-                    <th className="p-3.5 text-right">Amount</th>
-                    <th className="p-3.5">Purpose</th>
-                    <th className="p-3.5">Stage Status</th>
+                    <th className="whitespace-nowrap px-3 py-3">Employee</th>
+                    <th className="whitespace-nowrap px-3 py-3">Date</th>
+                    <th className="whitespace-nowrap px-3 py-3">Category</th>
+                    <th className="whitespace-nowrap px-3 py-3 text-right">Amount</th>
+                    <th className="whitespace-nowrap px-3 py-3">Purpose</th>
+                    <th className="whitespace-nowrap px-3 py-3">Stage Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {vExpenses.map((e) => (
                     <tr key={e.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5 font-medium text-[#14213D]">{txt(e.employee_name)}</td>
-                      <td className="p-3.5 text-[#4A5568]">{fmtDate(e.expense_date)}</td>
-                      <td className="p-3.5 capitalize">{pretty(e.category)}</td>
-                      <td className="p-3.5 text-right font-bold text-[#14213D]">{formatINR(e.amount)}</td>
-                      <td className="p-3.5 text-[#4A5568]">{e.purpose || 'Travel expense'}</td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3 font-medium text-[#14213D]">{txt(e.employee_name)}</td>
+                      <td className="px-3 py-3 text-[#4A5568]">{fmtDate(e.expense_date)}</td>
+                      <td className="px-3 py-3 capitalize">{pretty(e.category)}</td>
+                      <td className="px-3 py-3 text-right font-bold text-[#14213D]">{formatINR(e.amount)}</td>
+                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[280px] truncate" title={e.purpose || 'Travel expense'}>{e.purpose || 'Travel expense'}</div></td>
+                      <td className="px-3 py-3">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800">
                           {pretty(e.status)}
                         </span>
@@ -492,32 +529,32 @@ export default function ConsolidatedReportsPage() {
               <table className="w-full text-left text-xs">
                 <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
                   <tr>
-                    <th className="p-3.5">Ticket No</th>
-                    <th className="p-3.5">Customer & Asset</th>
-                    <th className="p-3.5">Priority</th>
-                    <th className="p-3.5">Warranty SLA</th>
-                    <th className="p-3.5">Assigned Engineer</th>
-                    <th className="p-3.5">Complaint Summary</th>
-                    <th className="p-3.5">Status</th>
+                    <th className="whitespace-nowrap px-3 py-3">Ticket No</th>
+                    <th className="whitespace-nowrap px-3 py-3">Customer & Asset</th>
+                    <th className="whitespace-nowrap px-3 py-3">Priority</th>
+                    <th className="whitespace-nowrap px-3 py-3">Warranty SLA</th>
+                    <th className="whitespace-nowrap px-3 py-3">Assigned Engineer</th>
+                    <th className="whitespace-nowrap px-3 py-3">Complaint Summary</th>
+                    <th className="whitespace-nowrap px-3 py-3">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {vTickets.map((s) => (
                     <tr key={s.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-3.5 font-semibold text-[#0F5E63]">{txt(s.ticket_no || s.ticket_number)}</td>
-                      <td className="p-3.5">
-                        <p className="font-medium text-[#14213D]">{txt(s.organisation_name)}</p>
+                      <td className="px-3 py-3 font-semibold text-[#0F5E63]">{txt(s.ticket_no || s.ticket_number)}</td>
+                      <td className="px-3 py-3">
+                        <p className="max-w-[220px] truncate font-medium text-[#14213D]" title={txt(s.organisation_name)}>{txt(s.organisation_name)}</p>
                         <p className="text-[11px] text-[#4A5568]">S/N: {s.equipment_serial || 'N/A'}</p>
                       </td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3">
                         <Badge variant={s.priority === 'critical' ? 'urgent' : 'outline'}>
                           {txt(s.priority).toUpperCase()}
                         </Badge>
                       </td>
-                      <td className="p-3.5 capitalize text-[#4A5568]">{pretty(s.warranty_status)}</td>
-                      <td className="p-3.5 text-[#14213D] font-medium">{s.assigned_to_name || 'Unassigned'}</td>
-                      <td className="p-3.5 text-[#4A5568] max-w-xs truncate">{txt(s.complaint || s.complaint_description)}</td>
-                      <td className="p-3.5">
+                      <td className="px-3 py-3 capitalize text-[#4A5568]">{pretty(s.warranty_status)}</td>
+                      <td className="px-3 py-3 text-[#14213D] font-medium">{s.assigned_to_name || 'Unassigned'}</td>
+                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[240px] truncate" title={txt(s.complaint || s.complaint_description)}>{txt(s.complaint || s.complaint_description)}</div></td>
+                      <td className="px-3 py-3">
                         <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-cyan-50 text-cyan-800">
                           {pretty(s.status)}
                         </span>

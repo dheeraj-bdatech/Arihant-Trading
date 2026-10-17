@@ -2,6 +2,7 @@ import { Injectable, Inject, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
+import { calendarDay, isoDaysBetween } from '../../common/utils/ist-date.util.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
 import { AppEvents } from '../../common/events/event-names.js';
 import type { Database } from '@arihant/shared';
@@ -116,9 +117,7 @@ export class ProposalsSchedulerService {
         const nextDateStr = p.next_follow_up_date || p.next_followup;
         if (!nextDateStr) continue;
 
-        const nextDate = new Date(nextDateStr);
-        const currDate = new Date(businessDate);
-        const daysOverdue = Math.max(1, Math.floor((currDate.getTime() - nextDate.getTime()) / (1000 * 60 * 60 * 24)));
+        const daysOverdue = Math.max(1, isoDaysBetween(calendarDay(nextDateStr as any) || businessDate, businessDate));
 
         const emitted = await this.emitDailyAlert(
           p.id,
@@ -176,9 +175,7 @@ export class ProposalsSchedulerService {
       for (const p of activePreDispatch) {
         if (!p.required_date) continue;
 
-        const reqDate = new Date(p.required_date);
-        const currDate = new Date(businessDate);
-        const diffDays = Math.round((reqDate.getTime() - currDate.getTime()) / (1000 * 60 * 60 * 24));
+        const diffDays = isoDaysBetween(businessDate, calendarDay(p.required_date as any) || businessDate);
 
         if (diffDays < 0) {
           // Missed required date
@@ -282,8 +279,7 @@ export class ProposalsSchedulerService {
       const suggestClosureDays = settings?.suggest_closure_after_days ?? 60;
       for (const p of overdueProposals) {
         if (!p.sent_date) continue;
-        const sentDate = new Date(p.sent_date);
-        const daysSinceSent = Math.floor((now.getTime() - sentDate.getTime()) / (1000 * 60 * 60 * 24));
+        const daysSinceSent = isoDaysBetween(calendarDay(p.sent_date as any) || businessDate, businessDate);
 
         if (daysSinceSent >= suggestClosureDays) {
           const emitted = await this.emitDailyAlert(

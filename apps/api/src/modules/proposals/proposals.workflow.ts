@@ -5,6 +5,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import type { AuthUser, ProposalStatus, UserRole } from '@arihant/shared';
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 
 export const TERMINAL_PROPOSAL_STATUSES: ProposalStatus[] = ['CONVERTED', 'LOST', 'CLOSED'];
 
@@ -214,7 +215,11 @@ export class ProposalsWorkflowService {
     user: AuthUser,
     context?: TransitionContext,
     settings?: ProposalSettingsConfig,
+    now: Date = new Date(),
   ): { targetStatus: ProposalStatus } {
+    // All calendar-date guards compare IST calendar days ('YYYY-MM-DD'), never UTC instants: between 00:00 and 05:30
+    // IST the UTC clock is still on yesterday, which used to refuse today's date as "in the future".
+    const today = todayInKolkata(now);
     const current = this.normalizeStatus(proposal.status);
     const target = this.normalizeStatus(targetStatusRaw);
     const allowed = this.getAllowedTransitions(proposal, user, settings);
@@ -239,7 +244,6 @@ export class ProposalsWorkflowService {
         const outcomeDateStr = proposal.outcome_date || proposal.updated_at;
         if (outcomeDateStr) {
           const outcomeDate = new Date(outcomeDateStr);
-          const now = new Date();
           const diffDays = Math.floor((now.getTime() - outcomeDate.getTime()) / (1000 * 60 * 60 * 24));
           if (diffDays > windowDays) {
             throw new ConflictException({
@@ -317,17 +321,16 @@ export class ProposalsWorkflowService {
       if (!context?.outcome_date) {
         throw new BadRequestException('Outcome date is mandatory when marking a proposal as converted');
       }
-      const outcomeDate = new Date(context.outcome_date);
-      const today = new Date();
-      today.setHours(23, 59, 59, 999);
-      if (outcomeDate > today) {
-        throw new BadRequestException('Outcome date cannot be in the future');
+      const outcomeDay = calendarDay(context.outcome_date);
+      if (!outcomeDay) {
+        throw new BadRequestException('Outcome date must be a valid date');
       }
-      if (proposal.sent_date) {
-        const sentDate = new Date(proposal.sent_date);
-        if (outcomeDate < sentDate) {
-          throw new BadRequestException('Outcome date cannot be earlier than sent date');
-        }
+      if (outcomeDay > today) {
+        throw new BadRequestException(`Outcome date cannot be in the future (today is ${today} IST)`);
+      }
+      const sentDay = calendarDay(proposal.sent_date);
+      if (sentDay && outcomeDay < sentDay) {
+        throw new BadRequestException(`Outcome date cannot be earlier than the sent date (${sentDay})`);
       }
     } else if (target === 'UNDER_PREPARATION' && current === 'READY_FOR_REVIEW') {
       // E22: Reviewer requests changes requires comment
@@ -339,17 +342,16 @@ export class ProposalsWorkflowService {
       if (!context?.sent_date) {
         throw new BadRequestException('Sent date is required when dispatching proposal to customer');
       }
-      const sentDate = new Date(context.sent_date);
-      const today = new Date();
-      today.setHours(23, 59, 59, 999);
-      if (sentDate > today) {
-        throw new BadRequestException('Sent date cannot be in the future');
+      const sentDay = calendarDay(context.sent_date);
+      if (!sentDay) {
+        throw new BadRequestException('Sent date must be a valid date');
       }
-      if (proposal.request_date) {
-        const reqDate = new Date(proposal.request_date);
-        if (sentDate < reqDate) {
-          throw new BadRequestException('Sent date cannot be earlier than request date');
-        }
+      if (sentDay > today) {
+        throw new BadRequestException(`Sent date cannot be in the future (today is ${today} IST)`);
+      }
+      const requestDay = calendarDay(proposal.request_date);
+      if (requestDay && sentDay < requestDay) {
+        throw new BadRequestException(`Sent date cannot be earlier than the proposal request date (${requestDay})`);
       }
       if (!context.email_references || context.email_references.length === 0 || !context.email_references[0]?.trim()) {
         throw new BadRequestException('At least one email reference or dispatched communication reference is required');
@@ -360,9 +362,12 @@ export class ProposalsWorkflowService {
       if (!context.next_follow_up_date) {
         throw new BadRequestException('Next follow-up date is required when dispatching to customer');
       }
-      const nextDate = new Date(context.next_follow_up_date);
-      if (nextDate < sentDate) {
-        throw new BadRequestException('Next follow-up date cannot be earlier than sent date');
+      const nextDay = calendarDay(context.next_follow_up_date);
+      if (!nextDay) {
+        throw new BadRequestException('Next follow-up date must be a valid date');
+      }
+      if (nextDay < sentDay) {
+        throw new BadRequestException(`Next follow-up date cannot be earlier than the sent date (${sentDay})`);
       }
     }
 

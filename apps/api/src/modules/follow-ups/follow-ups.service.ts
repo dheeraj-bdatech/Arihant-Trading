@@ -1,3 +1,4 @@
+import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
@@ -33,7 +34,7 @@ export class FollowUpsService {
     user: AuthUser,
   ): Promise<PaginatedResult<any>> {
     const { page, limit, offset } = getPaginationParams(query);
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayInKolkata();
 
     let baseQuery = this.db
       .selectFrom('follow_ups')
@@ -133,7 +134,7 @@ export class FollowUpsService {
   }
 
   async getMetrics(user: AuthUser) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayInKolkata();
     let query = this.db
       .selectFrom('follow_ups')
       .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id');
@@ -264,7 +265,7 @@ export class FollowUpsService {
           lead_id: existing.lead_id,
           type: 'follow_up',
           employee_id: user.id,
-          occurred_on: new Date().toISOString().split('T')[0],
+          occurred_on: todayInKolkata(),
           remarks: `Follow-up completed: ${dto.remarks || 'Client contacted.'}`,
           outcome: dto.outcome,
           next_action: dto.next_followup_date ? `Next follow-up on ${dto.next_followup_date}` : null,

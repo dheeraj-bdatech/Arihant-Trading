@@ -5,7 +5,7 @@
  *
  * Hard rule: nothing in this module computes a salary, incentive, penalty or deduction. It produces evidence only.
  */
-import type { TaskBlockerType, TaskStatus } from './enums.js';
+import type { TaskBlockerType, TaskStatus, UserRole } from './enums.js';
 
 
 // ============================================================================ vocabulary
@@ -150,6 +150,56 @@ export function resolveTaskAction(
 /** Actions currently available to this user (used by the detail endpoint to drive buttons). */
 export function allowedTaskActions(status: TaskStatus, kinds: Set<TaskActorKind>): TaskAction[] {
   return TASK_TRANSITIONS.filter((t) => resolveTaskAction(status, t.action, kinds).ok).map((t) => t.action);
+}
+
+// ============================================================================ task views by role
+/** Boards and pages of the Tasks module. Every role has the module; these decide what each person sees in it. */
+export type TaskViewKey =
+  | 'mine'
+  | 'team'
+  | 'blockers'
+  | 'approvals'
+  | 'waiting'
+  | 'recurring'
+  | 'accountability'
+  | 'evidence'
+  | 'my_performance'
+  | 'calendar'
+  | 'settings';
+
+/** The per-user facts the API reports in GET /tasks/my/summary. */
+export interface TaskViewFlags {
+  has_team: boolean;
+  can_view_all: boolean;
+  can_view_evidence: boolean;
+  can_manage_settings: boolean;
+  pending_blockers: number;
+  pending_approvals: number;
+}
+
+/** Management and admin review blockers and approve work for anyone without an active manager (fallback approvers). */
+export const TASK_FALLBACK_REVIEWER_ROLES: UserRole[] = ['management', 'admin'];
+
+/** Views every employee gets, whatever the role. */
+export const TASK_VIEWS_FOR_EVERYONE: TaskViewKey[] = ['mine', 'waiting', 'recurring', 'my_performance', 'calendar'];
+
+/**
+ * Which task views a user gets. Mirrors the API's own checks so nobody is shown a board that would be empty or refused:
+ * - Team board, accountability: people with reports, plus management / admin / accounts (they see every task).
+ * - Blocker reviews, approvals: people with reports, management / admin (fallback reviewers), and anyone something
+ *   is routed to right now (department head, escalation target). Accounts sees all tasks for audit but does not decide.
+ * - Performance evidence: managers and authorised viewers (`can_view_evidence`). Settings: admin only.
+ */
+export function taskViewsFor(role: UserRole, f: TaskViewFlags | null | undefined): Set<TaskViewKey> {
+  const views = new Set<TaskViewKey>(TASK_VIEWS_FOR_EVERYONE);
+  if (!f) return views;
+  const reviewer = f.has_team || TASK_FALLBACK_REVIEWER_ROLES.includes(role);
+  if (f.has_team || f.can_view_all) views.add('team').add('accountability');
+  if (reviewer || f.pending_blockers > 0) views.add('blockers');
+  if (reviewer || f.pending_approvals > 0) views.add('approvals');
+  if (f.can_view_evidence) views.add('evidence');
+  if (f.can_manage_settings) views.add('settings');
+  return views;
 }
 
 // ============================================================================ labels

@@ -14,7 +14,6 @@ export function TacticalIndiaMap({
   totalDeployments = 38450,
   onTimeRate = '98.6%'
 }: TacticalIndiaMapProps) {
-  const [selectedRegion, setSelectedRegion] = useState('All Hubs');
   const [hoveredHub, setHoveredHub] = useState<string | null>(null);
 
   // Strategic Deployment Hubs based on Arihant Brochure HQ & Key Offices
@@ -40,17 +39,6 @@ export function TacticalIndiaMap({
           <p className="text-[11px] text-[#4A5568]">Pan-India Defence & Security Installations</p>
         </div>
 
-        <select
-          value={selectedRegion}
-          onChange={(e) => setSelectedRegion(e.target.value)}
-          aria-label="Filter deployment regions"
-          className="text-xs font-mono font-medium text-[#14213D] bg-[#FBFAF7] border border-[#C9C4B8] rounded-lg px-2.5 py-1 focus:outline-none focus:ring-1 focus:ring-[#0F5E63]"
-        >
-          <option value="All Hubs">All India (100+ Projects)</option>
-          <option value="Eastern">Eastern Command (Patna/Kolkata)</option>
-          <option value="Northern">Northern Borders (Punjab/Delhi)</option>
-          <option value="Western">Western Defense (Rajasthan/Mumbai)</option>
-        </select>
       </div>
 
       {/* Map Viewport Area */}

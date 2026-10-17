@@ -27,6 +27,7 @@ import {
 } from './expense-claims.service.js';
 import { applyItemDecisions } from './expense-decisions.js';
 import {
+  assertNoFutureDates,
   ExpenseValidationException,
   isIsoDate,
   readText,
@@ -81,6 +82,33 @@ export function resolveTransition(
     throw conflict(`This action is not allowed while the claim is "${label}". Refresh to see its current state.`);
   }
   return rule;
+}
+
+/**
+ * Validates the payment details captured when Accounts marks a claim processed (= paid): Tally voucher, bank
+ * payment reference (NEFT/RTGS/UTR/cheque no.) and payment date are all required. The payment date cannot be in
+ * the future (IST) nor before the last expense on the claim.
+ */
+export function readPaymentDetails(
+  dto: Pick<TransitionDto, 'tally_voucher_ref' | 'payment_reference' | 'payment_date'>,
+  today: string,
+  items: { expense_date: unknown }[] = [],
+): { errors: FieldErrors; tallyRef: string | null; paymentReference: string | null; paymentDate: string | null } {
+  const errors: FieldErrors = {};
+  const tallyRef = readText(errors, 'tally_voucher_ref', dto.tally_voucher_ref, TEXT_LIMITS.reference, { required: true, label: 'Tally voucher reference' });
+  const paymentReference = readText(errors, 'payment_reference', dto.payment_reference, TEXT_LIMITS.reference, {
+    required: true,
+    label: 'Payment reference (UTR / NEFT / cheque no.)',
+    minLength: 4,
+  });
+  let paymentDate: string | null = null;
+  const lastExpense = items.map((i) => String(i.expense_date ?? '')).filter(isIsoDate).sort().pop();
+  if (dto.payment_date === undefined || dto.payment_date === null || dto.payment_date === '') errors.payment_date = 'Payment date is required.';
+  else if (!isIsoDate(dto.payment_date)) errors.payment_date = 'Payment date must be a valid date.';
+  else if (dto.payment_date > today) errors.payment_date = 'Payment date cannot be in the future.';
+  else if (lastExpense && dto.payment_date < lastExpense) errors.payment_date = `Payment date cannot be before the last expense on this claim (${lastExpense.split('-').reverse().join('-')}).`;
+  else paymentDate = dto.payment_date;
+  return { errors, tallyRef, paymentReference, paymentDate };
 }
 
 @Injectable()
@@ -193,6 +221,8 @@ export class ExpenseWorkflowService {
     let event: string = EXPENSE_EVENTS.SUBMITTED;
     let payload: Record<string, any> = { ...base };
     const now = new Date();
+    // Business date (IST). Using the UTC date here would treat 00:00–05:30 IST as yesterday.
+    const today = todayInKolkata(now);
 
     switch (rule.action) {
       case 'submit': {
@@ -226,7 +256,7 @@ export class ExpenseWorkflowService {
                 late_submission_reason: it.late_submission_reason,
                 category_details: it.category_details,
               },
-              { category, today: todayInKolkata(), config: this.claims.config, window, categoryUnchanged: true },
+              { category, today, config: this.claims.config, window, categoryUnchanged: true },
             );
           } catch (e: any) {
             const fieldErrors = e?.getResponse?.()?.errors || {};
@@ -293,6 +323,18 @@ export class ExpenseWorkflowService {
       case 'process': {
         const stage = rule.action === 'manager_approve' ? 'manager' : 'accounts';
         const items = await this.liveItems(trx, claim.id);
+        // A future-dated expense must never be approved or paid, even if it got past submission earlier.
+        assertNoFutureDates(
+          items,
+          today,
+          rule.action === 'manager_approve' ? 'approved' : rule.action === 'accounts_approve' ? 'verified' : 'processed for payment',
+          claim.period_to,
+        );
+        // Payment details are checked before any line decision is written so the dialog gets every field error at once.
+        const payment = rule.action === 'process' ? readPaymentDetails(dto, today, items) : null;
+        if (payment && Object.keys(payment.errors).length) {
+          throw new ExpenseValidationException(payment.errors, 'Enter the payment details to mark this claim as paid.');
+        }
         // `process` straight from accounts_approved: amounts are already settled; decisions are not accepted.
         const decide = !(rule.action === 'process' && from === 'accounts_approved');
         let totalApproved = money(claim.total_approved) ?? 0;
@@ -348,16 +390,7 @@ export class ExpenseWorkflowService {
           event = EXPENSE_EVENTS.ACCOUNTS_APPROVED;
           payload = { ...base, amount: totalApproved };
         } else {
-          const errors: FieldErrors = {};
-          const ref = readText(errors, 'tally_voucher_ref', dto.tally_voucher_ref, TEXT_LIMITS.reference, { required: true, label: 'Tally voucher reference' });
-          const payRef = readText(errors, 'payment_reference', dto.payment_reference, TEXT_LIMITS.reference, { label: 'Payment reference' });
-          let payDate: string | null = null;
-          if (dto.payment_date !== undefined && dto.payment_date !== null && dto.payment_date !== '') {
-            if (!isIsoDate(dto.payment_date)) errors.payment_date = 'Payment date must be a valid date.';
-            else if (dto.payment_date > todayInKolkata()) errors.payment_date = 'Payment date cannot be in the future.';
-            else payDate = dto.payment_date;
-          }
-          if (Object.keys(errors).length) throw new ExpenseValidationException(errors);
+          const { tallyRef: ref, paymentReference: payRef, paymentDate: payDate } = payment!;
           Object.assign(patch, {
             tally_voucher_ref: ref,
             payment_reference: payRef,

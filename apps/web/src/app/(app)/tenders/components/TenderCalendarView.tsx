@@ -22,6 +22,20 @@ import {
   Eye,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { istToday, istDateOf, toIstLocalInput } from '@/lib/ist-date';
+
+/** IST calendar day (YYYY-MM-DD) of an event value (instant or bare date). */
+const eventIstDay = (value: string | Date): string | null => {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : istDateOf(d);
+};
+
+/** The IST month containing today, as { year, month (0-based) } — the calendar opens on India's current month. */
+const istCurrentMonth = () => {
+  const t = istToday();
+  return { year: Number(t.slice(0, 4)), month: Number(t.slice(5, 7)) - 1 };
+};
 
 interface TenderCalendarViewProps {
   currentUser: any;
@@ -32,7 +46,8 @@ export function TenderCalendarView({
   currentUser,
   onOpenDossier,
 }: TenderCalendarViewProps) {
-  const [currentDate, setCurrentDate] = useState(new Date());
+  // Month shown, in IST (the browser/server clocks may be in another zone or 5h30 behind India).
+  const [shownMonth, setShownMonth] = useState(istCurrentMonth);
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedType, setSelectedType] = useState<string>('all');
@@ -42,7 +57,7 @@ export function TenderCalendarView({
     try {
       setLoading(true);
       const res = await api.get('/tenders/calendar');
-      setEvents(res.data || []);
+      setEvents(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to load tender calendar events:', err);
     } finally {
@@ -55,27 +70,23 @@ export function TenderCalendarView({
   }, []);
 
   // Compute Month Boundaries
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-
-  const firstDayOfMonth = new Date(year, month, 1);
-  const lastDayOfMonth = new Date(year, month + 1, 0);
+  const { year, month } = shownMonth;
+  // Pure calendar arithmetic in UTC so the grid never depends on the browser's timezone.
+  const firstDayOfMonth = new Date(Date.UTC(year, month, 1));
+  const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0));
 
   // Day of week: 0=Sun, 1=Mon, ..., 6=Sat. Convert to Mon-first: Mon=0, ..., Sun=6
-  const startingDayIndex = (firstDayOfMonth.getDay() + 6) % 7;
-  const daysInMonth = lastDayOfMonth.getDate();
+  const startingDayIndex = (firstDayOfMonth.getUTCDay() + 6) % 7;
+  const daysInMonth = lastDayOfMonth.getUTCDate();
+  const todayIst = istToday();
 
-  const prevMonth = () => {
-    setCurrentDate(new Date(year, month - 1, 1));
+  const shiftMonth = (delta: number) => {
+    const d = new Date(Date.UTC(year, month + delta, 1));
+    setShownMonth({ year: d.getUTCFullYear(), month: d.getUTCMonth() });
   };
-
-  const nextMonth = () => {
-    setCurrentDate(new Date(year, month + 1, 1));
-  };
-
-  const setToday = () => {
-    setCurrentDate(new Date());
-  };
+  const prevMonth = () => shiftMonth(-1);
+  const nextMonth = () => shiftMonth(1);
+  const setToday = () => setShownMonth(istCurrentMonth());
 
   // Filter events
   const filteredEvents = useMemo(() => {
@@ -88,9 +99,8 @@ export function TenderCalendarView({
     const map = new Map<string, any[]>();
     for (const ev of filteredEvents) {
       if (!ev.date && !ev.event_date) continue;
-      const d = new Date(ev.date || ev.event_date);
-      if (isNaN(d.getTime())) continue;
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const key = eventIstDay(ev.date || ev.event_date);
+      if (!key) continue;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(ev);
     }
@@ -280,8 +290,7 @@ export function TenderCalendarView({
               const day = idx + 1;
               const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
               const dayEvents = eventsByDate.get(dateStr) || [];
-              const isToday =
-                new Date().toISOString().split('T')[0] === dateStr;
+              const isToday = todayIst === dateStr;
 
               return (
                 <div
@@ -349,7 +358,8 @@ export function TenderCalendarView({
               )
               .map((ev, idx) => {
                 const badgeInfo = getEventBadge(ev.event_type);
-                const evDate = new Date(ev.date || ev.event_date);
+                const evDay = eventIstDay(ev.date || ev.event_date) || '';
+                const evTime = toIstLocalInput(ev.date || ev.event_date).slice(11, 16);
                 return (
                   <Card
                     key={idx}
@@ -358,12 +368,10 @@ export function TenderCalendarView({
                     <div className="flex items-center gap-3">
                       <div className="text-center px-3 py-1.5 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg">
                         <span className="block text-[10px] uppercase font-bold text-[#4A5568]">
-                          {evDate.toLocaleDateString('en-IN', {
-                            month: 'short',
-                          })}
+                          {evDay ? monthNames[Number(evDay.slice(5, 7)) - 1].slice(0, 3) : ''}
                         </span>
                         <span className="block text-base font-bold font-mono text-[#14213D]">
-                          {evDate.getDate()}
+                          {evDay ? Number(evDay.slice(8, 10)) : ''}
                         </span>
                       </div>
 
@@ -375,10 +383,7 @@ export function TenderCalendarView({
                             {badgeInfo.label}
                           </span>
                           <span className="text-xs font-mono text-[#4A5568]">
-                            {evDate.toLocaleTimeString('en-IN', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
+                            {evTime ? `${evTime} IST` : ''}
                           </span>
                         </div>
                         <h4 className="text-xs font-semibold text-[#14213D]">

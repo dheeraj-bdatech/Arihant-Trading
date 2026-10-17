@@ -189,6 +189,7 @@ export function validateCategoryDetails(
   code: string,
   raw: unknown,
   errors: FieldErrors,
+  today?: string,
 ): { details: Record<string, unknown>; computedAmount: number | null } {
   const kind = CATEGORY_DETAIL_KIND[code];
   const d = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
@@ -212,7 +213,9 @@ export function validateCategoryDetails(
       const check_in = isIsoDate(d.check_in) ? d.check_in : null;
       const check_out = isIsoDate(d.check_out) ? d.check_out : null;
       if (!check_in) err('check_in', 'Check-in date is required.');
+      else if (today && check_in > today) err('check_in', 'Check-in date cannot be in the future.');
       if (!check_out) err('check_out', 'Check-out date is required.');
+      else if (today && check_out > today) err('check_out', 'Check-out date cannot be in the future — claim the stay after you check out.');
       let nights = 0;
       if (check_in && check_out) {
         nights = hotelNights(check_in, check_out);
@@ -292,7 +295,7 @@ export function validateItem(input: ItemInput, ctx: ItemContext): NormalizedItem
 
   // Category-specific details (may override the amount).
   const { details, computedAmount } = cat
-    ? validateCategoryDetails(cat.code, input.category_details, errors)
+    ? validateCategoryDetails(cat.code, input.category_details, errors, ctx.today)
     : { details: {}, computedAmount: null };
 
   let amount = 0;
@@ -339,6 +342,63 @@ export function validateItem(input: ItemInput, ctx: ItemContext): NormalizedItem
     is_late,
     amount_recomputed,
   };
+}
+
+/** 'YYYY-MM-DD' → 'DD-MM-YYYY' for messages. */
+const ddmmyyyy = (iso: string) => iso.split('-').reverse().join('-');
+
+/** The line fields that carry a calendar date the expense was incurred on. */
+export interface DatedLine {
+  id: string;
+  purpose?: string | null;
+  expense_date: unknown;
+  category_details?: unknown;
+}
+
+/**
+ * Every date on a claim (line dates, hotel check-in/out, claim period end) that is after `today` (IST, YYYY-MM-DD).
+ * Keys match the claim-detail field-error convention (`items.<id>.<field>`). Today itself is never "future".
+ */
+export function futureDateErrors(lines: DatedLine[], today: string, periodTo?: unknown): FieldErrors {
+  const errors: FieldErrors = {};
+  const after = (v: unknown): v is string => typeof v === 'string' && isIsoDate(v) && v > today;
+  // pg may hand back a DATE as a local-midnight Date; its local calendar fields are the stored date.
+  const asIso = (v: unknown): unknown =>
+    v instanceof Date && !Number.isNaN(v.getTime())
+      ? `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`
+      : v;
+  periodTo = asIso(periodTo);
+  for (const line of lines) {
+    const label = line.purpose ? `"${line.purpose}"` : 'This line';
+    const date = asIso(line.expense_date);
+    if (after(date)) {
+      errors[`items.${line.id}.expense_date`] = `${label} is dated ${ddmmyyyy(date)}, which is after today (${ddmmyyyy(today)}).`;
+    }
+    const d = line.category_details && typeof line.category_details === 'object' ? (line.category_details as Record<string, unknown>) : {};
+    for (const f of ['check_in', 'check_out'] as const) {
+      if (after(d[f])) {
+        errors[`items.${line.id}.category_details.${f}`] = `${label}: ${f === 'check_in' ? 'check-in' : 'check-out'} ${ddmmyyyy(d[f] as string)} is after today (${ddmmyyyy(today)}).`;
+      }
+    }
+  }
+  if (!Object.keys(errors).length && after(periodTo)) {
+    errors.period_to = `The claim period ends ${ddmmyyyy(periodTo)}, which is after today (${ddmmyyyy(today)}).`;
+  }
+  return errors;
+}
+
+/**
+ * Refuses any workflow step (submit, approvals, processing/payment) on a claim that carries a future-dated
+ * expense, so a bad claim that slipped in earlier can never reach payment.
+ */
+export function assertNoFutureDates(lines: DatedLine[], today: string, step: string, periodTo?: unknown): void {
+  const errors = futureDateErrors(lines, today, periodTo);
+  if (!Object.keys(errors).length) return;
+  throw new ExpenseValidationException(
+    errors,
+    `This claim has expenses dated after today (${ddmmyyyy(today)}) and cannot be ${step}. Send it back for clarification (or reject it) so the employee can correct the dates.`,
+    'FUTURE_DATED_EXPENSE',
+  );
 }
 
 /** True when the category demands a receipt at this amount (0 = always, null = never). */

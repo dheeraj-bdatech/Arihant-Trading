@@ -1,3 +1,4 @@
+import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Injectable, Inject } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
@@ -11,7 +12,7 @@ export class DashboardService {
   async getMetrics(user: AuthUser): Promise<DashboardMetricsDto> {
     const now = new Date();
     const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const today = now.toISOString().split('T')[0];
+    const today = todayInKolkata(now);
 
     // 1. Tenders metrics
     let tenderQuery = this.db.selectFrom('tenders');
@@ -288,7 +289,7 @@ export class DashboardService {
   async getRegionalPerformance(user: AuthUser, query?: { zone_id?: string; region_id?: string }) {
     const now = new Date();
     const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const today = now.toISOString().split('T')[0];
+    const today = todayInKolkata(now);
 
     // 1. Resolve Available Zones and Target Zone
     const availableZones = await this.db

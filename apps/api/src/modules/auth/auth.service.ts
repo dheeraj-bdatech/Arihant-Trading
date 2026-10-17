@@ -10,6 +10,7 @@ import { Kysely } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import type { Database, AuthUser, LoginResponseDto } from '@arihant/shared';
 import type { LoginDto } from './auth.dto.js';
+import { getJwtSecret } from '../../common/auth/jwt-secret.js';
 
 @Injectable()
 export class AuthService {
@@ -35,13 +36,9 @@ export class AuthService {
       throw new UnauthorizedException('Account has been deactivated. Please contact administrator.');
     }
 
-    // Check password
-    if (user.password_hash) {
-      const isMatch = bcrypt.compareSync(loginDto.password, user.password_hash);
-      if (!isMatch && loginDto.password !== 'password123') {
-        throw new UnauthorizedException('Invalid email or password');
-      }
-    } else if (loginDto.password !== 'password123') {
+    // Only the stored bcrypt hash authenticates. There is no shared/master password: an account without a hash
+    // (never provisioned through users.create / bulk-invite) cannot log in until an admin sets one.
+    if (!user.password_hash || !(await bcrypt.compare(loginDto.password, user.password_hash))) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -56,9 +53,7 @@ export class AuthService {
       is_active: user.is_active,
     };
 
-    const jwtSecret =
-      this.configService.get<string>('SUPABASE_JWT_SECRET') ||
-      'super-secret-supabase-jwt-token-key-32chars';
+    const jwtSecret = getJwtSecret(this.configService);
 
     const token = jwt.sign(
       {

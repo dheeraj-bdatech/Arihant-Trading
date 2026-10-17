@@ -53,11 +53,14 @@ async function request<T = any>(
       errorData = { message: response.statusText };
     }
 
-    const message =
-      errorData?.message ||
-      (Array.isArray(errorData?.message)
-        ? errorData.message.join(', ')
-        : 'Request failed');
+    const rawMessage = errorData?.message;
+    const message = Array.isArray(rawMessage)
+      ? rawMessage.join(', ')
+      : typeof rawMessage === 'string' && rawMessage.trim()
+        ? rawMessage
+        : rawMessage && typeof rawMessage === 'object' && typeof rawMessage.message === 'string'
+          ? rawMessage.message
+          : response.statusText || 'Request failed';
 
     throw new ApiError(message, response.status, errorData);
   }

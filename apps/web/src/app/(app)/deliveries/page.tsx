@@ -1,6 +1,8 @@
 'use client';
 
 import Link from 'next/link';
+import { addIsoDays, istToday } from '@/lib/ist-date';
+import { calendarDay } from '@/lib/calendar-day';
 import React, { useState, useEffect } from 'react';
 import {
   Truck,
@@ -18,6 +20,7 @@ import {
   ChevronRight,
   Shield,
   MapPin,
+  Layers,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -31,10 +34,10 @@ import {
   Modal,
   Input,
   Select,
-  Tabs,
+  FilterMenu,
   PageContainer,
   PageHeader,
-  EmptyState, PageLoader, ToolbarBox, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, StatGrid, StatCard, RowMenu } from '@/components/ui';
+  EmptyState, PageLoader, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, StatGrid, StatCard, RowMenu } from '@/components/ui';
 
 export default function DeliveriesPage() {
   const { user } = useAuth();
@@ -59,7 +62,7 @@ export default function DeliveriesPage() {
     organisation_id: '',
     product_id: '',
     assigned_to: '',
-    delivery_date: new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0],
+    delivery_date: addIsoDays(istToday(), 3),
     delivery_location: '',
     product_model: '',
     serial_numbers: '',
@@ -229,6 +232,7 @@ export default function DeliveriesPage() {
     installed: deliveries.filter((d) => d.status === 'installed').length,
     handover_completed: deliveries.filter((d) => d.status === 'handover_completed').length,
   };
+  const hasActiveFilters = activeTab !== 'all' || Boolean(searchQuery);
 
   return (
     <PageContainer>
@@ -248,39 +252,78 @@ export default function DeliveriesPage() {
         }
       />
 
-      <StatGrid cols={4}>
-        <StatCard title="Total Deliveries" value={counts.all} icon={<Truck size={16} />} variant="primary" />
-        <StatCard title="Scheduled" value={counts.scheduled} icon={<Clock size={16} />} variant="amber" />
-        <StatCard title="In Transit" value={counts.in_transit} icon={<Package size={16} />} variant="rose" />
+      {/* Key metrics — one row; Scheduled / In Transit filter the register (click again to clear). */}
+      <StatGrid cols={4} className="gap-3">
+        <StatCard
+          title="Total Deliveries"
+          value={counts.all}
+          icon={<Truck size={16} />}
+          variant="primary"
+          className={activeTab === 'all' ? undefined : 'cursor-pointer'}
+          onClick={() => setActiveTab('all')}
+        />
+        <StatCard
+          title="Scheduled"
+          value={counts.scheduled}
+          icon={<Clock size={16} />}
+          variant="amber"
+          className={activeTab === 'scheduled' ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+          onClick={() => setActiveTab((cur) => (cur === 'scheduled' ? 'all' : 'scheduled'))}
+        />
+        <StatCard
+          title="In Transit"
+          value={counts.in_transit}
+          icon={<Package size={16} />}
+          variant="rose"
+          className={activeTab === 'in_transit' ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+          onClick={() => setActiveTab((cur) => (cur === 'in_transit' ? 'all' : 'in_transit'))}
+        />
         <StatCard title="Delivered / Closed" value={counts.delivered + counts.installed + counts.handover_completed} icon={<CheckCircle2 size={16} />} variant="emerald" />
       </StatGrid>
 
-      {/* Filter Tabs & Search Bar */}
-      <ToolbarBox row>
-        <Tabs
-          tabs={[
-            { id: 'all', label: 'All Orders', count: counts.all },
-            { id: 'scheduled', label: 'Scheduled', count: counts.scheduled },
-            { id: 'in_transit', label: 'In Transit', count: counts.in_transit },
-            { id: 'delivered', label: 'Delivered', count: counts.delivered },
-            { id: 'installed', label: 'Installed', count: counts.installed },
-            { id: 'handover_completed', label: 'Completed', count: counts.handover_completed },
-          ]}
-          activeTab={activeTab}
-          onChange={setActiveTab}
-        />
-
-        <div className="relative w-full md:w-72">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#4A5568]" />
-          <input
-            type="text"
-            placeholder="Search delivery, client, serial..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-[#C9C4B8] bg-white focus:outline-none focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]"
-          />
+      {/* One filter row: search + status dropdown. */}
+      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <input
+              type="search"
+              aria-label="Search deliveries"
+              placeholder="Search delivery, client, serial…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Status"
+              icon={<Layers />}
+              options={[
+                { key: 'all', label: 'All orders', count: counts.all },
+                { key: 'scheduled', label: 'Scheduled', count: counts.scheduled },
+                { key: 'in_transit', label: 'In transit', count: counts.in_transit },
+                { key: 'delivered', label: 'Delivered', count: counts.delivered },
+                { key: 'installed', label: 'Installed', count: counts.installed },
+                { key: 'handover_completed', label: 'Handover completed', count: counts.handover_completed },
+              ].map((o) => ({ ...o, active: activeTab === o.key, onSelect: () => setActiveTab(o.key) }))}
+            />
+            {hasActiveFilters && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  setActiveTab('all');
+                  setSearchQuery('');
+                }}
+                className="text-xs text-[#4A5568] hover:text-[#881337]"
+              >
+                Clear
+              </Button>
+            )}
+          </div>
         </div>
-      </ToolbarBox>
+      </Card>
 
       {/* Delivery Cards List */}
       {isLoading ? (
@@ -401,7 +444,7 @@ export default function DeliveriesPage() {
                     setUpdateForm({
                       status: delivery.status,
                       received_by: delivery.received_by || '',
-                      installation_date: delivery.installation_date ? new Date(delivery.installation_date).toISOString().split('T')[0] : '',
+                      installation_date: calendarDay(delivery.installation_date),
                       installation_notes: delivery.installation_notes || '',
                       remarks: delivery.remarks || '',
                     });

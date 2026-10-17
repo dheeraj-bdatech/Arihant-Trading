@@ -675,6 +675,11 @@ export class ExpenseClaimsService {
         'c.created_at',
         'c.version',
         'c.last_reviewer_comment',
+        // Payment details so the queues and "My expenses" can show how/when a processed claim was paid.
+        'c.processed_at',
+        'c.tally_voucher_ref',
+        'c.payment_reference',
+        'c.payment_date',
         'emp.full_name as employee_name',
         'mgr.full_name as manager_name',
         'mgr.is_active as manager_active',
@@ -713,8 +718,9 @@ export class ExpenseClaimsService {
   accountsQueue(query: Record<string, unknown>, user: AuthUser) {
     if (user.role !== 'accounts' && !isAdminLike(user)) throw new ForbiddenException('The Accounts queue is only available to the Accounts team.');
     const statuses = query.statuses || 'accounts_review,accounts_approved';
+    // `processed` = paid: Accounts can look back at what they paid and with which bank reference.
     return this.list({ sort_by: 'submitted_at', sort_dir: 'asc', ...query, statuses }, user, {
-      extra: (eb: any) => eb('c.status', 'in', ['accounts_review', 'accounts_approved']),
+      extra: (eb: any) => eb('c.status', 'in', ['accounts_review', 'accounts_approved', 'processed']),
     });
   }
 

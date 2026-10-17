@@ -5,6 +5,7 @@ import './globals.css';
 import './theme.css';
 import { AuthProvider } from '@/lib/auth-context';
 import { PersonaSwitcherFab } from '@/components/layout/PersonaSwitcherFab';
+import { UIUXFeedbackFab } from '@/components/layout/UIUXFeedbackFab';
 import { ThemeProvider, THEME_BOOT_SCRIPT, DEFAULT_THEME } from '@/lib/theme-context';
 
 export const metadata: Metadata = {
@@ -41,6 +42,7 @@ export default function RootLayout({
         <ThemeProvider>
           <AuthProvider>
             {children}
+            <UIUXFeedbackFab />
             <PersonaSwitcherFab />
           </AuthProvider>
         </ThemeProvider>

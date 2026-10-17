@@ -13,6 +13,7 @@ import crypto from 'crypto';
 import { Kysely } from 'kysely';
 import { KYSELY_DB } from '../database/database.module.js';
 import { IS_PUBLIC_KEY } from './public.decorator.js';
+import { getJwtSecret } from './jwt-secret.js';
 import type { Database, AuthUser } from '@arihant/shared';
 
 @Injectable()
@@ -84,9 +85,7 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     const token = authHeader.split(' ')[1];
-    const jwtSecret =
-      this.configService.get<string>('SUPABASE_JWT_SECRET') ||
-      'super-secret-supabase-jwt-token-key-32chars';
+    const jwtSecret = getJwtSecret(this.configService);
 
     let payload: any;
     let decodedToken: any = null;

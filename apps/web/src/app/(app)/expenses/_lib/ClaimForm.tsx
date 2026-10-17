@@ -11,31 +11,33 @@ import { useRouter } from 'next/navigation';
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowLeftRight,
+  ArrowRight,
+  Building2,
+  Calendar,
   Camera,
+  CircleCheck,
+  Circle,
   Copy,
   FileText,
   ImageIcon,
+  IndianRupee,
+  Info,
+  MapPin,
+  Minus,
   Paperclip,
   Pencil,
   Plus,
+  Route,
   Save,
   Send,
+  StickyNote,
   Trash2,
   Upload,
+  Users,
   X,
 } from 'lucide-react';
-import {
-  Badge,
-  Button,
-  Card,
-  Checkbox,
-  InfoCallout,
-  Input,
-  Modal,
-  PageLoader,
-  Select,
-  Textarea,
-} from '@/components/ui';
+import { Badge, Button, Card, Checkbox, InfoCallout, Modal, PageLoader } from '@/components/ui';
 import { api } from '@/lib/api';
 import {
   CATEGORY_DETAIL_KIND,
@@ -44,8 +46,8 @@ import {
   formatExpenseAmount,
   hotelNights,
   roundMoney,
-  todayInKolkata,
 } from '@arihant/shared';
+import { istToday, isIstFutureDate } from '@/lib/ist-date';
 import {
   errorMessage,
   fieldErrors,
@@ -58,6 +60,19 @@ import {
   type ExpenseItem,
 } from './expense-lib';
 import { ConflictCallout, DateText, LateFlag, Money, ReceiptViewer, StatusBadge, useToaster } from './expense-ui';
+import {
+  ChipGroup,
+  FieldTile,
+  RevealButton,
+  StepCard,
+  Stepper,
+  TileInput,
+  TileSelect,
+  TileTextarea,
+  categoryIcon,
+  travelModeIcon,
+  type StepState,
+} from './booking-fields';
 
 const MAX_FILE_MB = 10;
 const MAX_FILES = 5;
@@ -83,7 +98,7 @@ type ItemDraft = {
 };
 
 const emptyItem = (defaults: Partial<ItemDraft> = {}): ItemDraft => ({
-  expense_date: todayInKolkata(),
+  expense_date: istToday(),
   category_id: '',
   amount: '',
   purpose: '',
@@ -112,6 +127,8 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
 
   const [header, setHeader] = useState({ title: '', trip_id: initialTripId || '', visit_id: initialVisitId || '', remarks: '' });
   const [headerDirty, setHeaderDirty] = useState(false);
+  const [editingHeader, setEditingHeader] = useState(!claimId);
+  const [showHeaderNote, setShowHeaderNote] = useState(false);
   const [headerErrors, setHeaderErrors] = useState<Record<string, string>>({});
   const [savingHeader, setSavingHeader] = useState(false);
 
@@ -187,7 +204,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
   const selectedTrip = linkable.trips.find((t) => t.id === header.trip_id);
   const selectedVisit = linkable.visits.find((v) => v.id === header.visit_id);
   const defaultCustomer = selectedVisit?.organisation_id || selectedTrip?.customer_id || claim?.visit_organisation_id || '';
-  const defaultDate = selectedVisit?.planned_date || selectedTrip?.first_visit || selectedTrip?.trip_date || todayInKolkata();
+  const defaultDate = selectedVisit?.planned_date || selectedTrip?.first_visit || selectedTrip?.trip_date || istToday();
 
   // ------------------------------------------------------------------ header
   const saveHeader = async (): Promise<ExpenseClaim | null> => {
@@ -206,6 +223,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
         return saved;
       }
       setClaim(saved);
+      setEditingHeader(false);
       push('success', 'Draft saved.');
       return saved;
     } catch (e) {
@@ -219,8 +237,15 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
   };
 
   // ------------------------------------------------------------------ items
-  const startNewItem = () => {
-    setEditor(emptyItem({ expense_date: defaultDate > todayInKolkata() ? todayInKolkata() : defaultDate, customer_id: defaultCustomer }));
+  const cancelHeaderEdit = () => {
+    if (claim) setHeader({ title: claim.title, trip_id: claim.trip_id || '', visit_id: claim.visit_id || '', remarks: claim.remarks || '' });
+    setHeaderDirty(false);
+    setHeaderErrors({});
+    setEditingHeader(false);
+  };
+
+  const startNewItem = (category_id = '') => {
+    setEditor(emptyItem({ category_id, details: detailsFor(categoryById.get(category_id)), expense_date: isIstFutureDate(defaultDate) ? istToday() : defaultDate, customer_id: defaultCustomer }));
     setEditorErrors({});
     setDuplicateNotice(null);
   };
@@ -407,177 +432,354 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
     { value: '', label: 'Not linked to a visit' },
     ...linkable.visits.filter((v) => !header.trip_id || v.trip_id === header.trip_id).map((v) => ({ value: v.id, label: `${v.planned_date.split('-').reverse().join('-')} · ${v.organisation_name}` })),
   ];
+  const tripText = header.trip_id
+    ? tripOptions.find((o) => o.value === header.trip_id)?.label ||
+      [claim?.trip_date?.split('-').reverse().join('-'), claim?.trip_location].filter(Boolean).join(' · ') ||
+      'Linked trip'
+    : 'Not linked';
+  const visitText = header.visit_id
+    ? visitOptions.find((o) => o.value === header.visit_id)?.label ||
+      [claim?.visit_date?.split('-').reverse().join('-'), claim?.visit_organisation_name].filter(Boolean).join(' · ') ||
+      'Linked visit'
+    : 'Not linked';
+
+  const setH = (patch: Partial<typeof header>) => {
+    setHeader({ ...header, ...patch });
+    setHeaderDirty(true);
+  };
+  const noteOpen = showHeaderNote || Boolean(header.remarks) || Boolean(headerErrors.remarks);
+
+  // Breakdown for the summary panel; the line being edited shows as its own row.
+  const breakdown = new Map<string, { code: string; name: string; count: number; total: number }>();
+  for (const i of items) {
+    if (i.id === editor?.id) continue;
+    const row = breakdown.get(i.category_id) || { code: i.category_code, name: i.category_name, count: 0, total: 0 };
+    row.count += 1;
+    row.total = roundMoney(row.total + i.amount);
+    breakdown.set(i.category_id, row);
+  }
+  const editorCat = editor ? categoryById.get(editor.category_id) : undefined;
+  const pendingAmount = editor ? Number(editorAmount(editor, editorCat)) || 0 : 0;
+  const receiptsMissing = items.filter((i) => i.receipt_missing).length;
+
+  const step1: StepState = claim && !editingHeader ? 'done' : 'active';
+  const step2: StepState = !claim ? 'pending' : items.length && !editor ? 'done' : 'active';
+  const step3: StepState = claim && items.length && !editor && !headerDirty ? 'active' : 'pending';
+  const canSubmit = Boolean(claim) && items.length > 0 && !editor && !headerDirty;
+  const submitBlocker = editor
+    ? 'Save or cancel the open expense first'
+    : headerDirty
+      ? 'Save the trip details first'
+      : items.length === 0
+        ? 'Add at least one expense'
+        : undefined;
+  const submitLabel = claim?.status === 'clarification_required' ? 'Resubmit' : 'Submit for approval';
+
+  const checklist = [
+    { done: Boolean(claim) && !headerDirty, text: 'Trip details saved' },
+    { done: items.length > 0, text: items.length ? `${items.length} expense${items.length === 1 ? '' : 's'} added` : 'Add at least one expense' },
+    {
+      done: items.length > 0 && receiptsMissing === 0,
+      text: receiptsMissing ? `${receiptsMissing} receipt${receiptsMissing === 1 ? '' : 's'} still needed` : 'All required receipts attached',
+    },
+    ...(editor ? [{ done: false, text: 'Finish the open expense' }] : []),
+  ];
 
   return (
-    <div className="space-y-5 pb-4 md:pb-12">
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => leave(claim ? `/expenses/${claim.id}` : '/expenses')}>
-          Back
-        </Button>
-        {claim && (
-          <>
-            <span className="font-mono text-sm font-semibold text-[#0F5E63]">{claim.claim_number}</span>
-            <StatusBadge status={claim.status} />
-          </>
-        )}
-      </div>
+    <div className="space-y-5 pb-4 lg:pb-12">
+      {/* Hero: who / what / where, plus progress through the three steps */}
+      <section className="relative overflow-hidden rounded-[14px] bg-[#14213D] text-white">
+        <div aria-hidden className="pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-[#0F5E63]/50 blur-3xl" />
+        <div className="relative space-y-5 p-4 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              {claim && (
+                <button
+                  type="button"
+                  onClick={() => leave(`/expenses/${claim.id}`)}
+                  className="inline-flex items-center gap-1 rounded text-xs font-medium text-white/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Back to claim
+                </button>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#F2B872]">{claim ? claim.claim_number : 'New expense claim'}</span>
+                {claim && (
+                  <span className="rounded-full bg-white">
+                    <StatusBadge status={claim.status} />
+                  </span>
+                )}
+              </div>
+              <h2 className="break-words font-serif text-2xl leading-tight sm:text-[28px]">{claim?.title || 'Where did you travel?'}</h2>
+              <p className="max-w-xl text-sm text-white/70">
+                {claim
+                  ? [header.trip_id && tripText, header.visit_id && visitText].filter(Boolean).join('  ·  ') || 'Not linked to a trip or visit'
+                  : 'Three quick steps: trip details, one entry per bill, then submit for approval.'}
+              </p>
+            </div>
+            {claim && (
+              <div className="text-right">
+                <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-white/60">Total claimed</div>
+                <Money value={runningTotal} className="text-2xl font-semibold text-white sm:text-3xl" />
+                <div className="text-xs text-white/60">
+                  {items.length} expense{items.length === 1 ? '' : 's'}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-3 sm:px-4">
+            <Stepper
+              steps={[
+                { label: 'Trip details', state: step1 },
+                { label: 'Add expenses', state: step2 },
+                { label: 'Review & submit', state: step3 },
+              ]}
+            />
+          </div>
+        </div>
+      </section>
 
       {conflict && <ConflictCallout onRefresh={load} />}
 
       {claim?.status === 'clarification_required' && claim.last_reviewer_comment && (
         <InfoCallout variant="warning" title="Your reviewer asked for clarification">
           <p className="text-sm font-medium">“{claim.last_reviewer_comment}”</p>
-          <p className="text-xs mt-1">Update the lines or receipts below, then resubmit. Every change is recorded in the claim history.</p>
+          <p className="text-xs mt-1">Update the expenses or receipts below, then resubmit. Every change is recorded in the claim history.</p>
         </InfoCallout>
       )}
 
-      {/* Header */}
-      <Card className="p-4 sm:p-5 space-y-4 overflow-visible">
-        <h2 className="font-serif text-lg text-[#14213D]">Claim details</h2>
-        <Input
-          label="Title / purpose *"
-          value={header.title}
-          maxLength={200}
-          placeholder="e.g. Lucknow CRPF demo trip, 3–5 Oct"
-          onChange={(e) => {
-            setHeader({ ...header, title: e.target.value });
-            setHeaderDirty(true);
-          }}
-          error={headerErrors.title}
-        />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <Select
-            label="Trip"
-            value={header.trip_id}
-            options={tripOptions}
-            onChange={(e) => {
-              setHeader({ ...header, trip_id: e.target.value, visit_id: '' });
-              setHeaderDirty(true);
-            }}
-            error={headerErrors.trip_id}
-            helperText="Only your own active trips are listed. Line dates must fall within the trip."
-          />
-          <Select
-            label="Visit"
-            value={header.visit_id}
-            options={visitOptions}
-            onChange={(e) => {
-              setHeader({ ...header, visit_id: e.target.value });
-              setHeaderDirty(true);
-            }}
-            error={headerErrors.visit_id}
-          />
-        </div>
-        <Textarea
-          label="Remarks"
-          value={header.remarks}
-          rows={2}
-          maxLength={1000}
-          onChange={(e) => {
-            setHeader({ ...header, remarks: e.target.value });
-            setHeaderDirty(true);
-          }}
-          error={headerErrors.remarks}
-        />
-        <div className="flex justify-end">
-          <Button variant={isNew ? 'primary' : 'secondary'} leftIcon={<Save className="h-4 w-4" />} isLoading={savingHeader} disabled={!isNew && !headerDirty} onClick={saveHeader}>
-            {isNew ? 'Save draft & add lines' : 'Save details'}
-          </Button>
-        </div>
-      </Card>
-
-      {/* Lines */}
-      {claim && (
-        <Card className="p-4 sm:p-5 space-y-4 overflow-visible">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-serif text-lg text-[#14213D]">Expense lines</h2>
-            <div className="text-right">
-              <div className="text-[11px] uppercase tracking-wide text-[#4A5568]">Running total</div>
-              <Money value={runningTotal} className="text-lg font-semibold text-[#14213D]" />
-            </div>
-          </div>
-
-          {submitMessage && <InfoCallout variant="danger" title="Not submitted yet">{submitMessage}</InfoCallout>}
-
-          {items.length === 0 && !editor && (
-            <div className="rounded-[14px] border border-dashed border-[#C9C4B8] p-6 text-center text-sm text-[#4A5568]">
-              No lines yet. Add one line per bill — ticket, hotel, cab, meal.
-            </div>
-          )}
-
-          <div className="space-y-3">
-            {items.map((i) =>
-              editor?.id === i.id ? (
-                <ItemEditor
-                  key={i.id}
-                  draft={editor}
-                  categories={categories}
-                  customers={customers}
-                  projects={projects}
-                  errors={editorErrors}
-                  duplicateNotice={duplicateNotice}
-                  busy={savingItem}
-                  onChange={setEditor}
-                  onCancel={() => setEditor(null)}
-                  onSave={saveItem}
-                />
-              ) : (
-                <ItemCard
-                  key={i.id}
-                  item={i}
-                  errors={itemErrors[i.id] || {}}
-                  uploading={uploadingFor === i.id}
-                  onEdit={() => startEditItem(i)}
-                  onDelete={() => deleteItem(i)}
-                  onUpload={(files) => uploadFiles(i, files)}
-                  onPreview={setPreview}
-                  onRemoveAttachment={removeAttachment}
-                  disabled={Boolean(editor)}
-                />
-              ),
-            )}
-            {editor && !editor.id && (
-              <ItemEditor
-                draft={editor}
-                categories={categories}
-                customers={customers}
-                projects={projects}
-                errors={editorErrors}
-                duplicateNotice={duplicateNotice}
-                busy={savingItem}
-                onChange={setEditor}
-                onCancel={() => setEditor(null)}
-                onSave={saveItem}
-              />
-            )}
-          </div>
-
-          {!editor && (
-            <Button variant="outline" fullWidth leftIcon={<Plus className="h-4 w-4" />} onClick={startNewItem}>
-              Add expense line
-            </Button>
-          )}
-        </Card>
-      )}
-
-      {/* Sticky action bar (thumb-reachable on phones) */}
-      {claim && (
-        <div className="sticky md:static bottom-0 z-30 -mx-4 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur pl-4 pr-20 py-3 md:p-0 flex items-center gap-2 justify-end">
-          {claim.allowed_actions.includes('delete') && (
-            <Button variant="ghost" leftIcon={<Trash2 className="h-4 w-4" />} onClick={() => setConfirmDelete(true)}>
-              <span className="hidden sm:inline">Delete draft</span>
-            </Button>
-          )}
-          <div className="mr-auto md:hidden text-xs text-[#4A5568]">
-            {items.length} line(s) · <Money value={runningTotal} className="font-semibold text-[#14213D]" />
-          </div>
-          <Button
-            leftIcon={<Send className="h-4 w-4" />}
-            disabled={items.length === 0 || Boolean(editor) || headerDirty}
-            title={editor ? 'Save or cancel the open line first' : headerDirty ? 'Save the claim details first' : undefined}
-            onClick={() => setConfirmSubmit(true)}
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-5">
+          {/* Step 1 — trip details */}
+          <StepCard
+            n={1}
+            state={step1}
+            title="Trip details"
+            description={editingHeader ? 'Name the claim and link the trip or visit it belongs to.' : undefined}
+            action={
+              !editingHeader && claim ? (
+                <Button size="sm" variant="secondary" leftIcon={<Pencil className="h-3.5 w-3.5" />} onClick={() => setEditingHeader(true)} disabled={Boolean(editor)}>
+                  Modify
+                </Button>
+              ) : undefined
+            }
           >
-            {claim.status === 'clarification_required' ? 'Resubmit' : 'Submit for approval'}
+            {editingHeader ? (
+              <div className="space-y-3">
+                <FieldTile label="Claim title" htmlFor="claim-title" required error={headerErrors.title} hint="Place and dates work best, so your approver recognises it.">
+                  <TileInput
+                    id="claim-title"
+                    value={header.title}
+                    maxLength={200}
+                    autoFocus={isNew}
+                    placeholder="e.g. Lucknow CRPF demo trip, 3–5 Oct"
+                    className="text-lg"
+                    onChange={(e) => setH({ title: e.target.value })}
+                  />
+                </FieldTile>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <FieldTile label="Trip" icon={<Route />} error={headerErrors.trip_id} hint="Only your active trips. Expense dates must fall within the trip.">
+                    <TileSelect value={header.trip_id} options={tripOptions} onChange={(v) => setH({ trip_id: v, visit_id: '' })} />
+                  </FieldTile>
+                  <FieldTile label="Customer visit" icon={<MapPin />} error={headerErrors.visit_id}>
+                    <TileSelect value={header.visit_id} options={visitOptions} onChange={(v) => setH({ visit_id: v })} />
+                  </FieldTile>
+                </div>
+                {noteOpen ? (
+                  <FieldTile label="Note for your approver" htmlFor="claim-remarks" icon={<StickyNote />} error={headerErrors.remarks}>
+                    <TileTextarea
+                      id="claim-remarks"
+                      rows={2}
+                      maxLength={1000}
+                      value={header.remarks}
+                      placeholder="Anything your approver should know about this trip"
+                      onChange={(e) => setH({ remarks: e.target.value })}
+                    />
+                  </FieldTile>
+                ) : (
+                  <RevealButton onClick={() => setShowHeaderNote(true)}>Add a note for your approver</RevealButton>
+                )}
+                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#ECE9E2] pt-4">
+                  {!isNew && (
+                    <Button variant="ghost" onClick={cancelHeaderEdit} disabled={savingHeader}>
+                      Cancel
+                    </Button>
+                  )}
+                  <Button
+                    size="lg"
+                    leftIcon={isNew ? undefined : <Save className="h-4 w-4" />}
+                    rightIcon={isNew ? <ArrowRight className="h-4 w-4" /> : undefined}
+                    isLoading={savingHeader}
+                    disabled={!isNew && !headerDirty}
+                    onClick={saveHeader}
+                  >
+                    {isNew ? 'Continue to add expenses' : 'Save trip details'}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <FieldTile label="Trip" icon={<Route />} readOnly>
+                    <div className="mt-0.5 truncate text-[15px] font-semibold text-[#14213D]">{tripText}</div>
+                  </FieldTile>
+                  <FieldTile label="Customer visit" icon={<MapPin />} readOnly>
+                    <div className="mt-0.5 truncate text-[15px] font-semibold text-[#14213D]">{visitText}</div>
+                  </FieldTile>
+                </div>
+                {header.remarks && (
+                  <p className="flex items-start gap-1.5 text-[13px] text-[#4A5568]">
+                    <StickyNote className="mt-0.5 h-3.5 w-3.5 shrink-0" /> <span className="break-words">{header.remarks}</span>
+                  </p>
+                )}
+              </div>
+            )}
+          </StepCard>
+
+          {/* Step 2 — expenses */}
+          <StepCard
+            n={2}
+            state={step2}
+            title="Expenses"
+            description={claim ? 'One entry per bill — ticket, hotel, cab or meal. Attach the receipt after saving.' : 'Unlocks once the trip details are saved.'}
+            action={
+              items.length ? (
+                <span className="font-mono text-xs text-[#4A5568]">
+                  {items.length} {items.length === 1 ? 'entry' : 'entries'}
+                </span>
+              ) : undefined
+            }
+          >
+            {claim && (
+              <div className="space-y-3">
+                {submitMessage && <InfoCallout variant="danger" title="Not submitted yet">{submitMessage}</InfoCallout>}
+                {items.map((i) =>
+                  editor?.id === i.id ? (
+                    <ItemEditor
+                      key={i.id}
+                      draft={editor}
+                      categories={categories}
+                      customers={customers}
+                      projects={projects}
+                      errors={editorErrors}
+                      duplicateNotice={duplicateNotice}
+                      busy={savingItem}
+                      onChange={setEditor}
+                      onCancel={() => setEditor(null)}
+                      onSave={saveItem}
+                    />
+                  ) : (
+                    <ItemCard
+                      key={i.id}
+                      item={i}
+                      errors={itemErrors[i.id] || {}}
+                      uploading={uploadingFor === i.id}
+                      onEdit={() => startEditItem(i)}
+                      onDelete={() => deleteItem(i)}
+                      onUpload={(files) => uploadFiles(i, files)}
+                      onPreview={setPreview}
+                      onRemoveAttachment={removeAttachment}
+                      disabled={Boolean(editor)}
+                    />
+                  ),
+                )}
+                {editor && !editor.id && (
+                  <ItemEditor
+                    draft={editor}
+                    categories={categories}
+                    customers={customers}
+                    projects={projects}
+                    errors={editorErrors}
+                    duplicateNotice={duplicateNotice}
+                    busy={savingItem}
+                    onChange={setEditor}
+                    onCancel={() => setEditor(null)}
+                    onSave={saveItem}
+                  />
+                )}
+                {!editor && <CategoryPicker categories={categories} hasItems={items.length > 0} onPick={startNewItem} />}
+              </div>
+            )}
+          </StepCard>
+        </div>
+
+        {/* Summary panel (fare-summary style) */}
+        <aside className="space-y-4 lg:sticky lg:top-20">
+          <Card className="overflow-hidden">
+            <div className="border-b border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3">
+              <h3 className="font-serif text-base text-[#14213D]">Claim summary</h3>
+            </div>
+            <div className="space-y-4 p-4">
+              {breakdown.size || editor ? (
+                <ul className="space-y-2.5">
+                  {[...breakdown.values()].map((b) => (
+                    <li key={b.name} className="flex items-center gap-2.5 text-sm">
+                      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#E3EFEE] text-[#0F5E63]">{categoryIcon(b.code, 'h-3.5 w-3.5')}</span>
+                      <span className="min-w-0 flex-1 truncate text-[#14213D]">
+                        {b.name} <span className="text-xs text-[#4A5568]">× {b.count}</span>
+                      </span>
+                      <Money value={b.total} className="text-sm text-[#14213D]" />
+                    </li>
+                  ))}
+                  {editor && (
+                    <li className="flex items-center gap-2.5 text-sm">
+                      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-dashed border-[#0F5E63]/50 text-[#0F5E63]">
+                        <Pencil className="h-3.5 w-3.5" />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate italic text-[#4A5568]">{editor.id ? 'Editing entry' : 'New entry'} (unsaved)</span>
+                      <Money value={pendingAmount} className="text-sm text-[#4A5568]" />
+                    </li>
+                  )}
+                </ul>
+              ) : (
+                <p className="text-sm text-[#4A5568]">{claim ? 'No expenses added yet.' : 'Your expenses will add up here.'}</p>
+              )}
+              <div className="flex items-end justify-between border-t border-dashed border-[#DCD8CE] pt-3">
+                <span className="text-sm font-semibold text-[#14213D]">Total claimed</span>
+                <Money value={runningTotal} className="text-xl font-semibold text-[#14213D]" />
+              </div>
+              <ul className="space-y-1.5 rounded-lg bg-[#FBFAF7] p-3">
+                {checklist.map((c) => (
+                  <li key={c.text} className={`flex items-center gap-2 text-[13px] ${c.done ? 'text-[#14213D]' : 'text-[#4A5568]'}`}>
+                    {c.done ? <CircleCheck className="h-4 w-4 shrink-0 text-[#0F5E63]" /> : <Circle className="h-4 w-4 shrink-0 text-[#C9C4B8]" />}
+                    {c.text}
+                  </li>
+                ))}
+              </ul>
+              {claim && (
+                <div className="hidden space-y-2 lg:block">
+                  <Button fullWidth size="lg" leftIcon={<Send className="h-4 w-4" />} disabled={!canSubmit} title={submitBlocker} onClick={() => setConfirmSubmit(true)}>
+                    {submitLabel}
+                  </Button>
+                  {submitBlocker && <p className="text-center text-xs text-[#4A5568]">{submitBlocker}</p>}
+                </div>
+              )}
+              {claim?.allowed_actions.includes('delete') && (
+                <Button variant="ghost" size="sm" fullWidth leftIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => setConfirmDelete(true)} className="text-[#881337] hover:text-[#881337]">
+                  Delete draft
+                </Button>
+              )}
+            </div>
+          </Card>
+          <div className="space-y-2 rounded-[14px] border border-[#DCD8CE] bg-[#FBFAF7] p-4 text-xs text-[#4A5568]">
+            <div className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[#14213D]">
+              <Info className="h-3.5 w-3.5 text-[#0F5E63]" /> Good to know
+            </div>
+            <p>Receipts: PDF, JPG, PNG or HEIC, up to {MAX_FILE_MB} MB each and {MAX_FILES} per expense.</p>
+            <p>Bills older than 90 days need a reason and are flagged to your approver.</p>
+            <p>Future-dated expenses cannot be submitted.</p>
+          </div>
+        </aside>
+      </div>
+
+      {/* Sticky action bar (thumb-reachable on phones and tablets) */}
+      {claim && (
+        <div className="sticky bottom-0 z-30 -mx-4 flex items-center gap-2 border-t border-[#DCD8CE] bg-white/95 py-3 pl-4 pr-20 backdrop-blur lg:hidden">
+          <div className="mr-auto min-w-0 text-xs text-[#4A5568]">
+            {items.length} expense{items.length === 1 ? '' : 's'} · <Money value={runningTotal} className="font-semibold text-[#14213D]" />
+          </div>
+          <Button leftIcon={<Send className="h-4 w-4" />} disabled={!canSubmit} title={submitBlocker} onClick={() => setConfirmSubmit(true)}>
+            {submitLabel}
           </Button>
         </div>
       )}
@@ -585,11 +787,14 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
       <Modal isOpen={confirmSubmit} onClose={() => setConfirmSubmit(false)} title={claim?.status === 'clarification_required' ? 'Resubmit claim?' : 'Submit claim for approval?'} description="Once submitted the claim is locked until your approver acts on it." maxWidth="sm">
         <div className="space-y-4">
           <div className="rounded-[14px] bg-[#FBFAF7] border border-[#ECE9E2] p-4 flex items-center justify-between">
-            <span className="text-sm text-[#4A5568]">{items.length} line(s)</span>
+            <span className="text-sm text-[#4A5568]">{items.length} expense{items.length === 1 ? '' : 's'}</span>
             <Money value={claim?.total_claimed ?? 0} className="text-xl font-semibold text-[#14213D]" />
           </div>
+          {items.some((i) => isIstFutureDate(i.expense_date)) && (
+            <InfoCallout variant="danger">Some expenses are dated after today ({istToday().split('-').reverse().join('-')}). Fix their dates — future-dated expenses cannot be submitted.</InfoCallout>
+          )}
           {items.some((i) => i.receipt_missing) && (
-            <InfoCallout variant="warning">Some lines still need a receipt — the submission will be rejected until they are attached.</InfoCallout>
+            <InfoCallout variant="warning">Some expenses still need a receipt — the submission will be rejected until they are attached.</InfoCallout>
           )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmSubmit(false)} disabled={submitting}>Cancel</Button>
@@ -598,7 +803,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
         </div>
       </Modal>
 
-      <Modal isOpen={confirmDelete} onClose={() => setConfirmDelete(false)} title="Delete this draft?" description="The draft and its lines will be removed. This cannot be undone from the app." maxWidth="sm">
+      <Modal isOpen={confirmDelete} onClose={() => setConfirmDelete(false)} title="Delete this draft?" description="The draft and its expenses will be removed. This cannot be undone from the app." maxWidth="sm">
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setConfirmDelete(false)}>Keep</Button>
           <Button variant="danger" onClick={deleteDraft}>Delete draft</Button>
@@ -621,12 +826,17 @@ function editorAmount(d: ItemDraft, cat?: ExpenseCategory): string {
   return d.amount.trim();
 }
 
+/** Sensible starting details when a category is picked (meals default to one person). */
+function detailsFor(cat?: ExpenseCategory): Record<string, string> {
+  return cat && CATEGORY_DETAIL_KIND[cat.code] === 'food' ? { persons: '1' } : {};
+}
+
 /** Mirrors the server rules so most mistakes are caught before a round-trip. */
 function validateEditor(d: ItemDraft, cat?: ExpenseCategory): Record<string, string> {
   const e: Record<string, string> = {};
-  const today = todayInKolkata();
+  const today = istToday();
   if (!d.expense_date) e.expense_date = 'Expense date is required.';
-  else if (d.expense_date > today) e.expense_date = 'Expense date cannot be in the future.';
+  else if (isIstFutureDate(d.expense_date)) e.expense_date = 'Expense date cannot be in the future.';
   else if (daysBetween(d.expense_date, today) > 90 && d.late_submission_reason.trim().length < 5) {
     e.late_submission_reason = 'Older than 90 days — explain the late submission (min 5 characters).';
   }
@@ -656,7 +866,9 @@ function validateEditor(d: ItemDraft, cat?: ExpenseCategory): Record<string, str
       need('hotel_name', 'Hotel name is required.');
       need('check_in', 'Check-in date is required.');
       need('check_out', 'Check-out date is required.');
-      if (det.check_in && det.check_out && hotelNights(det.check_in, det.check_out) <= 0) e['category_details.check_out'] = 'Check-out must be after check-in.';
+      if (det.check_in && isIstFutureDate(det.check_in)) e['category_details.check_in'] = 'Check-in date cannot be in the future.';
+      if (det.check_out && isIstFutureDate(det.check_out)) e['category_details.check_out'] = 'Check-out date cannot be in the future — claim the stay after you check out.';
+      else if (det.check_in && det.check_out && hotelNights(det.check_in, det.check_out) <= 0) e['category_details.check_out'] = 'Check-out must be after check-in.';
     }
     if (kind === 'conveyance') {
       need('from', 'From is required.');
@@ -671,7 +883,62 @@ function validateEditor(d: ItemDraft, cat?: ExpenseCategory): Record<string, str
   return e;
 }
 
+// ======================================================================== category picker
+/** Big icon tiles — the first decision for every expense, like choosing Flights / Hotels / Cabs. */
+const CategoryPicker: React.FC<{ categories: ExpenseCategory[]; hasItems: boolean; onPick: (categoryId: string) => void }> = ({ categories, hasItems, onPick }) => (
+  <div className="rounded-[14px] border border-dashed border-[#C9C4B8] bg-[#FBFAF7] p-4">
+    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#14213D]">
+      <Plus className="h-4 w-4 text-[#0F5E63]" />
+      {hasItems ? 'Add another expense' : 'What did you spend on?'}
+    </div>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+      {categories.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          onClick={() => onPick(c.id)}
+          className="group flex min-h-[92px] flex-col items-start gap-2 rounded-xl border border-[#DCD8CE] bg-white p-3 text-left transition-all hover:-translate-y-px hover:border-[#0F5E63] hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30"
+        >
+          <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-[#E3EFEE] text-[#0F5E63] transition-colors group-hover:bg-[#0F5E63] group-hover:text-white">
+            {categoryIcon(c.code)}
+          </span>
+          <span className="text-[13px] font-semibold leading-tight text-[#14213D]">{c.name}</span>
+          {c.max_amount_per_item !== null && (
+            <span className="-mt-1 font-mono text-[10.5px] text-[#4A5568]">up to {formatExpenseAmount(c.max_amount_per_item)}</span>
+          )}
+        </button>
+      ))}
+    </div>
+    {!hasItems && <p className="mt-3 text-xs text-[#4A5568]">Add one entry per bill. You can attach the receipt right after saving it.</p>}
+  </div>
+);
+
 // ======================================================================== item editor
+/** From ⇄ To pair shared by travel and local conveyance. */
+const RouteFields: React.FC<{
+  from: string;
+  to: string;
+  onChange: (from: string, to: string) => void;
+  errors: { from?: string; to?: string };
+}> = ({ from, to, onChange, errors }) => (
+  <div className="relative grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <FieldTile label="From" htmlFor="route-from" icon={<MapPin />} required error={errors.from}>
+      <TileInput id="route-from" value={from} maxLength={120} placeholder="City or place" onChange={(e) => onChange(e.target.value, to)} />
+    </FieldTile>
+    <FieldTile label="To" htmlFor="route-to" icon={<MapPin />} required error={errors.to} className="sm:[&>div]:pl-6">
+      <TileInput id="route-to" value={to} maxLength={120} placeholder="City or place" onChange={(e) => onChange(from, e.target.value)} />
+    </FieldTile>
+    <button
+      type="button"
+      aria-label="Swap from and to"
+      onClick={() => onChange(to, from)}
+      className="absolute left-1/2 top-[29px] z-10 hidden h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[#C9C4B8] bg-white text-[#0F5E63] shadow-sm transition-colors hover:border-[#0F5E63] hover:bg-[#E3EFEE] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30 sm:inline-flex"
+    >
+      <ArrowLeftRight className="h-4 w-4" />
+    </button>
+  </div>
+);
+
 const ItemEditor: React.FC<{
   draft: ItemDraft;
   categories: ExpenseCategory[];
@@ -684,137 +951,250 @@ const ItemEditor: React.FC<{
   onCancel: () => void;
   onSave: () => void;
 }> = ({ draft, categories, customers, projects, errors, duplicateNotice, busy, onChange, onCancel, onSave }) => {
+  const [showLink, setShowLink] = useState(false);
+  const [showRemarks, setShowRemarks] = useState(false);
   const cat = categories.find((c) => c.id === draft.category_id);
   const kind = cat ? CATEGORY_DETAIL_KIND[cat.code] : undefined;
   const set = (patch: Partial<ItemDraft>) => onChange({ ...draft, ...patch });
   const setDetail = (k: string, v: string) => onChange({ ...draft, details: { ...draft.details, [k]: v } });
-  const today = todayInKolkata();
+  const setRoute = (from: string, to: string) => onChange({ ...draft, details: { ...draft.details, from, to } });
+  const today = istToday();
   const late = draft.expense_date && daysBetween(draft.expense_date, today) > 90;
   const computed = kind === 'conveyance' ? editorAmount(draft, cat) : null;
   const autoAmount = kind === 'conveyance' && Number(draft.details.km) > 0 && Number(draft.details.rate_per_km) > 0;
   const nights = kind === 'hotel' && draft.details.check_in && draft.details.check_out ? hotelNights(draft.details.check_in, draft.details.check_out) : null;
   const d = (k: string) => errors[`category_details.${k}`];
+  const persons = Number(draft.details.persons) || 0;
+  const linkOpen = Boolean(showLink || cat?.requires_customer_or_project || draft.customer_id || draft.project_id || errors.customer_id || errors.project_id);
+  const remarksOpen = Boolean(showRemarks || cat?.requires_remark || draft.remarks || errors.remarks);
 
   return (
-    <div className="rounded-[14px] border-2 border-[#0F5E63]/40 bg-[#FBFAF7] p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-[#14213D]">{draft.id ? 'Edit line' : 'New line'}</span>
-        <Button variant="ghost" size="xs" onClick={onCancel} leftIcon={<X className="h-3 w-3" />}>Cancel</Button>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
-        <Input label="Date *" type="date" max={today} value={draft.expense_date} onChange={(e) => set({ expense_date: e.target.value })} error={errors.expense_date} />
-        <Select
-          label="Category *"
-          value={draft.category_id}
-          onChange={(e) => set({ category_id: e.target.value, details: {} })}
-          options={[{ value: '', label: 'Choose…' }, ...categories.map((c) => ({ value: c.id, label: c.name }))]}
-          error={errors.category_id}
-        />
-        <Input
-          label={autoAmount ? 'Amount (km × rate)' : 'Amount (₹) *'}
-          inputMode="decimal"
-          value={autoAmount ? computed! : draft.amount}
-          readOnly={autoAmount}
-          onChange={(e) => set({ amount: e.target.value.replace(/[^\d.]/g, '') })}
-          placeholder="0.00"
-          className="font-mono"
-          error={errors.amount}
-          helperText={cat?.max_amount_per_item ? `Limit ${formatExpenseAmount(cat.max_amount_per_item)}${cat.cap_is_hard ? ' (hard cap)' : ''}` : undefined}
-        />
-      </div>
-
-      {kind === 'travel' && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Input label="From *" value={draft.details.from || ''} onChange={(e) => setDetail('from', e.target.value)} maxLength={120} error={d('from')} />
-          <Input label="To *" value={draft.details.to || ''} onChange={(e) => setDetail('to', e.target.value)} maxLength={120} error={d('to')} />
-          <Select label="Mode *" value={draft.details.mode || ''} onChange={(e) => setDetail('mode', e.target.value)} options={[{ value: '', label: 'Choose…' }, ...TRAVEL_MODES.map((m) => ({ value: m, label: label(m) }))]} error={d('mode')} />
-        </div>
-      )}
-      {kind === 'hotel' && (
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-          <Input label="Hotel name *" value={draft.details.hotel_name || ''} onChange={(e) => setDetail('hotel_name', e.target.value)} maxLength={120} error={d('hotel_name')} />
-          <Input label="Check-in *" type="date" value={draft.details.check_in || ''} onChange={(e) => setDetail('check_in', e.target.value)} error={d('check_in')} />
-          <Input label="Check-out *" type="date" min={draft.details.check_in || undefined} value={draft.details.check_out || ''} onChange={(e) => setDetail('check_out', e.target.value)} error={d('check_out')} />
-          <div className="flex flex-col justify-end">
-            <span className="text-xs font-semibold text-[#14213D] mb-1.5">Nights</span>
-            <span className="h-10 flex items-center font-mono text-sm">{nights !== null && nights > 0 ? nights : '—'}</span>
+    <div className="rounded-[14px] border-2 border-[#0F5E63]/50 bg-white shadow-sm">
+      {/* Expense type tabs */}
+      <div className="flex items-stretch gap-1 rounded-t-[12px] border-b border-[#ECE9E2] bg-[#FBFAF7] pr-2">
+        <div className="relative min-w-0 flex-1">
+          <div role="tablist" aria-label="Expense type" className="flex overflow-x-auto pr-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {categories.map((c) => {
+              const active = c.id === draft.category_id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => !active && onChange({ ...draft, category_id: c.id, details: detailsFor(c) })}
+                  className={`relative flex min-w-[76px] shrink-0 flex-col items-center gap-1 px-3 pb-2.5 pt-3 text-[11.5px] font-semibold transition-colors focus:outline-none focus-visible:bg-[#E3EFEE] ${
+                    active ? 'text-[#0F5E63]' : 'text-[#4A5568] hover:text-[#14213D]'
+                  }`}
+                >
+                  {categoryIcon(c.code)}
+                  <span className="whitespace-nowrap">{c.name}</span>
+                  {active && <span className="absolute inset-x-2 bottom-0 h-[3px] rounded-t-full bg-[#0F5E63]" />}
+                </button>
+              );
+            })}
           </div>
+          <span aria-hidden className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[#FBFAF7] to-transparent" />
         </div>
-      )}
-      {kind === 'conveyance' && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Input label="From *" value={draft.details.from || ''} onChange={(e) => setDetail('from', e.target.value)} maxLength={120} error={d('from')} />
-          <Input label="To *" value={draft.details.to || ''} onChange={(e) => setDetail('to', e.target.value)} maxLength={120} error={d('to')} />
-          <Input label="Distance (km)" inputMode="decimal" value={draft.details.km || ''} onChange={(e) => setDetail('km', e.target.value.replace(/[^\d.]/g, ''))} error={d('km')} />
-          <Input label="Rate per km (₹)" inputMode="decimal" value={draft.details.rate_per_km || ''} onChange={(e) => setDetail('rate_per_km', e.target.value.replace(/[^\d.]/g, ''))} error={d('rate_per_km')} />
-        </div>
-      )}
-      {kind === 'food' && (
-        <div className="grid grid-cols-2 gap-3">
-          <Select label="Meal *" value={draft.details.meal_type || ''} onChange={(e) => setDetail('meal_type', e.target.value)} options={[{ value: '', label: 'Choose…' }, ...MEAL_TYPES.map((m) => ({ value: m, label: label(m) }))]} error={d('meal_type')} />
-          <Input label="Persons *" inputMode="numeric" value={draft.details.persons || ''} onChange={(e) => setDetail('persons', e.target.value.replace(/\D/g, ''))} error={d('persons')} />
-        </div>
-      )}
-
-      <Input label="Purpose *" value={draft.purpose} maxLength={500} placeholder="What was this for?" onChange={(e) => set({ purpose: e.target.value })} error={errors.purpose} />
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Select
-          label={`Customer${cat?.requires_customer_or_project ? ' (or project) *' : ''}`}
-          value={draft.customer_id}
-          onChange={(e) => set({ customer_id: e.target.value })}
-          options={[{ value: '', label: 'None' }, ...customers.map((c) => ({ value: c.id, label: c.name }))]}
-          error={errors.customer_id}
-        />
-        <Select
-          label={`Project${cat?.requires_customer_or_project ? ' (or customer)' : ''}`}
-          value={draft.project_id}
-          onChange={(e) => set({ project_id: e.target.value })}
-          options={[{ value: '', label: 'None' }, ...projects.map((p) => ({ value: p.id, label: `${p.code} · ${p.name}` }))]}
-          error={errors.project_id}
-        />
+        <button type="button" aria-label="Close" onClick={onCancel} className="my-2 inline-flex w-8 shrink-0 items-center justify-center rounded-lg text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#14213D]">
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
-      <Textarea
-        label={`Remarks${cat?.requires_remark ? ' *' : ''}`}
-        rows={2}
-        maxLength={1000}
-        value={draft.remarks}
-        onChange={(e) => set({ remarks: e.target.value })}
-        error={errors.remarks}
-      />
+      {!cat ? (
+        <div className="p-6 text-center text-sm text-[#4A5568]">
+          {errors.category_id ? <span className="font-medium text-[#881337]">{errors.category_id}</span> : 'Pick the type of expense above to continue.'}
+        </div>
+      ) : (
+        <div className="space-y-4 p-4 sm:p-5">
+          {/* Category-specific details */}
+          {kind === 'travel' && (
+            <>
+              <RouteFields from={draft.details.from || ''} to={draft.details.to || ''} onChange={setRoute} errors={{ from: d('from'), to: d('to') }} />
+              <ChipGroup
+                label="Travel mode"
+                required
+                value={draft.details.mode || ''}
+                options={TRAVEL_MODES.map((m) => ({ value: m, label: label(m), icon: travelModeIcon(m) }))}
+                onChange={(v) => setDetail('mode', v)}
+                error={d('mode')}
+              />
+            </>
+          )}
+          {kind === 'hotel' && (
+            <>
+              <FieldTile label="Hotel name" htmlFor="hotel-name" icon={<Building2 />} required error={d('hotel_name')}>
+                <TileInput id="hotel-name" value={draft.details.hotel_name || ''} maxLength={120} placeholder="e.g. Hotel Clarks Avadh, Lucknow" onChange={(e) => setDetail('hotel_name', e.target.value)} />
+              </FieldTile>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_1fr_110px]">
+                <FieldTile label="Check-in" htmlFor="hotel-in" icon={<Calendar />} required error={d('check_in')}>
+                  <TileInput id="hotel-in" type="date" max={today} value={draft.details.check_in || ''} onChange={(e) => setDetail('check_in', e.target.value)} />
+                </FieldTile>
+                <FieldTile label="Check-out" htmlFor="hotel-out" icon={<Calendar />} required error={d('check_out')}>
+                  <TileInput id="hotel-out" type="date" min={draft.details.check_in || undefined} max={today} value={draft.details.check_out || ''} onChange={(e) => setDetail('check_out', e.target.value)} />
+                </FieldTile>
+                <FieldTile label="Nights" readOnly className="col-span-2 sm:col-span-1">
+                  <div className="mt-0.5 font-mono text-[15px] font-semibold text-[#14213D]">{nights !== null && nights > 0 ? nights : '—'}</div>
+                </FieldTile>
+              </div>
+            </>
+          )}
+          {kind === 'conveyance' && (
+            <>
+              <RouteFields from={draft.details.from || ''} to={draft.details.to || ''} onChange={setRoute} errors={{ from: d('from'), to: d('to') }} />
+              <div className="grid grid-cols-2 gap-3">
+                <FieldTile label="Distance (km)" htmlFor="conv-km" error={d('km')}>
+                  <TileInput id="conv-km" inputMode="decimal" placeholder="0" className="font-mono" value={draft.details.km || ''} onChange={(e) => setDetail('km', e.target.value.replace(/[^\d.]/g, ''))} />
+                </FieldTile>
+                <FieldTile label="Rate per km (₹)" htmlFor="conv-rate" error={d('rate_per_km')}>
+                  <TileInput id="conv-rate" inputMode="decimal" placeholder="0.00" className="font-mono" value={draft.details.rate_per_km || ''} onChange={(e) => setDetail('rate_per_km', e.target.value.replace(/[^\d.]/g, ''))} />
+                </FieldTile>
+              </div>
+            </>
+          )}
+          {kind === 'food' && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_auto] sm:items-start">
+              <ChipGroup
+                label="Meal"
+                required
+                value={draft.details.meal_type || ''}
+                options={MEAL_TYPES.map((m) => ({ value: m, label: label(m) }))}
+                onChange={(v) => setDetail('meal_type', v)}
+                error={d('meal_type')}
+              />
+              <FieldTile label="Persons" htmlFor="food-persons" icon={<Users />} required error={d('persons')} className="sm:w-40">
+                <div className="mt-0.5 flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="One person fewer"
+                    disabled={persons <= 1}
+                    onClick={() => setDetail('persons', String(Math.max(1, persons - 1)))}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#C9C4B8] text-[#14213D] hover:border-[#0F5E63] disabled:opacity-40"
+                  >
+                    <Minus className="h-3.5 w-3.5" />
+                  </button>
+                  <TileInput
+                    id="food-persons"
+                    inputMode="numeric"
+                    className="mt-0 w-10 text-center font-mono"
+                    value={draft.details.persons || ''}
+                    onChange={(e) => setDetail('persons', e.target.value.replace(/\D/g, ''))}
+                  />
+                  <button
+                    type="button"
+                    aria-label="One more person"
+                    disabled={persons >= 50}
+                    onClick={() => setDetail('persons', String(Math.min(50, persons + 1)))}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#C9C4B8] text-[#14213D] hover:border-[#0F5E63] disabled:opacity-40"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </FieldTile>
+            </div>
+          )}
 
-      {late && (
-        <Textarea
-          label="Late submission reason *"
-          rows={2}
-          maxLength={1000}
-          value={draft.late_submission_reason}
-          onChange={(e) => set({ late_submission_reason: e.target.value })}
-          error={errors.late_submission_reason}
-          helperText="This expense is older than 90 days and will be flagged to your approver."
-        />
-      )}
-
-      {duplicateNotice && (
-        <InfoCallout variant="warning" title="Possible duplicate">
-          <p className="text-sm">{duplicateNotice}</p>
-          <div className="mt-2">
-            <Checkbox
-              label="I confirm this is not a duplicate"
-              checked={draft.confirm_not_duplicate}
-              onChange={(e) => set({ confirm_not_duplicate: e.target.checked })}
-            />
+          {/* Date & amount — the same pair for every expense type */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FieldTile label={kind === 'travel' ? 'Travel date' : kind === 'hotel' ? 'Bill date' : 'Date'} htmlFor="item-date" icon={<Calendar />} required error={errors.expense_date}>
+              <TileInput id="item-date" type="date" max={today} value={draft.expense_date} onChange={(e) => set({ expense_date: e.target.value })} />
+            </FieldTile>
+            <FieldTile
+              label={autoAmount ? 'Amount · km × rate' : 'Amount'}
+              htmlFor="item-amount"
+              icon={<IndianRupee />}
+              required
+              readOnly={autoAmount}
+              error={errors.amount}
+              hint={cat.max_amount_per_item ? `Limit ${formatExpenseAmount(cat.max_amount_per_item)}${cat.cap_is_hard ? ' (hard cap)' : ' — add a remark if above'}` : undefined}
+            >
+              <div className="flex items-baseline gap-1">
+                <span className="font-mono text-[15px] text-[#4A5568]">₹</span>
+                <TileInput
+                  id="item-amount"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  className="font-mono text-lg"
+                  value={autoAmount ? computed! : draft.amount}
+                  readOnly={autoAmount}
+                  onChange={(e) => set({ amount: e.target.value.replace(/[^\d.]/g, '') })}
+                />
+              </div>
+            </FieldTile>
           </div>
-          {errors.confirm_not_duplicate && !draft.confirm_not_duplicate && <p className="text-xs text-[#881337] mt-1">{errors.confirm_not_duplicate}</p>}
-        </InfoCallout>
+
+          <FieldTile label="Purpose" htmlFor="item-purpose" required error={errors.purpose}>
+            <TileInput id="item-purpose" value={draft.purpose} maxLength={500} placeholder="What was this for? e.g. Demo at CRPF Group Centre" onChange={(e) => set({ purpose: e.target.value })} />
+          </FieldTile>
+
+          {linkOpen && (
+            <div className="space-y-2">
+              {cat.requires_customer_or_project && (
+                <p className="flex items-center gap-1.5 text-xs text-[#4A5568]">
+                  <Info className="h-3.5 w-3.5 text-[#0F5E63]" /> {cat.name} must be linked to a customer or a project.
+                </p>
+              )}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <FieldTile label="Customer" icon={<Building2 />} required={cat.requires_customer_or_project && !draft.project_id} error={errors.customer_id}>
+                  <TileSelect value={draft.customer_id} options={[{ value: '', label: 'None' }, ...customers.map((c) => ({ value: c.id, label: c.name }))]} onChange={(v) => set({ customer_id: v })} />
+                </FieldTile>
+                <FieldTile label="Project" icon={<Route />} error={errors.project_id}>
+                  <TileSelect value={draft.project_id} options={[{ value: '', label: 'None' }, ...projects.map((p) => ({ value: p.id, label: `${p.code} · ${p.name}` }))]} onChange={(v) => set({ project_id: v })} />
+                </FieldTile>
+              </div>
+            </div>
+          )}
+
+          {remarksOpen && (
+            <FieldTile label="Remarks" htmlFor="item-remarks" icon={<StickyNote />} required={cat.requires_remark} error={errors.remarks}>
+              <TileTextarea id="item-remarks" rows={2} maxLength={1000} value={draft.remarks} placeholder="Extra context for your approver" onChange={(e) => set({ remarks: e.target.value })} />
+            </FieldTile>
+          )}
+
+          {(!linkOpen || !remarksOpen) && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {!linkOpen && <RevealButton onClick={() => setShowLink(true)}>Link a customer or project</RevealButton>}
+              {!remarksOpen && <RevealButton onClick={() => setShowRemarks(true)}>Add remarks</RevealButton>}
+            </div>
+          )}
+
+          {late && (
+            <div className="space-y-2 rounded-lg border border-[#9A3412]/30 bg-[#FBEBDD]/60 p-3">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-[#7C2D12]">
+                <AlertTriangle className="h-3.5 w-3.5" /> This bill is older than 90 days and will be flagged to your approver.
+              </p>
+              <FieldTile label="Late submission reason" htmlFor="item-late" required error={errors.late_submission_reason}>
+                <TileTextarea id="item-late" rows={2} maxLength={1000} value={draft.late_submission_reason} onChange={(e) => set({ late_submission_reason: e.target.value })} />
+              </FieldTile>
+            </div>
+          )}
+
+          {duplicateNotice && (
+            <InfoCallout variant="warning" title="Possible duplicate">
+              <p className="text-sm">{duplicateNotice}</p>
+              <div className="mt-2">
+                <Checkbox
+                  label="I confirm this is not a duplicate"
+                  checked={draft.confirm_not_duplicate}
+                  onChange={(e) => set({ confirm_not_duplicate: e.target.checked })}
+                />
+              </div>
+              {errors.confirm_not_duplicate && !draft.confirm_not_duplicate && <p className="text-xs text-[#881337] mt-1">{errors.confirm_not_duplicate}</p>}
+            </InfoCallout>
+          )}
+        </div>
       )}
 
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onCancel} disabled={busy}>Cancel</Button>
-        <Button onClick={onSave} isLoading={busy} leftIcon={<Save className="h-4 w-4" />}>
-          {draft.id ? 'Save line' : 'Add line'}
-        </Button>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-b-[12px] border-t border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3 sm:px-5">
+        <div className="text-xs text-[#4A5568]">
+          This expense <Money value={Number(editorAmount(draft, cat)) || 0} className="ml-1 text-base font-semibold text-[#14213D]" />
+        </div>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>Cancel</Button>
+          <Button onClick={onSave} isLoading={busy} disabled={!cat} leftIcon={<Save className="h-4 w-4" />}>
+            {draft.id ? 'Save changes' : 'Add expense'}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -836,21 +1216,34 @@ const ItemCard: React.FC<{
   const cameraRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const det = item.category_details || {};
-  const detailText =
-    item.category_code === 'TRAVEL'
-      ? `${det.from} → ${det.to} · ${label(det.mode || '')}`
-      : item.category_code === 'HOTEL'
-        ? `${det.hotel_name} · ${det.nights} night(s)`
-        : item.category_code === 'LOCAL_CONVEYANCE'
-          ? `${det.from} → ${det.to}${det.km ? ` · ${det.km} km × ₹${det.rate_per_km}` : ''}`
-          : item.category_code === 'FOOD'
-            ? `${label(det.meal_type || '')} · ${det.persons} person(s)`
-            : null;
+  const isRoute = item.category_code === 'TRAVEL' || item.category_code === 'LOCAL_CONVEYANCE';
+  const headline: React.ReactNode = isRoute ? (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {det.from} <ArrowRight className="h-4 w-4 text-[#0F5E63]" /> {det.to}
+    </span>
+  ) : item.category_code === 'HOTEL' ? (
+    det.hotel_name
+  ) : item.category_code === 'FOOD' ? (
+    label(det.meal_type || '')
+  ) : (
+    item.purpose
+  );
+  const sub: React.ReactNode =
+    item.category_code === 'TRAVEL' ? (
+      <span className="inline-flex items-center gap-1">{travelModeIcon(det.mode || '', 'h-3.5 w-3.5')} {label(det.mode || '')}</span>
+    ) : item.category_code === 'HOTEL' ? (
+      `${det.nights} night${Number(det.nights) === 1 ? '' : 's'}`
+    ) : item.category_code === 'LOCAL_CONVEYANCE' && det.km ? (
+      `${det.km} km × ₹${det.rate_per_km}`
+    ) : item.category_code === 'FOOD' ? (
+      `${det.persons} person${Number(det.persons) === 1 ? '' : 's'}`
+    ) : null;
+  const showPurpose = headline !== item.purpose;
   const hasErrors = Object.values(errors).some(Boolean);
 
   return (
     <div
-      className={`rounded-[14px] border bg-white p-4 space-y-3 ${hasErrors ? 'border-[#881337]/50' : 'border-[#DCD8CE]'} ${drag ? 'ring-2 ring-[#0F5E63]/30' : ''}`}
+      className={`rounded-[14px] border bg-white transition-shadow hover:shadow-sm ${hasErrors ? 'border-[#881337]/50' : 'border-[#DCD8CE]'} ${drag ? 'ring-2 ring-[#0F5E63]/30' : ''}`}
       onDragOver={(e) => {
         e.preventDefault();
         setDrag(true);
@@ -862,39 +1255,54 @@ const ItemCard: React.FC<{
         if (e.dataTransfer.files?.length) onUpload(e.dataTransfer.files);
       }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <DateText value={item.expense_date} className="text-xs text-[#4A5568]" />
-            <Badge variant="outline" size="sm">{item.category_name}</Badge>
+      <div className="flex gap-3 p-4">
+        <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#E3EFEE] text-[#0F5E63]">{categoryIcon(item.category_code)}</span>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#4A5568]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[#0F5E63]">{item.category_name}</span>
+            <span aria-hidden>·</span>
+            <DateText value={item.expense_date} />
+            {sub && (
+              <>
+                <span aria-hidden>·</span>
+                {sub}
+              </>
+            )}
             {item.is_late && <LateFlag />}
             {item.duplicate_flag && (
               <Badge variant="warning" size="sm" className="gap-1"><Copy className="h-3 w-3" /> Duplicate flagged</Badge>
             )}
           </div>
-          <div className="font-medium text-[#14213D] break-words">{item.purpose}</div>
-          {detailText && <div className="text-xs text-[#4A5568]">{detailText}</div>}
+          <div className="break-words text-[15px] font-semibold text-[#14213D]">{headline}</div>
+          {showPurpose && <div className="break-words text-[13px] text-[#4A5568]">{item.purpose}</div>}
           {(item.customer_name || item.project_code) && (
-            <div className="text-xs text-[#4A5568]">{[item.customer_name, item.project_code && `${item.project_code} ${item.project_name || ''}`].filter(Boolean).join(' · ')}</div>
+            <div className="flex items-center gap-1 text-xs text-[#4A5568]">
+              <Building2 className="h-3 w-3" />
+              {[item.customer_name, item.project_code && `${item.project_code} ${item.project_name || ''}`].filter(Boolean).join(' · ')}
+            </div>
           )}
-          {item.remarks && <div className="text-xs text-[#4A5568] italic">“{item.remarks}”</div>}
+          {item.remarks && <div className="text-xs italic text-[#4A5568]">“{item.remarks}”</div>}
         </div>
-        <div className="text-right shrink-0">
-          <Money value={item.amount} className="font-semibold text-[#14213D]" />
-          <div className="flex justify-end gap-1 mt-1">
-            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Edit line" onClick={onEdit} disabled={disabled}><Pencil className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Remove line" onClick={onDelete} disabled={disabled}><Trash2 className="h-4 w-4" /></Button>
+        <div className="shrink-0 text-right">
+          <Money value={item.amount} className="text-lg font-semibold text-[#14213D]" />
+          <div className="mt-1 flex justify-end gap-1">
+            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Edit expense" onClick={onEdit} disabled={disabled}><Pencil className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Remove expense" onClick={onDelete} disabled={disabled}><Trash2 className="h-4 w-4" /></Button>
           </div>
         </div>
       </div>
 
-      {Object.entries(errors).filter(([, v]) => v).map(([k, v]) => (
-        <p key={k} className="text-xs text-[#881337] flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> {v}</p>
-      ))}
+      {hasErrors && (
+        <div className="space-y-1 px-4 pb-3">
+          {Object.entries(errors).filter(([, v]) => v).map(([k, v]) => (
+            <p key={k} className="flex items-center gap-1 text-xs text-[#881337]"><AlertTriangle className="h-3 w-3" /> {v}</p>
+          ))}
+        </div>
+      )}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-b-[14px] border-t border-dashed border-[#DCD8CE] bg-[#FBFAF7] px-4 py-2.5">
         {item.attachments.map((a) => (
-          <span key={a.id} className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${a.duplicate_of_attachment_id ? 'border-[#9A3412]/40 bg-[#FBEBDD]' : 'border-[#DCD8CE] bg-[#FBFAF7]'}`}>
+          <span key={a.id} className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${a.duplicate_of_attachment_id ? 'border-[#9A3412]/40 bg-[#FBEBDD]' : 'border-[#DCD8CE] bg-white'}`}>
             <button type="button" className="inline-flex items-center gap-1 hover:underline" onClick={() => onPreview(a)}>
               {a.mime_type === 'application/pdf' ? <FileText className="h-3.5 w-3.5" /> : <ImageIcon className="h-3.5 w-3.5" />}
               <span className="max-w-[140px] truncate">{a.file_name}</span>
@@ -904,13 +1312,15 @@ const ItemCard: React.FC<{
             </button>
           </span>
         ))}
-        {item.receipt_missing && (
+        {item.receipt_missing ? (
           <Badge variant="urgent" size="sm" className="gap-1"><Paperclip className="h-3 w-3" /> Receipt required</Badge>
+        ) : (
+          item.attachments.length === 0 && <span className="hidden text-[11px] text-[#8A8578] sm:inline">Drop a receipt here (optional)</span>
         )}
         <input ref={fileRef} type="file" accept={ACCEPT} multiple className="hidden" onChange={(e) => e.target.files && onUpload(e.target.files)} />
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => e.target.files && onUpload(e.target.files)} />
         {item.attachments.length < MAX_FILES && (
-          <span className="inline-flex gap-1 ml-auto">
+          <span className="ml-auto inline-flex gap-1">
             <Button size="xs" variant="secondary" isLoading={uploading} leftIcon={<Upload className="h-3 w-3" />} onClick={() => fileRef.current?.click()}>
               Receipt
             </Button>
@@ -920,7 +1330,6 @@ const ItemCard: React.FC<{
           </span>
         )}
       </div>
-      <p className="hidden sm:block text-[11px] text-[#8A8578]">Drop PDF / JPG / PNG / HEIC receipts here · max {MAX_FILE_MB} MB each, {MAX_FILES} per line</p>
     </div>
   );
 };

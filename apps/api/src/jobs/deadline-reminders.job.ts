@@ -11,6 +11,9 @@ import {
   PROPOSAL_INACTIVITY_DAYS,
   TENDER_UPCOMING_DAYS,
   TENDER_URGENT_HOURS,
+  todayInKolkata,
+  istDateOf,
+  isoDaysBetween,
   type Database,
 } from '@arihant/shared';
 
@@ -54,8 +57,9 @@ export class DeadlineRemindersJob {
       const closingDate = new Date(rawDeadline);
       const diffMs = closingDate.getTime() - now.getTime();
       const hoursLeft = Math.round(diffMs / (1000 * 60 * 60));
-      const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-      const deadlineKey = closingDate.toISOString().slice(0, 10);
+      // Calendar days and the dedupe key use the IST day (server clock is UTC; 00:00–05:30 IST is still "yesterday" in UTC).
+      const daysLeft = isoDaysBetween(todayInKolkata(now), istDateOf(closingDate));
+      const deadlineKey = istDateOf(closingDate);
 
       // Overdue
       if (diffMs < 0) {
@@ -160,7 +164,7 @@ export class DeadlineRemindersJob {
   @Cron(CronExpression.EVERY_HOUR)
   async checkLeadFollowupsOverdue() {
     this.logger.log('Running CRM lead & customer follow-up overdue compliance check...');
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayInKolkata();
 
     const overdueFollowUps = await this.db
       .selectFrom('follow_ups')

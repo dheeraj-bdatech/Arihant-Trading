@@ -3,18 +3,18 @@
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ChevronLeft, ChevronRight, FileSpreadsheet, Plus, Receipt, SlidersHorizontal, Upload, X } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, FileSpreadsheet, Layers, MapPin, Plus, Receipt, Search, Upload } from 'lucide-react';
 import {
   Button,
   Card,
   EmptyState,
+  FilterMenu,
   InfoCallout,
   Input,
   Modal,
   PageContainer,
   PageHeader,
   PageLoader,
-  Select,
   StatCard,
   StatGrid,
   Table,
@@ -27,10 +27,11 @@ import {
 import { api } from '@/lib/api';
 import { EXPENSE_CLAIM_STATUSES, EXPENSE_STATUS_LABELS } from '@arihant/shared';
 import { errorMessage, fieldErrors, notifyExpensesChanged, saveBlob, type ExpenseClaim, type Paged } from './_lib/expense-lib';
-import { DateText, ExpensesNav, Money, StatusBadge, useToaster } from './_lib/expense-ui';
+import { DateText, ExpenseViewMenu, Money, PaymentInfo, StatusBadge, useToaster } from './_lib/expense-ui';
 import { useUrlFilters } from './_lib/use-url-filters';
 
 const FILTER_KEYS = ['statuses', 'date_from', 'date_to', 'trip_id', 'search', 'page'] as const;
+const DATE_INPUT = 'h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none';
 
 function MyExpenses() {
   const router = useRouter();
@@ -41,7 +42,7 @@ function MyExpenses() {
   const [error, setError] = useState<string | null>(null);
   const [trips, setTrips] = useState<{ id: string; trip_date: string; base_location: string }[]>([]);
   const [importOpen, setImportOpen] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [datesOpen, setDatesOpen] = useState(false);
   const { push, Toaster } = useToaster();
 
   // Legacy deep link from the visit planner: /expenses?visit_id=… → start a claim for that visit.
@@ -91,41 +92,92 @@ function MyExpenses() {
           </div>
         }
       />
-      <ExpensesNav />
 
-      <StatGrid cols={4}>
+      <StatGrid cols={4} className="gap-3">
         <StatCard label="Claims (filtered)" value={String(totals?.count ?? 0)} subtext="Matching the filters below" icon={<Receipt className="h-5 w-5 text-[#0F5E63]" />} />
         <StatCard label="Total claimed" value={formatShort(totals?.total_claimed)} subtext="Sum of claim totals" variant="primary" />
         <StatCard label="Total approved" value={formatShort(totals?.total_approved)} subtext="After manager / Accounts review" variant="emerald" />
         <StatCard label="Needs your action" value={String(result?.data.filter((c) => c.status === 'clarification_required' || c.status === 'draft').length ?? 0)} subtext="Drafts & clarifications on this page" variant="amber" />
       </StatGrid>
 
-      <Button className="md:hidden" variant="secondary" fullWidth leftIcon={<SlidersHorizontal className="h-4 w-4" />} onClick={() => setFiltersOpen((o) => !o)}>
-        {filtersOpen ? 'Hide filters' : `Filters${activeCount ? ` (${activeCount})` : ''}`}
-      </Button>
-      <Card className={`p-3.5 overflow-visible ${filtersOpen ? '' : 'hidden md:block'}`}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
-          <Input label="Search" placeholder="Claim no. or title" defaultValue={values.search} onKeyDown={(e) => e.key === 'Enter' && set({ search: (e.target as HTMLInputElement).value })} onBlur={(e) => e.target.value !== values.search && set({ search: e.target.value })} />
-          <Select
-            label="Status"
-            value={values.statuses}
-            onChange={(e) => set({ statuses: e.target.value })}
-            options={[{ value: '', label: 'All statuses' }, ...EXPENSE_CLAIM_STATUSES.filter((s) => s !== 'manager_approved').map((s) => ({ value: s, label: EXPENSE_STATUS_LABELS[s] }))]}
-          />
-          <Input label="Expense date from" type="date" value={values.date_from} onChange={(e) => set({ date_from: e.target.value })} />
-          <Input label="Expense date to" type="date" value={values.date_to} min={values.date_from || undefined} onChange={(e) => set({ date_to: e.target.value })} />
-          <Select
-            label="Trip"
-            value={values.trip_id}
-            onChange={(e) => set({ trip_id: e.target.value })}
-            options={[{ value: '', label: 'Any trip' }, ...trips.map((t) => ({ value: t.id, label: `${t.trip_date.split('-').reverse().join('-')} · ${t.base_location}` }))]}
-          />
+      {/* One filter row: View (module navigation), search, then compact dropdowns. */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <ExpenseViewMenu />
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <input
+              key={values.search}
+              type="search"
+              aria-label="Search claims"
+              placeholder="Search claim no. or title…"
+              defaultValue={values.search}
+              onKeyDown={(e) => e.key === 'Enter' && set({ search: (e.target as HTMLInputElement).value })}
+              onBlur={(e) => e.target.value !== values.search && set({ search: e.target.value })}
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Status"
+              icon={<Layers />}
+              options={[
+                { key: 'all', label: 'All statuses' },
+                ...EXPENSE_CLAIM_STATUSES.filter((s) => s !== 'manager_approved').map((s) => ({ key: s, label: EXPENSE_STATUS_LABELS[s] })),
+              ].map((o) => ({
+                ...o,
+                urgent: o.key === 'clarification_required',
+                active: (values.statuses || 'all') === o.key,
+                onSelect: () => set({ statuses: o.key === 'all' ? null : o.key }),
+              }))}
+            />
+            <FilterMenu
+              label="Trip"
+              icon={<MapPin />}
+              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              options={[
+                { key: 'all', label: 'Any trip' },
+                ...trips.map((t) => ({ key: t.id, label: `${t.trip_date.split('-').reverse().join('-')} · ${t.base_location}` })),
+              ].map((o) => ({
+                ...o,
+                active: (values.trip_id || 'all') === o.key,
+                onSelect: () => set({ trip_id: o.key === 'all' ? null : o.key }),
+              }))}
+            />
+            <button
+              type="button"
+              onClick={() => setDatesOpen((o) => !o)}
+              aria-expanded={datesOpen}
+              className={`filter-menu-btn ${datesOpen || values.date_from || values.date_to ? 'filter-menu-btn--on' : ''}`}
+            >
+              <CalendarDays className="h-3.5 w-3.5" />
+              <span>Dates</span>
+              {(values.date_from || values.date_to) && <span className="filter-menu-chip">On</span>}
+            </button>
+            {activeCount > 0 && (
+              <Button variant="ghost" size="xs" onClick={clear} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                Clear
+              </Button>
+            )}
+          </div>
         </div>
-        {activeCount > 0 && (
-          <div className="mt-3 flex justify-end">
-            <Button size="xs" variant="ghost" leftIcon={<X className="h-3 w-3" />} onClick={clear}>
-              Clear filters
-            </Button>
+
+        {datesOpen && (
+          <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
+            <span className="font-semibold text-[#4A5568]">Expense date</span>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              From
+              <input type="date" value={values.date_from} onChange={(e) => set({ date_from: e.target.value })} className={DATE_INPUT} />
+            </label>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              To
+              <input type="date" value={values.date_to} min={values.date_from || undefined} onChange={(e) => set({ date_to: e.target.value })} className={DATE_INPUT} />
+            </label>
+            {(values.date_from || values.date_to) && (
+              <Button variant="ghost" size="xs" onClick={() => set({ date_from: null, date_to: null })} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                Reset dates
+              </Button>
+            )}
           </div>
         )}
       </Card>
@@ -180,7 +232,7 @@ function MyExpenses() {
                       </TableCell>
                       <TableCell className="text-right"><Money value={c.total_claimed} /></TableCell>
                       <TableCell className="text-right"><Money value={c.total_approved} /></TableCell>
-                      <TableCell><StatusBadge status={c.status} /></TableCell>
+                      <TableCell><StatusBadge status={c.status} /><PaymentInfo claim={c} className="mt-0.5" /></TableCell>
                       <TableCell className="text-xs"><DateText value={c.updated_at} /></TableCell>
                       <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                         {c.allowed_actions.includes('edit') ? (
@@ -211,6 +263,7 @@ function MyExpenses() {
                       <span>{c.period_from ? <><DateText value={c.period_from} /> – <DateText value={c.period_to} /></> : `${c.item_count ?? 0} line(s)`}</span>
                       <Money value={c.total_claimed} className="text-sm font-semibold text-[#14213D]" />
                     </div>
+                    <PaymentInfo claim={c} />
                     {c.status === 'clarification_required' && c.last_reviewer_comment && (
                       <p className="text-xs text-[#9A3412] bg-[#FBEBDD] rounded-lg px-2 py-1.5">“{c.last_reviewer_comment}”</p>
                     )}

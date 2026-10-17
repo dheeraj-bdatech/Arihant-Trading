@@ -524,7 +524,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          followup_date: '2026-09-21',
+          followup_date: new Date().toISOString().split('T')[0],
           owner_id: salesUserId,
           remarks: 'Discussed technical specs with purchase officer.',
           outcome: 'Requested revised delivery schedule',
@@ -624,7 +624,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
           product_id: testProductId,
           sector: 'Healthcare',
           responsible_id: salesUserId,
-          required_date: '2026-10-15',
+          required_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
           duplicate_override_reason: 'Testing EDA notifications',
         });
       expect(createRes.status).toBe(201);

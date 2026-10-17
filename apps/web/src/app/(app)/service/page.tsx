@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { istToday } from '@/lib/ist-date';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Wrench,
@@ -26,11 +27,12 @@ import {
   Globe2,
   Link2,
   ShieldQuestion,
-  X,
   PauseCircle,
   Play,
   RotateCcw,
   Ban,
+  Search,
+  Layers,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -45,7 +47,6 @@ import {
   Input,
   Select,
   Textarea,
-  Tabs,
   PageContainer,
   PageHeader,
   EmptyState,
@@ -53,14 +54,7 @@ import {
   StatGrid,
   InfoCallout,
   PageLoader,
-  ToolbarBox,
-  ToolbarSlot,
-  Table,
-  TableHeader,
-  TableRow,
-  TableHead,
-  TableBody,
-  TableCell,
+  FilterMenu,
 } from '@/components/ui';
 import { RowMenu, type RowMenuItem } from '@/components/ui/RowMenu';
 import type { ServicePriority, WarrantyStatus, ComplaintSource } from '@arihant/shared';
@@ -187,7 +181,7 @@ export default function ServicePage() {
     location: '',
     complaint: '',
     complaint_source: 'Phone' as ComplaintSource,
-    received_date: new Date().toISOString().split('T')[0],
+    received_date: istToday(),
     priority: 'high' as ServicePriority,
     warranty_status: 'in_warranty' as WarrantyStatus,
     assigned_to: '',
@@ -272,7 +266,7 @@ export default function ServicePage() {
 
   const tabCount = (tab: string) => tickets.filter((t) => matchesTab(tab, t.status)).length;
 
-  const anyFilter = sourceFilter !== 'all' || priorityFilter !== 'all' || unassignedFilter || overdueFilter || repeatFilter || unverifiedFilter || !!searchQuery;
+  const anyFilter = sourceFilter !== 'all' || priorityFilter !== 'all' || unassignedFilter || overdueFilter || repeatFilter || unverifiedFilter || activeTab !== 'all' || !!searchQuery;
   const clearFilters = () => {
     setSourceFilter('all');
     setPriorityFilter('all');
@@ -291,6 +285,67 @@ export default function ServicePage() {
     } else if (kind === 'breached') setOverdueFilter(true);
     else setUnverifiedFilter(true);
   };
+
+  // "Flags" dropdown: single-select over the quick toggles (and the old portal-triage tile)
+  type FlagKey = 'all' | 'portal' | 'unassigned' | 'overdue' | 'repeat' | 'unverified';
+  const activeFlag: FlagKey =
+    sourceFilter === 'Customer Portal' && activeTab === 'open'
+      ? 'portal'
+      : unassignedFilter
+      ? 'unassigned'
+      : overdueFilter
+      ? 'overdue'
+      : repeatFilter
+      ? 'repeat'
+      : unverifiedFilter
+      ? 'unverified'
+      : 'all';
+  const pickFlag = (key: FlagKey) => {
+    if (activeFlag === 'portal' && key !== 'portal') {
+      setSourceFilter('all');
+      setActiveTab('all');
+    }
+    setUnassignedFilter(key === 'unassigned');
+    setOverdueFilter(key === 'overdue');
+    setRepeatFilter(key === 'repeat');
+    setUnverifiedFilter(key === 'unverified');
+    if (key === 'portal') {
+      setSourceFilter('Customer Portal');
+      setActiveTab('open');
+    }
+  };
+  /** KPI tile that switches the stage filter (click again to clear). */
+  const toggleStage = (tab: string) => setActiveTab((cur) => (cur === tab ? 'all' : tab));
+
+  const STAGES: { id: string; label: string }[] = [
+    { id: 'all', label: 'All stages' },
+    { id: 'open', label: 'New intake' },
+    { id: 'assigned', label: 'Assigned & scheduled' },
+    { id: 'in_progress', label: 'In progress' },
+    { id: 'awaiting', label: 'Awaiting / on hold' },
+    { id: 'escalated', label: 'Escalated / revisit' },
+    { id: 'reports', label: 'Reports filed' },
+    { id: 'closed', label: 'Closed / cancelled' },
+  ];
+  const SOURCES: { key: string; label: string }[] = [
+    { key: 'all', label: 'All channels' },
+    { key: 'Phone', label: 'Client helpline call' },
+    { key: 'Email', label: 'Official client email' },
+    { key: 'Official Letter', label: 'Govt written dispatch' },
+    { key: 'Customer Portal', label: 'Customer portal' },
+    { key: 'Demo Team', label: 'Demo team (trials/demos)' },
+    { key: 'Sales Rep', label: 'Sales field rep' },
+    { key: 'Field Visit', label: 'Field inspection discovery' },
+    { key: 'Walk-in', label: 'Depot walk-in' },
+    { key: 'WhatsApp', label: 'WhatsApp hotline' },
+  ];
+  const PRIORITIES: { key: string; label: string }[] = [
+    { key: 'all', label: 'All priorities' },
+    { key: 'critical', label: 'Critical (LD risk)' },
+    { key: 'high', label: 'High' },
+    { key: 'medium', label: 'Medium' },
+    { key: 'low', label: 'Routine / preventative' },
+  ];
 
   /* ------------------------------- helpers ------------------------------- */
   const fetchDetail = useCallback(async (id: string) => api.get(`/service/tickets/${id}`), []);
@@ -460,19 +515,6 @@ export default function ServicePage() {
     </Button>
   );
 
-  const FilterToggle = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
-    <button
-      type="button"
-      aria-pressed={on}
-      onClick={onClick}
-      className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-        on ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#4A5568] hover:bg-[#FBFAF7]'
-      }`}
-    >
-      {children}
-    </button>
-  );
-
   const activeRing = (on: boolean) => `cursor-pointer transition-shadow hover:shadow-md ${on ? 'ring-2 ring-[#0F5E63]' : ''}`;
 
   return (
@@ -501,32 +543,36 @@ export default function ServicePage() {
         }
       />
 
-      {/* KPI Metrics HUD (§34) */}
-      <StatGrid cols={4}>
+      {/* KPI Metrics HUD (§34) — five tiles; clickable ones filter the queue (click again to clear). */}
+      <StatGrid cols={5} className="gap-3">
         <StatCard
           label="New Tickets"
           value={stats?.newTickets ?? tabCount('open')}
-          subtext="Fresh intake awaiting action"
+          subtext={`Fresh intake · ${stats?.portalNew ?? 0} from portal`}
           icon={<Clock className="h-5 w-5 text-[#0F5E63]" />}
+          role="button"
+          tabIndex={0}
+          onClick={() => toggleStage('open')}
+          onKeyDown={(e) => e.key === 'Enter' && toggleStage('open')}
+          className={activeRing(activeTab === 'open' && activeFlag !== 'portal')}
         />
         <StatCard
           label="Pending Queue"
           value={stats?.pendingTickets ?? tickets.filter((t) => !isFinished(t.status)).length}
-          subtext="Active in diagnosis & field trials"
+          subtext={`${stats?.assignedTickets ?? tickets.filter((t) => t.assigned_to && !isFinished(t.status)).length} assigned to engineers`}
           icon={<Wrench className="h-5 w-5 text-[#0F5E63]" />}
         />
         <StatCard
-          label="Assigned Tickets"
-          value={stats?.assignedTickets ?? tickets.filter((t) => t.assigned_to && !isFinished(t.status)).length}
-          subtext="Engineers mobilized & on-site"
-          icon={<UserCheck className="h-5 w-5 text-[#0F5E63]" />}
-        />
-        <StatCard
-          label="Overdue SLA Tickets"
-          value={stats?.overdueTickets ?? 0}
-          subtext="Past scheduled visit target"
-          icon={<Flame className="h-5 w-5 text-[#9A3412]" />}
+          label="SLA Breached"
+          value={stats?.slaBreached ?? 0}
+          subtext={`${stats?.overdueTickets ?? 0} past planned visit date`}
+          icon={<AlertTriangle className="h-5 w-5 text-[#9A3412]" />}
           variant="amber"
+          role="button"
+          tabIndex={0}
+          onClick={() => (overdueFilter ? setOverdueFilter(false) : applyStatFilter('breached'))}
+          onKeyDown={(e) => e.key === 'Enter' && (overdueFilter ? setOverdueFilter(false) : applyStatFilter('breached'))}
+          className={activeRing(overdueFilter)}
         />
         <StatCard
           label="Awaiting Parts / Spares"
@@ -538,138 +584,92 @@ export default function ServicePage() {
         <StatCard
           label="Completed & Signed"
           value={stats?.completedTickets ?? 0}
-          subtext="Customer sign-off certificate on file"
+          subtext={`Avg closure ${stats?.avgClosureDays ?? 0}d from intake`}
           icon={<CheckCircle2 className="h-5 w-5 text-[#0F5E63]" />}
           variant="emerald"
-        />
-        <StatCard
-          label="Repeat Complaints"
-          value={stats?.repeatComplaints ?? 0}
-          subtext="Recurring machine / station issues"
-          icon={<Repeat className="h-5 w-5 text-[#9A3412]" />}
-          variant="amber"
-        />
-        <StatCard
-          label="Avg Closure Time"
-          value={`${stats?.avgClosureDays ?? 0}d`}
-          subtext="Turnaround from intake to closure"
-          icon={<History className="h-5 w-5 text-[#0F5E63]" />}
-        />
-        {/* Triage tiles: click to filter */}
-        <StatCard
-          label="Portal Requests To Triage"
-          value={stats?.portalNew ?? 0}
-          subtext="Customer-portal tickets not yet picked up"
-          icon={<Globe2 className="h-5 w-5 text-[#0F5E63]" />}
           role="button"
           tabIndex={0}
-          onClick={() => applyStatFilter('portal')}
-          onKeyDown={(e) => e.key === 'Enter' && applyStatFilter('portal')}
-          className={activeRing(sourceFilter === 'Customer Portal' && activeTab === 'open')}
-        />
-        <StatCard
-          label="SLA Breached"
-          value={stats?.slaBreached ?? 0}
-          subtext="Open tickets past their resolution deadline"
-          icon={<AlertTriangle className="h-5 w-5 text-[#9A3412]" />}
-          variant="amber"
-          role="button"
-          tabIndex={0}
-          onClick={() => applyStatFilter('breached')}
-          onKeyDown={(e) => e.key === 'Enter' && applyStatFilter('breached')}
-          className={activeRing(overdueFilter)}
-        />
-        <StatCard
-          label="Unverified Customers"
-          value={stats?.unverifiedCustomers ?? 0}
-          subtext="Portal tickets awaiting customer verification"
-          icon={<ShieldQuestion className="h-5 w-5 text-[#9A3412]" />}
-          variant="amber"
-          role="button"
-          tabIndex={0}
-          onClick={() => applyStatFilter('unverified')}
-          onKeyDown={(e) => e.key === 'Enter' && applyStatFilter('unverified')}
-          className={activeRing(unverifiedFilter)}
+          onClick={() => toggleStage('closed')}
+          onKeyDown={(e) => e.key === 'Enter' && toggleStage('closed')}
+          className={activeRing(activeTab === 'closed')}
         />
       </StatGrid>
 
-      {/* Filter Bar */}
-      <ToolbarBox>
-        <ToolbarSlot>
-          <div className="space-y-3 p-3.5 bg-white border border-[#DCD8CE] rounded-[14px]">
-            <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
-              <div className="flex-1 w-full sm:w-auto relative">
-                <Input
-                  placeholder="Search by ticket ref, customer, complaint, or machine serial number..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full"
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
-                <Select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} className="w-full sm:w-48 text-xs font-semibold">
-                  <option value="all">All Origin Channels</option>
-                  <option value="Phone">Client Helpline Call</option>
-                  <option value="Email">Official Client Email</option>
-                  <option value="Official Letter">Govt Written Dispatch</option>
-                  <option value="Customer Portal">Customer Portal</option>
-                  <option value="Demo Team">Demo Team (Trials/Demos)</option>
-                  <option value="Sales Rep">Sales Field Rep</option>
-                  <option value="Field Visit">Field Inspection Discovery</option>
-                  <option value="Walk-in">Depot Walk-in</option>
-                  <option value="WhatsApp">WhatsApp Hotline</option>
-                </Select>
-                <Select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)} className="w-full sm:w-40 text-xs font-semibold">
-                  <option value="all">All Priorities</option>
-                  <option value="critical">Critical (LD Risk)</option>
-                  <option value="high">High Priority</option>
-                  <option value="medium">Medium Priority</option>
-                  <option value="low">Routine / Preventative</option>
-                </Select>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-[#4A5568]">Quick filters</span>
-              <FilterToggle on={sourceFilter === 'Customer Portal'} onClick={() => setSourceFilter(sourceFilter === 'Customer Portal' ? 'all' : 'Customer Portal')}>
-                <Globe2 className="h-3 w-3" /> Customer Portal
-              </FilterToggle>
-              <FilterToggle on={unassignedFilter} onClick={() => setUnassignedFilter((v) => !v)}>
-                <User className="h-3 w-3" /> Unassigned
-              </FilterToggle>
-              <FilterToggle on={overdueFilter} onClick={() => setOverdueFilter((v) => !v)}>
-                <Flame className="h-3 w-3" /> Overdue
-              </FilterToggle>
-              <FilterToggle on={repeatFilter} onClick={() => setRepeatFilter((v) => !v)}>
-                <Repeat className="h-3 w-3" /> Repeat complaints
-              </FilterToggle>
-              <FilterToggle on={unverifiedFilter} onClick={() => setUnverifiedFilter((v) => !v)}>
-                <ShieldQuestion className="h-3 w-3" /> Unverified customer
-              </FilterToggle>
-              {anyFilter && (
-                <Button size="xs" variant="ghost" onClick={clearFilters}>
-                  <X className="h-3 w-3 mr-1" /> Clear all
-                </Button>
-              )}
-            </div>
+      {/* One filter row: search, then compact dropdowns. */}
+      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <input
+              type="search"
+              aria-label="Search service tickets"
+              placeholder="Search ticket ref, customer, complaint, serial…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+            />
           </div>
-        </ToolbarSlot>
-
-        {/* Pipeline Navigation Tabs (§32) */}
-        <Tabs
-          tabs={[
-            { id: 'all', label: 'All Incidents', count: tickets.length },
-            { id: 'open', label: '1. New Intake', count: tabCount('open') },
-            { id: 'assigned', label: '2. Assigned & Scheduled', count: tabCount('assigned') },
-            { id: 'in_progress', label: '3. In Progress', count: tabCount('in_progress') },
-            { id: 'awaiting', label: '4. Awaiting / On Hold', count: tabCount('awaiting') },
-            { id: 'escalated', label: '5. Escalated / Revisit', count: tabCount('escalated') },
-            { id: 'reports', label: '6. Reports Filed', count: tabCount('reports') },
-            { id: 'closed', label: '7. Closed / Cancelled', count: tabCount('closed') },
-          ]}
-          activeTab={activeTab}
-          onChange={setActiveTab}
-        />
-      </ToolbarBox>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Stage"
+              icon={<Layers />}
+              options={STAGES.map((s) => ({
+                key: s.id,
+                label: s.label,
+                count: s.id === 'all' ? tickets.length : tabCount(s.id),
+                active: activeTab === s.id,
+                onSelect: () => setActiveTab(s.id),
+              }))}
+            />
+            <FilterMenu
+              label="Priority"
+              icon={<Flame />}
+              options={PRIORITIES.map((p) => ({
+                ...p,
+                urgent: p.key === 'critical',
+                active: priorityFilter === p.key,
+                onSelect: () => setPriorityFilter(p.key),
+              }))}
+            />
+            <FilterMenu
+              label="Source"
+              icon={<Phone />}
+              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              options={SOURCES.map((s) => ({
+                ...s,
+                active: sourceFilter === s.key,
+                onSelect: () => {
+                  if (activeFlag === 'portal') setActiveTab('all');
+                  setSourceFilter(s.key);
+                },
+              }))}
+            />
+            <FilterMenu
+              label="Flags"
+              icon={<ShieldAlert />}
+              align="right"
+              options={[
+                { key: 'all', label: 'No flag filter', icon: undefined, count: undefined },
+                { key: 'portal', label: 'Portal requests to triage', icon: <Globe2 />, count: stats?.portalNew ?? undefined },
+                { key: 'unassigned', label: 'Unassigned', icon: <User />, count: undefined },
+                { key: 'overdue', label: 'Overdue / SLA breached', icon: <AlertTriangle />, count: stats?.slaBreached ?? undefined },
+                { key: 'repeat', label: 'Repeat complaints', icon: <Repeat />, count: stats?.repeatComplaints ?? undefined },
+                { key: 'unverified', label: 'Unverified customer', icon: <ShieldQuestion />, count: stats?.unverifiedCustomers ?? undefined },
+              ].map((f) => ({
+                ...f,
+                urgent: f.key === 'overdue',
+                active: activeFlag === f.key,
+                onSelect: () => pickFlag(f.key as FlagKey),
+              }))}
+            />
+            {anyFilter && (
+              <Button variant="ghost" size="xs" onClick={clearFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                Clear
+              </Button>
+            )}
+          </div>
+        </div>
+      </Card>
 
       {anyFilter && (
         <p className="text-xs text-[#4A5568]">

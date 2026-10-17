@@ -1,3 +1,4 @@
+import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Kysely, sql } from 'kysely';
 import type { Database } from '@arihant/shared';
 
@@ -22,7 +23,7 @@ export async function getServiceSetting<T = unknown>(db: Db, key: string, fallba
  * created from random numbers) so a collision can never surface as a 500.
  */
 export async function generateTicketNo(db: Db): Promise<string> {
-  const year = new Date().getFullYear();
+  const year = Number(todayInKolkata().slice(0, 4)); // IST business year
   for (let i = 0; i < 12; i++) {
     const { rows } = await sql<{ n: string }>`select nextval('service_ticket_no_seq')::text as n`.execute(db);
     const candidate = `TCK-${year}-${String(rows[0].n).padStart(6, '0')}`;

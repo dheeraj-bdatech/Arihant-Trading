@@ -1,3 +1,4 @@
+import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Injectable, Inject, NotFoundException } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
@@ -83,7 +84,7 @@ export class InteractionsService {
   }
 
   async create(dto: CreateInteractionDto, employeeId: string) {
-    const occurredOn = dto.occurred_on || dto.interaction_date || new Date().toISOString().split('T')[0];
+    const occurredOn = dto.occurred_on || dto.interaction_date || todayInKolkata();
     const remarks = dto.remarks || dto.notes || null;
     const followupDate = dto.followup_date || dto.next_followup_date || null;
 

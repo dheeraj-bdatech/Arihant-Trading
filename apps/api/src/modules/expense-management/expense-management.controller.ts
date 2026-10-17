@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
-import type { AuthUser, ExpenseClaimAction } from '@arihant/shared';
+import { todayInKolkata, type AuthUser, type ExpenseClaimAction } from '@arihant/shared';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -280,7 +280,7 @@ export class ExpenseReportsController {
   async export(@Query() query: Record<string, unknown>, @CurrentUser() user: AuthUser, @Res() res: Response) {
     this.reports.parse(query); // validate before any bytes are sent
     const format = query.format === 'csv' ? 'csv' : 'xlsx';
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = todayInKolkata();
     res.setHeader(
       'Content-Type',
       format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

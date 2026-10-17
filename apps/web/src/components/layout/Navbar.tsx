@@ -7,6 +7,7 @@ import {
   Search,
   LogOut,
   Menu,
+  MessageSquarePlus,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useSidebar } from '@/lib/sidebar-context';
@@ -110,6 +111,17 @@ export const Navbar: React.FC<{ onOpenCommand?: () => void }> = ({
 
       {/* Right controls */}
       <div className="flex items-center space-x-2.5 shrink-0">
+        {/* UI/UX Field Ergonomics Feedback Trigger */}
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent('open-uiux-feedback'))}
+          className="app-hbtn hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white hover:bg-[#E3EFEE] border border-[#DCD8CE] hover:border-[#0F5E63]/40 text-[#0F5E63] text-xs font-semibold transition-all cursor-pointer shadow-2xs group"
+          title="UI/UX & Field Ergonomics Feedback"
+          aria-label="UI/UX & Field Ergonomics Feedback"
+        >
+          <MessageSquarePlus className="h-3.5 w-3.5 text-[#0F5E63] group-hover:scale-110 transition-transform" />
+          <span className="hidden md:inline text-[11px] font-bold">Feedback</span>
+        </button>
 
         <AppearanceMenu />
 

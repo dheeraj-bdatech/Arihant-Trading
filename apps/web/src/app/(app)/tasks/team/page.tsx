@@ -2,15 +2,36 @@
 
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, CalendarClock, CheckCircle2, Plus, Repeat, SlidersHorizontal, UserCog, Users, UserX, X, XCircle } from 'lucide-react';
+import {
+  ArrowDownWideNarrow,
+  ArrowUpDown,
+  ArrowUpNarrowWide,
+  BellOff,
+  CalendarClock,
+  CheckCircle2,
+  Clock,
+  Eye,
+  Flag,
+  Layers,
+  Plus,
+  Repeat,
+  ShieldAlert,
+  SlidersHorizontal,
+  Tag,
+  User,
+  UserCog,
+  Users,
+  UserX,
+  X,
+  XCircle,
+} from 'lucide-react';
 import {
   Badge,
   Button,
   Card,
-  Checkbox,
   EmptyState,
+  FilterMenu,
   InfoCallout,
-  Input,
   Modal,
   PageContainer,
   PageHeader,
@@ -18,7 +39,6 @@ import {
   RowMenu,
   SectionHeader,
   Select,
-  Tabs,
   Textarea,
 } from '@/components/ui';
 import { api } from '@/lib/api';
@@ -40,7 +60,7 @@ import {
   type TaskReassignReason,
 } from '@arihant/shared';
 import { errorMessage, fieldErrors, istToday, notifyTasksChanged, useTaskCategories, useTaskSummary, type AssigneeOption, type TaskRow } from '../_lib/task-lib';
-import { MultiSelect, TaskConflictCallout, TasksNav, useToaster, useUrlFilters } from '../_lib/task-ui';
+import { TaskConflictCallout, TaskViewMenu, TaskViewRow, useToaster, useUrlFilters } from '../_lib/task-ui';
 import { DeadlineInput, UserSelect } from '../_lib/pickers';
 import { TaskActionDialog, type TaskDialogAction } from '../_lib/TaskActions';
 import { TaskCards, TaskPagination, TaskSearchInput, TaskTable, rowActorKinds, useTaskList } from '../_lib/TaskList';
@@ -82,6 +102,8 @@ const contextName = (k: ContextKey, id: string, rows: TaskRow[]): string | null 
       return null;
   }
 };
+/** Less-used filters, shown in the inline "More" row (Priority lives here so the main row fits one line with View). */
+const MORE_KEYS = ['priority', 'category_ids', 'recurrence_type', 'has_open_blocker', 'delay_class', 'no_update', 'deadline_from', 'deadline_to'] as const;
 const URL_KEYS = ['section', 'view', ...FILTERS, 'sort_by', 'sort_dir', 'page'] as const;
 const PAGE_SIZE = 25;
 
@@ -111,7 +133,8 @@ function TeamTasks() {
   const { values, set } = useUrlFilters(URL_KEYS);
   const { categories } = useTaskCategories();
   const { push, Toaster } = useToaster();
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  // Opens by itself when a drill-down link arrives with one of the "More" filters set.
+  const [filtersOpen, setFiltersOpen] = useState(() => MORE_KEYS.some((k) => values[k]));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState<'reassign' | 'extend' | null>(null);
   const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: TaskRow } | null>(null);
@@ -217,32 +240,44 @@ function TeamTasks() {
     );
   };
 
-  if (!summary) return <PageLoader rows={5} label="Loading team tasks" />;
-
-  if (!allowed) {
+  // Until the summary says who may see this page, the row carries just the View menu (it is the navigation).
+  if (!summary || !allowed) {
     return (
       <PageContainer>
         <PageHeader title="Team Tasks" icon={<Users className="h-5 w-5" />} />
-        <TasksNav />
-        <EmptyState
-          icon={Users}
-          title="Team Tasks is for managers"
-          description="This view lists the work of people who report to you. You have no reporting team, so your own work lives in My Tasks."
-          action={
-            <Link href="/tasks">
-              <Button variant="secondary">Go to My Tasks</Button>
-            </Link>
-          }
-        />
+        <TaskViewRow />
+        {!summary ? (
+          <PageLoader rows={5} label="Loading team tasks" />
+        ) : (
+          <EmptyState
+            icon={Users}
+            title="Team Tasks is for managers"
+            description="This view lists the work of people who report to you. You have no reporting team, so your own work lives in My Tasks."
+            action={
+              <Link href="/tasks">
+                <Button variant="secondary">Go to My Tasks</Button>
+              </Link>
+            }
+          />
+        )}
       </PageContainer>
     );
   }
 
-  const viewTabs = [
-    { id: 'team', label: 'My team' },
-    { id: 'assigned_by_me', label: 'Assigned by me' },
-    { id: 'all', label: canViewAll ? 'All tasks' : 'All I can see' },
+  const showOptions = [
+    { key: 'team', label: 'My team' },
+    { key: 'assigned_by_me', label: 'Assigned by me' },
+    { key: 'all', label: canViewAll ? 'All tasks' : 'All I can see' },
+  ].map((o) => ({ ...o, active: section === 'tasks' && view === o.key, onSelect: () => set({ section: null, view: o.key === defaultView ? null : o.key }) }));
+  const moreActive = MORE_KEYS.filter((k) => values[k]).length;
+  const contextChips = CONTEXT.filter((k) => values[k]);
+  const scrollPanel = '[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto';
+  /** Single-select over a comma-list param: drill-down links may carry several ids, each shows as active. */
+  const listMenu = (key: (typeof EDITABLE)[number], anyLabel: string, opts: { value: string; label: string }[]) => [
+    { key: '__any', label: anyLabel, active: !values[key], onSelect: () => set({ [key]: null }) },
+    ...opts.map((o) => ({ key: o.value, label: o.label, active: listOf(key).includes(o.value), onSelect: () => set({ [key]: o.value }) })),
   ];
+  const dateCls = 'h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none';
 
   return (
     <PageContainer>
@@ -257,20 +292,141 @@ function TeamTasks() {
           </Link>
         }
       />
-      <TasksNav />
 
-      <div className="-mx-1 overflow-x-auto px-1">
-        <Tabs
-          variant="pills"
-          className="w-max min-w-full"
-          tabs={[
-            { id: 'tasks', label: 'Tasks' },
-            { id: 'needs', label: 'Needs reassignment', count: summary.needs_reassignment || undefined, badgeVariant: 'warning' },
-          ]}
-          activeTab={section}
-          onChange={(id) => set({ section: id === 'needs' ? 'needs' : null })}
-        />
-      </div>
+      {/* One filter row on both sections: View, search, then compact dropdowns. "More" opens the less-used filters inline. */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <TaskViewMenu />
+          <div className="w-full min-w-[200px] lg:w-auto lg:flex-1">
+            {section === 'tasks' ? (
+              <TaskSearchInput compact label="Search team tasks" placeholder="Search task number or title" value={values.search} onSearch={(q) => set({ search: q })} />
+            ) : (
+              <p className="text-xs text-[#4A5568]">Open tasks and recurring series owned by people who are no longer active.</p>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Show"
+              icon={<Eye />}
+              neutralKeys={[defaultView]}
+              options={[
+                ...showOptions,
+                { key: 'needs', label: 'Needs reassignment', icon: <UserX />, count: summary.needs_reassignment || undefined, urgent: true, active: section === 'needs', onSelect: () => set({ section: 'needs' }) },
+              ]}
+            />
+            {section === 'tasks' && (
+              <>
+                <FilterMenu label="Assignee" icon={<User />} className={scrollPanel} options={listMenu('assignee_ids', 'Anyone', assigneeOptions)} neutralKeys={['__any']} />
+                <FilterMenu
+                  label="Status"
+                  icon={<Layers />}
+                  className={scrollPanel}
+                  options={listMenu('statuses', 'Open & completed', TASK_DISPLAY_STATUSES.map((st) => ({ value: st, label: TASK_STATUS_LABELS[st] })))}
+                  neutralKeys={['__any']}
+                />
+                <button type="button" onClick={() => setFiltersOpen((o) => !o)} aria-expanded={filtersOpen} className={`filter-menu-btn ${filtersOpen || moreActive ? 'filter-menu-btn--on' : ''}`}>
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>More</span>
+                  {moreActive > 0 && <span className="filter-menu-chip">{moreActive}</span>}
+                </button>
+                <FilterMenu
+                  label="Sort"
+                  icon={<ArrowUpDown />}
+                  neutralKeys={[...SORT_OPTIONS.map((o) => o.value), 'dir_desc', 'dir_asc']}
+                  align="right"
+                  options={[
+                    ...SORT_OPTIONS.map((o) => ({ key: o.value, label: o.label, active: sortBy === o.value, onSelect: () => set({ sort_by: o.value === 'deadline' ? null : o.value, sort_dir: null }) })),
+                    { key: 'dir_desc', label: 'Descending', icon: <ArrowDownWideNarrow />, active: sortDir === 'desc', onSelect: () => set({ sort_dir: 'desc' }) },
+                    { key: 'dir_asc', label: 'Ascending', icon: <ArrowUpNarrowWide />, active: sortDir === 'asc', onSelect: () => set({ sort_dir: 'asc' }) },
+                  ]}
+                />
+                {activeFilters > 0 && (
+                  <Button variant="ghost" size="xs" onClick={clearFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                    Clear
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {section === 'tasks' && filtersOpen && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-[#ECE9E2] pt-2.5 text-xs">
+            <FilterMenu label="Priority" icon={<Flag />} options={listMenu('priority', 'Any priority', TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] })))} neutralKeys={['__any']} />
+            <FilterMenu label="Category" icon={<Tag />} className={scrollPanel} options={listMenu('category_ids', 'Any category', categories.map((c) => ({ value: c.id, label: c.name })))} neutralKeys={['__any']} />
+            <FilterMenu
+              label="Frequency"
+              icon={<Repeat />}
+              neutralKeys={['__any']}
+              options={[
+                { key: '__any', label: 'Any frequency', active: !values.recurrence_type, onSelect: () => set({ recurrence_type: null }) },
+                ...TASK_RECURRENCE_TYPES.map((r) => ({ key: r, label: TASK_RECURRENCE_LABELS[r as TaskRecurrenceType], active: values.recurrence_type === r, onSelect: () => set({ recurrence_type: r }) })),
+              ]}
+            />
+            <FilterMenu
+              label="Blocker"
+              icon={<ShieldAlert />}
+              neutralKeys={['__any']}
+              options={[
+                { key: '__any', label: 'Any', active: !values.has_open_blocker, onSelect: () => set({ has_open_blocker: null }) },
+                { key: 'true', label: 'Has an open blocker', active: values.has_open_blocker === 'true', onSelect: () => set({ has_open_blocker: 'true' }) },
+                { key: 'false', label: 'No open blocker', active: values.has_open_blocker === 'false', onSelect: () => set({ has_open_blocker: 'false' }) },
+              ]}
+            />
+            <FilterMenu
+              label="Delay"
+              icon={<Clock />}
+              neutralKeys={['__any']}
+              options={[
+                { key: '__any', label: 'Any', active: !values.delay_class, onSelect: () => set({ delay_class: null }) },
+                ...TASK_DELAY_CLASSES.map((d) => ({ key: d, label: TASK_DELAY_CLASS_LABELS[d], active: values.delay_class === d, onSelect: () => set({ delay_class: d }) })),
+              ]}
+            />
+            <button
+              type="button"
+              aria-pressed={values.no_update === 'true'}
+              onClick={() => set({ no_update: values.no_update === 'true' ? null : 'true' })}
+              className={`filter-menu-btn ${values.no_update === 'true' ? 'filter-menu-btn--on' : ''}`}
+            >
+              <BellOff className="h-3.5 w-3.5" />
+              <span>No recent update</span>
+            </button>
+            <span className="ml-1 font-semibold text-[#4A5568]">Deadline</span>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              From
+              <input type="date" aria-label="Deadline from" value={values.deadline_from} max={values.deadline_to || undefined} onChange={(e) => set({ deadline_from: e.target.value })} className={dateCls} />
+            </label>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              To
+              <input type="date" aria-label="Deadline to" value={values.deadline_to} min={values.deadline_from || undefined} onChange={(e) => set({ deadline_to: e.target.value })} className={dateCls} />
+            </label>
+            {moreActive > 0 && (
+              <Button variant="ghost" size="xs" onClick={() => set(Object.fromEntries(MORE_KEYS.map((k) => [k, null])) as Record<(typeof MORE_KEYS)[number], null>)} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                Reset
+              </Button>
+            )}
+          </div>
+        )}
+
+        {section === 'tasks' && contextChips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-[#ECE9E2] pt-2.5" aria-label="Drill-down filters">
+            {contextChips.map((k) => {
+              const name = contextName(k, values[k], tasks.data?.data || []);
+              return (
+                <span key={k} className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#0F5E63]/30 bg-[#E3EFEE] py-0.5 pl-3 pr-1 text-xs font-semibold text-[#0F5E63]">
+                  <span className="truncate">
+                    {CONTEXT_LABEL[k]}
+                    {name ? `: ${name}` : ''}
+                  </span>
+                  <button type="button" aria-label={`Remove ${CONTEXT_LABEL[k]} filter`} onClick={() => set({ [k]: null })} className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-white/70">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </Card>
 
       {conflict && (
         <TaskConflictCallout
@@ -283,106 +439,6 @@ function TeamTasks() {
 
       {section === 'tasks' ? (
         <>
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="-mx-1 overflow-x-auto px-1">
-              <Tabs variant="segmented" className="w-max" tabs={viewTabs} activeTab={view} onChange={(id) => set({ view: id === defaultView ? null : id })} />
-            </div>
-            <div className="flex items-end gap-2">
-              <div className="w-full md:w-44">
-                <Select
-                  label="Sort by"
-                  value={sortBy}
-                  searchable={false}
-                  onChange={(e) => set({ sort_by: e.target.value === 'deadline' ? null : e.target.value, sort_dir: null })}
-                  options={SORT_OPTIONS}
-                />
-              </div>
-              <Button
-                variant="secondary"
-                className="shrink-0"
-                aria-label={sortDir === 'asc' ? 'Sorted ascending — switch to descending' : 'Sorted descending — switch to ascending'}
-                leftIcon={sortDir === 'asc' ? <ArrowUpNarrowWide className="h-4 w-4" /> : <ArrowDownWideNarrow className="h-4 w-4" />}
-                onClick={() => set({ sort_dir: sortDir === 'asc' ? 'desc' : 'asc' })}
-              >
-                {sortDir === 'asc' ? 'Asc' : 'Desc'}
-              </Button>
-            </div>
-          </div>
-
-          {CONTEXT.some((k) => values[k]) && (
-            <div className="flex flex-wrap items-center gap-2" aria-label="Drill-down filters">
-              {CONTEXT.filter((k) => values[k]).map((k) => {
-                const name = contextName(k, values[k], tasks.data?.data || []);
-                return (
-                  <span key={k} className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#0F5E63]/30 bg-[#E3EFEE] py-0.5 pl-3 pr-1 text-xs font-semibold text-[#0F5E63]">
-                    <span className="truncate">
-                      {CONTEXT_LABEL[k]}
-                      {name ? `: ${name}` : ''}
-                    </span>
-                    <button type="button" aria-label={`Remove ${CONTEXT_LABEL[k]} filter`} onClick={() => set({ [k]: null })} className="flex h-7 w-7 items-center justify-center rounded-full hover:bg-white/70">
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-          )}
-
-          <Button className="md:hidden" variant="secondary" fullWidth aria-expanded={filtersOpen} leftIcon={<SlidersHorizontal className="h-4 w-4" />} onClick={() => setFiltersOpen((o) => !o)}>
-            {filtersOpen ? 'Hide filters' : `Filters${activeFilters ? ` (${activeFilters})` : ''}`}
-          </Button>
-          <Card className={`p-3.5 overflow-visible ${filtersOpen ? '' : 'hidden md:block'}`}>
-            <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <TaskSearchInput value={values.search} onSearch={(q) => set({ search: q })} placeholder="Task number or title" />
-              <MultiSelect label="Assignees" options={assigneeOptions} value={listOf('assignee_ids')} onChange={(v) => set({ assignee_ids: v })} placeholder="Anyone" />
-              <MultiSelect label="Categories" options={categories.map((c) => ({ value: c.id, label: c.name }))} value={listOf('category_ids')} onChange={(v) => set({ category_ids: v })} placeholder="Any category" />
-              <MultiSelect label="Priority" options={TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] }))} value={listOf('priority')} onChange={(v) => set({ priority: v })} placeholder="Any priority" />
-              <MultiSelect label="Status" options={TASK_DISPLAY_STATUSES.map((s) => ({ value: s, label: TASK_STATUS_LABELS[s] }))} value={listOf('statuses')} onChange={(v) => set({ statuses: v })} placeholder="Open & completed" />
-              <Select
-                label="Frequency"
-                value={values.recurrence_type}
-                searchable={false}
-                onChange={(e) => set({ recurrence_type: e.target.value })}
-                options={[{ value: '', label: 'Any frequency' }, ...TASK_RECURRENCE_TYPES.map((r) => ({ value: r, label: TASK_RECURRENCE_LABELS[r as TaskRecurrenceType] }))]}
-              />
-              <Input label="Deadline from" type="date" value={values.deadline_from} max={values.deadline_to || undefined} onChange={(e) => set({ deadline_from: e.target.value })} />
-              <Input label="Deadline to" type="date" value={values.deadline_to} min={values.deadline_from || undefined} onChange={(e) => set({ deadline_to: e.target.value })} />
-              <Select
-                label="Blocker"
-                value={values.has_open_blocker}
-                searchable={false}
-                onChange={(e) => set({ has_open_blocker: e.target.value })}
-                options={[
-                  { value: '', label: 'Any' },
-                  { value: 'true', label: 'Has an open blocker' },
-                  { value: 'false', label: 'No open blocker' },
-                ]}
-              />
-              <Select
-                label="Delay"
-                value={values.delay_class}
-                searchable={false}
-                onChange={(e) => set({ delay_class: e.target.value })}
-                options={[{ value: '', label: 'Any' }, ...TASK_DELAY_CLASSES.map((d) => ({ value: d, label: TASK_DELAY_CLASS_LABELS[d] }))]}
-              />
-              <div className="flex h-10 items-center">
-                <Checkbox id="team-no-update" label="No recent update only" checked={values.no_update === 'true'} onChange={(e) => set({ no_update: e.target.checked ? 'true' : null })} />
-              </div>
-              {activeFilters > 0 && (
-                <div className="flex h-10 items-center lg:justify-end">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    leftIcon={<X className="h-3.5 w-3.5" />}
-                    onClick={clearFilters}
-                  >
-                    Clear filters ({activeFilters})
-                  </Button>
-                </div>
-              )}
-            </div>
-          </Card>
-
           {tasks.error && (
             <InfoCallout variant="danger" title="Could not load team tasks">
               {tasks.error}

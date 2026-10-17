@@ -1,3 +1,4 @@
+import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -176,7 +177,7 @@ export class DeliveriesService {
       throw new BadRequestException('The selected organisation does not exist');
     }
 
-    const year = new Date().getFullYear();
+    const year = Number(todayInKolkata().slice(0, 4)); // IST business year
     const countRes = await this.db
       .selectFrom('deliveries')
       .select(sql<number>`count(id)::int`.as('count'))

@@ -13,6 +13,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql, Transaction } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
+import { addIsoDays, calendarDay, isoDaysBetween, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   PROPOSAL_INACTIVITY_DAYS,
   type Database,
@@ -849,7 +850,7 @@ export class ProposalsService {
     // E9: Concurrency-safe number generation
     const seqResult = await sql<{ next_num: string }>`SELECT nextval('proposal_canonical_seq')::text as next_num`.execute(this.db);
     const seqNum = seqResult.rows[0]?.next_num || `${Date.now().toString().slice(-4)}`;
-    const year = new Date().getFullYear();
+    const year = Number(todayInKolkata().slice(0, 4));
     const canonicalNo = `PRP-${year}-${seqNum.padStart(5, '0')}`;
     const legacyNumber = `PROP-${year}-${seqNum.padStart(4, '0')}`;
 
@@ -1056,7 +1057,16 @@ export class ProposalsService {
     }
 
     // E33: Changing required date before sending requires reason
-    if (dto.required_date && dto.required_date !== existing.required_date && !isDispatched) {
+    // Compare IST calendar days: existing.required_date is a Date object, dto.required_date a 'YYYY-MM-DD' string.
+    const requiredDayChanged = Boolean(dto.required_date) && calendarDay(dto.required_date) !== calendarDay(existing.required_date as any);
+    const existingRequestDay = calendarDay(existing.request_date as any);
+    if (requiredDayChanged && existingRequestDay && (calendarDay(dto.required_date) || '') < existingRequestDay) {
+      throw new HttpException(
+        `Required date cannot be before the proposal request date (${existingRequestDay})`,
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (requiredDayChanged && !isDispatched) {
       if (!dto.required_date_change_reason) {
         throw new BadRequestException('A reason is mandatory when changing the required completion date');
       }
@@ -1462,12 +1472,8 @@ export class ProposalsService {
     );
 
     // E26: Determine sent_late flag
-    const reqDateStr = (proposal.required_date as any) instanceof Date
-      ? (proposal.required_date as any).toISOString().split('T')[0]
-      : String(proposal.required_date || '').split('T')[0];
-    const sentDateStr = (dto.sent_date as any) instanceof Date
-      ? (dto.sent_date as any).toISOString().split('T')[0]
-      : String(dto.sent_date || '').split('T')[0];
+    const reqDateStr = calendarDay(proposal.required_date as any);
+    const sentDateStr = calendarDay(dto.sent_date);
     const isSentLate = Boolean(reqDateStr && sentDateStr && sentDateStr > reqDateStr);
 
     await this.db.transaction().execute(async (trx) => {
@@ -1564,12 +1570,8 @@ export class ProposalsService {
       settings,
     );
 
-    const reqDateStr = (proposal.required_date as any) instanceof Date
-      ? (proposal.required_date as any).toISOString().split('T')[0]
-      : String(proposal.required_date || '').split('T')[0];
-    const sentDateStr = (dto.sent_date as any) instanceof Date
-      ? (dto.sent_date as any).toISOString().split('T')[0]
-      : String(dto.sent_date || '').split('T')[0];
+    const reqDateStr = calendarDay(proposal.required_date as any);
+    const sentDateStr = calendarDay(dto.sent_date);
     const isSentLate = Boolean(reqDateStr && sentDateStr && sentDateStr > reqDateStr);
 
     await this.db.transaction().execute(async (trx) => {
@@ -1787,7 +1789,7 @@ export class ProposalsService {
     const proposal = await this.findOne(id, user);
     const settings = await this.getSettings();
 
-    const outcomeDate = dto.outcome_date || new Date().toISOString().split('T')[0];
+    const outcomeDate = calendarDay(dto.outcome_date) || todayInKolkata();
 
     this.workflowService.validateTransition(
       proposal,
@@ -1863,7 +1865,7 @@ export class ProposalsService {
     const proposal = await this.findOne(id, user);
     const settings = await this.getSettings();
 
-    const outcomeDate = new Date().toISOString().split('T')[0];
+    const outcomeDate = todayInKolkata();
 
     this.workflowService.validateTransition(
       proposal,
@@ -2001,15 +2003,17 @@ export class ProposalsService {
       throw new BadRequestException('Follow-ups can only be logged on proposals sent to customers');
     }
 
-    const contactDate = dto.contact_date || dto.followup_date || new Date().toISOString().split('T')[0];
-    const today = new Date().toISOString().split('T')[0];
+    // IST calendar days — the UTC clock is still on yesterday between 00:00 and 05:30 IST.
+    const today = todayInKolkata();
+    const contactDate = calendarDay(dto.contact_date || dto.followup_date) || today;
+    const proposalSentDay = calendarDay(proposal.sent_date);
 
-    // E36: contact_date <= now
+    // E36: contact_date <= today (IST)
     if (contactDate > today) {
-      throw new BadRequestException('Contact date cannot be in the future');
+      throw new BadRequestException(`Contact date cannot be in the future (today is ${today} IST)`);
     }
-    if (proposal.sent_date && contactDate < proposal.sent_date) {
-      throw new BadRequestException('Contact date cannot be earlier than the proposal sent date');
+    if (proposalSentDay && contactDate < proposalSentDay) {
+      throw new BadRequestException(`Contact date cannot be earlier than the proposal sent date (${proposalSentDay})`);
     }
 
     const summary = this.sanitizeText(dto.summary || dto.remarks);
@@ -2018,7 +2022,7 @@ export class ProposalsService {
     }
 
     // E36: User must either set a future next date OR record an outcome transition
-    const nextDate = dto.next_follow_up_date || dto.next_followup_date;
+    const nextDate = calendarDay(dto.next_follow_up_date || dto.next_followup_date);
     const hasOutcome = dto.record_converted || dto.record_lost || dto.record_closed;
 
     if (!nextDate && !hasOutcome) {
@@ -2033,9 +2037,7 @@ export class ProposalsService {
         throw new BadRequestException('Next follow-up date cannot be in the past');
       }
       const maxHorizon = settings?.max_follow_up_horizon_days ?? 90;
-      const nD = new Date(nextDate);
-      const tD = new Date(today);
-      const diffHorizon = Math.round((nD.getTime() - tD.getTime()) / (1000 * 60 * 60 * 24));
+      const diffHorizon = isoDaysBetween(today, nextDate);
       if (diffHorizon > maxHorizon && !dto.postpone_reason) {
         throw new BadRequestException(
           `Scheduling a follow-up beyond ${maxHorizon} days requires a documented justification reason`,
@@ -2155,8 +2157,8 @@ export class ProposalsService {
     const proposal = await this.findOne(id, user);
     const settings = await this.getSettings();
 
-    const today = new Date().toISOString().split('T')[0];
-    if (dto.new_follow_up_date < today) {
+    const today = todayInKolkata();
+    if ((calendarDay(dto.new_follow_up_date) || '') < today) {
       throw new BadRequestException('New follow-up date cannot be in the past');
     }
 
@@ -2498,15 +2500,15 @@ export class ProposalsService {
       }
 
       // Preparation overdue (6f)
-      if (!isDispatched && !isClosed && p.required_date && p.required_date < today) {
+      // DATE columns arrive as Date objects: compare IST calendar-day strings, never Date vs string.
+      const requiredDay = calendarDay(p.required_date as any);
+      if (!isDispatched && !isClosed && requiredDay && requiredDay < today) {
         prep_overdue++;
       }
 
       // Required date approaching (6f)
-      if (!isDispatched && !isClosed && p.required_date && p.required_date >= today) {
-        const reqD = new Date(p.required_date);
-        const tD = new Date(today);
-        const diffDays = Math.round((reqD.getTime() - tD.getTime()) / (1000 * 60 * 60 * 24));
+      if (!isDispatched && !isClosed && requiredDay && requiredDay >= today) {
+        const diffDays = isoDaysBetween(today, requiredDay);
         if (diffDays <= warningDays) {
           required_date_approaching++;
         }
@@ -2524,7 +2526,7 @@ export class ProposalsService {
 
       // Follow-up buckets (6a, 6b, 6c)
       if (isDispatched) {
-        const fuDate = p.next_follow_up_date || p.next_followup;
+        const fuDate = calendarDay((p.next_follow_up_date || p.next_followup) as any);
         if (fuDate === today) due_today++;
         else if (fuDate && fuDate < today) overdue++;
 
@@ -2532,7 +2534,7 @@ export class ProposalsService {
         const isOwnerInactive = p.owner_inactive_flag;
         let sentDaysAgo = 0;
         if (p.sent_date) {
-          sentDaysAgo = Math.floor((now.getTime() - new Date(p.sent_date).getTime()) / (1000 * 60 * 60 * 24));
+          sentDaysAgo = isoDaysBetween(calendarDay(p.sent_date as any) || today, today);
         }
         if (!fuDate || isOwnerInactive || (sentDaysAgo > noFuThreshold && (p.follow_up_count || 0) === 0)) {
           no_followup++;
@@ -2621,17 +2623,13 @@ export class ProposalsService {
         if (p.sent_late) sentLateCount++;
 
         if (p.request_date) {
-          const reqD = new Date(p.request_date);
-          const sD = new Date(p.sent_date);
-          const turn = Math.max(0, Math.round((sD.getTime() - reqD.getTime()) / (1000 * 60 * 60 * 24)));
+          const turn = Math.max(0, isoDaysBetween(calendarDay(p.request_date as any)!, calendarDay(p.sent_date as any)!));
           totalTurnaroundDays += turn;
           turnaroundItems++;
         }
 
         if (p.outcome_date) {
-          const sD = new Date(p.sent_date);
-          const oD = new Date(p.outcome_date);
-          const outTime = Math.max(0, Math.round((oD.getTime() - sD.getTime()) / (1000 * 60 * 60 * 24)));
+          const outTime = Math.max(0, isoDaysBetween(calendarDay(p.sent_date as any)!, calendarDay(p.outcome_date as any)!));
           totalSentToOutcomeDays += outTime;
           sentToOutcomeItems++;
         }
@@ -2780,7 +2778,7 @@ export class ProposalsService {
       const productInput = String(raw.product_id || raw.product || raw['Product'] || '').trim();
       const sectorInput = String(raw.sector_id || raw.sector || raw['Sector'] || 'Commercial').trim();
       const requiredDateInput = raw.required_date || raw['Required Date'] || raw.target_date;
-      const requestDateInput = raw.request_date || raw['Request Date'] || new Date().toISOString().split('T')[0];
+      const requestDateInput = raw.request_date || raw['Request Date'] || todayInKolkata();
       const statusInput = String(raw.status || raw['Status'] || 'REQUESTED').trim();
       const responsibleInput = String(raw.responsible_id || raw.responsible_person_id || raw.responsible || raw['Responsible Person'] || '').trim();
       const remarksInput = String(raw.remarks || raw['Remarks'] || '').trim();
@@ -2788,6 +2786,8 @@ export class ProposalsService {
       if (!customerInput) errors.push('Customer is required');
       if (!productInput) errors.push('Product is required');
       if (!requiredDateInput) errors.push('Required completion date is required');
+      else if (!calendarDay(requiredDateInput)) errors.push(`Required completion date "${requiredDateInput}" is not a valid date`);
+      if (!calendarDay(requestDateInput)) errors.push(`Request date "${requestDateInput}" is not a valid date`);
 
       // Resolve customer
       const matchedOrg = organisations.find(
@@ -2863,8 +2863,8 @@ export class ProposalsService {
       } else {
         validCount++;
         const mappedStatus = this.workflowService.normalizeStatus(statusInput) || 'REQUESTED';
-        const parsedReqDate = new Date(requestDateInput).toISOString().split('T')[0];
-        const parsedCompDate = new Date(requiredDateInput).toISOString().split('T')[0];
+        const parsedReqDate = calendarDay(requestDateInput) as string;
+        const parsedCompDate = calendarDay(requiredDateInput) as string;
 
         rowReports.push({
           row: rowIndex,
@@ -2895,7 +2895,7 @@ export class ProposalsService {
     if (!isDryRun && rowsToInsert.length > 0) {
       for (const item of rowsToInsert) {
         try {
-          const year = new Date().getFullYear();
+          const year = Number(todayInKolkata().slice(0, 4));
           const seqResult = await sql<{ next_num: string }>`SELECT nextval('proposal_canonical_seq')::text as next_num`.execute(this.db);
           const seqNum = seqResult.rows[0]?.next_num || `${Date.now().toString().slice(-4)}`;
           const canonicalNo = `PRP-${year}-${seqNum.padStart(5, '0')}`;
@@ -3070,11 +3070,11 @@ export class ProposalsService {
         return this.send(
           id,
           {
-            sent_date: dto.sent_date || new Date().toISOString().split('T')[0],
+            sent_date: calendarDay(dto.sent_date) || todayInKolkata(),
             email_references: [dto.reference || 'Dispatch'],
             follow_up_owner_id: user.id,
             next_follow_up_date:
-              dto.next_followup || new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
+              calendarDay(dto.next_followup) || addIsoDays(todayInKolkata(), 3),
           },
           user,
         );
@@ -3082,7 +3082,7 @@ export class ProposalsService {
         return this.markConverted(
           id,
           {
-            outcome_date: dto.sent_date || new Date().toISOString().split('T')[0],
+            outcome_date: calendarDay(dto.sent_date) || todayInKolkata(),
             conversion_reference: dto.converted_reference,
             converted_to: dto.converted_to,
             remarks: dto.remarks,

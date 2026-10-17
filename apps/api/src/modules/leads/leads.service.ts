@@ -1,3 +1,4 @@
+import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -53,7 +54,7 @@ export class LeadsService {
     user: AuthUser,
   ): Promise<PaginatedResult<any>> {
     const { page, limit, offset } = getPaginationParams(query);
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayInKolkata();
 
     let baseQuery = this.db
       .selectFrom('leads')
@@ -149,21 +150,21 @@ export class LeadsService {
     if (query.followup === 'due_today') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
-          sql<boolean>`leads.next_followup_at::date = ${today}::date`,
+          sql<boolean>`(leads.next_followup_at AT TIME ZONE 'Asia/Kolkata')::date = ${today}::date`,
           sql<boolean>`leads.next_followup_date = ${today}`,
         ]),
       );
     } else if (query.followup === 'overdue') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
-          sql<boolean>`leads.next_followup_at::date < ${today}::date`,
+          sql<boolean>`(leads.next_followup_at AT TIME ZONE 'Asia/Kolkata')::date < ${today}::date`,
           sql<boolean>`leads.next_followup_date < ${today}`,
         ]),
       );
     } else if (query.followup === 'upcoming') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
-          sql<boolean>`leads.next_followup_at::date > ${today}::date`,
+          sql<boolean>`(leads.next_followup_at AT TIME ZONE 'Asia/Kolkata')::date > ${today}::date`,
           sql<boolean>`leads.next_followup_date > ${today}`,
         ]),
       );
@@ -520,7 +521,7 @@ export class LeadsService {
     const leadStatus = (dto.lead_status || dto.status || 'new').toLowerCase() as LeadStatus;
     const initialStatus = leadStatus;
 
-    const lastInteractionDate = dto.last_interaction_date || new Date().toISOString().split('T')[0];
+    const lastInteractionDate = dto.last_interaction_date || todayInKolkata();
     const lastInteractionAt = new Date(lastInteractionDate);
     const nextFollowupDate = dto.next_followup_date || null;
     const nextFollowupAt = nextFollowupDate ? new Date(nextFollowupDate) : null;
@@ -899,7 +900,7 @@ export class LeadsService {
           lead_id: id,
           type: toStatus === 'demo' ? 'demo' : toStatus === 'proposal' ? 'proposal' : 'follow_up',
           employee_id: user.id,
-          occurred_on: new Date().toISOString().split('T')[0],
+          occurred_on: todayInKolkata(),
           remarks: `Status updated to ${toStatus.toUpperCase()}${dto.loss_reason ? ` (Reason: ${dto.loss_reason})` : ''}. ${dto.remarks || ''}`.trim(),
           outcome: `Stage progressed from ${fromStatus} to ${toStatus}`,
           next_action: toStatus === 'converted' ? 'Initiate customer onboarding and proposal fulfillment' : null,
@@ -1181,7 +1182,7 @@ export class LeadsService {
       );
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayInKolkata();
 
     const stats = await baseLeads
       .select([

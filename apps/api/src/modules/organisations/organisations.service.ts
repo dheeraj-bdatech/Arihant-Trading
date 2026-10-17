@@ -1,3 +1,4 @@
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Injectable, NotFoundException, Inject } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
@@ -303,13 +304,13 @@ export class OrganisationsService {
     const currentSalesperson = leads[0]?.assignee_name || (org as any).created_by_name || 'Unassigned';
 
     // 11. Follow-up history metrics
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayInKolkata();
     const followUpHistory = {
       total: followUps.length,
       pending: followUps.filter((f) => f.status === 'pending').length,
       completed: followUps.filter((f) => f.status === 'completed').length,
-      overdue: followUps.filter((f) => f.status === 'pending' && f.due_date < today).length,
-      due_today: followUps.filter((f) => f.status === 'pending' && f.due_date === today).length,
+      overdue: followUps.filter((f) => f.status === 'pending' && (calendarDay(f.due_date as any) || '') < today && Boolean(f.due_date)).length,
+      due_today: followUps.filter((f) => f.status === 'pending' && calendarDay(f.due_date as any) === today).length,
       items: followUps,
     };
 

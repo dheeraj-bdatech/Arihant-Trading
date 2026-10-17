@@ -5,23 +5,24 @@
  * repeated delays, incomplete work, approved blockers and unapproved delays — for a scope (my team /
  * department / all) and period. Every count drills down to a filtered task list. Scope, period, sort and the
  * open flag tab live in the URL; the server role-scopes everything (403 for a scope you may not see).
+ * Layout follows the shared list pattern: five KPI cards in one row, then one filter row (View + search + FilterMenus).
  */
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowDown, ArrowUp, ArrowUpDown, BarChart3, ChevronRight, FileSearch, Flag, Users } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, BarChart3, Building2, CalendarDays, ChevronDown, ChevronRight, ChevronUp, FileSearch, Flag, Search, Users } from 'lucide-react';
 import {
   Badge,
   Button,
   Card,
   EmptyState,
+  FilterMenu,
   InfoCallout,
   Modal,
   PageContainer,
   PageHeader,
   PageLoader,
   SectionHeader,
-  Select,
   StatCard,
   StatGrid,
   Table,
@@ -36,10 +37,10 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatTaskDate, type TaskBlockerStatus, type TaskDisplayStatus } from '@arihant/shared';
 import { addDays, errorMessage, istToday, teamTasksHref, useTaskSummary } from '../_lib/task-lib';
-import { BlockerBadge, DateTime, FlagChip, Meta, StatusBadge, TasksNav, blockerTypeLabel, useToaster, useUrlFilters } from '../_lib/task-ui';
-import { DELAY_SERIES, DelayMixBar, PeriodPicker, Swatch, defaultPeriod, periodError } from '../_lib/EvidenceReport';
+import { BlockerBadge, DateTime, FlagChip, Meta, StatusBadge, TaskViewMenu, TaskViewRow, blockerTypeLabel, useToaster, useUrlFilters } from '../_lib/task-ui';
+import { DELAY_SERIES, DelayMixBar, Swatch, defaultPeriod, periodError, presetRange, type PeriodPreset } from '../_lib/EvidenceReport';
 
-const KEYS = ['scope', 'from', 'to', 'department_id', 'sort', 'dir', 'flag'] as const;
+const KEYS = ['scope', 'from', 'to', 'department_id', 'sort', 'dir', 'flag', 'show'] as const;
 const OPEN_STATUSES = 'not_started,in_progress,blocked';
 
 type Scope = 'team' | 'department' | 'all';
@@ -190,6 +191,38 @@ const FLAG_TABS: { id: FlagKey; label: string; hint: string }[] = [
   { id: 'repeated_delay', label: 'Repeated delays', hint: 'Employees at or above the repeated unexcused-delay threshold.' },
 ];
 
+/** Desktop table: 7 metric columns; related values are stacked as a secondary line (nothing is dropped). */
+const TABLE_COLS: { key: Exclude<SortKey, 'name'>; label: string; sub?: 'due_this_week' | 'unexcused_delay_days' }[] = [
+  { key: 'due_today', label: 'Due today', sub: 'due_this_week' },
+  { key: 'overdue', label: 'Overdue' },
+  { key: 'no_update', label: 'No update' },
+  { key: 'unapproved_delays', label: 'Unapproved', sub: 'unexcused_delay_days' },
+  { key: 'incomplete_work', label: 'Incomplete' },
+  { key: 'approved_blockers', label: 'Blockers' },
+  { key: 'on_time_pct', label: 'On-time' },
+];
+
+/** "Show" filter for the per-employee list (client-side). Counts are employees, not tasks. */
+const SHOW_OPTIONS: { key: string; label: string; test: (e: EmployeeRow) => boolean; urgent?: boolean }[] = [
+  { key: 'overdue', label: 'With overdue tasks', test: (e) => e.overdue > 0, urgent: true },
+  { key: 'no_update', label: 'Without updates', test: (e) => e.no_update > 0 },
+  { key: 'unapproved', label: 'With unapproved delays', test: (e) => e.unapproved_delays > 0 },
+  { key: 'repeated', label: 'Repeated-delay flag', test: (e) => e.repeated_delay_flag, urgent: true },
+  { key: 'due_today', label: 'Due today', test: (e) => e.due_today > 0 },
+  { key: 'due_week', label: 'Due in 7 days', test: (e) => e.due_this_week > 0 },
+  { key: 'incomplete', label: 'With incomplete work', test: (e) => e.incomplete_work > 0 },
+  { key: 'approved', label: 'With approved blockers', test: (e) => e.approved_blockers > 0 },
+  { key: 'inactive', label: 'Inactive employees', test: (e) => !e.is_active },
+];
+
+const PERIOD_PRESETS: { key: PeriodPreset; label: string }[] = [
+  { key: 'this_month', label: 'This month' },
+  { key: 'last_30', label: 'Last 30 days' },
+  { key: 'this_quarter', label: 'This quarter' },
+];
+const periodLabel = (from: string, to: string) => PERIOD_PRESETS.find((p) => { const r = presetRange(p.key); return r.from === from && r.to === to; })?.label || 'Custom';
+const dateInputCls = 'h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15';
+
 const roleLabel = (r: string) => r.replace(/_/g, ' ');
 const pct = (v: number | null) => (v === null ? '—' : `${v}%`);
 
@@ -300,6 +333,8 @@ function Accountability() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drillId, setDrillId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [datesOpen, setDatesOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -396,15 +431,19 @@ function Accountability() {
   const sortKey: SortKey = values.sort === 'name' || COLUMNS.some((c) => c.key === values.sort) ? (values.sort as SortKey) : 'unapproved_delays';
   const dir: 'asc' | 'desc' = values.dir === 'asc' || values.dir === 'desc' ? values.dir : sortKey === 'name' ? 'asc' : 'desc';
   const toggleSort = (k: SortKey) => set(k === sortKey ? { sort: k, dir: dir === 'asc' ? 'desc' : 'asc' } : { sort: k, dir: k === 'name' ? 'asc' : 'desc' }, { resetPage: false });
+  const show = SHOW_OPTIONS.find((o) => o.key === values.show) || null;
   const employees = useMemo(() => {
-    const rows = [...(data?.employees || [])];
+    const q = query.trim().toLowerCase();
+    const rows = (data?.employees || []).filter(
+      (e) => (!show || show.test(e)) && (!q || [e.name, roleLabel(e.role), e.department, e.manager].some((v) => v && v.toLowerCase().includes(q))),
+    );
     const val = (e: EmployeeRow) => (sortKey === 'on_time_pct' ? (e.on_time_pct ?? -1) : sortKey === 'name' ? 0 : (e[sortKey] as number));
     rows.sort((a, b) => {
       const c = sortKey === 'name' ? a.name.localeCompare(b.name) : val(a) - val(b);
       return (dir === 'asc' ? c : -c) || a.name.localeCompare(b.name);
     });
     return rows;
-  }, [data, sortKey, dir]);
+  }, [data, sortKey, dir, show, query]);
 
   const drill = drillId ? data?.employees.find((e) => e.employee_id === drillId) || null : null;
   const flagged = (data?.employees || []).filter((e) => e.repeated_delay_flag).length;
@@ -416,16 +455,34 @@ function Accountability() {
   const t = data?.totals;
   const tiles: Tile[] = t
     ? [
-        { key: 'due_today', label: 'Due today', value: t.due_today, sub: 'Open tasks due today', href: filterHref('due_today') || undefined },
-        { key: 'due_week', label: 'Due this week', value: t.due_this_week, sub: `Next 7 days, to ${formatTaskDate(addDays(today, 6))}`, href: filterHref('due_week') || undefined },
+        { key: 'due_week', label: 'Due this week', value: t.due_this_week, sub: `${t.due_today} due today · to ${formatTaskDate(addDays(today, 6))}`, href: filterHref('due_week') || undefined },
         { key: 'overdue', label: 'Overdue', value: t.overdue, sub: 'Past deadline, no accepted blocker', variant: 'amber', href: filterHref('overdue') || undefined },
         { key: 'no_update', label: 'Without updates', value: t.no_update, sub: 'No progress update within the limit', variant: 'amber', href: filterHref('no_update') || undefined },
+        { key: 'unapproved', label: 'Unapproved delays', value: t.unapproved_delays, sub: `${t.unexcused_delay_days} d unexcused · ${t.incomplete_work} reworked`, variant: 'rose', href: filterHref('unexcused') || undefined },
         { key: 'repeated', label: 'Repeated delays', value: flagged, sub: 'Employees flagged', variant: 'rose', onClick: () => showFlag('repeated_delay') },
-        { key: 'incomplete', label: 'Incomplete work', value: t.incomplete_work, sub: 'Sent back or reopened (period)', variant: 'amber', onClick: () => showFlag('rework') },
-        { key: 'approved', label: 'Approved blockers', value: t.approved_blockers, sub: 'Accepted dependencies (period)', variant: 'primary', href: filterHref('blocker') || undefined },
-        { key: 'unapproved', label: 'Unapproved delays', value: t.unapproved_delays, sub: 'Late unexcused, overdue, rejected', variant: 'rose', href: filterHref('unexcused') || undefined },
       ]
     : [];
+
+  // ---------------------------------------------------------------- filter row
+  const scopeKey = scope === 'department' ? `dept:${departmentId}` : scope;
+  const defaultScopeKey = scopes[0]?.id === 'department' ? `dept:${deptOptions[0]?.id || ''}` : scopes[0]?.id || 'team';
+  const scopeOptions = [
+    ...scopes.filter((x) => x.id !== 'department').map((x) => ({ key: x.id as string, label: x.label, icon: <Users />, onSelect: () => set({ scope: x.id, department_id: null, flag: null }, { resetPage: false }) })),
+    ...(scopes.some((x) => x.id === 'department') ? deptOptions : []).map((d) => ({
+      key: `dept:${d.id}`,
+      label: d.name,
+      icon: <Building2 />,
+      onSelect: () => set({ scope: 'department', department_id: d.id, flag: null }, { resetPage: false }),
+    })),
+  ].map((o) => ({ ...o, active: o.key === scopeKey }));
+  const datesSet = Boolean(values.from || values.to);
+  const showDates = datesOpen || Boolean(rangeError);
+  const hasActiveFilters = Boolean(query.trim() || show || datesSet || scopeKey !== defaultScopeKey);
+  const clearFilters = () => {
+    setQuery('');
+    setDatesOpen(false);
+    set({ scope: null, department_id: null, from: null, to: null, show: null, flag: null }, { resetPage: false });
+  };
 
   const scopeLabel = scope === 'department' ? deptOptions.find((d) => d.id === departmentId)?.name || 'Department' : scope === 'all' ? 'All employees' : 'My team';
 
@@ -471,10 +528,137 @@ function Accountability() {
     return <CountCell value={e[c.key] as number} risk={c.risk} href={filterHref(c.filter, { assignee_ids: e.employee_id })} label={`${c.label} for ${e.name}`} />;
   };
 
+  const subLine = (e: EmployeeRow, sub: 'due_this_week' | 'unexcused_delay_days') => {
+    if (sub === 'unexcused_delay_days') {
+      return <span className={`block font-mono text-[11px] tabular-nums ${e.unexcused_delay_days ? 'font-semibold text-[#9A3412]' : 'text-[#4A5568]'}`}>{e.unexcused_delay_days} d unexcused</span>;
+    }
+    const href = filterHref('due_week', { assignee_ids: e.employee_id });
+    return (
+      <span className="block text-[11px] text-[#4A5568]">
+        {e.due_this_week && href ? (
+          <Link href={href} className="font-mono tabular-nums font-semibold text-[#14213D] underline decoration-[#C9C4B8] underline-offset-2 hover:text-[#0F5E63]" aria-label={`${e.due_this_week} — due in 7 days for ${e.name}`}>
+            {e.due_this_week}
+          </Link>
+        ) : (
+          <span className="font-mono tabular-nums">{e.due_this_week}</span>
+        )}{' '}
+        in 7 d
+      </span>
+    );
+  };
+
   return (
     <PageContainer>
       <PageHeader title="Accountability" icon={<BarChart3 className="h-5 w-5" />} />
-      <TasksNav />
+
+      {/* Key metrics for the scope and period picked in the filter row below. */}
+      {ready && !noAccess && !rangeError && tiles.length > 0 && (
+        <StatGrid cols={5} className={`gap-3 transition-opacity ${loading ? 'opacity-60' : ''}`}>
+          {tiles.map((tile) => (
+            <SignalTile key={tile.key} tile={tile} />
+          ))}
+        </StatGrid>
+      )}
+
+      {!ready || noAccess ? (
+        <TaskViewRow />
+      ) : (
+        /* One filter row: View, search (employees), scope, period, show, sort. */
+        <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+            <TaskViewMenu />
+            <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+              <input
+                type="search"
+                aria-label="Search employees"
+                placeholder="Search employee, role, department…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+              <FilterMenu label="Scope" icon={<Users />} neutralKeys={[defaultScopeKey]} options={scopeOptions} className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto" />
+              <button type="button" onClick={() => setDatesOpen((o) => !o)} aria-expanded={showDates} className={`filter-menu-btn ${showDates || datesSet ? 'filter-menu-btn--on' : ''}`}>
+                <CalendarDays className="h-3.5 w-3.5" />
+                <span>Period</span>
+                <span className="filter-menu-chip max-w-[130px] truncate">{periodLabel(from, to)}</span>
+              </button>
+              <FilterMenu
+                label="Show"
+                icon={<Flag />}
+                className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                options={[
+                  { key: 'all', label: 'All employees', count: data?.employees.length, active: !show, onSelect: () => set({ show: null }, { resetPage: false }) },
+                  ...SHOW_OPTIONS.map((o) => ({
+                    key: o.key,
+                    label: o.label,
+                    urgent: o.urgent,
+                    count: data ? data.employees.filter(o.test).length : undefined,
+                    active: show?.key === o.key,
+                    onSelect: () => set({ show: o.key }, { resetPage: false }),
+                  })),
+                ]}
+              />
+              <FilterMenu
+                label="Sort"
+                icon={<ArrowUpDown />}
+                align="right"
+                neutralKeys={['name', ...COLUMNS.map((c) => c.key), 'dir_desc', 'dir_asc']}
+                className="[&_.filter-menu-panel]:max-h-[360px] [&_.filter-menu-panel]:overflow-y-auto"
+                options={[
+                  ...[{ key: 'name' as SortKey, label: 'Name' }, ...COLUMNS].map((o) => ({
+                    key: o.key as string,
+                    label: o.label,
+                    active: sortKey === o.key,
+                    onSelect: () => set({ sort: o.key, dir: o.key === 'name' ? 'asc' : 'desc' }, { resetPage: false }),
+                  })),
+                  { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: dir === 'desc', onSelect: () => set({ sort: sortKey, dir: 'desc' }, { resetPage: false }) },
+                  { key: 'dir_asc', label: 'Ascending', icon: <ChevronUp />, active: dir === 'asc', onSelect: () => set({ sort: sortKey, dir: 'asc' }, { resetPage: false }) },
+                ]}
+              />
+              {hasActiveFilters && (
+                <Button variant="ghost" size="xs" onClick={clearFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {showDates && (
+            <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
+              <span className="font-semibold text-[#4A5568]">Period</span>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Period presets">
+                {PERIOD_PRESETS.map((p) => {
+                  const r = presetRange(p.key);
+                  const on = r.from === from && r.to === to;
+                  return (
+                    <Button key={p.key} type="button" size="xs" variant={on ? 'primary' : 'secondary'} aria-pressed={on} onClick={() => set({ from: r.from, to: r.to }, { resetPage: false })}>
+                      {p.label}
+                    </Button>
+                  );
+                })}
+              </div>
+              <label className="flex items-center gap-1.5 text-[#4A5568]">
+                From
+                <input type="date" value={from} onChange={(e) => e.target.value && set({ from: e.target.value, to }, { resetPage: false })} className={dateInputCls} />
+              </label>
+              <label className="flex items-center gap-1.5 text-[#4A5568]">
+                To
+                <input type="date" value={to} min={from || undefined} onChange={(e) => e.target.value && set({ from, to: e.target.value }, { resetPage: false })} aria-invalid={Boolean(rangeError)} className={dateInputCls} />
+              </label>
+              {rangeError ? (
+                <span role="alert" className="font-semibold text-[#9A3412]">
+                  {rangeError}
+                </span>
+              ) : (
+                <span className="text-[11px] text-[#8A8578]">Calendar days in IST.</span>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
 
       {!ready ? (
         <PageLoader rows={4} label="Loading accountability" />
@@ -491,25 +675,6 @@ function Accountability() {
         />
       ) : (
         <>
-          <Card padding="sm" className="space-y-4 overflow-visible">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-              <div className="space-y-1.5">
-                <p className="text-xs font-semibold text-[#14213D]" id="scope-label">
-                  Scope
-                </p>
-                <div role="group" aria-labelledby="scope-label" className="max-w-full overflow-x-auto">
-                  <Tabs variant="segmented" size="sm" activeTab={scope} onChange={(id) => set({ scope: id, department_id: null, flag: null }, { resetPage: false })} tabs={scopes} />
-                </div>
-              </div>
-              {scope === 'department' && deptOptions.length > 1 && (
-                <div className="w-full lg:w-72">
-                  <Select label="Department" value={departmentId} onChange={(e) => set({ department_id: e.target.value, flag: null }, { resetPage: false })} options={deptOptions.map((d) => ({ value: d.id, label: d.name }))} />
-                </div>
-              )}
-            </div>
-            <PeriodPicker from={from} to={to} presets={['this_month', 'last_30', 'this_quarter']} onChange={(v) => set({ from: v.from, to: v.to }, { resetPage: false })} />
-          </Card>
-
           {error && (
             <InfoCallout variant="danger" title="Could not load the dashboard">
               <div className="flex flex-wrap items-center gap-3">
@@ -536,12 +701,6 @@ function Accountability() {
                   . Due, overdue and no-update counts are live; the rest cover tasks whose original deadline falls in the period.
                 </p>
 
-                <StatGrid cols={4}>
-                  {tiles.map((tile) => (
-                    <SignalTile key={tile.key} tile={tile} />
-                  ))}
-                </StatGrid>
-
                 <div className="grid gap-4 lg:grid-cols-2">
                   <Card padding="md" className="space-y-4">
                     <SectionHeader title="Completed per week" description="On time vs late (excused) vs late (unexcused)." />
@@ -550,7 +709,7 @@ function Accountability() {
                   <Card padding="md" className="space-y-4">
                     <SectionHeader title="Delay classes in the period" description="All tasks due in the period, measured against the original deadline." />
                     <DelayMixBar title="Delay classes in the period" counts={{ on_time: t.on_time, late_excused: t.late_excused, late_unexcused: t.late_unexcused, open_overdue: t.open_overdue }} />
-                    <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3 border-t border-[#ECE9E2] pt-3">
+                    <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 border-t border-[#ECE9E2] pt-3">
                       <Meta label="Due in period">
                         <span className="font-mono tabular-nums">{t.assigned}</span>
                       </Meta>
@@ -563,41 +722,76 @@ function Accountability() {
                       <Meta label="Unexcused delay">
                         <span className="font-mono tabular-nums">{t.unexcused_delay_days} d</span>
                       </Meta>
+                      <Meta label="Incomplete work">
+                        {t.incomplete_work ? (
+                          <button type="button" onClick={() => showFlag('rework')} className="font-mono tabular-nums font-semibold underline decoration-[#C9C4B8] underline-offset-2 hover:text-[#0F5E63]" aria-label={`${t.incomplete_work} — incomplete work; show flagged rework`}>
+                            {t.incomplete_work}
+                          </button>
+                        ) : (
+                          <span className="font-mono tabular-nums">0</span>
+                        )}
+                      </Meta>
+                      <Meta label="Approved blockers">
+                        <CountCell value={t.approved_blockers} href={filterHref('blocker')} label="Approved blockers — open the task list" />
+                      </Meta>
                     </dl>
                   </Card>
                 </div>
 
                 <section className="space-y-3" aria-labelledby="per-employee">
                   <SectionHeader title="Per employee" description="Click a column to sort. Numbers open the matching task list; a name opens the details." id="per-employee" />
-                  {employees.length === 0 ? (
+                  {data.employees.length === 0 ? (
                     <EmptyState icon={Users} title="No employees in this scope" description="Nobody is assigned to this team or department yet." />
+                  ) : employees.length === 0 ? (
+                    <EmptyState
+                      icon={Search}
+                      title="No employees match"
+                      description="Try another search or Show filter."
+                      action={
+                        <Button variant="secondary" onClick={() => { setQuery(''); set({ show: null }, { resetPage: false }); }}>
+                          Clear search and Show
+                        </Button>
+                      }
+                    />
                   ) : (
                     <>
                       <div className="hidden md:block">
-                        <Table>
+                        <Table className="[&_td]:px-3 [&_th]:px-3">
                           <TableHeader>
                             <TableRow>
                               {sortHead('name', 'Employee')}
-                              {COLUMNS.map((c) => sortHead(c.key, c.label, c.hint, true))}
+                              {TABLE_COLS.map((tc) => {
+                                const c = COLUMNS.find((x) => x.key === tc.key);
+                                const sub = tc.sub && COLUMNS.find((x) => x.key === tc.sub);
+                                return sortHead(tc.key, tc.label, [c ? `${c.label}: ${c.hint}` : '', sub ? `Below: ${sub.label} — ${sub.hint}` : ''].filter(Boolean).join('\n'), true);
+                              })}
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {employees.map((e) => (
                               <TableRow key={e.employee_id} className={e.is_active ? undefined : 'bg-[#FBFAF7]'}>
-                                <TableCell className="min-w-[200px]">
-                                  <button type="button" onClick={() => setDrillId(e.employee_id)} className="text-left group" aria-label={`Open details for ${e.name}`}>
-                                    <span className="block text-sm font-semibold text-[#14213D] group-hover:text-[#0F5E63] group-hover:underline">{e.name}</span>
-                                    <span className="block text-[11px] text-[#4A5568] capitalize">{[roleLabel(e.role), e.department].filter(Boolean).join(' · ')}</span>
+                                <TableCell className="w-[220px] max-w-[220px]">
+                                  <button type="button" onClick={() => setDrillId(e.employee_id)} className="block w-full min-w-0 text-left group" aria-label={`Open details for ${e.name}`}>
+                                    <span className="block truncate text-sm font-semibold text-[#14213D] group-hover:text-[#0F5E63] group-hover:underline" title={e.name}>
+                                      {e.name}
+                                    </span>
+                                    <span className="block truncate text-[11px] text-[#4A5568] capitalize" title={[roleLabel(e.role), e.department].filter(Boolean).join(' · ')}>
+                                      {[roleLabel(e.role), e.department].filter(Boolean).join(' · ')}
+                                    </span>
                                   </button>
                                   <div className="mt-1 flex flex-wrap gap-1">
                                     {employeeChips(e)}
                                   </div>
                                 </TableCell>
-                                {COLUMNS.map((c) => (
-                                  <TableCell key={c.key} className="text-right">
-                                    {cellFor(e, c)}
-                                  </TableCell>
-                                ))}
+                                {TABLE_COLS.map((tc) => {
+                                  const c = COLUMNS.find((x) => x.key === tc.key)!;
+                                  return (
+                                    <TableCell key={tc.key} className="text-right">
+                                      {cellFor(e, c)}
+                                      {tc.sub && subLine(e, tc.sub)}
+                                    </TableCell>
+                                  );
+                                })}
                               </TableRow>
                             ))}
                           </TableBody>
@@ -605,12 +799,6 @@ function Accountability() {
                       </div>
 
                       <div className="md:hidden space-y-3">
-                        <div className="grid grid-cols-[1fr_auto] items-end gap-2">
-                          <Select label="Sort by" value={sortKey} onChange={(e) => set({ sort: e.target.value, dir: e.target.value === 'name' ? 'asc' : 'desc' }, { resetPage: false })} options={[{ value: 'name', label: 'Name' }, ...COLUMNS.map((c) => ({ value: c.key, label: c.label }))]} />
-                          <Button variant="secondary" size="md" aria-label={dir === 'asc' ? 'Sorted ascending — switch to descending' : 'Sorted descending — switch to ascending'} onClick={() => toggleSort(sortKey)}>
-                            {dir === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
-                          </Button>
-                        </div>
                         <ul className="space-y-2.5">
                           {employees.map((e) => (
                             <li key={e.employee_id} className={`rounded-[14px] border border-[#DCD8CE] p-3 space-y-2.5 ${e.is_active ? 'bg-white' : 'bg-[#FBFAF7]'}`}>

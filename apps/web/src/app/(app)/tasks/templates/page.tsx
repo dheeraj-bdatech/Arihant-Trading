@@ -1,15 +1,15 @@
 'use client';
 
-import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Plus, Repeat, Search, X } from 'lucide-react';
+import { AlertTriangle, Flag, Layers, Plus, Repeat, Search, SlidersHorizontal, User, X } from 'lucide-react';
 import {
   Button,
   Card,
   EmptyState,
+  FilterMenu,
   InfoCallout,
-  Input,
   PageContainer,
   PageHeader,
   PageLoader,
@@ -19,12 +19,20 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tabs,
 } from '@/components/ui';
 import { api } from '@/lib/api';
-import { formatTaskDate, type TaskPriority, type TaskTemplateStatus } from '@arihant/shared';
+import {
+  TASK_PRIORITIES,
+  TASK_PRIORITY_LABELS,
+  TASK_RECURRENCE_LABELS,
+  TASK_RECURRENCE_TYPES,
+  formatTaskDate,
+  type TaskPriority,
+  type TaskRecurrenceType,
+  type TaskTemplateStatus,
+} from '@arihant/shared';
 import { errorMessage } from '../_lib/task-lib';
-import { DueText, FlagChip, PriorityBadge, TasksNav, useUrlFilters } from '../_lib/task-ui';
+import { DueText, FlagChip, PriorityBadge, TaskViewMenu, useUrlFilters } from '../_lib/task-ui';
 import { TemplateStatusBadge, describeDue } from '../_lib/TaskForm';
 
 interface TemplateListRow {
@@ -49,9 +57,14 @@ interface TemplateListRow {
   due_time: string;
 }
 
-const FILTER_KEYS = ['status', 'search'] as const;
+const FILTER_KEYS = ['status', 'search', 'recurrence', 'assignee', 'priority', 'flag'] as const;
 type StatusTab = 'active' | 'paused' | 'ended' | 'all';
 const TAB_LABELS: Record<StatusTab, string> = { active: 'Active', paused: 'Paused', ended: 'Ended', all: 'All' };
+type FlagFilter = 'attention' | 'overdue';
+const FLAG_LABELS: Record<FlagFilter, string> = { attention: 'Needs a new assignee', overdue: 'Has overdue tasks' };
+const UNASSIGNED = '__none__';
+const SCROLL_PANEL = '[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto';
+const needsAttention = (r: TemplateListRow) => r.needs_reassignment || r.assignee_active === false;
 
 /** Flags that need a manager's attention: inactive assignee / series paused for reassignment. */
 const RowFlags: React.FC<{ t: TemplateListRow }> = ({ t }) => (
@@ -66,12 +79,14 @@ const period = (t: TemplateListRow) => `From ${formatTaskDate(t.start_date)}${t.
 
 function RecurringTasks() {
   const router = useRouter();
-  const { values, set } = useUrlFilters(FILTER_KEYS);
+  const { values, set, clear } = useUrlFilters(FILTER_KEYS);
   const tab: StatusTab = (['active', 'paused', 'ended', 'all'] as StatusTab[]).includes(values.status as StatusTab) ? (values.status as StatusTab) : 'active';
   const [rows, setRows] = useState<TemplateListRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState(values.search);
+  // Recurrence and Priority sit in the inline "More" row; it opens by itself when a link arrives with one set.
+  const [moreOpen, setMoreOpen] = useState(() => Boolean(values.recurrence || values.priority));
 
   // All statuses are fetched once (the list is small) so every tab shows its count.
   const load = useCallback(async () => {
@@ -96,10 +111,13 @@ function RecurringTasks() {
     return () => window.removeEventListener('tasks:changed', onChange);
   }, [load]);
 
-  // Debounced search → URL (shareable, survives refresh).
+  // Debounced search → URL (shareable, survives refresh). Uses the latest `set` so a
+  // pending write never restores filters that "Clear" removed in the meantime.
+  const setRef = useRef(set);
+  setRef.current = set;
   useEffect(() => {
     if (search === values.search) return;
-    const t = window.setTimeout(() => set({ search: search.trim() || null }), 350);
+    const t = window.setTimeout(() => setRef.current({ search: search.trim() || null }), 350);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
@@ -112,8 +130,45 @@ function RecurringTasks() {
     }
     return c;
   }, [rows]);
-  const attention = useMemo(() => (rows || []).filter((r) => r.needs_reassignment || r.assignee_active === false).length, [rows]);
-  const visible = useMemo(() => (rows || []).filter((r) => tab === 'all' || r.status === tab), [rows, tab]);
+  const attention = useMemo(() => (rows || []).filter(needsAttention).length, [rows]);
+  const overdueSeries = useMemo(() => (rows || []).filter((r) => r.open_overdue_count > 0).length, [rows]);
+  const flag: FlagFilter | '' = values.flag === 'attention' || values.flag === 'overdue' ? values.flag : '';
+  const visible = useMemo(
+    () =>
+      (rows || []).filter(
+        (r) =>
+          (tab === 'all' || r.status === tab) &&
+          (!values.recurrence || r.recurrence_type === values.recurrence) &&
+          (!values.priority || r.priority === values.priority) &&
+          (!values.assignee || (values.assignee === UNASSIGNED ? !r.assignee_name : r.assignee_name === values.assignee)) &&
+          (flag !== 'attention' || needsAttention(r)) &&
+          (flag !== 'overdue' || r.open_overdue_count > 0),
+      ),
+    [rows, tab, values.recurrence, values.priority, values.assignee, flag],
+  );
+  // Option lists come from the loaded series so every option has at least one match.
+  const recurrenceCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const r of rows || []) c[r.recurrence_type] = (c[r.recurrence_type] || 0) + 1;
+    return c;
+  }, [rows]);
+  const assignees = useMemo(() => {
+    const c = new Map<string, number>();
+    for (const r of rows || []) c.set(r.assignee_name || UNASSIGNED, (c.get(r.assignee_name || UNASSIGNED) || 0) + 1);
+    return [...c.entries()].sort(([a], [b]) => (a === UNASSIGNED ? 1 : b === UNASSIGNED ? -1 : a.localeCompare(b)));
+  }, [rows]);
+  const priorityCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const r of rows || []) c[r.priority] = (c[r.priority] || 0) + 1;
+    return c;
+  }, [rows]);
+  const moreActive = [values.recurrence, values.priority].filter(Boolean).length;
+  const narrowed = Boolean(values.recurrence || values.priority || values.assignee || flag);
+  const hasActiveFilters = Boolean(search || values.search || values.status || narrowed);
+  const clearFilters = () => {
+    setSearch('');
+    clear();
+  };
 
   return (
     <PageContainer>
@@ -128,40 +183,97 @@ function RecurringTasks() {
           </Link>
         }
       />
-      <TasksNav />
 
-      <Card className="p-3.5 space-y-3 overflow-visible">
-        <div className="flex flex-col md:flex-row md:items-end gap-3">
-          <div className="overflow-x-auto -mx-1 px-1">
-            <Tabs
-              variant="segmented"
-              tabs={(['active', 'paused', 'ended', 'all'] as StatusTab[]).map((s) => ({
-                id: s,
-                label: TAB_LABELS[s],
-                count: rows ? counts[s] : undefined,
-                badgeVariant: s === 'paused' && attention ? 'urgent' : undefined,
-              }))}
-              activeTab={tab}
-              onChange={(id) => set({ status: id === 'active' ? null : id })}
-            />
-          </div>
-          <div className="relative md:ml-auto md:w-80">
-            <Input
+      {/* One filter row: View, search, then compact dropdowns. "More" opens Recurrence and Priority inline. */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <TaskViewMenu />
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <input
               id="template-search"
+              type="text"
               aria-label="Search recurring tasks by title"
               placeholder="Search by title…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 pr-9"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-9 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
             {search && (
               <button type="button" aria-label="Clear search" onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8A8578] hover:text-[#14213D]">
                 <X className="h-4 w-4" />
               </button>
             )}
           </div>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Status"
+              icon={<Layers />}
+              neutralKeys={['active']}
+              options={(['active', 'paused', 'ended', 'all'] as StatusTab[]).map((s) => ({
+                key: s,
+                label: s === 'all' ? 'All statuses' : TAB_LABELS[s],
+                count: rows ? counts[s] : undefined,
+                active: tab === s,
+                onSelect: () => set({ status: s === 'active' ? null : s }),
+              }))}
+            />
+            <FilterMenu
+              label="Assignee"
+              icon={<User />}
+              className={SCROLL_PANEL}
+              options={[
+                { key: 'all', label: 'Anyone', count: undefined as number | undefined },
+                ...assignees.map(([name, n]) => ({ key: name, label: name === UNASSIGNED ? 'Unassigned' : name, count: n })),
+              ].map((o) => ({ ...o, active: (values.assignee || 'all') === o.key, onSelect: () => set({ assignee: o.key === 'all' ? null : o.key }) }))}
+            />
+            <FilterMenu
+              label="Attention"
+              icon={<AlertTriangle />}
+              align="right"
+              options={[
+                { key: 'all', label: 'All series', count: undefined as number | undefined },
+                { key: 'attention', label: FLAG_LABELS.attention, count: attention, urgent: true },
+                { key: 'overdue', label: FLAG_LABELS.overdue, count: overdueSeries, urgent: true },
+              ].map((o) => ({ ...o, active: (flag || 'all') === o.key, onSelect: () => set({ flag: o.key === 'all' ? null : o.key }) }))}
+            />
+            <button type="button" onClick={() => setMoreOpen((o) => !o)} aria-expanded={moreOpen} className={`filter-menu-btn ${moreOpen || moreActive ? 'filter-menu-btn--on' : ''}`}>
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span>More</span>
+              {moreActive > 0 && <span className="filter-menu-chip">{moreActive}</span>}
+            </button>
+            {hasActiveFilters && (
+              <Button variant="ghost" size="xs" onClick={clearFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                Clear
+              </Button>
+            )}
+          </div>
         </div>
+
+        {moreOpen && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-[#ECE9E2] pt-2.5">
+            <FilterMenu
+              label="Recurrence"
+              icon={<Repeat />}
+              options={[
+                { key: 'all', label: 'Any recurrence', count: undefined as number | undefined },
+                ...TASK_RECURRENCE_TYPES.filter((k) => recurrenceCounts[k] || values.recurrence === k).map((k: TaskRecurrenceType) => ({
+                  key: k,
+                  label: TASK_RECURRENCE_LABELS[k],
+                  count: recurrenceCounts[k] || 0,
+                })),
+              ].map((o) => ({ ...o, active: (values.recurrence || 'all') === o.key, onSelect: () => set({ recurrence: o.key === 'all' ? null : o.key }) }))}
+            />
+            <FilterMenu
+              label="Priority"
+              icon={<Flag />}
+              options={[
+                { key: 'all', label: 'Any priority', count: undefined as number | undefined },
+                ...TASK_PRIORITIES.map((k) => ({ key: k, label: TASK_PRIORITY_LABELS[k], count: priorityCounts[k] || 0 })),
+              ].map((o) => ({ ...o, active: (values.priority || 'all') === o.key, onSelect: () => set({ priority: o.key === 'all' ? null : o.key }) }))}
+            />
+          </div>
+        )}
       </Card>
 
       {attention > 0 && (
@@ -177,16 +289,22 @@ function RecurringTasks() {
       ) : rows && visible.length === 0 ? (
         <EmptyState
           icon={Repeat}
-          title={values.search ? 'No recurring tasks match your search' : tab === 'all' ? 'No recurring tasks yet' : `No ${TAB_LABELS[tab].toLowerCase()} recurring tasks`}
+          title={
+            values.search || narrowed
+              ? 'No recurring tasks match your filters'
+              : tab === 'all'
+                ? 'No recurring tasks yet'
+                : `No ${TAB_LABELS[tab].toLowerCase()} recurring tasks`
+          }
           description={
-            values.search
-              ? 'Try a different title or clear the search.'
+            values.search || narrowed
+              ? 'Try a different title or clear the filters.'
               : 'Recurring tasks generate a fresh task every day, week or month — weekly reports, monthly stock checks, daily follow-ups.'
           }
           action={
-            values.search ? (
-              <Button variant="secondary" onClick={() => setSearch('')}>
-                Clear search
+            values.search || narrowed ? (
+              <Button variant="secondary" onClick={clearFilters}>
+                Clear filters
               </Button>
             ) : (
               <Link href="/tasks/new?frequency=weekly">

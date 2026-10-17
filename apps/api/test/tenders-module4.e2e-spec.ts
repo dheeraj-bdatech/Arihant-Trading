@@ -154,7 +154,7 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
           region_id: testRegionId,
           category: 'pq',
           publication_date: '2026-09-20',
-          submission_deadline: '2026-10-15T15:00:00Z',
+          submission_deadline: '2026-11-15T15:00:00Z',
           estimated_value: 12500000,
           assigned_person_id: salesUserId,
           remarks: 'High priority defence tender registration',

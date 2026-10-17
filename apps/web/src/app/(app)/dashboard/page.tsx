@@ -533,7 +533,7 @@ export default function DashboardPage() {
 
   const critical = view.attention.filter((a) => a.severity === 'critical').length;
   const warnings = view.attention.filter((a) => a.severity === 'warning').length;
-  const hour = new Date().getHours();
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const preset = PRESET_ROLE_USERS[role];
   const firstName = (user?.full_name || preset?.name || 'there').split(' ')[0];
@@ -549,7 +549,7 @@ export default function DashboardPage() {
         name={firstName}
         roleLabel={preset?.title || role.replace(/_/g, ' ')}
         zone={preset?.zone}
-        dateLabel={new Date().toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
+        dateLabel={new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
         summary={summary}
         stats={[
           { label: 'Critical', value: critical, tone: 'red' },

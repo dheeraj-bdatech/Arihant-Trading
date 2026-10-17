@@ -186,7 +186,7 @@ describe('Arihant BOS API E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: orgId,
-          planned_date: '2026-10-15',
+          planned_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
           purpose: 'Quarterly review with procurement IG',
           location: 'Jalandhar Frontier HQ',
         });

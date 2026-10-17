@@ -17,6 +17,7 @@ import {
   TASK_TEXT_LIMITS,
   formatTaskDate,
   formatTaskDateTime,
+  istDateOf,
   type TaskHolidayPolicy,
   type TaskLeavePolicy,
   type TaskPriority,
@@ -475,7 +476,7 @@ export default function RecurringTaskDetailPage() {
   const history = useMemo<HistoryItem[]>(() => {
     if (!template) return [];
     const items: HistoryItem[] = [
-      ...template.instances.map((task) => ({ kind: 'task' as const, date: task.occurrence_date || task.start_date || task.created_at.slice(0, 10), task })),
+      ...template.instances.map((task) => ({ kind: 'task' as const, date: task.occurrence_date || task.start_date || istDateOf(task.created_at), task })),
       ...template.skips.map((skip) => ({ kind: 'skip' as const, date: skip.occurrence_date, skip })),
     ];
     return items.sort((a, b) => b.date.localeCompare(a.date));

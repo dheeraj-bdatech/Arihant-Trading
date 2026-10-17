@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { addIsoDays, istToday } from '@/lib/ist-date';
+import { calendarDay } from '@/lib/calendar-day';
 import {
   Target,
   Search,
@@ -12,7 +14,6 @@ import {
   Calendar,
   Clock,
   ChevronRight,
-  Filter,
   RefreshCw,
   FileText,
   CheckCircle,
@@ -44,6 +45,11 @@ import {
   CalendarDays,
   CheckCircle2,
   Bell,
+  ArrowUpDown,
+  ChevronDown,
+  ChevronUp,
+  LayoutList,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -60,7 +66,6 @@ import {
   Input,
   Select,
   Textarea,
-  Tabs,
   EmptyState,
   PageHeader,
   StatCard,
@@ -69,7 +74,7 @@ import {
   TableBody,
   TableRow,
   TableHead,
-  TableCell, Spinner, ToolbarBox, ToolbarSlot, PageLoader } from '@/components/ui';
+  TableCell, Spinner, PageLoader, StatGrid, FilterMenu } from '@/components/ui';
 import { formatLakh, LeadStatus, LeadCategory, LeadType, LeadLossReason, InteractionType, FollowUpStatus } from '@arihant/shared';
 
 const LEAD_CATEGORY_OPTIONS: { value: LeadCategory; label: string }[] = [
@@ -234,7 +239,12 @@ export default function LeadsPage() {
     lead_type: '',
     sector: '',
     lead_source: '',
+    followup: '',
+    sort_by: 'created_at',
+    sort_dir: 'desc' as 'asc' | 'desc',
   });
+  // Type / Source / Sector live in the "More" inline panel under the filter row.
+  const [moreLeadFiltersOpen, setMoreLeadFiltersOpen] = useState(false);
 
   // 2. Customers / Organisations State
   const [customers, setCustomers] = useState<any[]>([]);
@@ -311,7 +321,7 @@ export default function LeadsPage() {
     regional_manager_id: '',
     remarks: '',
     lead_status: 'new' as LeadStatus,
-    last_interaction_date: new Date().toISOString().split('T')[0],
+    last_interaction_date: istToday(),
     last_interaction_type: 'call',
     next_followup_date: '',
     value_lakh: '',
@@ -396,7 +406,7 @@ export default function LeadsPage() {
     organisation_id: '',
     contact_id: '',
     type: 'call',
-    date: new Date().toISOString().split('T')[0],
+    date: istToday(),
     notes: '',
     outcome: '',
     next_action: '',
@@ -418,7 +428,7 @@ export default function LeadsPage() {
   // Demo Transition Modal State
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
   const [demoForm, setDemoForm] = useState({
-    requested_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+    requested_date: addIsoDays(istToday(), 1),
     requested_time: '11:00',
     product_id: '',
     assigned_to: '',
@@ -571,7 +581,7 @@ export default function LeadsPage() {
   // Proposal Transition Modal State
   const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
   const [proposalForm, setProposalForm] = useState({
-    required_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+    required_date: addIsoDays(istToday(), 7),
     responsible_person_id: '',
     deal_value: '' as string | number,
     reference: '',
@@ -583,7 +593,7 @@ export default function LeadsPage() {
   const [isDiscussionModalOpen, setIsDiscussionModalOpen] = useState(false);
   const [discussionStage, setDiscussionStage] = useState<'tender_discussion' | 'follow_up'>('tender_discussion');
   const [discussionForm, setDiscussionForm] = useState({
-    discussion_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+    discussion_date: addIsoDays(istToday(), 1),
     discussion_time: '14:30',
     mode: 'in_person',
     venue: '',
@@ -684,6 +694,9 @@ export default function LeadsPage() {
         lead_type: leadFilters.lead_type || undefined,
         sector: leadFilters.sector || undefined,
         source: leadFilters.lead_source || undefined,
+        followup: leadFilters.followup || undefined,
+        sort_by: leadFilters.sort_by !== 'created_at' ? leadFilters.sort_by : undefined,
+        sort_dir: leadFilters.sort_dir !== 'desc' ? leadFilters.sort_dir : undefined,
       });
 
       const list = Array.isArray(res) ? res : (res?.data || []);
@@ -947,7 +960,7 @@ export default function LeadsPage() {
         remarks: leadForm.remarks.trim() || undefined,
         lead_status: leadForm.lead_status || 'new',
         status: leadForm.lead_status || 'new',
-        last_interaction_date: leadForm.last_interaction_date || new Date().toISOString().split('T')[0],
+        last_interaction_date: leadForm.last_interaction_date || istToday(),
         last_interaction_type: leadForm.last_interaction_type || 'call',
         next_followup_date: leadForm.next_followup_date ? leadForm.next_followup_date : undefined,
         value_lakh: leadForm.value_lakh ? Number(leadForm.value_lakh) : undefined,
@@ -995,7 +1008,7 @@ export default function LeadsPage() {
       regional_manager_id: '',
       remarks: '',
       lead_status: 'new',
-      last_interaction_date: new Date().toISOString().split('T')[0],
+      last_interaction_date: istToday(),
       last_interaction_type: 'call',
       next_followup_date: '',
       value_lakh: '',
@@ -1112,7 +1125,7 @@ export default function LeadsPage() {
     const prodName = selectedLead.product_name || selectedLead.product_interests?.[0]?.product_name || 'Equipment';
 
     setDemoForm({
-      requested_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      requested_date: addIsoDays(istToday(), 1),
       requested_time: '11:00',
       product_id: defaultProdId,
       assigned_to: defaultDemoUser,
@@ -1133,10 +1146,10 @@ export default function LeadsPage() {
     if (!selectedLead) return;
     const defaultTenderUser = usersList.find((u) => u.role === 'tender_team')?.id || selectedLead.assigned_to || user?.id || '';
     const cleanOrg = (selectedLead.organisation_name || 'LEAD').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase();
-    const ref = `PROP-${cleanOrg}-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`;
+    const ref = `PROP-${cleanOrg}-${istToday().slice(0, 4)}-${Date.now().toString().slice(-4)}`;
 
     setProposalForm({
-      required_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+      required_date: addIsoDays(istToday(), 7),
       responsible_person_id: defaultTenderUser,
       deal_value: selectedLead.estimated_value_lakh || selectedLead.value_lakh || '',
       reference: ref,
@@ -1155,7 +1168,7 @@ export default function LeadsPage() {
     const venue = selectedLead.city ? `${selectedLead.organisation_name}, ${selectedLead.city}` : 'Client HQ / Virtual Conference';
 
     setDiscussionForm({
-      discussion_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      discussion_date: addIsoDays(istToday(), 1),
       discussion_time: '14:30',
       mode: stage === 'tender_discussion' ? 'tender_committee' : 'in_person',
       venue: venue,
@@ -1246,7 +1259,7 @@ export default function LeadsPage() {
           priority: 'urgent',
           task_type: 'one_time',
           deadline: demoForm.requested_date,
-          start_date: new Date().toISOString().split('T')[0],
+          start_date: istToday(),
           related_entity_type: 'lead',
           related_entity_id: selectedLead.id,
           expected_outcome: 'Field trial executed and signed demo trial certificate obtained',
@@ -1311,7 +1324,7 @@ export default function LeadsPage() {
           priority: 'high',
           task_type: 'one_time',
           deadline: proposalForm.required_date,
-          start_date: new Date().toISOString().split('T')[0],
+          start_date: istToday(),
           related_entity_type: 'lead',
           related_entity_id: selectedLead.id,
           expected_outcome: 'Proposal formulated and ready for managerial pricing review',
@@ -1379,7 +1392,7 @@ export default function LeadsPage() {
           priority: 'urgent',
           task_type: 'meeting',
           deadline: discussionForm.discussion_date,
-          start_date: new Date().toISOString().split('T')[0],
+          start_date: istToday(),
           related_entity_type: 'lead',
           related_entity_id: selectedLead.id,
           expected_outcome: 'Discussion minutes documented and buyer commitments captured',
@@ -1445,7 +1458,7 @@ export default function LeadsPage() {
         organisation_id: '',
         contact_id: '',
         type: 'call',
-        date: new Date().toISOString().split('T')[0],
+        date: istToday(),
         notes: '',
         outcome: '',
         next_action: '',
@@ -1613,6 +1626,150 @@ export default function LeadsPage() {
     followupStats?.overdue ??
     0;
 
+  // Lead register: filter row + KPI click-to-filter helpers
+  const LEAD_STAGE_FILTERS: { key: string; label: string }[] = [
+    { key: 'new', label: 'New' },
+    { key: 'contacted', label: 'Contacted' },
+    { key: 'qualified', label: 'Qualified' },
+    { key: 'follow_up', label: 'Follow-up stage' },
+    { key: 'demo', label: 'Demo scheduled' },
+    { key: 'proposal', label: 'Proposal sent' },
+    { key: 'tender_discussion', label: 'Tender discussion' },
+    { key: 'negotiation', label: 'Negotiation' },
+    { key: 'converted', label: 'Converted (won)' },
+    { key: 'lost', label: 'Lost' },
+    { key: 'on_hold', label: 'On hold' },
+  ];
+  const LEAD_SOURCE_FILTERS: { key: string; label: string }[] = [
+    { key: 'field_visit', label: 'Field visit' },
+    { key: 'referral', label: 'Referral' },
+    { key: 'tender', label: 'Tender' },
+    { key: 'exhibition', label: 'Exhibition' },
+    { key: 'website', label: 'Website' },
+    { key: 'cold_outreach', label: 'Cold outreach' },
+  ];
+  const LEAD_SORT_FIELDS: { key: string; label: string }[] = [
+    { key: 'created_at', label: 'Created date' },
+    { key: 'next_followup', label: 'Next follow-up' },
+    { key: 'last_interaction', label: 'Last interaction' },
+    { key: 'organisation', label: 'Organisation' },
+  ];
+  const leadStageCounts: Record<string, number> = leadStats?.byStatus || leadStats?.metrics?.byStatus || {};
+  const updateLeadFilter = (patch: Partial<typeof leadFilters>) => setLeadFilters((prev) => ({ ...prev, ...patch }));
+  const hasActiveLeadFilters = Boolean(
+    leadFilters.search ||
+      leadFilters.lead_status ||
+      leadFilters.lead_type ||
+      leadFilters.sector ||
+      leadFilters.lead_source ||
+      leadFilters.followup,
+  );
+  const clearLeadFilters = () =>
+    setLeadFilters((prev) => ({ ...prev, search: '', lead_status: '', lead_type: '', sector: '', lead_source: '', followup: '' }));
+  const moreLeadFiltersActive = [leadFilters.lead_type, leadFilters.lead_source, leadFilters.sector].filter(Boolean).length;
+  const followupsDueTodayTab = followupStats?.dueToday ?? followupStats?.due_today;
+  // View menu (first control of the filter row) — one option per workspace register.
+  const workspaceViewOptions = [
+    { key: 'leads', label: 'Lead pipeline', icon: <Target />, count: leadsTotal },
+    {
+      key: 'customers',
+      label: 'Customers (360°)',
+      icon: <Building />,
+      count: (activeTab === 'customers' && customerSearch) ? customersTotal : (totalCustomersCount || customersTotal),
+    },
+    { key: 'followups', label: 'Follow-ups', icon: <Clock />, count: followupsDueTodayTab ? `${followupsDueTodayTab} today` : undefined, urgent: true },
+    { key: 'reports', label: 'Intelligence', icon: <TrendingUp /> },
+  ].map((v) => ({ ...v, active: activeTab === v.key, onSelect: () => setActiveTab(v.key) }));
+  const REPORT_SECTIONS = [
+    { key: 'salesperson', label: 'Sales performance', icon: <Users /> },
+    { key: 'zones', label: 'Zone breakdown', icon: <Compass /> },
+    { key: 'products', label: 'Product demand', icon: <Briefcase /> },
+    { key: 'interactions', label: 'Field activity', icon: <MessageSquare /> },
+  ];
+  const FOLLOWUP_TIMEFRAMES = [
+    { key: 'all', label: 'All follow-ups', count: undefined },
+    { key: 'today', label: 'Due today', count: followupStats?.dueToday ?? followupStats?.due_today ?? 0 },
+    { key: 'overdue', label: 'Overdue', count: followupStats?.overdue ?? 0, urgent: true },
+    { key: 'upcoming', label: 'Upcoming', count: followupStats?.upcoming ?? 0 },
+    { key: 'completed', label: 'Completed', count: followupStats?.completed ?? 0 },
+  ];
+  const leadHeadlineCards: {
+    key: string;
+    label: string;
+    value: number;
+    subtext: string;
+    icon: React.ReactNode;
+    variant: 'primary' | 'emerald' | 'amber' | 'rose';
+    active: boolean;
+    onClick: () => void;
+  }[] = [
+    {
+      key: 'pipeline',
+      label: 'Active Pipeline',
+      value: activePipelineCount,
+      subtext: `Total Leads: ${totalLeadsCount}`,
+      variant: 'primary',
+      icon: <Compass className="h-4 w-4 text-[#0F5E63]" />,
+      active: false,
+      onClick: () => {
+        setActiveTab('leads');
+        clearLeadFilters();
+      },
+    },
+    {
+      key: 'fresh',
+      label: 'Fresh Prospects',
+      value: freshLeadsCount,
+      subtext: 'First-time Accounts',
+      variant: 'emerald',
+      icon: <Sparkles className="h-4 w-4 text-emerald-600" />,
+      active: leadFilters.lead_type === 'fresh',
+      onClick: () => {
+        setActiveTab('leads');
+        updateLeadFilter({ lead_type: leadFilters.lead_type === 'fresh' ? '' : 'fresh' });
+      },
+    },
+    {
+      key: 'reapproached',
+      label: 'Re-Approached',
+      value: reapproachedLeadsCount,
+      subtext: 'Repeat Engagements',
+      variant: 'amber',
+      icon: <Layers className="h-4 w-4 text-amber-600" />,
+      active: leadFilters.lead_type === 're_approached',
+      onClick: () => {
+        setActiveTab('leads');
+        updateLeadFilter({ lead_type: leadFilters.lead_type === 're_approached' ? '' : 're_approached' });
+      },
+    },
+    {
+      key: 'due_today',
+      label: 'Follow-ups Due Today',
+      value: followupsDueTodayCount,
+      subtext: `Overdue: ${followupsOverdueCount}`,
+      variant: Number(followupsOverdueCount) > 0 ? 'rose' : 'amber',
+      icon: <Clock className="h-4 w-4 text-amber-600" />,
+      active: leadFilters.followup === 'due_today',
+      onClick: () => {
+        setActiveTab('leads');
+        updateLeadFilter({ followup: leadFilters.followup === 'due_today' ? '' : 'due_today' });
+      },
+    },
+    {
+      key: 'converted',
+      label: 'Converted Deals',
+      value: convertedDealsCount,
+      subtext: `Lost: ${lostLeadsCount}`,
+      variant: 'emerald',
+      icon: <Award className="h-4 w-4 text-emerald-600" />,
+      active: leadFilters.lead_status === 'converted',
+      onClick: () => {
+        setActiveTab('leads');
+        updateLeadFilter({ lead_status: leadFilters.lead_status === 'converted' ? '' : 'converted' });
+      },
+    },
+  ];
+
   return (
     <div className="space-y-6 pb-12 animate-in fade-in duration-200">
       {/* 1. Page Header */}
@@ -1647,361 +1804,457 @@ export default function LeadsPage() {
         }
       />
 
-      {/* 2. Executive Metric Cards HUD */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-        <StatCard
-          label="Active Pipeline"
-          value={activePipelineCount}
-          subtext={`Total Leads: ${totalLeadsCount}`}
-          variant="primary"
-          icon={<Compass className="h-4 w-4 text-[#0F5E63]" />}
-        />
-        <StatCard
-          label="Fresh Prospects"
-          value={freshLeadsCount}
-          subtext="First-time Accounts"
-          variant="emerald"
-          icon={<Sparkles className="h-4 w-4 text-emerald-600" />}
-        />
-        <StatCard
-          label="Re-Approached"
-          value={reapproachedLeadsCount}
-          subtext="Repeat Engagements"
-          variant="amber"
-          icon={<Layers className="h-4 w-4 text-amber-600" />}
-        />
-        <StatCard
-          label="Follow-ups Due Today"
-          value={followupsDueTodayCount}
-          subtext={`Overdue: ${followupsOverdueCount}`}
-          variant={Number(followupsOverdueCount) > 0 ? 'rose' : 'amber'}
-          icon={<Clock className="h-4 w-4 text-amber-600" />}
-        />
-        <StatCard
-          label="Converted Deals"
-          value={convertedDealsCount}
-          subtext={`Lost: ${lostLeadsCount}`}
-          variant="emerald"
-          icon={<Award className="h-4 w-4 text-emerald-600" />}
-        />
-      </div>
+      {/* 2. Key metrics — five cards; type / follow-up / converted cards filter the lead register (click again to clear). */}
+      <StatGrid cols={5} className="gap-3">
+        {leadHeadlineCards.map((c) => (
+          <StatCard
+            key={c.key}
+            label={c.label}
+            value={c.value}
+            subtext={c.subtext}
+            variant={c.variant}
+            icon={c.icon}
+            className={c.active ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+            onClick={c.onClick}
+          />
+        ))}
+      </StatGrid>
 
-      {/* 3. Primary Workspace Tabs */}
-      <ToolbarBox>
-        <Tabs
-          variant="segmented"
-          activeTab={activeTab}
-          onChange={setActiveTab}
-          tabs={[
-            { id: 'leads', label: 'Lead Register & Pipeline', icon: <Target className="h-4 w-4" />, count: leadsTotal },
-            {
-              id: 'customers',
-              label: 'Customer Register (360°)',
-              icon: <Building className="h-4 w-4" />,
-              count: (activeTab === 'customers' && customerSearch)
-                ? customersTotal
-                : (totalCustomersCount || customersTotal),
-            },
-            { id: 'followups', label: 'Follow-ups Desk', icon: <Clock className="h-4 w-4" />, count: (followupStats?.dueToday ?? followupStats?.due_today) ? `${followupStats?.dueToday ?? followupStats?.due_today} today` : undefined },
-            { id: 'reports', label: 'Executive Intelligence Reports', icon: <TrendingUp className="h-4 w-4" /> },
-          ]}
-        />
-      </ToolbarBox>
+      {/* 3. One filter row on every view: the View menu switches the register, then that view's search and dropdowns. */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <FilterMenu label="View" icon={<LayoutList />} neutralKeys={[]} className="shrink-0" options={workspaceViewOptions} />
+
+          {activeTab === 'leads' && (
+            <>
+              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <input
+                  type="search"
+                  aria-label="Search leads"
+                  placeholder="Search lead, client, salesperson…"
+                  value={leadFilters.search}
+                  onChange={(e) => updateLeadFilter({ search: e.target.value })}
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+                <FilterMenu
+                  label="Stage"
+                  icon={<Layers />}
+                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  options={[{ key: 'all', label: 'All lifecycle stages' }, ...LEAD_STAGE_FILTERS].map((o) => ({
+                    ...o,
+                    count: o.key === 'all' ? undefined : leadStageCounts[o.key] || undefined,
+                    active: (leadFilters.lead_status || 'all') === o.key,
+                    onSelect: () => updateLeadFilter({ lead_status: o.key === 'all' ? '' : o.key }),
+                  }))}
+                />
+                <FilterMenu
+                  label="Follow-ups"
+                  icon={<Clock />}
+                  options={[
+                    { key: 'all', label: 'All leads', count: undefined },
+                    { key: 'overdue', label: 'Overdue', count: Number(followupsOverdueCount) || undefined },
+                    { key: 'due_today', label: 'Due today', count: Number(followupsDueTodayCount) || undefined },
+                    { key: 'upcoming', label: 'Upcoming', count: undefined },
+                    { key: 'no_followup', label: 'Not scheduled', count: undefined },
+                  ].map((f) => ({
+                    ...f,
+                    urgent: f.key === 'overdue',
+                    active: (leadFilters.followup || 'all') === f.key,
+                    onSelect: () => updateLeadFilter({ followup: f.key === 'all' ? '' : f.key }),
+                  }))}
+                />
+                <button
+                  type="button"
+                  onClick={() => setMoreLeadFiltersOpen((o) => !o)}
+                  aria-expanded={moreLeadFiltersOpen}
+                  className={`filter-menu-btn ${moreLeadFiltersOpen || moreLeadFiltersActive > 0 ? 'filter-menu-btn--on' : ''}`}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>More</span>
+                  {moreLeadFiltersActive > 0 && <span className="filter-menu-chip">{moreLeadFiltersActive}</span>}
+                </button>
+                <FilterMenu
+                  label="Sort"
+                  icon={<ArrowUpDown />}
+                  neutralKeys={[...LEAD_SORT_FIELDS.map((f) => f.key), 'dir_desc', 'dir_asc']}
+                  align="right"
+                  options={[
+                    ...LEAD_SORT_FIELDS.map((f) => ({
+                      key: f.key,
+                      label: f.label,
+                      active: leadFilters.sort_by === f.key,
+                      onSelect: () => updateLeadFilter({ sort_by: f.key }),
+                    })),
+                    { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: leadFilters.sort_dir === 'desc', onSelect: () => updateLeadFilter({ sort_dir: 'desc' }) },
+                    { key: 'dir_asc', label: 'Ascending', icon: <ChevronUp />, active: leadFilters.sort_dir === 'asc', onSelect: () => updateLeadFilter({ sort_dir: 'asc' }) },
+                  ]}
+                />
+                {hasActiveLeadFilters && (
+                  <Button variant="ghost" size="xs" onClick={clearLeadFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+
+          {activeTab === 'customers' && (
+            <>
+              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <input
+                  type="search"
+                  aria-label="Search organisations"
+                  placeholder="Search organisations by name, city, sector…"
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+                <span className="whitespace-nowrap text-xs font-medium text-[#4A5568]">
+                  Showing <strong className="text-[#14213D]">{customers.length}</strong> of{' '}
+                  <strong className="text-[#14213D]">{customersTotal}</strong>{' '}
+                  {customerSearch ? (
+                    <>
+                      matching accounts <span className="text-[#4A5568]/80">({totalCustomersCount || customersTotal} total)</span>
+                    </>
+                  ) : (
+                    'accounts in system'
+                  )}
+                </span>
+                {customerSearch && (
+                  <Button variant="ghost" size="xs" onClick={() => setCustomerSearch('')} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+
+          {activeTab === 'followups' && (
+            <div className="flex flex-wrap items-center gap-2 lg:flex-1 lg:flex-nowrap">
+              <FilterMenu
+                label="Timeframe"
+                icon={<CalendarDays />}
+                options={FOLLOWUP_TIMEFRAMES.map((t) => ({
+                  ...t,
+                  active: followupTimeframe === t.key,
+                  onSelect: () => setFollowupTimeframe(t.key),
+                }))}
+              />
+              {followupTimeframe !== 'all' && (
+                <Button variant="ghost" size="xs" onClick={() => setFollowupTimeframe('all')} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                  Clear
+                </Button>
+              )}
+              <span className="whitespace-nowrap text-xs text-[#4A5568] lg:ml-auto">
+                Total {followups.length} follow-ups displayed
+              </span>
+            </div>
+          )}
+
+          {activeTab === 'reports' && (
+            <FilterMenu
+              label="Report"
+              icon={<Activity />}
+              neutralKeys={[]}
+              className="shrink-0"
+              options={REPORT_SECTIONS.map((r) => ({
+                ...r,
+                active: reportSubTab === r.key,
+                onSelect: () => setReportSubTab(r.key),
+              }))}
+            />
+          )}
+        </div>
+
+        {/* "More" inline panel: the less-used lead filters (type, source, sector). */}
+        {activeTab === 'leads' && moreLeadFiltersOpen && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-[#ECE9E2] pt-2.5 text-xs">
+            <span className="font-semibold text-[#4A5568]">More filters</span>
+            <FilterMenu
+              label="Type"
+              icon={<Tag />}
+              options={[
+                { key: 'all', label: 'All lead types', count: undefined },
+                { key: 'fresh', label: 'Fresh accounts', count: freshLeadsCount || undefined },
+                { key: 're_approached', label: 'Re-approached accounts', count: reapproachedLeadsCount || undefined },
+              ].map((o) => ({
+                ...o,
+                active: (leadFilters.lead_type || 'all') === o.key,
+                onSelect: () => updateLeadFilter({ lead_type: o.key === 'all' ? '' : o.key }),
+              }))}
+            />
+            <FilterMenu
+              label="Source"
+              icon={<Compass />}
+              options={[{ key: 'all', label: 'All sources' }, ...LEAD_SOURCE_FILTERS].map((o) => ({
+                ...o,
+                active: (leadFilters.lead_source || 'all') === o.key,
+                onSelect: () => updateLeadFilter({ lead_source: o.key === 'all' ? '' : o.key }),
+              }))}
+            />
+            <FilterMenu
+              label="Sector"
+              icon={<Building />}
+              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              options={[{ value: 'all', label: 'All sectors' }, ...SECTOR_OPTIONS.map((s) => ({ value: s.value, label: s.value }))].map((s) => ({
+                key: s.value,
+                label: s.label,
+                active: (leadFilters.sector || 'all') === s.value,
+                onSelect: () => updateLeadFilter({ sector: s.value === 'all' ? '' : s.value }),
+              }))}
+            />
+            {moreLeadFiltersActive > 0 && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => updateLeadFilter({ lead_type: '', lead_source: '', sector: '' })}
+                className="text-xs text-[#4A5568] hover:text-[#881337]"
+              >
+                Reset
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* ========================================================================= */}
       {/* TAB 1: LEAD REGISTER & PIPELINE                                           */}
       {/* ========================================================================= */}
       {activeTab === 'leads' && (
         <div className="space-y-4">
-          {/* Filters Strip */}
-          <ToolbarSlot><div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[280px]">
-              <div className="relative w-full sm:w-64">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#4A5568]" />
-                <input
-                  type="text"
-                  placeholder="Search lead, client, salesperson..."
-                  value={leadFilters.search}
-                  onChange={(e) => setLeadFilters({ ...leadFilters, search: e.target.value })}
-                  className="w-full pl-9 pr-3 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] placeholder-[#4A5568] focus:outline-none focus:border-[#0F5E63]"
+          {/* Lead register */}
+          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
+            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
+              <h2 className="font-serif text-sm font-bold text-[#14213D]">Lead register</h2>
+              <span className="font-mono text-xs text-[#4A5568]">
+                Showing {leads.length} of {leadsTotal} {leadsTotal === 1 ? 'opportunity' : 'opportunities'}
+              </span>
+            </div>
+            {leadsLoading ? (
+              <PageLoader label="Loading pipeline" />
+            ) : leads.length === 0 ? (
+              <div className="py-12">
+                <EmptyState
+                  icon={Target}
+                  title="No opportunities match your filter"
+                  description="Try adjusting your stage, type, or search filters, or register a new lead."
+                  action={
+                    hasActiveLeadFilters ? (
+                      <Button size="sm" variant="secondary" onClick={clearLeadFilters}>
+                        Clear filters
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="primary" onClick={handleOpenCreateLead}>
+                        Create Opportunity
+                      </Button>
+                    )
+                  }
                 />
               </div>
-
-              <select
-                value={leadFilters.lead_status}
-                onChange={(e) => setLeadFilters({ ...leadFilters, lead_status: e.target.value })}
-                className="px-2.5 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:outline-none focus:border-[#0F5E63]"
-              >
-                <option value="">All Lifecycle Stages</option>
-                <option value="new">New</option>
-                <option value="contacted">Contacted</option>
-                <option value="qualified">Qualified</option>
-                <option value="follow_up">Follow-Up Stage</option>
-                <option value="demo">Demo Scheduled</option>
-                <option value="proposal">Proposal Sent</option>
-                <option value="tender_discussion">Tender Discussion</option>
-                <option value="negotiation">Negotiation</option>
-                <option value="converted">Converted (Won)</option>
-                <option value="lost">Lost</option>
-                <option value="on_hold">On Hold</option>
-              </select>
-
-              <select
-                value={leadFilters.lead_type}
-                onChange={(e) => setLeadFilters({ ...leadFilters, lead_type: e.target.value })}
-                className="px-2.5 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:outline-none focus:border-[#0F5E63]"
-              >
-                <option value="">All Lead Types</option>
-                <option value="fresh">Fresh Accounts</option>
-                <option value="re_approached">Re-Approached Accounts</option>
-              </select>
-
-              <select
-                value={leadFilters.lead_source}
-                onChange={(e) => setLeadFilters({ ...leadFilters, lead_source: e.target.value })}
-                className="px-2.5 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:outline-none focus:border-[#0F5E63]"
-              >
-                <option value="">All Sources</option>
-                <option value="field_visit">Field Visit</option>
-                <option value="referral">Referral</option>
-                <option value="tender">Tender</option>
-                <option value="exhibition">Exhibition</option>
-                <option value="website">Website</option>
-                <option value="cold_outreach">Cold Outreach</option>
-              </select>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between sm:justify-start gap-3 text-xs text-[#4A5568]">
-              <span>
-                Showing <strong className="text-[#14213D]">{leads.length}</strong> of{' '}
-                <strong className="text-[#14213D]">{leadsTotal}</strong> opportunities
-              </span>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] text-[#4A5568]">Rows:</span>
-                <select
-                  value={leadsLimit}
-                  onChange={(e) => {
-                    setLeadsLimit(Number(e.target.value));
-                    setLeadsPage(1);
-                  }}
-                  className="px-2 py-1 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:outline-none focus:border-[#0F5E63]"
-                >
-                  <option value={15}>15</option>
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
-              </div>
-            </div>
-          </div></ToolbarSlot>
-
-          {/* Leads Table */}
-          {leadsLoading ? (
-            <PageLoader label="Loading pipeline" />
-          ) : leads.length === 0 ? (
-            <EmptyState
-              icon={Target}
-              title="No opportunities match your filter"
-              description="Try adjusting your stage, type, or search filters, or register a new lead."
-              action={
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={handleOpenCreateLead}
-                >
-                  Create Opportunity
-                </Button>
-              }
-            />
-          ) : (
-            <Table className="min-w-[1240px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Opportunity / Title</TableHead>
-                  <TableHead>Organisation & Sector</TableHead>
-                  <TableHead>Primary Contact</TableHead>
-                  <TableHead>Classification</TableHead>
-                  <TableHead>Salesperson / RM</TableHead>
-                  <TableHead>Products</TableHead>
-                  <TableHead>Stage / Status</TableHead>
-                  <TableHead>Est. Value</TableHead>
-                  <TableHead>Next Follow-Up</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {leads.map((lead) => (
-                  <TableRow key={lead.id} className="group cursor-pointer" onClick={() => handleOpenLead(lead.id)}>
-                    <TableCell>
-                      <div className="font-bold text-[#14213D] group-hover:text-[#0F5E63] transition-colors line-clamp-1">
-                        {lead.product_name || (lead.product_interests && lead.product_interests[0]?.name) || lead.organisation_name || 'Procurement Opportunity'}
-                      </div>
-                      <div className="text-[10px] text-[#4A5568]">
-                        <span className="font-mono">#{lead.id.slice(0, 8)}</span> • Source: {lead.source || 'Direct'}
-                      </div>
-                    </TableCell>
-
-                    <TableCell>
-                      <div className="font-semibold text-[#14213D] flex items-center gap-1.5">
-                        <Building className="h-3.5 w-3.5 text-[#4A5568] shrink-0" />
-                        <span className="truncate">{lead.organisation_name || '—'}</span>
-                      </div>
-                      <div className="text-[10px] text-[#4A5568] flex items-center gap-1">
-                        <span>{lead.sector || 'Defence / Security'}</span>
-                        {(lead.city || lead.state) && (
-                          <span>• {lead.city ? `${lead.city}, ` : ''}{lead.state || ''}</span>
-                        )}
-                      </div>
-                    </TableCell>
-
-                    <TableCell>
-                      {lead.contact_name ? (
-                        <div>
-                          <div className="font-medium text-[#14213D] flex items-center gap-1">
-                            <User className="h-3 w-3 text-[#4A5568]" />
-                            <span>{lead.contact_name}</span>
-                          </div>
-                          <div className="text-[10px] text-[#4A5568]">
-                            {lead.contact_designation || lead.contact_mobile || lead.contact_phone || '—'}
-                          </div>
+            ) : (
+              <Table className="[&_td]:px-3 [&_th]:px-3">
+                <TableHeader>
+                  <TableRow className="bg-[#FBFAF7]">
+                    <TableHead className="whitespace-nowrap text-xs">Opportunity</TableHead>
+                    <TableHead className="whitespace-nowrap text-xs">Organisation & Contact</TableHead>
+                    <TableHead className="whitespace-nowrap text-xs">Owner</TableHead>
+                    <TableHead className="whitespace-nowrap text-xs">Products</TableHead>
+                    <TableHead className="whitespace-nowrap text-xs">Stage / Value</TableHead>
+                    <TableHead className="whitespace-nowrap text-xs">Follow-up</TableHead>
+                    <TableHead className="w-16 text-right text-xs">
+                      <span className="sr-only">Actions</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {leads.map((lead) => (
+                    <TableRow key={lead.id} className="group cursor-pointer" onClick={() => handleOpenLead(lead.id)}>
+                      <TableCell>
+                        <div className="w-[180px]">
+                        <div
+                          className="truncate text-xs font-bold text-[#14213D] transition-colors group-hover:text-[#0F5E63]"
+                          title={lead.product_name || (lead.product_interests && lead.product_interests[0]?.name) || lead.organisation_name || 'Procurement Opportunity'}
+                        >
+                          {lead.product_name || (lead.product_interests && lead.product_interests[0]?.name) || lead.organisation_name || 'Procurement Opportunity'}
                         </div>
-                      ) : (
-                        <span className="text-[#4A5568] italic text-[11px]">Unspecified</span>
-                      )}
-                    </TableCell>
-
-                    <TableCell>
-                      {lead.lead_type === 're_approached' ? (
-                        <Badge variant="warning" size="sm" className="font-bold text-[10px]">
-                          RE-APPROACHED
-                        </Badge>
-                      ) : (
-                        <Badge variant="info" size="sm" className="font-bold text-[10px]">
-                          FRESH
-                        </Badge>
-                      )}
-                    </TableCell>
-
-                    <TableCell>
-                      <div className="text-xs font-semibold text-gray-800">
-                        {lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned'}
-                      </div>
-                      {lead.regional_manager_name && (
-                        <div className="text-[10px] text-[#4A5568]">
-                          RM: {lead.regional_manager_name}
-                        </div>
-                      )}
-                    </TableCell>
-
-                    <TableCell>
-                      {lead.product_interests && lead.product_interests.length > 0 ? (
-                        <div className="flex flex-wrap gap-1 max-w-[180px]">
-                          {lead.product_interests.slice(0, 2).map((p: any) => (
-                            <span
-                              key={p.product_id || p.id}
-                              className="px-1.5 py-0.5 rounded bg-[#E3EFEE] text-[#0F5E63] text-[10px] font-medium truncate"
-                            >
-                              {p.name || p.product_name}
-                            </span>
-                          ))}
-                          {lead.product_interests.length > 2 && (
-                            <span className="text-[10px] text-[#4A5568]">
-                              +{lead.product_interests.length - 2}
-                            </span>
+                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[#4A5568]">
+                          <span className="shrink-0 font-mono">#{lead.id.slice(0, 8)}</span>
+                          <span className="min-w-0 truncate" title={`Source: ${lead.source || 'Direct'}`}>• {lead.source || 'Direct'}</span>
+                          {lead.lead_type === 're_approached' ? (
+                            <Badge variant="warning" size="sm" className="shrink-0 text-[9px] font-bold">RE-APPROACHED</Badge>
+                          ) : (
+                            <Badge variant="info" size="sm" className="shrink-0 text-[9px] font-bold">FRESH</Badge>
                           )}
                         </div>
-                      ) : lead.product_name ? (
-                        <span className="px-1.5 py-0.5 rounded bg-[#E3EFEE] text-[#0F5E63] text-[10px] font-medium truncate">
-                          {lead.product_name}
-                        </span>
-                      ) : (
-                        <span className="text-[#4A5568] italic text-[10px]">None tagged</span>
-                      )}
-                    </TableCell>
-
-                    <TableCell>
-                      {getStatusBadge(lead.lead_status || lead.status)}
-                    </TableCell>
-
-                    <TableCell>
-                      <span className="font-extrabold text-[#0F5E63]">
-                        {formatLakh(lead.value_lakh || lead.estimated_value_lakh || 0)}
-                      </span>
-                    </TableCell>
-
-                    <TableCell>
-                      {lead.next_followup_at || lead.next_followup_date ? (
-                        <div className="flex items-center gap-1 text-[11px] font-mono text-gray-700">
-                          <Calendar className="h-3 w-3 text-[#4A5568]" />
-                          <span>
-                            {new Date(lead.next_followup_at || lead.next_followup_date).toLocaleDateString('en-IN')}
-                          </span>
                         </div>
-                      ) : (
-                        <span className="text-[#4A5568] italic text-[10px]">None set</span>
-                      )}
-                    </TableCell>
+                      </TableCell>
 
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          size="xs"
-                          variant="secondary"
-                          onClick={() => {
-                            setInteractionForm({
-                              ...interactionForm,
-                              lead_id: lead.id,
-                              organisation_id: lead.organisation_id,
-                              contact_id: lead.primary_contact_id || '',
-                            });
-                            setIsLogInteractionOpen(true);
-                          }}
-                          leftIcon={<MessageSquare className="h-3 w-3" />}
+                      <TableCell>
+                        <div className="w-[170px]">
+                        <div className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-[#14213D]">
+                          <Building className="h-3.5 w-3.5 shrink-0 text-[#4A5568]" />
+                          <span className="truncate" title={lead.organisation_name || undefined}>{lead.organisation_name || '—'}</span>
+                        </div>
+                        <div
+                          className="truncate text-[11px] text-[#4A5568]"
+                          title={`${lead.sector || 'Defence / Security'}${lead.city || lead.state ? ` • ${lead.city ? `${lead.city}, ` : ''}${lead.state || ''}` : ''}`}
                         >
-                          Log Touch
-                        </Button>
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          onClick={() => handleOpenLead(lead.id)}
-                          leftIcon={<Eye className="h-3 w-3" />}
-                        >
-                          Inspect
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+                          {lead.sector || 'Defence / Security'}
+                          {(lead.city || lead.state) && <> • {lead.city ? `${lead.city}, ` : ''}{lead.state || ''}</>}
+                        </div>
+                        <div className="flex min-w-0 items-center gap-1 text-[11px] text-[#4A5568]">
+                          <User className="h-3 w-3 shrink-0" />
+                          {lead.contact_name ? (
+                            <span
+                              className="truncate"
+                              title={`${lead.contact_name}${lead.contact_designation || lead.contact_mobile || lead.contact_phone ? ` · ${lead.contact_designation || lead.contact_mobile || lead.contact_phone}` : ''}`}
+                            >
+                              {lead.contact_name}
+                              {(lead.contact_designation || lead.contact_mobile || lead.contact_phone) && ` · ${lead.contact_designation || lead.contact_mobile || lead.contact_phone}`}
+                            </span>
+                          ) : (
+                            <span className="italic">Contact unspecified</span>
+                          )}
+                        </div>
+                        </div>
+                      </TableCell>
 
-          {/* Pagination */}
-          {leadsTotalPages > 1 && (
-            <div className="flex items-center justify-between pt-2">
-              <span className="text-xs text-[#4A5568]">
-                Page {leadsPage} of {leadsTotalPages}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={leadsPage <= 1}
-                  onClick={() => setLeadsPage((p) => Math.max(1, p - 1))}
-                >
-                  Previous
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={leadsPage >= leadsTotalPages}
-                  onClick={() => setLeadsPage((p) => Math.min(leadsTotalPages, p + 1))}
-                >
-                  Next
-                </Button>
+                      <TableCell>
+                        <div className="max-w-[120px] truncate text-xs font-semibold text-[#14213D]" title={lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned'}>
+                          {lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned'}
+                        </div>
+                        {lead.regional_manager_name && (
+                          <div className="max-w-[120px] truncate text-[11px] text-[#4A5568]" title={`RM: ${lead.regional_manager_name}`}>RM: {lead.regional_manager_name}</div>
+                        )}
+                      </TableCell>
+
+                      <TableCell>
+                        {lead.product_interests && lead.product_interests.length > 0 ? (
+                          <div className="flex w-[130px] flex-wrap gap-1">
+                            {lead.product_interests.slice(0, 2).map((p: any) => (
+                              <span
+                                key={p.product_id || p.id}
+                                className="max-w-[130px] truncate rounded bg-[#E3EFEE] px-1.5 py-0.5 text-[10px] font-medium text-[#0F5E63]"
+                                title={p.name || p.product_name}
+                              >
+                                {p.name || p.product_name}
+                              </span>
+                            ))}
+                            {lead.product_interests.length > 2 && (
+                              <span className="text-[10px] text-[#4A5568]">+{lead.product_interests.length - 2}</span>
+                            )}
+                          </div>
+                        ) : lead.product_name ? (
+                          <span className="inline-block max-w-[130px] truncate rounded bg-[#E3EFEE] px-1.5 py-0.5 text-[10px] font-medium text-[#0F5E63]" title={lead.product_name}>
+                            {lead.product_name}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] italic text-[#4A5568]">None tagged</span>
+                        )}
+                      </TableCell>
+
+                      <TableCell className="whitespace-nowrap">
+                        {getStatusBadge(lead.lead_status || lead.status)}
+                        <div className="mt-1 font-mono text-[11px] font-bold text-[#0F5E63]" title="Estimated value">
+                          {formatLakh(lead.value_lakh || lead.estimated_value_lakh || 0)}
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="whitespace-nowrap">
+                        {lead.next_followup_at || lead.next_followup_date ? (
+                          <div className="flex items-center gap-1 font-mono text-[11px] text-[#14213D]">
+                            <Calendar className="h-3 w-3 text-[#4A5568]" />
+                            <span>{new Date(lead.next_followup_at || lead.next_followup_date).toLocaleDateString('en-IN')}</span>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] italic text-[#4A5568]">None set</span>
+                        )}
+                      </TableCell>
+
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            size="xs"
+                            variant="secondary"
+                            title="Log touch"
+                            aria-label="Log touch"
+                            onClick={() => {
+                              setInteractionForm({
+                                ...interactionForm,
+                                lead_id: lead.id,
+                                organisation_id: lead.organisation_id,
+                                contact_id: lead.primary_contact_id || '',
+                              });
+                              setIsLogInteractionOpen(true);
+                            }}
+                          >
+                            <MessageSquare className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            title="Inspect lead"
+                            aria-label="Inspect lead"
+                            onClick={() => handleOpenLead(lead.id)}
+                          >
+                            <Eye className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+
+            {/* Footer: rows per page + pagination */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#ECE9E2] px-4 py-2.5">
+              <div className="flex items-center gap-2 text-xs text-[#4A5568]">
+                <span>
+                  Page {leadsPage} of {Math.max(1, leadsTotalPages)}
+                </span>
+                <FilterMenu
+                  label={`${leadsLimit} rows`}
+                  neutralKeys={['15', '25', '50', '100']}
+                  options={[15, 25, 50, 100].map((n) => ({
+                    key: String(n),
+                    label: `${n} per page`,
+                    active: leadsLimit === n,
+                    onSelect: () => {
+                      setLeadsLimit(n);
+                      setLeadsPage(1);
+                    },
+                  }))}
+                />
               </div>
+              {leadsTotalPages > 1 && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={leadsPage <= 1}
+                    onClick={() => setLeadsPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={leadsPage >= leadsTotalPages}
+                    onClick={() => setLeadsPage((p) => Math.min(leadsTotalPages, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
             </div>
-          )}
+          </Card>
         </div>
       )}
 
@@ -2010,43 +2263,6 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       {activeTab === 'customers' && (
         <div className="space-y-4">
-          <ToolbarSlot><div className="p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs flex flex-wrap items-center justify-between gap-3">
-            <div className="relative w-full sm:w-80">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#4A5568]" />
-              <input
-                type="text"
-                placeholder="Search organisations by name, city, sector..."
-                value={customerSearch}
-                onChange={(e) => setCustomerSearch(e.target.value)}
-                className="w-full pl-9 pr-8 py-1.5 text-xs bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] placeholder-[#4A5568] focus:outline-none focus:border-[#0F5E63]"
-              />
-              {customerSearch && (
-                <button
-                  type="button"
-                  onClick={() => setCustomerSearch('')}
-                  className="absolute right-2.5 top-2 text-[#4A5568] hover:text-[#14213D] text-xs font-bold"
-                  title="Clear search"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-            <div className="text-xs text-[#4A5568] font-medium">
-              {customerSearch ? (
-                <span>
-                  Showing <strong className="text-[#14213D]">{customers.length}</strong> of{' '}
-                  <strong className="text-[#14213D]">{customersTotal}</strong> matching accounts{' '}
-                  <span className="text-[#4A5568]/80">({totalCustomersCount || customersTotal} total in system)</span>
-                </span>
-              ) : (
-                <span>
-                  Showing <strong className="text-[#14213D]">{customers.length}</strong> of{' '}
-                  <strong className="text-[#14213D]">{customersTotal}</strong> accounts in system
-                </span>
-              )}
-            </div>
-          </div></ToolbarSlot>
-
           {customersLoading ? (
             <PageLoader label="Loading customer accounts" />
           ) : customers.length === 0 ? (
@@ -2191,34 +2407,6 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       {activeTab === 'followups' && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
-            <div className="flex items-center gap-1.5">
-              {[
-                { id: 'all', label: 'All Follow-ups' },
-                { id: 'today', label: `Due Today (${followupStats?.dueToday ?? followupStats?.due_today ?? 0})` },
-                { id: 'overdue', label: `Overdue (${followupStats?.overdue ?? 0})` },
-                { id: 'upcoming', label: `Upcoming (${followupStats?.upcoming ?? 0})` },
-                { id: 'completed', label: `Completed (${followupStats?.completed ?? 0})` },
-              ].map((chip) => (
-                <button
-                  key={chip.id}
-                  onClick={() => setFollowupTimeframe(chip.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    followupTimeframe === chip.id
-                      ? 'bg-[#0F5E63] text-white shadow-xs'
-                      : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
-                  }`}
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-
-            <span className="text-xs text-[#4A5568]">
-              Total {followups.length} follow-ups displayed
-            </span>
-          </div>
-
           {followupsLoading ? (
             <PageLoader label="Loading follow-ups" />
           ) : followups.length === 0 ? (
@@ -2244,10 +2432,10 @@ export default function LeadsPage() {
                 {followups.map((fu) => {
                   const isOverdue =
                     fu.status === 'pending' &&
-                    new Date(fu.due_date).getTime() < new Date().setHours(0, 0, 0, 0);
+                    Boolean(fu.due_date) && calendarDay(fu.due_date) < istToday();
                   const isToday =
                     fu.status === 'pending' &&
-                    new Date(fu.due_date).toDateString() === new Date().toDateString();
+                    calendarDay(fu.due_date) === istToday();
 
                   return (
                     <TableRow key={fu.id}>
@@ -2349,7 +2537,7 @@ export default function LeadsPage() {
                               variant="outline"
                               onClick={() => {
                                 setSelectedFollowup(fu);
-                                setRescheduleDate(String(fu.due_date).slice(0, 10));
+                                setRescheduleDate(calendarDay(fu.due_date));
                                 setRescheduleTime(fu.due_time ? String(fu.due_time).slice(0, 5) : '');
                                 setRescheduleRemarks('');
                                 setIsRescheduleFollowupOpen(true);
@@ -2374,28 +2562,6 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       {activeTab === 'reports' && (
         <div className="space-y-4">
-          <div className="flex items-center gap-2 p-1.5 bg-[#E3EFEE] border border-[#DCD8CE] rounded-xl w-fit">
-            {[
-              { id: 'salesperson', label: 'Salesperson Performance', icon: <Users className="h-3.5 w-3.5" /> },
-              { id: 'zones', label: 'Territorial Zone Breakdown', icon: <Compass className="h-3.5 w-3.5" /> },
-              { id: 'products', label: 'Product Demand Intelligence', icon: <Briefcase className="h-3.5 w-3.5" /> },
-              { id: 'interactions', label: 'Field Activity Breakdown', icon: <MessageSquare className="h-3.5 w-3.5" /> },
-            ].map((sub) => (
-              <button
-                key={sub.id}
-                onClick={() => setReportSubTab(sub.id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  reportSubTab === sub.id
-                    ? 'bg-white text-[#0F5E63] shadow-xs border border-[#DCD8CE]'
-                    : 'text-[#4A5568] hover:text-[#14213D]'
-                }`}
-              >
-                {sub.icon}
-                <span>{sub.label}</span>
-              </button>
-            ))}
-          </div>
-
           {/* Sub-report 1: Salesperson Performance */}
           {reportSubTab === 'salesperson' && (
             <Card>

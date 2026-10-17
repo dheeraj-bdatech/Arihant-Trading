@@ -11,6 +11,7 @@ import jwt from 'jsonwebtoken';
 import { Kysely } from 'kysely';
 import { KYSELY_DB } from '../database/database.module.js';
 import type { Database, UserRole } from '@arihant/shared';
+import { getJwtSecret } from '../auth/jwt-secret.js';
 
 @WebSocketGateway({
   cors: {
@@ -45,9 +46,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ? authHeader.split(' ')[1]
         : authHeader;
 
-      const jwtSecret =
-        this.configService.get<string>('SUPABASE_JWT_SECRET') ||
-        'super-secret-supabase-jwt-token-key-32chars';
+      const jwtSecret = getJwtSecret(this.configService);
 
       const payload: any = jwt.verify(token, jwtSecret);
       const userId = payload.sub || payload.id;

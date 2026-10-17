@@ -1,29 +1,39 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRightLeft,
+  BarChart3,
   CheckCircle2,
+  ClipboardCheck,
   Download,
   FileText,
+  Landmark,
+  LayoutList,
+  Receipt,
   RefreshCw,
+  Settings2,
   XCircle,
 } from 'lucide-react';
 import {
   Badge,
   Button,
+  FilterMenu,
   InfoCallout,
   Input,
   Modal,
   Select,
   Spinner,
-  Tabs,
   Textarea,
+  type FilterMenuOption,
 } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { istToday, isIstFutureDate } from '@/lib/ist-date';
 import {
   EXPENSE_ACTION_LABELS,
   EXPENSE_ITEM_STATUS_LABELS,
@@ -31,7 +41,6 @@ import {
   EXPENSE_STATUS_LABELS,
   formatExpenseAmount,
   formatExpenseDate,
-  todayInKolkata,
   type ExpenseClaimStatus,
   type ExpenseItemStatus,
 } from '@arihant/shared';
@@ -67,45 +76,66 @@ export const ItemStatusBadge: React.FC<{ status: ExpenseItemStatus }> = ({ statu
   </Badge>
 );
 
-/** Sub-navigation shared by every expense page; tabs are filtered by role and carry live counts. */
-export const ExpensesNav: React.FC = () => {
+// ------------------------------------------------------------------ navigation
+type ExpenseView = { href: string; label: string; icon: React.ReactNode; count?: number; urgent?: boolean };
+
+/** Expense screens this user can open — filtered by role, with live "waiting on you" counts. */
+function useExpenseViews(): ExpenseView[] {
   const { user } = useAuth();
-  const router = useRouter();
-  const pathname = usePathname();
   const counts = useBadgeCounts(Boolean(user));
   const role = user?.role || '';
   const isAdminLike = MANAGEMENT_ROLES.includes(role);
-
-  const tabs = useMemo(() => {
-    const t: { id: string; label: string; count?: number; badgeVariant?: 'urgent' | 'warning' }[] = [
-      { id: '/expenses', label: 'My Expenses', count: counts?.my_clarifications || undefined, badgeVariant: 'urgent' },
-    ];
+  return useMemo(() => {
+    const n = (v?: number) => (v && v > 0 ? v : undefined);
+    const v: ExpenseView[] = [{ href: '/expenses', label: 'My Expenses', icon: <Receipt />, count: n(counts?.my_clarifications), urgent: true }];
     if (role === 'regional_manager' || isAdminLike || counts?.has_team) {
-      t.push({ id: '/expenses/approvals', label: 'Approvals', count: counts?.manager_pending || undefined, badgeVariant: 'warning' });
+      v.push({ href: '/expenses/approvals', label: 'Approvals', icon: <ClipboardCheck />, count: n(counts?.manager_pending), urgent: true });
     }
     if (role === 'accounts' || isAdminLike) {
-      const n = (counts?.accounts_pending || 0) + (counts?.accounts_ready || 0);
-      t.push({ id: '/expenses/accounts', label: 'Accounts Queue', count: n || undefined, badgeVariant: 'warning' });
+      v.push({ href: '/expenses/accounts', label: 'Accounts Queue', icon: <Landmark />, count: n((counts?.accounts_pending || 0) + (counts?.accounts_ready || 0)), urgent: true });
     }
     if (['management', 'admin', 'accounts', 'regional_manager'].includes(role) || counts?.has_team) {
-      t.push({ id: '/expenses/reports', label: 'Reports' });
+      v.push({ href: '/expenses/reports', label: 'Reports', icon: <BarChart3 /> });
     }
-    if (isAdminLike) t.push({ id: '/expenses/categories', label: 'Categories', count: counts?.approver_inactive || undefined, badgeVariant: 'urgent' });
-    return t;
+    if (isAdminLike) v.push({ href: '/expenses/categories', label: 'Categories', icon: <Settings2 />, count: n(counts?.approver_inactive), urgent: true });
+    return v;
   }, [counts, role, isAdminLike]);
+}
 
-  const active =
-    tabs
-      .map((t) => t.id)
-      .filter((id) => id !== '/expenses' && pathname.startsWith(id))
-      .sort((a, b) => b.length - a.length)[0] || '/expenses';
-
-  return (
-    <div className="overflow-x-auto -mx-1 px-1">
-      <Tabs variant="underline" tabs={tabs} activeTab={active} onChange={(id) => router.push(id)} />
-    </div>
-  );
+/**
+ * Every expense screen behind one "View" dropdown — the first control of each page's filter row.
+ * The active entry comes from the URL unless `active` (an href) is given; claim pages match none.
+ */
+export const ExpenseViewMenu: React.FC<{ active?: string; align?: 'left' | 'right' }> = ({ active, align }) => {
+  const router = useRouter();
+  const pathname = usePathname();
+  const views = useExpenseViews();
+  const current =
+    active ??
+    views.find((v) => (v.href === '/expenses' ? pathname === v.href : pathname === v.href || pathname.startsWith(`${v.href}/`)))?.href;
+  const options: FilterMenuOption[] = views.map((v) => ({
+    key: v.href,
+    label: v.label,
+    icon: v.icon,
+    count: v.count,
+    urgent: v.urgent,
+    active: current === v.href,
+    onSelect: () => router.push(v.href),
+  }));
+  return <FilterMenu label="View" icon={<LayoutList />} options={options} neutralKeys={[]} align={align} />;
 };
+
+/** Compact bar for expense pages without a filter row (new claim, claim detail, edit): back to My expenses + View. */
+export const ExpensesNav: React.FC = () => (
+  <div className="flex flex-wrap items-center gap-2">
+    <Link href="/expenses">
+      <Button size="sm" variant="secondary" className="h-9" leftIcon={<ArrowLeft className="h-4 w-4" />}>
+        My expenses
+      </Button>
+    </Link>
+    <ExpenseViewMenu />
+  </div>
+);
 
 export const ConflictCallout: React.FC<{ onRefresh: () => void }> = ({ onRefresh }) => (
   <InfoCallout variant="warning" title="This claim was updated by someone else">
@@ -204,27 +234,49 @@ export const ProcessModal: React.FC<{
   busy?: boolean;
   total: number | null;
   errors: Record<string, string>;
+  /** The server's refusal (e.g. future-dated lines) — shown inside the dialog so it never fails silently. */
+  serverError?: string | null;
   onClose: () => void;
   onConfirm: (v: { tally_voucher_ref: string; payment_reference: string; payment_date: string }) => void;
-}> = ({ open, busy, total, errors, onClose, onConfirm }) => {
-  const [v, setV] = useState({ tally_voucher_ref: '', payment_reference: '', payment_date: '' });
+}> = ({ open, busy, total, errors, serverError, onClose, onConfirm }) => {
+  const blank = () => ({ tally_voucher_ref: '', payment_reference: '', payment_date: istToday() });
+  const [v, setV] = useState(blank);
   const [touched, setTouched] = useState(false);
   useEffect(() => {
     if (open) {
-      setV({ tally_voucher_ref: '', payment_reference: '', payment_date: '' });
+      setV(blank());
       setTouched(false);
     }
   }, [open]);
+  // Mirrors the server: voucher, bank reference and payment date are all required; the date cannot be after today (IST).
+  const local: Record<string, string> = {};
+  if (!v.tally_voucher_ref.trim()) local.tally_voucher_ref = 'Required.';
+  if (!v.payment_reference.trim()) local.payment_reference = 'Enter the bank UTR / NEFT / cheque reference.';
+  else if (v.payment_reference.trim().length < 4) local.payment_reference = 'Payment reference must be at least 4 characters.';
+  if (!v.payment_date) local.payment_date = 'Payment date is required.';
+  else if (isIstFutureDate(v.payment_date)) local.payment_date = 'Payment date cannot be in the future.';
+  const shown = (k: string) => (touched ? local[k] : undefined) || errors[k];
+  const otherErrors = Object.entries(errors).filter(([k]) => !['tally_voucher_ref', 'payment_reference', 'payment_date'].includes(k));
   return (
-    <Modal isOpen={open} onClose={onClose} title="Mark as processed in Tally" description={`Approved total ${formatExpenseAmount(total ?? 0)}. After this the claim is read-only.`} maxWidth="md">
+    <Modal isOpen={open} onClose={onClose} title="Mark as processed & paid" description={`Approved total ${formatExpenseAmount(total ?? 0)}. Record the Tally voucher and the bank payment. After this the claim is read-only.`} maxWidth="md">
       <form
         onSubmit={(e) => {
           e.preventDefault();
           setTouched(true);
-          if (v.tally_voucher_ref.trim()) onConfirm(v);
+          if (!Object.keys(local).length) onConfirm({ ...v, tally_voucher_ref: v.tally_voucher_ref.trim(), payment_reference: v.payment_reference.trim() });
         }}
         className="space-y-4"
       >
+        {serverError && (
+          <InfoCallout variant="danger" title="Not marked as paid">
+            <p>{serverError}</p>
+            {otherErrors.length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-xs">
+                {otherErrors.map(([k, m]) => <li key={k}>{m}</li>)}
+              </ul>
+            )}
+          </InfoCallout>
+        )}
         <Input
           label="Tally voucher reference *"
           value={v.tally_voucher_ref}
@@ -232,22 +284,40 @@ export const ProcessModal: React.FC<{
           maxLength={100}
           autoFocus
           placeholder="e.g. JV/2026/0451"
-          error={(touched && !v.tally_voucher_ref.trim() ? 'Required.' : undefined) || errors.tally_voucher_ref}
+          error={shown('tally_voucher_ref')}
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Input label="Payment reference" value={v.payment_reference} onChange={(e) => setV({ ...v, payment_reference: e.target.value })} maxLength={100} placeholder="NEFT / UTR" error={errors.payment_reference} />
-          <Input label="Payment date" type="date" max={todayInKolkata()} value={v.payment_date} onChange={(e) => setV({ ...v, payment_date: e.target.value })} error={errors.payment_date} />
+          <Input label="Payment reference (UTR) *" value={v.payment_reference} onChange={(e) => setV({ ...v, payment_reference: e.target.value })} maxLength={100} placeholder="NEFT / RTGS UTR or cheque no." className="font-mono" error={shown('payment_reference')} />
+          <Input label="Payment date *" type="date" max={istToday()} value={v.payment_date} onChange={(e) => setV({ ...v, payment_date: e.target.value })} error={shown('payment_date')} />
         </div>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <Button type="submit" isLoading={busy}>
-            Mark processed
+            Mark paid
           </Button>
         </div>
       </form>
     </Modal>
+  );
+};
+
+/** How a processed claim was paid: bank reference + date (and the Tally voucher). */
+export const PaymentInfo: React.FC<{
+  claim: { status: string; payment_reference?: string | null; payment_date?: string | null; tally_voucher_ref?: string | null };
+  className?: string;
+}> = ({ claim, className = '' }) => {
+  if (claim.status !== 'processed') return null;
+  return (
+    <div className={`text-[11px] text-[#4A5568] ${className}`}>
+      {claim.payment_reference ? (
+        <>Paid · UTR <span className="font-mono text-[#14213D]">{claim.payment_reference}</span></>
+      ) : (
+        <span className="text-[#9A3412]">Paid · no bank reference recorded</span>
+      )}
+      {claim.payment_date && <> · <DateText value={claim.payment_date} /></>}
+    </div>
   );
 };
 

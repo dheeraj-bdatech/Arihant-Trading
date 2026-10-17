@@ -1,5 +1,6 @@
 'use client';
 
+import { fromIstLocalInput } from '@/lib/ist-date';
 import React, { useState } from 'react';
 import { MapPin, LogOut } from 'lucide-react';
 import { Button, Badge, Input, Select, Textarea } from '@/components/ui';
@@ -95,13 +96,13 @@ const VisitCard: React.FC<{ visit: any; ticket: any; canWork: boolean; closed: b
       </div>
       <div className="grid grid-cols-1 gap-2 text-xs text-[#4A5568] sm:grid-cols-3">
         <div>
-          Scheduled: <strong className="text-[#14213D]">{v.scheduled_start ? new Date(v.scheduled_start).toLocaleString('en-IN') : 'TBD'}</strong>
+          Scheduled: <strong className="text-[#14213D]">{v.scheduled_start ? new Date(v.scheduled_start).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'TBD'}</strong>
         </div>
         <div>
-          Check-in: <strong className="text-[#14213D]">{checkedIn ? new Date(v.actual_check_in).toLocaleString('en-IN') : 'Pending'}</strong>
+          Check-in: <strong className="text-[#14213D]">{checkedIn ? new Date(v.actual_check_in).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Pending'}</strong>
         </div>
         <div>
-          Check-out: <strong className="text-[#14213D]">{checkedOut ? new Date(v.actual_check_out).toLocaleString('en-IN') : 'Pending'}</strong>
+          Check-out: <strong className="text-[#14213D]">{checkedOut ? new Date(v.actual_check_out).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Pending'}</strong>
         </div>
       </div>
       {checkedIn && v.check_in_lat != null && (
@@ -184,7 +185,7 @@ export const VisitsTab: React.FC<Props> = ({ ticket, role, userId, onChanged }) 
     setError(null);
     try {
       await api.post(`/service/tickets/${ticket.id}/visits`, {
-        scheduled_start: new Date(when).toISOString(),
+        scheduled_start: fromIstLocalInput(when), // IST wall clock → instant
         notes: notes.trim() || undefined,
       });
       setWhen('');

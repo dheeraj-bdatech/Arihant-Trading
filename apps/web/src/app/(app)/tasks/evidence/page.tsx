@@ -5,16 +5,17 @@
  * completion, deadline compliance, blockers, repeated misses, reassignments and manager reviews — plus immutable
  * snapshots (data + PDF + Excel, SHA-256) and the manager review workflow (draft → submitted/locked →
  * acknowledged; changes only as a new version). Every view, export and download is audited server-side.
- * Employee, period and basis live in the URL.
+ * Employee, period and basis live in the URL and are picked in one filter row (employee search + FilterMenus).
  */
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Camera, Download, FileSearch, FileSpreadsheet, FileText, History, Lock, PenLine, Send, ShieldAlert, Snowflake, UserSearch } from 'lucide-react';
+import { CalendarDays, Camera, Download, FileSearch, FileSpreadsheet, FileText, History, Layers, Lock, PenLine, Search, Send, ShieldAlert, Snowflake, User, UserSearch } from 'lucide-react';
 import {
   Badge,
   Button,
   Card,
   EmptyState,
+  FilterMenu,
   InfoCallout,
   Input,
   Modal,
@@ -29,8 +30,8 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatTaskDate, type TaskEvidenceBasis } from '@arihant/shared';
 import { errorMessage, fieldErrors, isConflict, saveBlob, useTaskSettings, useTaskSummary, type AssigneeOption } from '../_lib/task-lib';
-import { DateTime, EvidenceDisclaimer, TasksNav, useToaster, useUrlFilters } from '../_lib/task-ui';
-import { BASIS_LABEL, EvidenceReport, PeriodPicker, ReviewCard, defaultPeriod, periodError, type EvidenceReportData, type PerformanceReview } from '../_lib/EvidenceReport';
+import { DateTime, EvidenceDisclaimer, TaskViewMenu, TaskViewRow, useToaster, useUrlFilters } from '../_lib/task-ui';
+import { BASIS_LABEL, EvidenceReport, ReviewCard, defaultPeriod, periodError, presetRange, type EvidenceReportData, type PerformanceReview, type PeriodPreset } from '../_lib/EvidenceReport';
 
 const KEYS = ['employee_id', 'from', 'to', 'basis'] as const;
 const ADMIN_LIKE = ['admin', 'management'];
@@ -66,6 +67,17 @@ interface FrozenView {
 }
 
 const shortHash = (h: string | null | undefined) => (h ? `${h.slice(0, 12)}…` : '—');
+
+const personDetail = (p: Person) => [p.role.replace(/_/g, ' '), p.is_active ? null : 'inactive', p.sub].filter(Boolean).join(' · ');
+
+const PERIOD_PRESETS: { key: PeriodPreset; label: string }[] = [
+  { key: 'this_month', label: 'This month' },
+  { key: 'last_month', label: 'Last month' },
+  { key: 'last_30', label: 'Last 30 days' },
+  { key: 'this_quarter', label: 'This quarter' },
+];
+const periodLabel = (from: string, to: string) => PERIOD_PRESETS.find((p) => { const r = presetRange(p.key); return r.from === from && r.to === to; })?.label || 'Custom';
+const dateInputCls = 'h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15';
 
 // ------------------------------------------------------------------ review editor (create / edit draft)
 interface ReviewForm {
@@ -284,6 +296,10 @@ function Evidence() {
   const [revising, setRevising] = useState<PerformanceReview | null>(null);
   const [reason, setReason] = useState('');
   const [reasonError, setReasonError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [findOpen, setFindOpen] = useState(false);
+  // The period row also holds Basis, so it opens by itself when a link arrives with a basis set.
+  const [datesOpen, setDatesOpen] = useState(() => Boolean(values.basis));
 
   // ---------------------------------------------------------------- employee options
   useEffect(() => {
@@ -438,12 +454,33 @@ function Evidence() {
   };
 
   // ---------------------------------------------------------------- derived
-  const options = useMemo(() => {
+  const employeeOptions = useMemo(() => {
     const list = people || [];
-    const opts = list.map((p) => ({ value: p.id, label: `${p.full_name} · ${p.role.replace(/_/g, ' ')}${p.is_active ? '' : ' · inactive'}${p.sub ? ` · ${p.sub}` : ''}` }));
-    if (employeeId && !list.some((p) => p.id === employeeId)) opts.unshift({ value: employeeId, label: report?.employee.name || 'Selected employee' });
-    return [{ value: '', label: 'Choose an employee…' }, ...opts];
-  }, [people, employeeId, report]);
+    const opts = list.map((p) => ({ key: p.id, label: `${p.full_name}${p.is_active ? '' : ' (inactive)'}` }));
+    if (employeeId && !list.some((p) => p.id === employeeId)) opts.unshift({ key: employeeId, label: report?.employee.name || 'Selected employee' });
+    return opts.map((o) => ({ ...o, active: o.key === employeeId, onSelect: () => set({ employee_id: o.key }) }));
+  }, [people, employeeId, report, set]);
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return (people || []).filter((p) => p.full_name.toLowerCase().includes(q) || personDetail(p).toLowerCase().includes(q)).slice(0, 12);
+  }, [people, query]);
+  const pickEmployee = (id: string) => {
+    set({ employee_id: id });
+    setQuery('');
+    setFindOpen(false);
+  };
+  const peopleHint = canAll ? 'Everyone in the company (first 100 users).' : 'People in your team or department.';
+  const defaultBasis: TaskEvidenceBasis = settings?.evidence_period_basis || 'deadline';
+  const effectiveBasis = basis || defaultBasis;
+  const datesSet = Boolean(values.from || values.to);
+  const showDates = datesOpen || Boolean(rangeError || errors.from || errors.to);
+  const hasActiveFilters = Boolean(employeeId || datesSet || basis || query.trim());
+  const clearFilters = () => {
+    setQuery('');
+    setDatesOpen(false);
+    set({ employee_id: null, from: null, to: null, basis: null });
+  };
   const employeeName = report?.employee.name || people?.find((p) => p.id === employeeId)?.full_name || 'this employee';
   const isSelf = Boolean(user && employeeId === user.id);
   const canWriteReview = Boolean(employeeId) && !isSelf && (hasTeam || isAdminLike);
@@ -452,7 +489,136 @@ function Evidence() {
   return (
     <PageContainer>
       <PageHeader title="Performance Evidence" icon={<FileSearch className="h-5 w-5" />} />
-      <TasksNav />
+
+      {!summary || !allowed ? (
+        <TaskViewRow />
+      ) : (
+        /* One filter row: View, find an employee, then compact dropdowns for employee and period (basis sits in the period row). */
+        <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+            <TaskViewMenu />
+            <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+              <input
+                id="evidence-employee"
+                type="search"
+                role="combobox"
+                aria-label="Find an employee"
+                aria-expanded={findOpen && matches.length > 0}
+                aria-controls="evidence-employee-results"
+                aria-autocomplete="list"
+                aria-invalid={Boolean(errors.employee_id)}
+                title={peopleHint}
+                placeholder="Find an employee by name, role, department…"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setFindOpen(true);
+                }}
+                onFocus={() => setFindOpen(true)}
+                onBlur={() => window.setTimeout(() => setFindOpen(false), 120)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && matches[0]) {
+                    e.preventDefault();
+                    pickEmployee(matches[0].id);
+                  } else if (e.key === 'Escape') {
+                    setQuery('');
+                    setFindOpen(false);
+                  }
+                }}
+                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              />
+              {findOpen && query.trim() && (
+                <div id="evidence-employee-results" role="listbox" className="filter-menu-panel left-0 max-h-[320px] w-full overflow-y-auto">
+                  {matches.length === 0 ? (
+                    <p className="px-2.5 py-2 text-xs text-[#8A8578]">No one matches. {peopleHint}</p>
+                  ) : (
+                    matches.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        role="option"
+                        aria-selected={p.id === employeeId}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => pickEmployee(p.id)}
+                        className={`filter-menu-row ${p.id === employeeId ? 'filter-menu-row--on' : ''}`}
+                      >
+                        <span className="min-w-0 flex-1 text-left">
+                          <span className="block truncate">{p.full_name}</span>
+                          <span className="block truncate text-[11px] font-normal capitalize text-[#4A5568]">{personDetail(p)}</span>
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+              <FilterMenu
+                label="Employee"
+                icon={<User />}
+                neutralKeys={[]}
+                className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                options={employeeOptions.length ? employeeOptions : [{ key: 'none', label: people === null ? 'Loading people…' : 'No one available', active: false, onSelect: () => undefined }]}
+              />
+              <button type="button" onClick={() => setDatesOpen((o) => !o)} aria-expanded={showDates} className={`filter-menu-btn ${showDates || datesSet || basis ? 'filter-menu-btn--on' : ''}`}>
+                <CalendarDays className="h-3.5 w-3.5" />
+                <span>Period</span>
+                <span className="filter-menu-chip max-w-[130px] truncate">{periodLabel(from, to)}</span>
+              </button>
+              {hasActiveFilters && (
+                <Button variant="ghost" size="xs" onClick={clearFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+          {errors.employee_id && (
+            <p role="alert" className="text-xs font-semibold text-[#9A3412]">
+              {errors.employee_id}
+            </p>
+          )}
+
+          {showDates && (
+            <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
+              <span className="font-semibold text-[#4A5568]">Period</span>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Period presets">
+                {PERIOD_PRESETS.map((p) => {
+                  const r = presetRange(p.key);
+                  const on = r.from === from && r.to === to;
+                  return (
+                    <Button key={p.key} type="button" size="xs" variant={on ? 'primary' : 'secondary'} aria-pressed={on} onClick={() => set({ from: r.from, to: r.to })}>
+                      {p.label}
+                    </Button>
+                  );
+                })}
+              </div>
+              <label className="flex items-center gap-1.5 text-[#4A5568]">
+                From
+                <input id="period-from" type="date" value={from} onChange={(e) => e.target.value && set({ from: e.target.value, to })} aria-invalid={Boolean(errors.from)} className={dateInputCls} />
+              </label>
+              <label className="flex items-center gap-1.5 text-[#4A5568]">
+                To
+                <input id="period-to" type="date" value={to} min={from || undefined} onChange={(e) => e.target.value && set({ from, to: e.target.value })} aria-invalid={Boolean(errors.to || rangeError)} className={dateInputCls} />
+              </label>
+              <FilterMenu
+                label="Basis"
+                icon={<Layers />}
+                neutralKeys={[defaultBasis]}
+                options={(['deadline', 'completion'] as const).map((b) => ({ key: b, label: BASIS_LABEL[b], active: effectiveBasis === b, onSelect: () => set({ basis: b }) }))}
+              />
+              {errors.from || errors.to || rangeError ? (
+                <span role="alert" className="font-semibold text-[#9A3412]">
+                  {[errors.from, errors.to || rangeError].filter(Boolean).join(' ')}
+                </span>
+              ) : (
+                <span className="text-[11px] text-[#8A8578]">Calendar days in IST.</span>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       <div className="space-y-1.5">
         <EvidenceDisclaimer />
         <p className="text-[11px] text-[#4A5568] px-1">Access to this report is logged.</p>
@@ -473,36 +639,8 @@ function Evidence() {
         />
       ) : (
         <>
-          <Card padding="sm" className="space-y-4 overflow-visible">
-            <div className="max-w-xl">
-              <Select
-                id="evidence-employee"
-                label="Employee"
-                value={employeeId}
-                onChange={(e) => set({ employee_id: e.target.value })}
-                options={options}
-                error={errors.employee_id}
-                helperText={canAll ? 'Everyone in the company (first 100 users).' : 'People in your team or department.'}
-                searchPlaceholder="Search people…"
-              />
-            </div>
-            <PeriodPicker from={from} to={to} errors={errors} onChange={(v) => set({ from: v.from, to: v.to })}>
-              <Select
-                id="evidence-basis"
-                label="Period basis"
-                value={basis || settings?.evidence_period_basis || 'deadline'}
-                onChange={(e) => set({ basis: e.target.value })}
-                options={[
-                  { value: 'deadline', label: BASIS_LABEL.deadline },
-                  { value: 'completion', label: BASIS_LABEL.completion },
-                ]}
-                searchable={false}
-              />
-            </PeriodPicker>
-          </Card>
-
           {!employeeId ? (
-            <EmptyState icon={UserSearch} title="Choose an employee" description="Pick an employee and a period to see the factual evidence report, snapshots and manager reviews." />
+            <EmptyState icon={UserSearch} title="Choose an employee" description={`Pick an employee and a period to see the factual evidence report, snapshots and manager reviews. ${peopleHint}`} />
           ) : (
             <>
               {canSnapshot && (

@@ -6,17 +6,18 @@
  * "I have read it", not "I agree". Period lives in the URL. Views are audited server-side.
  */
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Gauge, MessageSquareText, PenLine } from 'lucide-react';
+import { CalendarDays, CheckCircle2, Gauge, MessageSquareText, PenLine } from 'lucide-react';
 import { Button, Card, InfoCallout, Modal, PageContainer, PageHeader, PageLoader, SectionHeader, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { TASK_MIN_COMMENT_LENGTH, formatTaskDate } from '@arihant/shared';
 import { errorMessage, fieldErrors, isConflict } from '../_lib/task-lib';
-import { DateTime, EvidenceDisclaimer, TasksNav, useToaster, useUrlFilters } from '../_lib/task-ui';
-import { EvidenceReport, PeriodPicker, ReviewCard, defaultPeriod, periodError, type EvidenceReportData, type PerformanceReview } from '../_lib/EvidenceReport';
+import { DateTime, EvidenceDisclaimer, TaskViewMenu, useToaster, useUrlFilters } from '../_lib/task-ui';
+import { EvidenceReport, PERIOD_PRESETS, ReviewCard, defaultPeriod, periodError, periodLabel, presetRange, type EvidenceReportData, type PerformanceReview } from '../_lib/EvidenceReport';
 
 const KEYS = ['from', 'to'] as const;
 const RESPONSE_MAX = 4000;
+const dateInputCls = 'h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15';
 
 function MyPerformance() {
   const { user } = useAuth();
@@ -40,6 +41,9 @@ function MyPerformance() {
   const [response, setResponse] = useState('');
   const [responseError, setResponseError] = useState<string | null>(null);
   const [acknowledging, setAcknowledging] = useState<PerformanceReview | null>(null);
+  const [datesOpen, setDatesOpen] = useState(false);
+  const datesSet = Boolean(values.from || values.to);
+  const showDates = datesOpen || Boolean(rangeError || errors.from || errors.to);
 
   const loadReport = useCallback(async () => {
     if (!me || rangeError) return;
@@ -127,7 +131,64 @@ function MyPerformance() {
   return (
     <PageContainer>
       <PageHeader title="My Performance" icon={<Gauge className="h-5 w-5" />} />
-      <TasksNav />
+
+      {/* One filter row: View, then the period (opens its presets and dates inline). */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-wrap items-center gap-2">
+          <TaskViewMenu />
+          <button type="button" onClick={() => setDatesOpen((o) => !o)} aria-expanded={showDates} className={`filter-menu-btn ${showDates || datesSet ? 'filter-menu-btn--on' : ''}`}>
+            <CalendarDays className="h-3.5 w-3.5" />
+            <span>Period</span>
+            <span className="filter-menu-chip max-w-[130px] truncate">{periodLabel(from, to)}</span>
+          </button>
+          {datesSet && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                setDatesOpen(false);
+                set({ from: null, to: null });
+              }}
+              className="text-xs text-[#4A5568] hover:text-[#881337]"
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+
+        {showDates && (
+          <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
+            <span className="font-semibold text-[#4A5568]">Period</span>
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Period presets">
+              {PERIOD_PRESETS.map((p) => {
+                const r = presetRange(p.key);
+                const on = r.from === from && r.to === to;
+                return (
+                  <Button key={p.key} type="button" size="xs" variant={on ? 'primary' : 'secondary'} aria-pressed={on} onClick={() => set({ from: r.from, to: r.to })}>
+                    {p.label}
+                  </Button>
+                );
+              })}
+            </div>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              From
+              <input id="period-from" type="date" value={from} onChange={(e) => e.target.value && set({ from: e.target.value, to })} aria-invalid={Boolean(errors.from)} className={dateInputCls} />
+            </label>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              To
+              <input id="period-to" type="date" value={to} min={from || undefined} onChange={(e) => e.target.value && set({ from, to: e.target.value })} aria-invalid={Boolean(errors.to || rangeError)} className={dateInputCls} />
+            </label>
+            {errors.from || errors.to || rangeError ? (
+              <span role="alert" className="font-semibold text-[#9A3412]">
+                {[errors.from, errors.to || rangeError].filter(Boolean).join(' ')}
+              </span>
+            ) : (
+              <span className="text-[11px] text-[#8A8578]">Calendar days in IST.</span>
+            )}
+          </div>
+        )}
+      </Card>
+
       <div className="space-y-1.5">
         <EvidenceDisclaimer />
         <p className="text-[11px] text-[#4A5568] px-1">These are the same facts your manager sees. Access to this report is logged.</p>
@@ -137,10 +198,6 @@ function MyPerformance() {
         <PageLoader rows={4} label="Loading your performance" />
       ) : (
         <>
-          <Card padding="sm" className="overflow-visible">
-            <PeriodPicker from={from} to={to} errors={errors} onChange={(v) => set({ from: v.from, to: v.to })} />
-          </Card>
-
           <Card padding="md" className="space-y-4">
             <SectionHeader
               title="My reviews"

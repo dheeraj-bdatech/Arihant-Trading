@@ -4,7 +4,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { Kysely } from 'kysely';
-import { Database as DB } from '@arihant/shared';
+import { Database as DB, todayInKolkata } from '@arihant/shared';
 import { purgeTaskModule } from './helpers/reset-tasks';
 
 describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => {
@@ -537,7 +537,7 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
       const res = await request(app.getHttpServer())
         .post(`/api/expense-claims/${expenseId}/process`)
         .set('Authorization', `Bearer ${accountsToken}`)
-        .send({ version: await claimVersion(accountsToken), tally_voucher_ref: 'JV/PATNA/001', payment_reference: 'NEFT settled' });
+        .send({ version: await claimVersion(accountsToken), tally_voucher_ref: 'JV/PATNA/001', payment_reference: 'NEFT settled', payment_date: todayInKolkata() });
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('processed');
     });

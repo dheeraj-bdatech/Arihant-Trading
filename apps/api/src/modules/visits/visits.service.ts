@@ -1,3 +1,4 @@
+import { addIsoDays, calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -438,8 +439,8 @@ export class VisitsService {
   // -------------------------------------------------------------
   async create(dto: CreateVisitDto, user: AuthUser) {
     // 1. Date validation: do not allow normal visits in the past
-    const today = new Date().toISOString().split('T')[0];
-    if (dto.planned_date < today) {
+    const today = todayInKolkata();
+    if ((calendarDay(dto.planned_date) || '') < today) {
       throw new BadRequestException({
         code: 'PAST_DATE_NOT_ALLOWED',
         message: 'Cannot schedule a field visit for a past date.',
@@ -737,8 +738,8 @@ export class VisitsService {
       });
     }
 
-    const today = new Date().toISOString().split('T')[0];
-    if (dto.new_date < today) {
+    const today = todayInKolkata();
+    if ((calendarDay(dto.new_date) || '') < today) {
       throw new BadRequestException({
         code: 'INVALID_DATE',
         message: 'Rescheduled date must be today or a future date.',
@@ -762,9 +763,7 @@ export class VisitsService {
       });
     }
 
-    const existingDateStr = (existing.planned_date as any) instanceof Date
-      ? (existing.planned_date as any).toISOString().split('T')[0]
-      : String(existing.planned_date).split('T')[0];
+    const existingDateStr = calendarDay(existing.planned_date as any) || '';
 
     const updated = await this.db
       .updateTable('visits')
@@ -929,7 +928,7 @@ export class VisitsService {
       return this.reschedule(
         id,
         {
-          new_date: dto.rescheduled_to || new Date().toISOString().split('T')[0],
+          new_date: dto.rescheduled_to || todayInKolkata(),
           reason: dto.change_reason || 'Rescheduled by user',
         },
         user,
@@ -1149,10 +1148,8 @@ export class VisitsService {
 
     // Follow-up date validation
     if (dto.followup_date) {
-      const visitDateStr = (existing.planned_date as any) instanceof Date
-        ? (existing.planned_date as any).toISOString().split('T')[0]
-        : String(existing.planned_date).split('T')[0];
-      const followupDateStr = dto.followup_date.split('T')[0];
+      const visitDateStr = calendarDay(existing.planned_date as any) || '';
+      const followupDateStr = calendarDay(dto.followup_date) || '';
 
       if (followupDateStr < visitDateStr) {
         throw new BadRequestException({
@@ -1362,9 +1359,10 @@ export class VisitsService {
     },
     user: AuthUser,
   ) {
-    const today = new Date().toISOString().split('T')[0];
-    const tomorrowDate = new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    const next7DaysDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+    // IST calendar days — "Today's visits" must follow the Indian date, not the UTC server clock.
+    const today = todayInKolkata();
+    const tomorrowDate = addIsoDays(today, 1);
+    const next7DaysDate = addIsoDays(today, 7);
 
     // Fetch team visits within scope
     let baseQuery = this.db
@@ -1458,7 +1456,8 @@ export class VisitsService {
     };
 
     for (const v of allVisits) {
-      const vDate = v.planned_date;
+      // planned_date is a DATE column (a Date object here): compare as an IST 'YYYY-MM-DD' string.
+      const vDate = calendarDay(v.planned_date as any) || '';
       if (vDate === today) {
         grouped.today.push(v);
       } else if (vDate === tomorrowDate) {

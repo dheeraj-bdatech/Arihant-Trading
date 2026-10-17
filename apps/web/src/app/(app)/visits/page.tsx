@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { addIsoDays, istToday } from '@/lib/ist-date';
+import { calendarDay } from '@/lib/calendar-day';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -20,7 +22,6 @@ import {
   UserPlus,
   RefreshCw,
   Search,
-  Filter,
   Shield,
   Layers,
   History,
@@ -40,6 +41,8 @@ import {
   Zap,
   Bell,
   Wrench,
+  LayoutList,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
@@ -58,13 +61,12 @@ import {
   StatCard,
   StatGrid,
   SectionHeader,
-  FilterBar,
   EmptyState,
   InfoCallout,
-  Tabs,
-  Checkbox, CountUp, PageLoader, Spinner, ToolbarBox, ToolbarSlot, FilterMenu,
+  Checkbox, CountUp, PageLoader, Spinner, FilterMenu,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu } from '@/components/ui';
 import type { RowMenuItem } from '@/components/ui/RowMenu';
+import type { FilterMenuOption } from '@/components/ui/FilterMenu';
 
 // Specific Demo Kit standard accessories mapping
 const getStandardKitAccessories = (productName?: string, category?: string) => {
@@ -159,6 +161,7 @@ export default function VisitsPage() {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [filterTravelOnly, setFilterTravelOnly] = useState(false);
   const [filterDemoOnly, setFilterDemoOnly] = useState(false);
+  const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
 
   // Modals
   const [isScheduleOpen, setIsScheduleOpen] = useState(false);
@@ -183,7 +186,7 @@ export default function VisitsPage() {
     organisation_id: '',
     assigned_to: '', // Visiting officer who is going
     location: '',
-    planned_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0], // 1 week in advance default
+    planned_date: addIsoDays(istToday(), 7), // 1 week in advance default
     start_time: '10:00',
     end_time: '11:30',
     purpose: '',
@@ -379,7 +382,7 @@ export default function VisitsPage() {
   // 2. Create Trip Form
   const [newTrip, setNewTrip] = useState({
     employee_id: '',
-    trip_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+    trip_date: addIsoDays(istToday(), 7),
     base_location: '',
     notes: '',
   });
@@ -635,7 +638,7 @@ export default function VisitsPage() {
         organisation_id: '',
         assigned_to: defaultOfficer,
         location: '',
-        planned_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+        planned_date: addIsoDays(istToday(), 7),
         start_time: '10:00',
         end_time: '11:30',
         purpose: '',
@@ -691,7 +694,7 @@ export default function VisitsPage() {
       setIsCreateTripOpen(false);
       setNewTrip({
         employee_id: '',
-        trip_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+        trip_date: addIsoDays(istToday(), 7),
         base_location: '',
         notes: '',
       });
@@ -913,11 +916,52 @@ export default function VisitsPage() {
     }
   };
 
+  const hasActiveFilters = Boolean(
+    filterSearch || filterStatus || filterEmployee || filterDateFrom || filterDateTo || filterTravelOnly || filterDemoOnly,
+  );
+  const handleClearFilters = () => {
+    const searchOnly = Boolean(filterSearch) && !filterStatus && !filterEmployee && !filterDateFrom && !filterDateTo && !filterTravelOnly && !filterDemoOnly;
+    setFilterSearch('');
+    setFilterStatus('');
+    setFilterEmployee('');
+    setFilterDateFrom('');
+    setFilterDateTo('');
+    setFilterTravelOnly(false);
+    setFilterDemoOnly(false);
+    // Search alone doesn't trigger the effect, so refetch explicitly in that case.
+    if (searchOnly) fetchData();
+  };
+
+  // Which filters the current view uses: the visit list uses all of them; the team activity board is fetched with
+  // status, team member and dates only; trips, customer timeline and employee activity ignore them.
+  const isVisitList = activeTab === 'my_visits';
+  const isTeamView = activeTab === 'manager_dashboard';
+  const showListFilters = isVisitList || isTeamView;
+  const datesActive = Boolean(filterDateFrom || filterDateTo);
+  const requirementsActive = filterTravelOnly || filterDemoOnly;
+  const moreActive = (isVisitList && requirementsActive ? 1 : 0) + (datesActive ? 1 : 0);
+  const viewHasActiveFilters = isVisitList
+    ? hasActiveFilters
+    : isTeamView && Boolean(filterStatus || filterEmployee || datesActive);
+  const canSeeTeamActivity = hasRole(['management', 'regional_manager', 'admin']);
+  const viewOptions: FilterMenuOption[] = [
+    { key: 'my_visits', label: 'My visits', icon: <Calendar />, count: visits.length || undefined },
+    ...(canSeeTeamActivity ? [{ key: 'manager_dashboard', label: 'Team activity', icon: <Shield /> }] : []),
+    { key: 'trips', label: 'Trips & multi-stop plans', icon: <Route />, count: trips.length || undefined },
+    { key: 'customer_history', label: 'Customer timeline', icon: <Building /> },
+    { key: 'employee_activity', label: 'Employee activity', icon: <History /> },
+  ].map((o) => ({
+    ...o,
+    active: activeTab === o.key,
+    onSelect: () => setActiveTab(o.key as typeof activeTab),
+  }));
+
   // KPI Calculations
   const stats = useMemo(() => {
     const total = visits.length;
-    const today = new Date().toISOString().split('T')[0];
-    const todayCount = visits.filter((v) => v.planned_date === today).length;
+    // "Today's visits" = planned on today's IST date (planned_date may arrive as an ISO instant).
+    const today = istToday();
+    const todayCount = visits.filter((v) => calendarDay(v.planned_date) === today).length;
     const directives = visits.filter((v) => v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention') || v.assigned_by_manager).length;
     const completed = visits.filter((v) => v.status === 'completed').length;
     return { total, todayCount, directives, completed };
@@ -1217,8 +1261,8 @@ export default function VisitsPage() {
         }
       />
 
-      {/* KPI Cards */}
-      <StatGrid columns={4}>
+      {/* KPI Cards — one row */}
+      <StatGrid cols={4} className="gap-3">
         <StatCard
           label="Total Field Visits"
           value={stats.total}
@@ -1248,142 +1292,171 @@ export default function VisitsPage() {
           valueColor="primary"
           subtext="Intelligence & outcomes logged"
           icon={<CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />}
+          className={filterStatus === 'completed' ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+          onClick={() => {
+            // The status filter only applies to the visit list / team activity, so jump to the list from other views.
+            if (filterStatus !== 'completed' && !showListFilters) setActiveTab('my_visits');
+            setFilterStatus(filterStatus === 'completed' ? '' : 'completed');
+          }}
         />
       </StatGrid>
 
-      {/* Main Tab Switcher + Filters (one box) */}
-      <ToolbarBox>
-      <Tabs
-        variant="pills"
-        tabs={[
-          {
-            id: 'my_visits',
-            label: `My Scheduled Visits`,
-            icon: <Calendar className="h-3.5 w-3.5" />,
-            count: visits.length,
-          },
-          ...(hasRole(['management', 'regional_manager', 'admin'])
-            ? [
-                {
-                  id: 'manager_dashboard',
-                  label: 'Manager Team Activity',
-                  icon: <Shield className="h-3.5 w-3.5" />,
-                },
-              ]
-            : []),
-          {
-            id: 'trips',
-            label: 'Trips & Multi-Stop Plans',
-            icon: <Route className="h-3.5 w-3.5" />,
-            count: trips.length,
-          },
-          {
-            id: 'customer_history',
-            label: 'Customer Timeline',
-            icon: <Building className="h-3.5 w-3.5" />,
-          },
-          {
-            id: 'employee_activity',
-            label: 'Employee Activity Dossier',
-            icon: <History className="h-3.5 w-3.5" />,
-          },
-        ]}
-        activeTab={activeTab}
-        onChange={(id) => setActiveTab(id as any)}
-      />
+      {/* One filter row: View first (it is the page navigation), then only the controls the current view uses. */}
+      <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <FilterMenu label="View" icon={<LayoutList />} neutralKeys={[]} options={viewOptions} />
 
-      {/* Filter Toolbar */}
-      <ToolbarSlot><div className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {/* Search */}
-          <div className="col-span-1 sm:col-span-2">
-            <Input
-              placeholder="Search organisation, city, officer, purpose..."
-              value={filterSearch}
-              onChange={(e) => setFilterSearch(e.target.value)}
-              className="text-xs"
-            />
-          </div>
-
-          {/* Status Filter */}
-          <Select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            options={[
-              { value: '', label: 'All Statuses' },
-              { value: 'planned', label: 'Planned' },
-              { value: 'modified', label: 'Modified' },
-              { value: 'rescheduled', label: 'Rescheduled' },
-              { value: 'completed', label: 'Completed' },
-              { value: 'not_completed', label: 'Not Completed' },
-              { value: 'cancelled', label: 'Cancelled' },
-            ]}
-          />
-
-          {/* Employee Filter (For Managers) */}
-          {hasRole(['management', 'regional_manager', 'admin']) && (
-            <Select
-              value={filterEmployee}
-              onChange={(e) => setFilterEmployee(e.target.value)}
-              options={[
-                { value: '', label: 'All Team Members' },
-                ...usersList.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
-              ]}
-            />
+          {isVisitList && (
+            <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+              <input
+                type="search"
+                aria-label="Search field visits"
+                placeholder="Search organisation, city, officer, purpose… (Enter)"
+                value={filterSearch}
+                onChange={(e) => setFilterSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') fetchData();
+                }}
+                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              />
+            </div>
           )}
 
-          {/* Date From */}
-          <Input
-            type="date"
-            placeholder="From Date"
-            value={filterDateFrom}
-            onChange={(e) => setFilterDateFrom(e.target.value)}
-            className="text-xs"
-          />
+          {showListFilters && (
+            <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+              <FilterMenu
+                label="Status"
+                icon={<Layers />}
+                neutralKeys={['']}
+                options={[
+                  { key: '', label: 'All statuses' },
+                  { key: 'planned', label: 'Planned' },
+                  { key: 'modified', label: 'Modified' },
+                  { key: 'rescheduled', label: 'Rescheduled' },
+                  { key: 'completed', label: 'Completed', count: stats.completed },
+                  { key: 'not_completed', label: 'Not completed' },
+                  { key: 'cancelled', label: 'Cancelled' },
+                ].map((o) => ({
+                  ...o,
+                  active: filterStatus === o.key,
+                  onSelect: () => setFilterStatus(o.key),
+                }))}
+              />
+              {canSeeTeamActivity && (
+                <FilterMenu
+                  label="Team member"
+                  icon={<Users />}
+                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  options={[{ id: '', full_name: 'All team members', role: '' }, ...usersList].map((u: any) => ({
+                    key: u.id || 'all',
+                    label: u.role ? `${u.full_name} (${u.role})` : u.full_name,
+                    active: filterEmployee === u.id,
+                    onSelect: () => setFilterEmployee(u.id),
+                  }))}
+                />
+              )}
+              {/* Visit list: "More" holds requirements + planned dates. Team activity is not filtered by requirements, so it only gets "Dates". */}
+              <button
+                type="button"
+                onClick={() => setIsDateFilterOpen((prev) => !prev)}
+                aria-expanded={isDateFilterOpen}
+                className={`filter-menu-btn ${isDateFilterOpen || moreActive > 0 ? 'filter-menu-btn--on' : ''}`}
+              >
+                {isVisitList ? <SlidersHorizontal className="h-3.5 w-3.5" /> : <CalendarDays className="h-3.5 w-3.5" />}
+                <span>{isVisitList ? 'More' : 'Dates'}</span>
+                {moreActive > 0 && <span className="filter-menu-chip">{isVisitList ? moreActive : 'On'}</span>}
+              </button>
+              {viewHasActiveFilters && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={handleClearFilters}
+                  className="text-xs text-[#4A5568] hover:text-[#881337]"
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+          )}
 
-          {/* Date To */}
-          <Input
-            type="date"
-            placeholder="To Date"
-            value={filterDateTo}
-            onChange={(e) => setFilterDateTo(e.target.value)}
-            className="text-xs"
-          />
-          {/* Quick filters + reset live in the same single row as the other controls */}
-          <div className="flex items-center gap-2">
+          {activeTab === 'customer_history' && (
             <FilterMenu
-              label="Quick filters"
-              icon={<Filter className="h-3.5 w-3.5" />}
+              label="Customer"
+              icon={<Building />}
               neutralKeys={[]}
-              options={[
-                { key: 'travel', label: 'Travel required only', active: filterTravelOnly, onSelect: () => setFilterTravelOnly(!filterTravelOnly) },
-                { key: 'demo', label: 'Demo required only', active: filterDemoOnly, onSelect: () => setFilterDemoOnly(!filterDemoOnly) },
-              ]}
+              className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+              options={organisations.map((o) => ({
+                key: o.id,
+                label: `${o.name} (${o.city || 'State'})`,
+                active: selectedOrgId === o.id,
+                onSelect: () => setSelectedOrgId(o.id),
+              }))}
             />
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setFilterSearch('');
-                setFilterStatus('');
-                setFilterEmployee('');
-                setFilterDateFrom('');
-                setFilterDateTo('');
-                setFilterTravelOnly(false);
-                setFilterDemoOnly(false);
-                fetchData();
-              }}
-              className="text-xs text-[#4A5568]"
-            >
-              <RefreshCw className="mr-1 h-3 w-3" />
-              <span>Reset</span>
-            </Button>
-          </div>
+          )}
         </div>
 
-      </div></ToolbarSlot>
-
-      </ToolbarBox>
+        {showListFilters && isDateFilterOpen && (
+          <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
+            {isVisitList && (
+              <FilterMenu
+                label="Requirements"
+                icon={<Car />}
+                neutralKeys={['any']}
+                options={[
+                  { key: 'any', label: 'Any requirement', travel: false, demo: false },
+                  { key: 'travel', label: 'Travel required', travel: true, demo: false },
+                  { key: 'demo', label: 'Demo required', travel: false, demo: true },
+                  { key: 'both', label: 'Travel + demo required', travel: true, demo: true },
+                ].map(({ travel, demo, ...o }) => ({
+                  ...o,
+                  active: filterTravelOnly === travel && filterDemoOnly === demo,
+                  onSelect: () => {
+                    setFilterTravelOnly(travel);
+                    setFilterDemoOnly(demo);
+                  },
+                }))}
+              />
+            )}
+            <span className="font-semibold text-[#4A5568]">Planned date</span>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              From
+              <input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-[#4A5568]">
+              To
+              <input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+              />
+            </label>
+            {moreActive > 0 && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  setFilterDateFrom('');
+                  setFilterDateTo('');
+                  if (isVisitList) {
+                    setFilterTravelOnly(false);
+                    setFilterDemoOnly(false);
+                  }
+                }}
+                className="text-xs text-[#4A5568] hover:text-[#881337]"
+              >
+                Reset
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* TAB CONTENT: MY VISITS */}
       {activeTab === 'my_visits' && (
@@ -1965,16 +2038,6 @@ export default function VisitsPage() {
       {/* TAB CONTENT: CUSTOMER TIMELINE */}
       {activeTab === 'customer_history' && (
         <div className="space-y-4">
-          <div className="flex items-center gap-3 bg-white p-4 rounded-xl border border-[#DCD8CE] shadow-xs">
-            <span className="text-xs font-bold text-gray-700 shrink-0">Select Customer / Agency:</span>
-            <Select
-              value={selectedOrgId}
-              onChange={(e) => setSelectedOrgId(e.target.value)}
-              options={organisations.map((o) => ({ value: o.id, label: `${o.name} (${o.city || 'State'})` }))}
-              className="max-w-md"
-            />
-          </div>
-
           <div className="space-y-3">
             {selectedOrgHistory.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
@@ -2174,9 +2237,7 @@ export default function VisitsPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      const d = new Date();
-                      d.setDate(d.getDate() + 7);
-                      setNewVisit({ ...newVisit, planned_date: d.toISOString().split('T')[0] });
+                      setNewVisit({ ...newVisit, planned_date: addIsoDays(istToday(), 7) });
                     }}
                     className="text-[10px] text-[#0F5E63] hover:underline font-bold"
                   >

@@ -32,27 +32,25 @@ import {
   Database as DatabaseIcon,
   MapPin,
   History,
+  LayoutList,
 } from 'lucide-react';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import {
   Button,
   Badge,
-  Tabs,
   Card,
   CardContent,
   PageContainer,
   PageHeader,
-  Input,
   Table,
   TableHeader,
   TableBody,
   TableRow,
   TableHead,
   TableCell,
-  ToolbarBox,
-  ToolbarSlot,
   PageLoader,
+  FilterMenu,
   InfoCallout,
   EmptyState, StatGrid, StatCard, RowMenu,
 } from '@/components/ui';
@@ -193,7 +191,7 @@ export default function AdminPage() {
     const entityTypeFormatted = (log.entity_type || 'Record').replace(/_/g, ' ').toUpperCase();
     if (name) {
       return (
-        <div className="font-sans">
+        <div className="max-w-[300px] truncate font-sans" title={`${entityTypeFormatted}: ${name}`}>
           <span className="font-semibold text-gray-900 capitalize">{entityTypeFormatted}: </span>
           <span className="text-[#0F5E63] font-medium">{name}</span>
         </div>
@@ -224,7 +222,7 @@ export default function AdminPage() {
       });
       return (
         <span
-          className="font-sans text-[11px] text-gray-700 truncate block max-w-xs"
+          className="font-sans text-[11px] text-gray-700 truncate block max-w-[280px]"
           title={parts.join(' · ')}
         >
           {parts.join(' · ') || 'Updated record attributes'}
@@ -313,6 +311,78 @@ export default function AdminPage() {
         }
       />
 
+      <StatGrid cols={4} className="gap-3">
+        <StatCard title="Personnel" value={usersList.length} icon={<Users size={16} />} variant="primary" subtext={`${usersList.filter((u) => u.is_active).length} active`} />
+        <StatCard title="Roles" value={USER_ROLES.length} icon={<Shield size={16} />} variant="emerald" subtext="RBAC personas" />
+        <StatCard title="Zones" value={zonesList.length} icon={<MapPin size={16} />} variant="amber" subtext={`${productsList.length} equipment masters`} />
+        <StatCard title="Audit Entries" value={auditLogs.length} icon={<History size={16} />} variant="rose" subtext="Latest security trail" />
+      </StatGrid>
+
+      {/* One filter row on every section: View first; the Users section adds its search + Department menu. */}
+      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <FilterMenu
+            label="View"
+            icon={<LayoutList />}
+            neutralKeys={[]}
+            className="shrink-0"
+            options={[
+              { key: 'permissions', label: 'Role Permissions', icon: <Key /> },
+              { key: 'users', label: 'Users & Departments', icon: <Users />, count: usersList.length },
+              { key: 'products', label: 'Equipment & MHA QRs', icon: <Box />, count: productsList.length },
+              { key: 'zones', label: 'Zones & Regions', icon: <MapPin />, count: zonesList.length },
+              { key: 'audit', label: 'Security Audit Logs', icon: <History />, count: auditLogs.length },
+            ].map((v) => ({ ...v, active: activeTab === v.key, onSelect: () => setActiveTab(v.key) }))}
+          />
+          {activeTab === 'users' && (
+            <>
+              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <input
+                  type="search"
+                  aria-label="Search personnel"
+                  placeholder="Search by name, email, role…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+                <FilterMenu
+                  label="Department"
+                  icon={<Building2 />}
+                  align="right"
+                  className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  options={[
+                    { key: 'all', label: 'All departments', count: usersList.length, active: selectedDept === 'all', onSelect: () => setSelectedDept('all') },
+                    ...USER_ROLES.map((r) => ({
+                      key: r,
+                      label: DEPARTMENT_NAMES[r],
+                      count: usersList.filter((u) => u.role === r).length,
+                      active: selectedDept === r,
+                      onSelect: () => setSelectedDept(r),
+                    })),
+                  ]}
+                />
+                {(search || selectedDept !== 'all') && (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => {
+                      setSearch('');
+                      setSelectedDept('all');
+                    }}
+                    className="text-xs text-[#4A5568] hover:text-[#881337]"
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </Card>
+
       {failed.length > 0 && (
         <InfoCallout variant="danger" title="Some administration data could not be loaded">
           {failed.join(', ')} did not respond. Your role may not be allowed to read them, or the API is unreachable. Use Reload to retry.
@@ -323,27 +393,6 @@ export default function AdminPage() {
           {actionError}
         </InfoCallout>
       )}
-
-      <StatGrid cols={4}>
-        <StatCard title="Personnel" value={usersList.length} icon={<Users size={16} />} variant="primary" subtext={`${usersList.filter((u) => u.is_active).length} active`} />
-        <StatCard title="Roles" value={USER_ROLES.length} icon={<Shield size={16} />} variant="emerald" subtext="RBAC personas" />
-        <StatCard title="Zones" value={zonesList.length} icon={<MapPin size={16} />} variant="amber" subtext={`${productsList.length} equipment masters`} />
-        <StatCard title="Audit Entries" value={auditLogs.length} icon={<History size={16} />} variant="rose" subtext="Latest security trail" />
-      </StatGrid>
-
-      <ToolbarBox>
-      <Tabs
-        tabs={[
-          { id: 'permissions', label: 'Role Permissions & Scope Matrix' },
-          { id: 'users', label: 'Users & Departments', count: usersList.length },
-          { id: 'products', label: 'Equipment & MHA QRs', count: productsList.length },
-          { id: 'zones', label: 'Zones & Regions', count: zonesList.length },
-          { id: 'audit', label: 'Security Audit Logs', count: auditLogs.length },
-        ]}
-        activeTab={activeTab}
-        onChange={setActiveTab}
-      />
-      </ToolbarBox>
 
       {/* ── TAB 1: ROLE PERMISSIONS & SCOPE MATRIX ── */}
       {activeTab === 'permissions' && (
@@ -556,120 +605,75 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              {/* Comparative Matrix Table across all 8 Roles */}
-              <Card>
-                <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7]">
-                  <h4 className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                    Enterprise Role Governance Matrix
-                  </h4>
-                </div>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Enterprise Role</TableHead>
-                      <TableHead>Territory</TableHead>
-                      <TableHead className="text-center">All-India</TableHead>
-                      <TableHead className="text-center">Tender Signoff</TableHead>
-                      <TableHead className="text-center">Bid Submit</TableHead>
-                      <TableHead className="text-center">Demos</TableHead>
-                      <TableHead className="text-center">Service</TableHead>
-                      <TableHead className="text-center">Stage 1 Exp</TableHead>
-                      <TableHead className="text-center">Stage 2 Payout</TableHead>
-                      <TableHead className="text-center">RBAC Admin</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {USER_ROLES.map((r) => {
-                      const caps = permissionsState[r];
-                      const prof = ROLE_PROFILES[r];
-                      return (
-                        <TableRow key={r}>
-                          <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
-                            <div>{prof.title}</div>
-                            <span className="text-[10px] text-[#4A5568] font-normal">{DEPARTMENT_NAMES[r]}</span>
-                          </TableCell>
-                          <TableCell className="whitespace-nowrap">
-                            <span className="text-[10px] font-bold uppercase text-[#4A5568]">
-                              {prof.territorialScope.replace('_', ' ')}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-center">{caps.canViewAllIndia ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                          <TableCell className="text-center">{caps.canApproveTenders ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                          <TableCell className="text-center">{caps.canSubmitTenderBids ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                          <TableCell className="text-center">{caps.canManageDemos ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                          <TableCell className="text-center">{caps.canManageService ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                          <TableCell className="text-center">{caps.canEndorseExpensesStage1 ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                          <TableCell className="text-center">{caps.canDisburseExpensesStage2 ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                          <TableCell className="text-center">{caps.canManageUsersAndMasters ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </Card>
             </div>
           </div>
+
+          {/* Comparative Matrix Table across all 8 Roles */}
+          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
+            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7]">
+              <h4 className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
+                Enterprise Role Governance Matrix
+              </h4>
+            </div>
+            <Table className="table-fixed !min-w-0 [&_td]:px-2.5 [&_th]:h-auto [&_th]:px-2.5 [&_th]:py-2.5 [&_th]:text-[10px] [&_th]:leading-tight">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[240px]">Enterprise Role</TableHead>
+                  <TableHead className="text-center">All-India</TableHead>
+                  <TableHead className="text-center">Tender Signoff</TableHead>
+                  <TableHead className="text-center">Bid Submit</TableHead>
+                  <TableHead className="text-center">Demos</TableHead>
+                  <TableHead className="text-center">Service</TableHead>
+                  <TableHead className="text-center">Stage 1 Exp</TableHead>
+                  <TableHead className="text-center">Stage 2 Payout</TableHead>
+                  <TableHead className="text-center">RBAC Admin</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {USER_ROLES.map((r) => {
+                  const caps = permissionsState[r];
+                  const prof = ROLE_PROFILES[r];
+                  return (
+                    <TableRow key={r}>
+                      <TableCell className="font-bold text-[#14213D]">
+                        <div className="truncate" title={prof.title}>{prof.title}</div>
+                        <div className="truncate text-[11px] text-[#4A5568] font-normal" title={DEPARTMENT_NAMES[r]}>{DEPARTMENT_NAMES[r]}</div>
+                        <div className="text-[10px] font-bold uppercase text-[#4A5568]">{prof.territorialScope.replace('_', ' ')}</div>
+                      </TableCell>
+                      <TableCell className="text-center">{caps.canViewAllIndia ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                      <TableCell className="text-center">{caps.canApproveTenders ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                      <TableCell className="text-center">{caps.canSubmitTenderBids ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                      <TableCell className="text-center">{caps.canManageDemos ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                      <TableCell className="text-center">{caps.canManageService ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                      <TableCell className="text-center">{caps.canEndorseExpensesStage1 ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                      <TableCell className="text-center">{caps.canDisburseExpensesStage2 ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                      <TableCell className="text-center">{caps.canManageUsersAndMasters ? <Check className="w-4 h-4 text-emerald-600 inline" /> : <span className="text-gray-300">-</span>}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </Card>
         </div>
       )}
 
       {/* ── TAB 2: USERS & DEPARTMENTS ── */}
       {activeTab === 'users' && (
         <div className="space-y-4">
-          <ToolbarSlot>
-          {/* Department Breakdown Chips */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="xs"
-              variant={selectedDept === 'all' ? 'primary' : 'outline'}
-              onClick={() => setSelectedDept('all')}
-            >
-              All Departments ({usersList.length})
-            </Button>
-            {USER_ROLES.map((r) => {
-              const count = usersList.filter((u) => u.role === r).length;
-              return (
-                <Button
-                  key={r}
-                  size="xs"
-                  variant={selectedDept === r ? 'primary' : 'outline'}
-                  onClick={() => setSelectedDept(r)}
-                  className="gap-1.5"
-                >
-                  <span>{DEPARTMENT_NAMES[r]}</span>
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10">
-                    {count}
-                  </span>
-                </Button>
-              );
-            })}
-          </div>
-          </ToolbarSlot>
-
-          <Card>
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <span className="text-xs font-bold text-[#14213D]">
-                Active Personnel Directory ({filteredUsers.length} of {usersList.length})
+          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
+            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
+              <h2 className="font-serif text-sm font-bold text-[#14213D]">Personnel directory</h2>
+              <span className="font-mono text-xs text-[#4A5568]">
+                {filteredUsers.length} of {usersList.length}
               </span>
-              <div className="w-full sm:w-72">
-                <Input
-                  type="text"
-                  placeholder="Filter by name, email, role..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="h-9"
-                />
-              </div>
             </div>
 
-            <Table>
+            <Table className="[&_td]:px-3 [&_th]:px-3">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name & Email</TableHead>
-                  <TableHead>Department</TableHead>
-                  <TableHead>Assigned Role</TableHead>
-                  <TableHead>Phone</TableHead>
-                  <TableHead>Reporting Manager</TableHead>
-                  <TableHead>Assigned Territory</TableHead>
+                  <TableHead>Name & Contact</TableHead>
+                  <TableHead>Department & Role</TableHead>
+                  <TableHead>Territory & Manager</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
@@ -677,35 +681,29 @@ export default function AdminPage() {
               <TableBody>
                 {filteredUsers.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-10 text-center text-xs text-[#4A5568]">
+                    <TableCell colSpan={5} className="py-10 text-center text-xs text-[#4A5568]">
                       {usersList.length === 0 ? 'No personnel records were returned.' : 'No personnel match this filter.'}
                     </TableCell>
                   </TableRow>
                 )}
                 {filteredUsers.map((u) => (
                   <TableRow key={u.id}>
-                    <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
-                      {show(u.full_name)}
-                      <div className="text-[10px] text-[#4A5568] font-mono font-normal">
+                    <TableCell className="font-bold text-[#14213D]">
+                      <div className="max-w-[280px] truncate" title={show(u.full_name)}>{show(u.full_name)}</div>
+                      <div className="max-w-[280px] truncate text-[11px] text-[#4A5568] font-mono font-normal" title={show(u.email)}>
                         {show(u.email)}
                       </div>
-                    </TableCell>
-                    <TableCell className="text-[#14213D] whitespace-nowrap font-medium">
-                      {DEPARTMENT_NAMES[u.role as UserRole] || 'General'}
+                      {u.phone && <div className="text-[11px] text-[#4A5568] font-mono font-normal">{u.phone}</div>}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
-                      <Badge variant="outline" size="sm" className="uppercase font-bold">
-                        {show(u.role).replace(/_/g, ' ')}
-                      </Badge>
+                      <div className="font-medium text-[#14213D]">{DEPARTMENT_NAMES[u.role as UserRole] || 'General'}</div>
+                      <div className="text-[11px] uppercase text-[#4A5568]">{show(u.role).replace(/_/g, ' ')}</div>
                     </TableCell>
-                    <TableCell className="text-[#4A5568] font-mono whitespace-nowrap">
-                      {u.phone || '-'}
-                    </TableCell>
-                    <TableCell className="text-[#4A5568] whitespace-nowrap">
-                      {u.manager_name || 'Top Management'}
-                    </TableCell>
-                    <TableCell className="text-[#4A5568] whitespace-nowrap">
-                      {u.zone_name || 'All India'}
+                    <TableCell>
+                      <div className="max-w-[220px] truncate text-[#14213D]">{u.zone_name || 'All India'}</div>
+                      <div className="max-w-[220px] truncate text-[11px] text-[#4A5568]" title={u.manager_name || 'Top Management'}>
+                        Reports to {u.manager_name || 'Top Management'}
+                      </div>
                     </TableCell>
                     <TableCell className="text-center whitespace-nowrap">
                       <Badge
@@ -805,11 +803,10 @@ export default function AdminPage() {
             <EmptyState icon={History} title="No audit entries" description="The security audit trail returned no records for your role." />
           ) : (
           <div className="max-h-[600px] overflow-y-auto">
-            <Table>
+            <Table className="[&_td]:px-3 [&_th]:px-3">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Timestamp (IST)</TableHead>
-                  <TableHead>Actor</TableHead>
+                  <TableHead>Timestamp (IST) & Actor</TableHead>
                   <TableHead>Action Code</TableHead>
                   <TableHead>Entity</TableHead>
                   <TableHead>Audit Payload Details</TableHead>
@@ -818,19 +815,17 @@ export default function AdminPage() {
               <TableBody>
                 {auditLogs.map((log) => (
                   <TableRow key={log.id}>
-                    <TableCell className="text-[#4A5568] font-mono text-[11px] whitespace-nowrap">
-                      {fmtStamp(log.created_at)}
+                    <TableCell className="whitespace-nowrap">
+                      <div className="text-[#14213D] font-sans font-semibold">{log.actor_name || 'System Engine'}</div>
+                      <div className="text-[#4A5568] font-mono text-[11px]">{fmtStamp(log.created_at)}</div>
                     </TableCell>
-                    <TableCell className="text-[#14213D] font-sans font-semibold whitespace-nowrap">
-                      {log.actor_name || 'System Engine'}
+                    <TableCell className="text-[#0F5E63] font-semibold">
+                      <div className="max-w-[200px] truncate" title={log.action}>{log.action}</div>
                     </TableCell>
-                    <TableCell className="text-[#0F5E63] font-semibold whitespace-nowrap">
-                      {log.action}
-                    </TableCell>
-                    <TableCell className="text-[#4A5568] whitespace-nowrap">
+                    <TableCell className="text-[#4A5568]">
                       {getEntityLabel(log)}
                     </TableCell>
-                    <TableCell className="text-[#4A5568] font-sans max-w-xs truncate">
+                    <TableCell className="text-[#4A5568] font-sans">
                       {getPayloadSummary(log)}
                     </TableCell>
                   </TableRow>

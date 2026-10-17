@@ -1,9 +1,31 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { AlertTriangle, Download, FileText, Paperclip, RefreshCw, ShieldAlert, Trash2 } from 'lucide-react';
-import { Badge, Button, InfoCallout, Modal, Spinner, Tabs } from '@/components/ui';
+import {
+  AlertTriangle,
+  CalendarDays,
+  CheckSquare,
+  ClipboardCheck,
+  Columns3,
+  Download,
+  FileBadge,
+  FileText,
+  Gauge,
+  Hourglass,
+  LayoutList,
+  Paperclip,
+  RefreshCw,
+  Repeat,
+  Settings2,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+  TrendingUp,
+  Users,
+} from 'lucide-react';
+import { Badge, Button, Card, FilterMenu, InfoCallout, Modal, Spinner, type FilterMenuOption } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -19,6 +41,7 @@ import {
   formatTaskDate,
   formatTaskDateTime,
   relativeDue,
+  taskViewsFor,
   type TaskBlockerStatus,
   type TaskBlockerType,
   type TaskDelayClass,
@@ -123,38 +146,105 @@ export const TaskConflictCallout: React.FC<{ onRefresh: () => void }> = ({ onRef
   </InfoCallout>
 );
 
-// ------------------------------------------------------------------ sub-navigation
-export const TasksNav: React.FC = () => {
+// ------------------------------------------------------------------ navigation
+/** Boards on the Tasks page (`?scope=`). The rest of the module lives on its own pages. */
+export type TaskBoardScope = 'mine' | 'team' | 'blockers' | 'approvals';
+export const TASK_BOARD_SCOPES: TaskBoardScope[] = ['mine', 'team', 'blockers', 'approvals'];
+
+export const taskBoardHref = (scope: TaskBoardScope) => (scope === 'mine' ? '/tasks' : `/tasks?scope=${scope}`);
+
+/** Views this user gets — role and reporting line, via the shared rule the API mirrors (taskViewsFor). */
+export function useTaskViews() {
   const { user } = useAuth();
+  const { summary } = useTaskSummary(Boolean(user));
+  const views = useMemo(() => taskViewsFor(user?.role || 'sales', summary), [user?.role, summary]);
+  return { views, summary, loaded: Boolean(summary) };
+}
+
+/** Pages reached from the View menu; the list pages of the boards map back to their board. */
+const BOARD_LIST_PAGES: Record<string, TaskBoardScope> = { '/tasks/team': 'team', '/tasks/blockers': 'blockers', '/tasks/approvals': 'approvals' };
+const TASK_PAGES = ['/tasks/waiting', '/tasks/templates', '/tasks/accountability', '/tasks/evidence', '/tasks/my-performance', '/tasks/calendar', '/tasks/settings'];
+
+/** View-menu key for a task page: a board's list page maps to its board scope, any other page to its own path ('' if none). */
+export function taskViewKey(pathname: string | null | undefined): string {
+  const path = pathname || '';
+  const boardScope = Object.entries(BOARD_LIST_PAGES).find(([p]) => path.startsWith(p))?.[1];
+  return boardScope || TASK_PAGES.find((p) => path.startsWith(p)) || '';
+}
+
+/**
+ * Every task screen behind one "View" dropdown, filtered by role. Boards (My / Team tasks, Blocker reviews,
+ * Approvals) switch in place via `onScope` on the Tasks page, or open it from elsewhere; the rest open their page.
+ * `active` defaults to the current page (taskViewKey), so the sub-pages can drop it in as the first filter-row control.
+ */
+export const TaskViewMenu: React.FC<{ active?: string; onScope?: (scope: TaskBoardScope) => void; align?: 'left' | 'right'; className?: string }> = ({
+  active: activeProp,
+  onScope,
+  align,
+  className,
+}) => {
   const router = useRouter();
   const pathname = usePathname();
-  const { summary } = useTaskSummary(Boolean(user));
-  const tabs = useMemo(() => {
-    const s = summary;
-    const manager = Boolean(s?.has_team || s?.can_view_all);
-    const t: { id: string; label: string; count?: number; badgeVariant?: 'urgent' | 'warning' | 'info' }[] = [
-      { id: '/tasks', label: 'My Tasks', count: s?.my_overdue || undefined, badgeVariant: 'urgent' },
-    ];
-    if (manager) t.push({ id: '/tasks/team', label: 'Team Tasks', count: s?.needs_reassignment || undefined, badgeVariant: 'warning' });
-    if (manager || s?.pending_blockers) t.push({ id: '/tasks/blockers', label: 'Blocker Reviews', count: s?.pending_blockers || undefined, badgeVariant: 'urgent' });
-    if (manager || s?.pending_approvals) t.push({ id: '/tasks/approvals', label: 'Approvals', count: s?.pending_approvals || undefined, badgeVariant: 'warning' });
-    t.push({ id: '/tasks/waiting', label: 'Waiting on Me', count: s?.waiting_on_me || undefined, badgeVariant: 'warning' });
-    t.push({ id: '/tasks/templates', label: 'Recurring' });
-    if (manager) t.push({ id: '/tasks/accountability', label: 'Accountability' });
-    if (s?.can_view_evidence) t.push({ id: '/tasks/evidence', label: 'Performance Evidence' });
-    t.push({ id: '/tasks/my-performance', label: 'My Performance' });
-    t.push({ id: '/tasks/calendar', label: 'Leave & Holidays' });
-    if (s?.can_manage_settings) t.push({ id: '/tasks/settings', label: 'Settings' });
-    return t;
-  }, [summary]);
-  const active =
-    tabs
-      .map((t) => t.id)
-      .filter((id) => id !== '/tasks' && pathname.startsWith(id))
-      .sort((a, b) => b.length - a.length)[0] || '/tasks';
+  const active = activeProp ?? taskViewKey(pathname);
+  const { views, summary: s } = useTaskViews();
+  const n = (v?: number) => (v && v > 0 ? v : undefined);
+
+  const options = useMemo(() => {
+    const board = (id: TaskBoardScope, label: string, icon: React.ReactNode, extra?: Partial<FilterMenuOption>): FilterMenuOption => ({
+      key: id,
+      label,
+      icon,
+      active: active === id,
+      onSelect: () => (onScope ? onScope(id) : router.push(taskBoardHref(id))),
+      ...extra,
+    });
+    const page = (href: string, label: string, icon: React.ReactNode, extra?: Partial<FilterMenuOption>): FilterMenuOption => ({
+      key: href,
+      label,
+      icon,
+      active: active === href,
+      onSelect: () => router.push(href),
+      ...extra,
+    });
+    const o: FilterMenuOption[] = [board('mine', 'My tasks', <CheckSquare />, { count: n(s?.my_overdue), urgent: true })];
+    if (views.has('team')) o.push(board('team', s?.can_view_all && !s?.has_team ? 'All tasks' : 'Team tasks', <Users />, { count: n(s?.needs_reassignment) }));
+    if (views.has('blockers')) o.push(board('blockers', 'Blocker reviews', <ShieldCheck />, { count: n(s?.pending_blockers), urgent: true }));
+    if (views.has('approvals')) o.push(board('approvals', 'Approvals', <ClipboardCheck />, { count: n(s?.pending_approvals), urgent: true }));
+    o.push(page('/tasks/waiting', 'Waiting on me', <Hourglass />, { count: n(s?.waiting_on_me) }));
+    o.push(page('/tasks/templates', 'Recurring', <Repeat />));
+    if (views.has('accountability')) o.push(page('/tasks/accountability', 'Accountability', <Gauge />));
+    if (views.has('evidence')) o.push(page('/tasks/evidence', 'Performance evidence', <FileBadge />));
+    o.push(page('/tasks/my-performance', 'My performance', <TrendingUp />));
+    o.push(page('/tasks/calendar', 'Leave & holidays', <CalendarDays />));
+    if (views.has('settings')) o.push(page('/tasks/settings', 'Settings', <Settings2 />));
+    return o;
+  }, [s, views, active, onScope, router]);
+
+  return <FilterMenu label="View" icon={<LayoutList />} options={options} neutralKeys={[]} align={align} className={`shrink-0 ${className || ''}`} />;
+};
+
+/**
+ * The filter-row card of a task page with only the View menu — for the states of a filter-row page that have
+ * nothing to filter yet (loading, no access), so the navigation stays in the same place.
+ */
+export const TaskViewRow: React.FC = () => (
+  <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+    <TaskViewMenu />
+  </Card>
+);
+
+/** Header bar for the task pages without a filter row (forms, details, settings): back to the board, plus the View dropdown. */
+export const TasksNav: React.FC = () => {
+  const active = taskViewKey(usePathname());
+  const boardScope = (TASK_BOARD_SCOPES as string[]).includes(active) ? (active as TaskBoardScope) : 'mine';
   return (
-    <div className="overflow-x-auto -mx-1 px-1">
-      <Tabs variant="underline" tabs={tabs} activeTab={active} onChange={(id) => router.push(id)} />
+    <div className="flex flex-wrap items-center gap-2">
+      <Link href={taskBoardHref(boardScope)}>
+        <Button size="sm" variant="secondary" className="h-9" leftIcon={<Columns3 className="h-4 w-4" />}>
+          Task board
+        </Button>
+      </Link>
+      <TaskViewMenu active={active} />
     </div>
   );
 };

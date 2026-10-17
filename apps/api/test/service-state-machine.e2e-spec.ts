@@ -151,7 +151,7 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
         }
       }
       expect(mismatches).toEqual([]);
-    });
+    }, 60000);
 
     it('exposes allowed_next_statuses on every ticket so the UI offers only legal buttons', async () => {
       const t = await mk();

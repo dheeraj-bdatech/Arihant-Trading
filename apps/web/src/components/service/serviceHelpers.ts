@@ -1,3 +1,5 @@
+import { istToday } from '@/lib/ist-date';
+import { calendarDay } from '@/lib/calendar-day';
 import { ApiError } from '@/lib/api';
 import {
   SERVICE_SLA_PAUSE_STATUSES,
@@ -23,13 +25,12 @@ export function errMsg(err: unknown, fallback = 'Something went wrong. Please tr
 
 export const isConflict = (err: unknown) => err instanceof ApiError && err.status === 409;
 
-export const dateOnly = (v: unknown): string => (v ? String(v).slice(0, 10) : '');
+/** A date/instant from the API as its IST calendar day (YYYY-MM-DD). */
+export const dateOnly = (v: unknown): string => calendarDay(v);
 
-/** Today's date (YYYY-MM-DD) in the browser's local zone. */
+/** Today's business date (YYYY-MM-DD) in IST — not the browser's zone, not UTC. */
 export function todayLocal(): string {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return istToday();
 }
 
 export function statusLabel(status: string | null | undefined): string {

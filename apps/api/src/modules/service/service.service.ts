@@ -1,3 +1,4 @@
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -121,7 +122,7 @@ export class ServiceService {
 
   /** IST calendar date (YYYY-MM-DD). */
   private todayIst(): string {
-    return new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+    return todayInKolkata();
   }
 
   private parseDateOnly(value: unknown, field: string): string {
@@ -691,7 +692,7 @@ export class ServiceService {
         complaint_description: input.complaint,
         complaint_source: input.source,
         problem_category: input.problemCategory,
-        received_date: (input.receivedDate ? String(input.receivedDate).slice(0, 10) : now.toISOString().slice(0, 10)) as any,
+        received_date: (calendarDay(input.receivedDate) || todayInKolkata(now)) as any,
         date_received: now,
         priority: priority as any,
         warranty_status: warranty as any,
@@ -757,7 +758,7 @@ export class ServiceService {
           contact_id: input.contactId || null,
           type: 'service',
           employee_id: input.actorId,
-          occurred_on: now.toISOString().slice(0, 10),
+          occurred_on: todayInKolkata(now),
           remarks: `Service ticket ${ticketNo} registered (${priority} priority, via ${input.source}): ${input.complaint.slice(0, 180)}`,
           outcome: repeat.isRepeat ? 'Repeat complaint — same equipment within window' : 'Service request logged',
         })
@@ -973,7 +974,7 @@ export class ServiceService {
     }
     if (to === 'visit_scheduled') {
       if (!effectiveAssignee) throw new BadRequestException('Status visit_scheduled requires an assigned engineer');
-      const date = visitDate || (existing.planned_visit_date ? String(existing.planned_visit_date).slice(0, 10) : null);
+      const date = visitDate || (existing.planned_visit_date ? calendarDay(existing.planned_visit_date as any) : null);
       if (!date) throw new BadRequestException('Status visit_scheduled requires a planned visit date');
       const mayOverride = this.isManager(user) && dto.manager_override === true;
       this.assertFutureOrToday(date, 'planned_visit_date', mayOverride);
@@ -1086,7 +1087,7 @@ export class ServiceService {
           contact_id: existing.contact_id,
           type: 'service',
           employee_id: user.id,
-          occurred_on: new Date().toISOString().slice(0, 10),
+          occurred_on: todayInKolkata(),
           remarks: `Service ticket ${existing.ticket_no} closed${remarks ? `: ${remarks}` : ''}`,
           outcome: 'Service ticket closed',
         })
@@ -1163,7 +1164,7 @@ export class ServiceService {
           contact_id: dto.contact_id || null,
           type: 'service',
           employee_id: user.id,
-          occurred_on: new Date().toISOString().slice(0, 10),
+          occurred_on: todayInKolkata(),
           remarks: `Portal service request ${existing.ticket_no} verified and linked to this customer: ${String(existing.complaint).slice(0, 160)}`,
           outcome: 'Customer verified',
         })
@@ -1292,7 +1293,7 @@ export class ServiceService {
           contact_id: ticket.contact_id,
           type: 'service',
           employee_id: user.id,
-          occurred_on: now.toISOString().slice(0, 10),
+          occurred_on: todayInKolkata(now),
           remarks: `Service ticket ${ticket.ticket_no} service report filed: ${action}`,
           outcome: dto.further_work_required ? 'Revisit required for pending spares/work' : 'Service report submitted & confirmed',
         })
@@ -1601,7 +1602,7 @@ export class ServiceService {
       await this.emitTicketEvent(AppEvents.SERVICE_PART_ISSUED, ticketId, { actorId: user.id, partName: updated.part_name, quantity: updated.quantity });
       if ((stillOpen?.n || 0) === 0 && status === 'awaiting_part') {
         const today = this.todayIst();
-        const future = ticket.planned_visit_date && String(ticket.planned_visit_date).slice(0, 10) >= today && ticket.assigned_to;
+        const future = ticket.planned_visit_date && (calendarDay(ticket.planned_visit_date as any) || '') >= today && ticket.assigned_to;
         const to: ServiceStatus = future ? 'visit_scheduled' : 'in_progress';
         const row = await this.db.transaction().execute((trx) =>
           this.applyTransition(trx, ticket, to, { actorId: user.id, reason: 'All requested spares issued — work can resume' }),

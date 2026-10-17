@@ -25,6 +25,7 @@ import {
   Send,
   Sparkles,
   Award,
+  LayoutList,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -36,7 +37,7 @@ import {
   CardTitle,
   CardDescription,
   CardContent,
-  Tabs,
+  FilterMenu,
   Modal,
   Input,
   Select,
@@ -49,7 +50,7 @@ import {
   PageContainer,
   PageHeader,
   StatCard,
-  StatGrid, ToolbarBox, ToolbarSlot, PageLoader } from '@/components/ui';
+  StatGrid, PageLoader } from '@/components/ui';
 import { formatLakh, formatINR } from '@arihant/shared';
 
 const formatLeadCategory = (category?: string) => {
@@ -153,6 +154,14 @@ export default function RegionalPage() {
   }
 
   const zoneName = data?.zone?.name || 'North';
+  const employeeQuery = searchEmployee.toLowerCase();
+  const filteredTeam: any[] = (data?.teamPerformance ?? []).filter(
+    (emp: any) =>
+      !employeeQuery ||
+      emp.full_name.toLowerCase().includes(employeeQuery) ||
+      emp.email.toLowerCase().includes(employeeQuery) ||
+      emp.region_name.toLowerCase().includes(employeeQuery),
+  );
   const zoneCode = data?.zone?.code || 'N';
 
   if (isLoading && !data) {
@@ -205,7 +214,7 @@ export default function RegionalPage() {
       />
 
       {/* ── 4 KEY ACCENT METRIC HUD CARDS ── */}
-      <StatGrid cols={4}>
+      <StatGrid cols={4} className="gap-3">
         <StatCard
           title="Regional Pipeline"
           value={formatLakh(data?.sales?.totalPipelineValueLakh ?? 0)}
@@ -236,97 +245,104 @@ export default function RegionalPage() {
         />
       </StatGrid>
 
-      {/* ── 4 TABS NAVIGATION ── */}
-      <ToolbarBox>
-      <Tabs
-        tabs={[
-          { id: 'team', label: `Team Accountability (${data?.teamPerformance?.length || 0})` },
-          { id: 'leads', label: `Sales Leads & Funnel (${data?.sales?.totalLeads || 0})` },
-          { id: 'visits', label: `Territory Tours & Visits (${data?.visits?.total || 0})` },
-          { id: 'tenders', label: `Territory GeM Tenders (${data?.tenders?.total || 0})` },
-        ]}
-        activeTab={activeTab}
-        onChange={setActiveTab}
-      />
-      </ToolbarBox>
+      {/* ── One filter row: View switcher first, then the search for views that have one. ── */}
+      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <FilterMenu
+            label="View"
+            icon={<LayoutList />}
+            neutralKeys={[]}
+            className="shrink-0"
+            options={[
+              { key: 'team', label: 'Team Accountability', icon: <Users />, count: data?.teamPerformance?.length || 0 },
+              { key: 'leads', label: 'Sales Leads & Funnel', icon: <Target />, count: data?.sales?.totalLeads || 0 },
+              { key: 'visits', label: 'Tours & Visits', icon: <Calendar />, count: data?.visits?.total || 0 },
+              { key: 'tenders', label: 'GeM Tenders', icon: <FileText />, count: data?.tenders?.total || 0 },
+            ].map((v) => ({ ...v, active: activeTab === v.key, onSelect: () => setActiveTab(v.key) }))}
+          />
+          {activeTab === 'team' && (
+            <>
+              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <input
+                  type="search"
+                  aria-label="Search representatives"
+                  placeholder="Search rep by name, territory, email…"
+                  value={searchEmployee}
+                  onChange={(e) => setSearchEmployee(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                />
+              </div>
+              {searchEmployee && (
+                <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+                  <Button variant="ghost" size="xs" onClick={() => setSearchEmployee('')} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                    Clear
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </Card>
 
       {/* ── TAB 1: EMPLOYEE ACCOUNTABILITY & PERFORMANCE ── */}
       {activeTab === 'team' && (
         <div className="space-y-4">
-          <ToolbarSlot><div className="p-4 rounded-xl bg-white border border-[#DCD8CE] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
-            <div className="flex items-center space-x-2">
-              <Users className="h-4 w-4 text-[#0F5E63]" />
-              <span className="text-xs font-bold text-[#14213D]">
-                Direct Reports & Regional Staff Scorecard
+          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
+            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
+              <h2 className="flex items-center gap-2 font-serif text-sm font-bold text-[#14213D]">
+                <Users className="h-4 w-4 text-[#0F5E63]" />
+                Direct Reports &amp; Regional Staff Scorecard
+              </h2>
+              <span className="font-mono text-xs text-[#4A5568]">
+                {filteredTeam.length} {filteredTeam.length === 1 ? 'rep' : 'reps'}
               </span>
             </div>
-            <div className="flex items-center space-x-2">
-              <Input
-                type="text"
-                placeholder="Filter rep by name, territory, email..."
-                value={searchEmployee}
-                onChange={(e) => setSearchEmployee(e.target.value)}
-                className="w-64 h-9"
-              />
-            </div>
-          </div></ToolbarSlot>
-
-          <Card>
-            <Table>
+            <Table className="[&_td]:px-3 [&_th]:px-3">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Representative</TableHead>
-                  <TableHead>Role & Region</TableHead>
-                  <TableHead className="text-center">Milestones (Done/Total)</TableHead>
-                  <TableHead className="text-center">Overdue</TableHead>
-                  <TableHead className="text-center">Visits Done</TableHead>
-                  <TableHead className="text-right">Pipeline (₹ L)</TableHead>
-                  <TableHead className="text-center">Active Blockers</TableHead>
-                  <TableHead className="text-center">Compliance</TableHead>
-                  <TableHead className="text-right">Evidence</TableHead>
+                  <TableHead className="text-xs">Representative</TableHead>
+                  <TableHead className="whitespace-nowrap text-center text-xs" title="Milestones done / total">Milestones</TableHead>
+                  <TableHead className="whitespace-nowrap text-center text-xs" title="Visits done / total">Visits</TableHead>
+                  <TableHead className="whitespace-nowrap text-right text-xs">Pipeline (₹ L)</TableHead>
+                  <TableHead className="whitespace-nowrap text-center text-xs" title="Active blockers">Blockers</TableHead>
+                  <TableHead className="whitespace-nowrap text-center text-xs">Compliance</TableHead>
+                  <TableHead className="w-20 text-right text-xs">
+                    <span className="sr-only">Evidence</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data?.teamPerformance
-                  ?.filter(
-                    (emp: any) =>
-                      !searchEmployee ||
-                      emp.full_name.toLowerCase().includes(searchEmployee.toLowerCase()) ||
-                      emp.email.toLowerCase().includes(searchEmployee.toLowerCase()) ||
-                      emp.region_name.toLowerCase().includes(searchEmployee.toLowerCase()),
-                  )
-                  .map((emp: any) => (
-                    <TableRow key={emp.id}>
-                      <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
-                        {emp.full_name}
-                        <div className="text-[10px] text-[#4A5568] font-mono font-normal">
-                          {emp.email}
+                {filteredTeam.map((emp: any) => (
+                    <TableRow
+                      key={emp.id}
+                      className="cursor-pointer"
+                      onClick={() => {
+                        setSelectedEmployee(emp);
+                        setIsEvidenceModalOpen(true);
+                      }}
+                    >
+                      <TableCell className="max-w-[300px]">
+                        <div className="truncate font-bold text-[#14213D]" title={emp.full_name}>{emp.full_name}</div>
+                        <div className="truncate text-[11px] text-[#4A5568]" title={`${emp.role.replace('_', ' ').toUpperCase()} · ${emp.region_name}`}>
+                          <span className="font-semibold text-[#14213D]">{emp.role.replace('_', ' ').toUpperCase()}</span> · {emp.region_name}
                         </div>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        <span className="font-semibold text-[#14213D] text-xs">
-                          {emp.role.replace('_', ' ').toUpperCase()}
-                        </span>
-                        <div className="text-[10px] text-[#4A5568]">
-                          {emp.region_name}
+                        <div className="truncate font-mono text-[10px] text-[#4A5568]" title={emp.email}>
+                          {emp.email}
                         </div>
                       </TableCell>
                       <TableCell className="text-center whitespace-nowrap">
                         <span className="font-mono font-bold text-[#14213D]">
                           {emp.tasks.completed} / {emp.tasks.total}
                         </span>
-                        <div className="text-[10px] text-[#4A5568]">
-                          {emp.tasks.completionRate}%
+                        <div className="text-[11px] text-[#4A5568]">
+                          {emp.tasks.completionRate}% ·{' '}
+                          {emp.tasks.overdue > 0 ? (
+                            <span className="font-bold text-[#9A3412]">{emp.tasks.overdue} overdue</span>
+                          ) : (
+                            <span className="text-emerald-700">0 overdue</span>
+                          )}
                         </div>
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
-                        {emp.tasks.overdue > 0 ? (
-                          <span className="text-[11px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded">
-                            {emp.tasks.overdue}
-                          </span>
-                        ) : (
-                          <span className="text-[11px] text-emerald-700 font-medium">0</span>
-                        )}
                       </TableCell>
                       <TableCell className="text-center font-mono font-bold text-[#14213D] whitespace-nowrap">
                         {emp.visits.completed} / {emp.visits.total}
@@ -337,7 +353,7 @@ export default function RegionalPage() {
                       <TableCell className="text-center whitespace-nowrap">
                         {emp.activeBlockers.length > 0 ? (
                           <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-bold text-[10px]">
-                            {emp.activeBlockers.length} BLOCKED
+                            {emp.activeBlockers.length} blocked
                           </span>
                         ) : (
                           <span className="text-[11px] text-[#4A5568]">None</span>
@@ -361,9 +377,10 @@ export default function RegionalPage() {
                       </TableCell>
                       <TableCell className="text-right whitespace-nowrap">
                         <Button
-                          size="sm"
+                          size="xs"
                           variant="secondary"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             setSelectedEmployee(emp);
                             setIsEvidenceModalOpen(true);
                           }}
@@ -440,7 +457,7 @@ export default function RegionalPage() {
               </Link>
             </div>
 
-            <Table>
+            <Table className="[&_td]:px-3 [&_th]:px-3">
               <TableHeader>
                 <TableRow>
                   <TableHead>Organisation & City</TableHead>
@@ -455,11 +472,11 @@ export default function RegionalPage() {
               <TableBody>
                 {data?.sales?.recentLeads?.map((ld: any) => (
                   <TableRow key={ld.id}>
-                    <TableCell className="font-bold text-[#14213D]">
-                      {ld.organisation_name}
-                      <div className="text-[10px] text-[#4A5568] font-normal">{ld.city || 'North Zone'}</div>
+                    <TableCell className="max-w-[260px] font-bold text-[#14213D]">
+                      <div className="truncate" title={ld.organisation_name}>{ld.organisation_name}</div>
+                      <div className="text-[11px] text-[#4A5568] font-normal">{ld.city || 'North Zone'}</div>
                     </TableCell>
-                    <TableCell className="text-[#14213D]">{ld.product_name || 'Security Scanning Hardware'}</TableCell>
+                    <TableCell className="max-w-[200px] truncate text-[#14213D]" title={ld.product_name || 'Security Scanning Hardware'}>{ld.product_name || 'Security Scanning Hardware'}</TableCell>
                     <TableCell>
                       <Badge
                         variant={getCategoryBadgeVariant(ld.category)}
@@ -519,7 +536,7 @@ export default function RegionalPage() {
               </Link>
             </div>
 
-            <Table>
+            <Table className="[&_td]:px-3 [&_th]:px-3">
               <TableHeader>
                 <TableRow>
                   <TableHead>Planned Date</TableHead>
@@ -537,14 +554,14 @@ export default function RegionalPage() {
                     <TableCell className="font-mono font-bold text-[#14213D] whitespace-nowrap">
                       {new Date(v.planned_date).toLocaleDateString('en-IN')}
                     </TableCell>
-                    <TableCell className="font-bold text-[#14213D]">
-                      {v.organisation_name}
+                    <TableCell className="max-w-[240px] font-bold text-[#14213D]">
+                      <div className="truncate" title={v.organisation_name}>{v.organisation_name}</div>
                       <div className="text-[10px] text-[#4A5568] font-normal flex items-center gap-1">
                         <MapPin className="h-3 w-3 text-[#0F5E63]" />
-                        <span>{v.location || 'Client HQ'}</span>
+                        <span className="truncate" title={v.location || 'Client HQ'}>{v.location || 'Client HQ'}</span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-[#14213D] max-w-[200px] truncate">{v.purpose || 'Technical brief'}</TableCell>
+                    <TableCell className="text-[#14213D] max-w-[200px] truncate" title={v.purpose || 'Technical brief'}>{v.purpose || 'Technical brief'}</TableCell>
                     <TableCell className="text-[#4A5568] whitespace-nowrap">{v.assigned_rep_name || 'Territory Rep'}</TableCell>
                     <TableCell className="whitespace-nowrap">
                       <Badge
@@ -555,7 +572,7 @@ export default function RegionalPage() {
                         {v.status}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-[#4A5568] max-w-[180px] truncate font-italic">
+                    <TableCell className="text-[#4A5568] max-w-[180px] truncate" title={v.remarks || undefined}>
                       {v.remarks ? (
                         <span className="text-purple-800 font-medium">{v.remarks}</span>
                       ) : (
@@ -564,7 +581,7 @@ export default function RegionalPage() {
                     </TableCell>
                     <TableCell className="text-right whitespace-nowrap">
                       <Button
-                        size="sm"
+                        size="xs"
                         variant="ghost"
                         onClick={() => handleOpenIntervention(v)}
                         className="text-xs text-[#0F5E63] hover:bg-[#E3EFEE]"
@@ -600,7 +617,7 @@ export default function RegionalPage() {
               </Link>
             </div>
 
-            <Table>
+            <Table className="[&_td]:px-3 [&_th]:px-3">
               <TableHeader>
                 <TableRow>
                   <TableHead>Tender Reference No.</TableHead>
@@ -624,11 +641,11 @@ export default function RegionalPage() {
                       <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
                         <span className="font-mono text-[#0F5E63]">{t.tender_no}</span>
                       </TableCell>
-                      <TableCell className="text-[#14213D]">
-                        <div className="font-semibold text-[#14213D]">{t.department || 'Government Buyer'}</div>
+                      <TableCell className="max-w-[220px] text-[#14213D]">
+                        <div className="truncate font-semibold text-[#14213D]" title={t.department || 'Government Buyer'}>{t.department || 'Government Buyer'}</div>
                         <div className="text-[10px] text-[#4A5568]">{t.city}, {t.state}</div>
                       </TableCell>
-                      <TableCell className="text-[#4A5568] max-w-[240px] truncate">{t.requirement_text}</TableCell>
+                      <TableCell className="text-[#4A5568] max-w-[240px] truncate" title={t.requirement_text}>{t.requirement_text}</TableCell>
                       <TableCell className="whitespace-nowrap">
                         <Badge variant="outline" size="sm" className="uppercase font-bold">
                           {t.category}
@@ -661,7 +678,7 @@ export default function RegionalPage() {
                       </TableCell>
                       <TableCell className="text-right whitespace-nowrap">
                         <Link href={`/tenders?highlight=${t.id}`}>
-                          <Button size="sm" variant="secondary" className="shadow-xs text-xs">
+                          <Button size="xs" variant="secondary" className="shadow-xs text-xs">
                             Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
                           </Button>
                         </Link>

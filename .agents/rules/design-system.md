@@ -2,9 +2,9 @@
 
 ## 1. Absolute Directives
 1. **Light Executive Aesthetic ONLY**:
-   - The application theme is strictly clean light enterprise (`#F7FBFF` background, `#FFFFFF` cards, `#D6E3F5` borders).
+   - The application theme is strictly client UI-Kit aligned warm linen enterprise (`#F6F5F1` background, `#FFFFFF` cards, `#DCD8CE` borders).
    - **NEVER** use dark, black, or slate backgrounds (such as `bg-slate-900`, `bg-gray-900`, `bg-black`, `border-slate-800`).
-   - Dark/black themes are strictly forbidden across all views, modals, cards, sidebars, and widgets.
+   - Dark/black themes are strictly forbidden across all views, modals, cards, and widgets (except specialized dark command panels `.card--dark` `#14213D`).
 
 2. **Mandatory Component Library Usage**:
    - All interactive and structural UI elements must be imported from `@/components/ui`.
@@ -17,17 +17,21 @@
 
 | Token Name | Hex Code / Value | Tailwind Class | Usage |
 | :--- | :--- | :--- | :--- |
-| **Canvas Background** | `#F7FBFF` | `bg-[#F7FBFF]` | Whole-page wrapper background |
+| **Canvas Background** | `#F6F5F1` | `bg-[#F6F5F1]` | Whole-page wrapper background (warm linen) |
 | **Card Surface** | `#FFFFFF` | `bg-white` | Primary content surfaces |
-| **Subtle Well** | `#F8FAFC` | `bg-slate-50` / `bg-gray-50/70` | Secondary wells, sub-panels |
-| **Base Border** | `#D6E3F5` | `border-[#D6E3F5]` | All cards, dividers, inputs |
-| **Border Hover** | `#9FC0F5` | `hover:border-[#9FC0F5]` | Interactive elements on hover |
-| **Primary Brand Blue** | `#223FA7` | `text-[#223FA7]`, `bg-[#223FA7]` | Primary buttons, headers, icons |
-| **Secondary Soft Blue** | `#EAF2FF` | `bg-[#EAF2FF]` | Button backgrounds, pills |
-| **Primary Text** | `#1A1A1A` | `text-[#1A1A1A]` | Headings, card titles, key values |
-| **Muted Text** | `#5871A5` | `text-[#5871A5]` | Sub-labels, captions, secondary info |
-| **Border Radius** | `12px` | `rounded-xl` | Standard for all cards and dialogs |
+| **Subtle Alt** | `#FBFAF7` | `bg-[#FBFAF7]` | Secondary wells, headers, table strips |
+| **Base Border** | `#DCD8CE` | `border-[#DCD8CE]` | All cards, outer borders |
+| **Divider Line** | `#ECE9E2` | `border-[#ECE9E2]` | Interior dividers, table row lines |
+| **Control Line** | `#C9C4B8` | `border-[#C9C4B8]` | Form inputs, select dropdowns |
+| **Brand Primary Teal** | `#0F5E63` | `text-[#0F5E63]`, `bg-[#0F5E63]` | Primary buttons, active tabs, main accents |
+| **Brand Secondary Teal** | `#E3EFEE` | `bg-[#E3EFEE]` | Soft button backgrounds, badge tints |
+| **Accent Terracotta** | `#9A3412` | `text-[#9A3412]`, `bg-[#9A3412]` | Urgent deadlines, live auction chips |
+| **Dark Panel Navy** | `#14213D` | `bg-[#14213D]`, `text-[#14213D]` | Sidebar navigation, monitor hero |
+| **Primary Text Ink** | `#14213D` | `text-[#14213D]` | Titles, headings, main content |
+| **Muted Text** | `#4A5568` | `text-[#4A5568]` | Subtitles, helper text, labels |
+| **Standard Card Radius** | `14px` | `rounded-[14px]` | Standard for all cards, containers |
 | **Control Radius** | `8px` | `rounded-lg` | Buttons, inputs, chips |
+| **Badge Radius** | Full | `rounded-full` | Status badges, avatar circles |
 
 ---
 
@@ -83,4 +87,4 @@
 
 ## 4. Verification Protocol
 - Always run `pnpm --filter @arihant/web exec tsc --noEmit` before considering any task complete. Must exit with 0 errors.
-- Ensure all pages and modals render properly with `#F7FBFF` background and `#FFFFFF` cards.
+- Ensure all pages and modals render properly with `#F6F5F1` warm linen background and `#FFFFFF` cards.

@@ -5,15 +5,16 @@
  * stuck with an inactive approver. Categories are never deleted — deactivate them instead so
  * historic claims keep their category.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { FolderKanban, Pencil, Plus, Settings2, UserX } from 'lucide-react';
+import { FolderKanban, Layers, Pencil, Plus, Search, Settings2, Tag, UserX } from 'lucide-react';
 import {
   Badge,
   Button,
   Card,
   Checkbox,
   EmptyState,
+  FilterMenu,
   InfoCallout,
   Input,
   Modal,
@@ -30,8 +31,17 @@ import {
 } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { errorMessage, fieldErrors, useCategories, type ExpenseCategory, type ExpenseClaim, type Paged } from '../_lib/expense-lib';
-import { DateText, ExpensesNav, Money, StatusBadge, useToaster } from '../_lib/expense-ui';
+import { errorMessage, fieldErrors, useBadgeCounts, useCategories, type ExpenseCategory, type ExpenseClaim, type Paged } from '../_lib/expense-lib';
+import { DateText, ExpenseViewMenu, ExpensesNav, Money, StatusBadge, useToaster } from '../_lib/expense-ui';
+
+type Section = 'categories' | 'projects' | 'approvers';
+const SECTION_SEARCH: Record<Section, string> = {
+  categories: 'Search category code or name…',
+  projects: 'Search project code or name…',
+  approvers: 'Search claim no., employee or approver…',
+};
+/** Case-insensitive match of `q` against any of the given fields. */
+const matches = (q: string, ...fields: (string | null | undefined)[]) => !q || fields.some((f) => (f || '').toLowerCase().includes(q));
 
 type CatForm = {
   id?: string;
@@ -64,12 +74,17 @@ const toForm = (c?: ExpenseCategory): CatForm => ({
 export default function ExpenseCategoriesPage() {
   const { user } = useAuth();
   const allowed = user?.role === 'admin' || user?.role === 'management';
-  const [tab, setTab] = useState<'categories' | 'projects' | 'approvers'>('categories');
+  const [tab, setTab] = useState<Section>('categories');
+  const [search, setSearch] = useState('');
+  const [newProject, setNewProject] = useState(0);
   const { categories, loading, reload } = useCategories(true);
+  const counts = useBadgeCounts(allowed);
   const [form, setForm] = useState<CatForm | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const { push, Toaster } = useToaster();
+  const q = search.trim().toLowerCase();
+  const visibleCategories = useMemo(() => categories.filter((c) => matches(q, c.code, c.name)), [categories, q]);
 
   if (!allowed) {
     return (
@@ -113,22 +128,67 @@ export default function ExpenseCategoriesPage() {
       <PageHeader
         title="Expense Categories"
         icon={<Settings2 className="h-5 w-5" />}
-        actions={tab === 'categories' ? <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => { setErrors({}); setForm(toForm()); }}>New category</Button> : undefined}
-      />
-      <ExpensesNav />
-      <Tabs
-        variant="segmented"
-        activeTab={tab}
-        onChange={(id) => setTab(id as typeof tab)}
-        tabs={[
-          { id: 'categories', label: 'Categories' },
-          { id: 'projects', label: 'Projects' },
-          { id: 'approvers', label: 'Stuck approvals' },
-        ]}
+        actions={
+          tab === 'categories' ? (
+            <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => { setErrors({}); setForm(toForm()); }}>New category</Button>
+          ) : tab === 'projects' ? (
+            <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setNewProject((n) => n + 1)}>New project</Button>
+          ) : undefined
+        }
       />
 
+      {/* One filter row: View (module navigation), section, search over the visible table. */}
+      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <ExpenseViewMenu />
+          <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <input
+              type="search"
+              aria-label="Search this list"
+              placeholder={SECTION_SEARCH[tab]}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+            <FilterMenu
+              label="Section"
+              icon={<Layers />}
+              neutralKeys={[]}
+              align="right"
+              options={[
+                { key: 'categories', label: 'Categories', icon: <Tag /> },
+                { key: 'projects', label: 'Projects', icon: <FolderKanban /> },
+                { key: 'approvers', label: 'Stuck approvals', icon: <UserX />, count: counts?.approver_inactive || undefined, urgent: true },
+              ].map((o) => ({
+                ...o,
+                active: tab === o.key,
+                onSelect: () => {
+                  setTab(o.key as Section);
+                  setSearch('');
+                },
+              }))}
+            />
+            {search && (
+              <Button variant="ghost" size="xs" onClick={() => setSearch('')} className="text-xs text-[#4A5568] hover:text-[#881337]">
+                Clear
+              </Button>
+            )}
+          </div>
+        </div>
+      </Card>
+
       {tab === 'categories' && (
-        loading ? <PageLoader rows={4} /> : (
+        loading ? <PageLoader rows={4} /> : visibleCategories.length === 0 && q ? (
+          <EmptyState
+            icon={Tag}
+            title="No categories match your search"
+            description="Try a different code or name."
+            action={<Button variant="secondary" onClick={() => setSearch('')}>Clear search</Button>}
+          />
+        ) : (
           <Card className="p-0 overflow-x-auto">
             <Table>
               <TableHeader>
@@ -143,7 +203,7 @@ export default function ExpenseCategoriesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {categories.map((c) => (
+                {visibleCategories.map((c) => (
                   <TableRow key={c.id} className={c.is_active ? '' : 'opacity-60'}>
                     <TableCell className="font-mono text-xs">{c.code}</TableCell>
                     <TableCell className="font-medium">{c.name}</TableCell>
@@ -163,8 +223,8 @@ export default function ExpenseCategoriesPage() {
         )
       )}
 
-      {tab === 'projects' && <ProjectsPanel push={push} />}
-      {tab === 'approvers' && <StuckApprovals />}
+      {tab === 'projects' && <ProjectsPanel push={push} search={q} newRequest={newProject} onClearSearch={() => setSearch('')} />}
+      {tab === 'approvers' && <StuckApprovals search={q} onClearSearch={() => setSearch('')} />}
 
       <Modal isOpen={Boolean(form)} onClose={() => setForm(null)} title={form?.id ? `Edit ${form.code}` : 'New category'} description="Inactive categories cannot be chosen on new lines but stay on historic claims." maxWidth="lg">
         {form && (
@@ -204,7 +264,13 @@ export default function ExpenseCategoriesPage() {
   );
 }
 
-const ProjectsPanel: React.FC<{ push: (k: 'success' | 'error', t: string) => void }> = ({ push }) => {
+/** Projects master. `newRequest` increments when the page header's "New project" is pressed. */
+const ProjectsPanel: React.FC<{ push: (k: 'success' | 'error', t: string) => void; search: string; newRequest: number; onClearSearch: () => void }> = ({
+  push,
+  search,
+  newRequest,
+  onClearSearch,
+}) => {
   const [projects, setProjects] = useState<any[] | null>(null);
   const [form, setForm] = useState<{ id?: string; code: string; name: string; is_active: boolean } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -213,6 +279,14 @@ const ProjectsPanel: React.FC<{ push: (k: 'success' | 'error', t: string) => voi
   useEffect(() => {
     load();
   }, [load]);
+  // Only presses made while this panel is open count — not the value it mounts with.
+  const handledRequest = useRef(newRequest);
+  useEffect(() => {
+    if (newRequest === handledRequest.current) return;
+    handledRequest.current = newRequest;
+    setErrors({});
+    setForm({ code: '', name: '', is_active: true });
+  }, [newRequest]);
   const save = async () => {
     if (!form) return;
     setSaving(true);
@@ -230,17 +304,24 @@ const ProjectsPanel: React.FC<{ push: (k: 'success' | 'error', t: string) => voi
     }
   };
   if (!projects) return <PageLoader rows={3} />;
+  const visible = projects.filter((p) => matches(search, p.code, p.name));
   return (
     <div className="space-y-3">
-      <div className="flex justify-end"><Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => { setErrors({}); setForm({ code: '', name: '', is_active: true }); }}>New project</Button></div>
       {projects.length === 0 ? (
         <EmptyState icon={FolderKanban} title="No projects yet" description="Projects let Demo and Service expenses be tagged when there is no single customer." />
+      ) : visible.length === 0 ? (
+        <EmptyState
+          icon={FolderKanban}
+          title="No projects match your search"
+          description="Try a different code or name."
+          action={<Button variant="secondary" onClick={onClearSearch}>Clear search</Button>}
+        />
       ) : (
         <Card className="p-0 overflow-x-auto">
           <Table>
             <TableHeader><TableRow><TableHead>Code</TableHead><TableHead>Name</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Edit</TableHead></TableRow></TableHeader>
             <TableBody>
-              {projects.map((p) => (
+              {visible.map((p) => (
                 <TableRow key={p.id} className={p.is_active ? '' : 'opacity-60'}>
                   <TableCell className="font-mono text-xs">{p.code}</TableCell>
                   <TableCell>{p.name}</TableCell>
@@ -267,7 +348,7 @@ const ProjectsPanel: React.FC<{ push: (k: 'success' | 'error', t: string) => voi
 };
 
 /** Claims awaiting a manager who has since been deactivated (§5.17). */
-const StuckApprovals: React.FC = () => {
+const StuckApprovals: React.FC<{ search: string; onClearSearch: () => void }> = ({ search, onClearSearch }) => {
   const [result, setResult] = useState<Paged<ExpenseClaim> | null>(null);
   useEffect(() => {
     const load = () => api.get('/expense-claims', { approver_inactive: true, page_size: 50 }).then(setResult).catch(() => setResult({ data: [], total: 0, page: 1, limit: 50, totalPages: 1 }));
@@ -277,12 +358,23 @@ const StuckApprovals: React.FC = () => {
   }, []);
   if (!result) return <PageLoader rows={3} />;
   if (!result.data.length) return <EmptyState icon={UserX} title="No stuck approvals" description="Claims waiting on a deactivated approver will appear here for reassignment." />;
+  const visible = result.data.filter((c) => matches(search, c.claim_number, c.employee_name, c.manager_name));
+  if (!visible.length) {
+    return (
+      <EmptyState
+        icon={UserX}
+        title="No stuck approvals match your search"
+        description="Try a different claim number or name."
+        action={<Button variant="secondary" onClick={onClearSearch}>Clear search</Button>}
+      />
+    );
+  }
   return (
     <Card className="p-0 overflow-x-auto">
       <Table>
         <TableHeader><TableRow><TableHead>Claim</TableHead><TableHead>Employee</TableHead><TableHead>Inactive approver</TableHead><TableHead>Submitted</TableHead><TableHead className="text-right">Amount</TableHead><TableHead /></TableRow></TableHeader>
         <TableBody>
-          {result.data.map((c) => (
+          {visible.map((c) => (
             <TableRow key={c.id}>
               <TableCell className="font-mono text-xs text-[#0F5E63]">{c.claim_number}</TableCell>
               <TableCell>{c.employee_name}</TableCell>

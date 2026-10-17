@@ -2,17 +2,16 @@
 
 /**
  * Module 8 task list building blocks shared by My Tasks, Team Tasks and the queues:
- * desktop table, mobile cards, a drag-and-drop Kanban board and pagination.
+ * desktop table, mobile cards, pagination and the Kanban move rules (the board itself is TaskBoard).
  * Kanban moves only offer transitions the shared TASK_TRANSITIONS map allows for this viewer;
  * the API re-checks permission, status and version on every call.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ChevronLeft, ChevronRight, GripVertical, MoveRight } from 'lucide-react';
-import { Button, Card, Checkbox, Input, Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
+import { ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { Button, Card, Checkbox, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
 import { api } from '@/lib/api';
-import { useAuth } from '@/lib/auth-context';
 import {
   TASK_OVERDUE_CAPABLE_STATUSES,
   TASK_RECURRENCE_LABELS,
@@ -24,9 +23,9 @@ import {
   type TaskRecurrenceType,
   type TaskStatus,
 } from '@arihant/shared';
-import { errorMessage, isConflict, notifyTasksChanged, type Paged, type TaskRow } from './task-lib';
-import { BlockerBadge, DelayBadge, DueText, FlagChip, PriorityBadge, ProgressBar, StatusBadge, TaskConflictCallout, TaskStatusBadges } from './task-ui';
-import { TaskActionDialog, type TaskDialogAction } from './TaskActions';
+import { errorMessage, type Paged, type TaskRow } from './task-lib';
+import { BlockerBadge, DelayBadge, DueText, FlagChip, PriorityBadge, ProgressBar, TaskStatusBadges } from './task-ui';
+import type { TaskDialogAction } from './TaskActions';
 
 // ------------------------------------------------------------------ data
 /**
@@ -65,7 +64,7 @@ export function useTaskList(query: Record<string, string | number | boolean | un
 
 // ------------------------------------------------------------------ helpers
 /** Work the assignee still owes (the deadline countdown matters). */
-const countsDown = (t: Pick<TaskRow, 'status'>) => TASK_OVERDUE_CAPABLE_STATUSES.includes(t.status);
+export const countsDown = (t: Pick<TaskRow, 'status'>) => TASK_OVERDUE_CAPABLE_STATUSES.includes(t.status);
 
 /** "General · Acme Hospital · Weekly" — category, linked record and recurrence. */
 export const taskContextLine = (t: TaskRow) =>
@@ -145,7 +144,7 @@ export const TaskTable: React.FC<TaskListProps> = ({ rows, showAssignee, selecte
 
   return (
     <div className="hidden md:block">
-      <Table>
+      <Table className="[&_td]:px-3 [&_th]:px-3">
         <TableHeader>
           <TableRow>
             {selectable && (
@@ -162,11 +161,8 @@ export const TaskTable: React.FC<TaskListProps> = ({ rows, showAssignee, selecte
             )}
             <TableHead>Task</TableHead>
             {showAssignee && <TableHead>Assignee</TableHead>}
-            <TableHead>Priority</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Deadline</TableHead>
-            <TableHead className="w-32">Progress</TableHead>
-            <TableHead>Flags</TableHead>
             {rowActions && <TableHead className="text-right">Actions</TableHead>}
           </TableRow>
         </TableHeader>
@@ -185,33 +181,42 @@ export const TaskTable: React.FC<TaskListProps> = ({ rows, showAssignee, selecte
                     <Checkbox aria-label={`Select ${t.task_number}`} checked={isSelected} onChange={(e) => toggle([t.id], e.target.checked)} />
                   </TableCell>
                 )}
-                <TableCell className="max-w-[320px]">
-                  <div className="font-mono text-xs font-semibold text-[#0F5E63]">{t.task_number}</div>
-                  <Link href={`/tasks/${t.id}`} onClick={(e) => e.stopPropagation()} className="block truncate font-medium text-[#14213D] hover:underline focus:underline focus:outline-none">
-                    {t.title}
-                  </Link>
-                  <div className="truncate text-[11px] text-[#4A5568]">{taskContextLine(t)}</div>
+                {/* Widths are capped on inner wrappers: auto table layout ignores max-width on cells. */}
+                <TableCell>
+                  <div className="min-w-0 max-w-[310px]">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-xs font-semibold text-[#0F5E63]">{t.task_number}</span>
+                      <PriorityBadge priority={t.priority} />
+                    </div>
+                    <Link href={`/tasks/${t.id}`} onClick={(e) => e.stopPropagation()} title={t.title} className="block truncate font-medium text-[#14213D] hover:underline focus:underline focus:outline-none">
+                      {t.title}
+                    </Link>
+                    <div className="truncate text-[11px] text-[#4A5568]" title={taskContextLine(t)}>
+                      {taskContextLine(t)}
+                    </div>
+                  </div>
                 </TableCell>
                 {showAssignee && (
-                  <TableCell className="max-w-[180px]">
-                    <div className={`truncate text-xs font-medium ${t.assignee_active === false ? 'text-[#881337]' : 'text-[#14213D]'}`}>{t.assignee_name || 'Unassigned'}</div>
-                    {t.department_name && <div className="truncate text-[11px] text-[#4A5568]">{t.department_name}</div>}
+                  <TableCell>
+                    <div className="min-w-0 max-w-[160px]">
+                      <div className={`truncate text-xs font-medium ${t.assignee_active === false ? 'text-[#881337]' : 'text-[#14213D]'}`} title={t.assignee_name || undefined}>
+                        {t.assignee_name || 'Unassigned'}
+                      </div>
+                      {t.department_name && <div className="truncate text-[11px] text-[#4A5568]">{t.department_name}</div>}
+                    </div>
                   </TableCell>
                 )}
                 <TableCell>
-                  <PriorityBadge priority={t.priority} />
-                </TableCell>
-                <TableCell className="max-w-[220px]">
-                  <StatusCell task={t} />
+                  <div className="min-w-0 max-w-[200px] space-y-1">
+                    <StatusCell task={t} />
+                    <TaskFlags task={t} showInactive={Boolean(showAssignee)} />
+                  </div>
                 </TableCell>
                 <TableCell className="whitespace-nowrap">
-                  <DeadlineCell task={t} />
-                </TableCell>
-                <TableCell>
-                  <ProgressBar value={t.progress_percent} />
-                </TableCell>
-                <TableCell className="max-w-[200px]">
-                  <TaskFlags task={t} showInactive={Boolean(showAssignee)} />
+                  <div className="w-32 space-y-1.5">
+                    <DeadlineCell task={t} />
+                    {t.status !== 'completed' && <ProgressBar value={t.progress_percent} />}
+                  </div>
                 </TableCell>
                 {rowActions && (
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
@@ -282,12 +287,16 @@ export const TaskCards: React.FC<TaskListProps> = ({ rows, showAssignee, selecte
 };
 
 // ------------------------------------------------------------------ search
-/** Search box that commits on Enter or blur (keeps the URL quiet while typing). */
-export const TaskSearchInput: React.FC<{ value: string; onSearch: (q: string) => void; label?: string; placeholder?: string }> = ({
+/**
+ * Search box that commits on Enter or blur (keeps the URL quiet while typing); clearing it applies at once.
+ * `compact` drops the visible label and shows a search icon, for toolbar rows.
+ */
+export const TaskSearchInput: React.FC<{ value: string; onSearch: (q: string) => void; label?: string; placeholder?: string; compact?: boolean }> = ({
   value,
   onSearch,
   label = 'Search',
   placeholder = 'Task number or title',
+  compact,
 }) => {
   const [q, setQ] = useState(value);
   useEffect(() => setQ(value), [value]);
@@ -297,13 +306,27 @@ export const TaskSearchInput: React.FC<{ value: string; onSearch: (q: string) =>
   return (
     <form
       role="search"
-      className="w-full"
+      className={`w-full ${compact ? 'relative' : ''}`}
       onSubmit={(e) => {
         e.preventDefault();
         commit();
       }}
     >
-      <Input label={label} type="search" value={q} placeholder={placeholder} enterKeyHint="search" onChange={(e) => setQ(e.target.value)} onBlur={commit} />
+      {compact && <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />}
+      <Input
+        label={compact ? undefined : label}
+        aria-label={compact ? label : undefined}
+        type="search"
+        value={q}
+        placeholder={placeholder}
+        enterKeyHint="search"
+        className={compact ? 'h-9 pl-9' : undefined}
+        onChange={(e) => {
+          setQ(e.target.value);
+          if (!e.target.value && value) onSearch('');
+        }}
+        onBlur={commit}
+      />
     </form>
   );
 };
@@ -423,246 +446,3 @@ export function planKanbanMove(row: TaskRow, to: TaskStatus, kinds: Set<TaskActo
       return { ok: false, message: 'This move is not allowed.' };
   }
 }
-
-// ------------------------------------------------------------------ kanban board
-export const TaskKanban: React.FC<{
-  rows: TaskRow[];
-  /** Viewer has a team or can view all (manager actions are offered on others' tasks). */
-  isManager: boolean;
-  showAssignee?: boolean;
-  /** Reload the board after a move. */
-  onChanged: () => void;
-  notify: (kind: 'success' | 'error', text: string) => void;
-}> = ({ rows, isManager, showAssignee, onChanged, notify }) => {
-  const { user } = useAuth();
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [overCol, setOverCol] = useState<TaskStatus | null>(null);
-  const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: TaskRow } | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [menuFor, setMenuFor] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
-
-  const columns = useMemo(() => {
-    const map = new Map<TaskStatus, TaskRow[]>(KANBAN_COLUMNS.map((c) => [c.id, []]));
-    rows.forEach((r) => map.get(r.status)?.push(r));
-    return map;
-  }, [rows]);
-
-  const kindsOf = (row: TaskRow) => rowActorKinds(row, user?.id, isManager);
-  const dragRow = dragId ? rows.find((r) => r.id === dragId) || null : null;
-
-  const move = async (row: TaskRow, to: TaskStatus) => {
-    setMenuFor(null);
-    const plan = planKanbanMove(row, to, kindsOf(row));
-    if (!plan) return;
-    if (!plan.ok) {
-      notify('error', plan.message);
-      return;
-    }
-    if (plan.action !== 'start') {
-      setDialog({ action: plan.action, task: row });
-      return;
-    }
-    // Starting has no fields — do it straight from the drop.
-    setBusyId(row.id);
-    try {
-      await api.post(`/tasks/${row.id}/start`, { version: row.version });
-      notifyTasksChanged();
-      notify('success', `${row.task_number} started.`);
-      onChanged();
-    } catch (e) {
-      if (isConflict(e) && (e as any)?.data?.code === 'STALE_VERSION') setConflict(true);
-      else notify('error', errorMessage(e));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const endDrag = () => {
-    setDragId(null);
-    setOverCol(null);
-  };
-
-  return (
-    <div className="space-y-3">
-      {conflict && (
-        <TaskConflictCallout
-          onRefresh={() => {
-            setConflict(false);
-            onChanged();
-          }}
-        />
-      )}
-      <p className="hidden md:block text-[11px] text-[#4A5568]">Drag a card to another column, or use “Move to…” on the card. Only moves allowed for you are applied.</p>
-      <div className="-mx-1 overflow-x-auto px-1 pb-2">
-        <div className="flex gap-3 snap-x snap-mandatory lg:grid lg:grid-cols-5">
-          {KANBAN_COLUMNS.map((col) => {
-            const items = columns.get(col.id) || [];
-            const plan = dragRow ? planKanbanMove(dragRow, col.id, kindsOf(dragRow)) : null;
-            const isOver = overCol === col.id;
-            const tone = !dragRow || !plan ? 'border-[#DCD8CE]' : plan.ok ? 'border-[#0F5E63] border-dashed bg-[#E3EFEE]/40' : 'border-[#DCD8CE] opacity-60';
-            return (
-              <section
-                key={col.id}
-                aria-label={`${col.label} (${items.length})`}
-                onDragOver={(e) => {
-                  if (!dragId) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  if (overCol !== col.id) setOverCol(col.id);
-                }}
-                onDragLeave={(e) => {
-                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverCol((c) => (c === col.id ? null : c));
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const id = e.dataTransfer.getData('text/plain') || dragId;
-                  endDrag();
-                  const row = rows.find((r) => r.id === id);
-                  if (row) move(row, col.id);
-                }}
-                className={`flex w-[82vw] max-w-[320px] shrink-0 snap-start flex-col rounded-[14px] border bg-[#FBFAF7] transition-colors sm:w-[300px] lg:w-auto lg:max-w-none ${tone} ${isOver && plan?.ok ? 'ring-2 ring-[#0F5E63]/30' : ''}`}
-              >
-                <header className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-3 py-2.5">
-                  <h3 className="font-serif text-sm font-bold text-[#14213D]">{col.label}</h3>
-                  <span className="rounded-full bg-white border border-[#DCD8CE] px-2 py-0.5 font-mono text-[11px] font-semibold text-[#4A5568]">{items.length}</span>
-                </header>
-                {dragRow && plan && (
-                  <p className={`px-3 pt-2 text-[11px] font-semibold ${plan.ok ? 'text-[#0F5E63]' : 'text-[#8A8578]'}`}>{plan.ok ? `Drop to ${plan.label.toLowerCase()}` : 'Not allowed'}</p>
-                )}
-                <ul className="flex min-h-[120px] flex-1 flex-col gap-2 p-2">
-                  {items.length === 0 && <li className="flex flex-1 items-center justify-center rounded-[10px] border border-dashed border-[#DCD8CE] p-4 text-center text-[11px] text-[#8A8578]">No tasks</li>}
-                  {items.map((t) => (
-                    <KanbanCard
-                      key={t.id}
-                      task={t}
-                      showAssignee={showAssignee}
-                      busy={busyId === t.id}
-                      dragging={dragId === t.id}
-                      menuOpen={menuFor === t.id}
-                      kinds={kindsOf(t)}
-                      onToggleMenu={() => setMenuFor((m) => (m === t.id ? null : t.id))}
-                      onMove={(to) => move(t, to)}
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData('text/plain', t.id);
-                        e.dataTransfer.effectAllowed = 'move';
-                        setMenuFor(null);
-                        setDragId(t.id);
-                      }}
-                      onDragEnd={endDrag}
-                    />
-                  ))}
-                </ul>
-              </section>
-            );
-          })}
-        </div>
-      </div>
-
-      <TaskActionDialog
-        action={dialog?.action ?? null}
-        task={dialog?.task ?? null}
-        onClose={() => setDialog(null)}
-        onDone={(_detail, message) => {
-          setDialog(null);
-          notify('success', message);
-          onChanged();
-        }}
-        onConflict={() => setConflict(true)}
-      />
-    </div>
-  );
-};
-
-const KanbanCard: React.FC<{
-  task: TaskRow;
-  showAssignee?: boolean;
-  busy: boolean;
-  dragging: boolean;
-  menuOpen: boolean;
-  kinds: Set<TaskActorKind>;
-  onToggleMenu: () => void;
-  onMove: (to: TaskStatus) => void;
-  onDragStart: (e: React.DragEvent<HTMLLIElement>) => void;
-  onDragEnd: () => void;
-}> = ({ task: t, showAssignee, busy, dragging, menuOpen, kinds, onToggleMenu, onMove, onDragStart, onDragEnd }) => {
-  const menuId = `move-${t.id}`;
-  const showDelay = (t.status === 'completed' || t.status === 'awaiting_approval') && Boolean(t.delay_class) && t.delay_class !== 'open';
-  const hasChips = t.is_overdue || Boolean(t.open_blocker) || showDelay || t.no_update || t.generated_late || (showAssignee && t.assignee_active === false);
-  return (
-    <li
-      draggable={!busy}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      aria-busy={busy || undefined}
-      className={`group rounded-[10px] border bg-white p-3 shadow-2xs space-y-2 transition-opacity ${dragging ? 'opacity-40' : ''} ${t.is_overdue ? 'border-[#DCD8CE] border-l-[3px] border-l-[#9A3412]' : 'border-[#DCD8CE]'} ${busy ? 'cursor-wait' : 'cursor-grab active:cursor-grabbing'}`}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <span className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-[#0F5E63]">
-          <GripVertical className="hidden md:inline h-3.5 w-3.5 text-[#C9C4B8]" aria-hidden />
-          {t.task_number}
-        </span>
-        <PriorityBadge priority={t.priority} />
-      </div>
-      <Link href={`/tasks/${t.id}`} draggable={false} className="block text-sm font-medium leading-snug text-[#14213D] line-clamp-2 hover:underline focus:underline focus:outline-none">
-        {t.title}
-      </Link>
-      {hasChips && (
-        <div className="flex flex-wrap items-center gap-1">
-          {t.is_overdue && <StatusBadge status="overdue" />}
-          {t.open_blocker && <BlockerBadge status={t.open_blocker.status} />}
-          {showDelay && <DelayBadge delay={t.delay_class} />}
-          <TaskFlags task={t} showInactive={Boolean(showAssignee)} />
-        </div>
-      )}
-      <div className="flex items-end justify-between gap-2">
-        <DueText deadline={t.deadline} open={countsDown(t)} />
-        {showAssignee && <span className="min-w-0 truncate text-right text-[11px] text-[#4A5568]">{t.assignee_name}</span>}
-      </div>
-      {t.status === 'in_progress' && <ProgressBar value={t.progress_percent} />}
-      <div className="flex items-center justify-between gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="h-10 md:h-8 -ml-2"
-          aria-expanded={menuOpen}
-          aria-controls={menuId}
-          disabled={busy}
-          rightIcon={<MoveRight className="h-3.5 w-3.5" />}
-          onClick={onToggleMenu}
-        >
-          Move to…
-        </Button>
-        {busy && <Spinner size="xs" />}
-      </div>
-      {menuOpen && (
-        <div
-          id={menuId}
-          role="group"
-          aria-label={`Move ${t.task_number} to`}
-          className="grid gap-1 border-t border-[#ECE9E2] pt-2"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') onToggleMenu();
-          }}
-        >
-          {KANBAN_COLUMNS.filter((c) => c.id !== t.status).map((c, i) => {
-            const plan = planKanbanMove(t, c.id, kinds);
-            return (
-              <button
-                key={c.id}
-                type="button"
-                autoFocus={i === 0}
-                onClick={() => onMove(c.id)}
-                className={`flex h-10 items-center justify-between gap-2 rounded-lg px-3 text-left text-xs transition-colors hover:bg-[#E3EFEE] focus:bg-[#E3EFEE] focus:outline-none ${plan?.ok ? 'font-semibold text-[#14213D]' : 'text-[#8A8578]'}`}
-              >
-                <span>{c.label}</span>
-                <span className="text-[11px] font-medium">{plan?.ok ? plan.label : 'Not allowed'}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </li>
-  );
-};

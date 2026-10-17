@@ -42,6 +42,21 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { formatTaskDateTime } from '@arihant/shared';
+import { istToday, istNowLocalInput, fromIstLocalInput, toIstLocalInput } from '@/lib/ist-date';
+
+/** Server-computed submission readiness (GET /tenders/:id → document_readiness). */
+interface DocumentReadiness {
+  mandatory_total: number;
+  mandatory_ready: number;
+  percentage: number;
+  all_mandatory_ready: boolean;
+  checklist_created: boolean;
+  source: 'checklist' | 'template';
+  missing: string[];
+}
+
+const SUBMISSION_STAGES = ['submitted', 'pq_submitted'];
 import { RelatedRecords } from '@/components/links/RelatedRecords';
 import { GuardedLink } from '@/components/links/GuardedLink';
 
@@ -134,14 +149,14 @@ export function TenderDossierModal({
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [selectedNextStatus, setSelectedNextStatus] = useState<string>('');
   const [transitionNotes, setTransitionNotes] = useState<string>('');
-  const [portalSubmissionDate, setPortalSubmissionDate] = useState<string>(
-    new Date().toISOString().split('T')[0]
-  );
+  const [portalSubmissionDate, setPortalSubmissionDate] = useState<string>(istToday());
+  const [transitionError, setTransitionError] = useState<string | null>(null);
 
   const handlePerformTransition = async (targetStatus: string, defaultRemarks?: string) => {
     if (!tender?.id) return;
     setIsTransitioning(true);
     setFeedbackMsg(null);
+    setTransitionError(null);
     try {
       await api.post(`/tenders/${tender.id}/transitions`, {
         target_status: targetStatus,
@@ -157,10 +172,8 @@ export function TenderDossierModal({
       await loadTender();
       onTenderUpdated?.();
     } catch (err: any) {
-      setFeedbackMsg({
-        type: 'error',
-        text: err?.message || 'Failed to transition tender stage.',
-      });
+      // Shown inline next to the Confirm button (the server's exact reason, e.g. which documents are not Ready).
+      setTransitionError(err?.message || 'Failed to transition tender stage.');
     } finally {
       setIsTransitioning(false);
     }
@@ -364,6 +377,7 @@ export function TenderDossierModal({
     new_deadline: '',
     summary: '',
   });
+  const [corrigendumError, setCorrigendumError] = useState<string | null>(null);
 
   const [isInstrumentOpen, setIsInstrumentOpen] = useState(false);
   const [newInstrument, setNewInstrument] = useState({
@@ -635,16 +649,23 @@ export function TenderDossierModal({
 
   const handleAddCorrigendum = async () => {
     if (!tenderId) return;
+    setCorrigendumError(null);
+    // The box holds IST wall-clock time; send it as an IST instant so the deadline shown is the time entered.
+    const newDeadlineIso = fromIstLocalInput(newCorrigendum.new_deadline);
+    if (!newCorrigendum.corrigendum_number.trim() || !newDeadlineIso) {
+      setCorrigendumError('Corrigendum number and the new deadline (date and time, IST) are required.');
+      return;
+    }
     setActionLoading(true);
     try {
-      await api.post(`/tenders/${tenderId}/corrigenda`, newCorrigendum);
+      await api.post(`/tenders/${tenderId}/corrigenda`, { ...newCorrigendum, new_deadline: newDeadlineIso });
       setIsCorrigendumOpen(false);
       setNewCorrigendum({ corrigendum_number: '', new_deadline: '', summary: '' });
       await loadTender();
       onTenderUpdated?.();
       setFeedbackMsg({ type: 'success', text: 'Corrigendum recorded and deadline updated' });
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to record corrigendum' });
+      setCorrigendumError(err?.message || 'Failed to record corrigendum');
     } finally {
       setActionLoading(false);
     }
@@ -945,12 +966,12 @@ export function TenderDossierModal({
                     <p className="text-[#4A5568]">
                       Deadline:{' '}
                       <span className="font-bold text-[#9A3412]">
-                        {tender.submission_deadline ? new Date(tender.submission_deadline).toLocaleString('en-IN') : 'N/A'}
+                        {tender.submission_deadline ? `${formatTaskDateTime(tender.submission_deadline)} IST` : 'N/A'}
                       </span>
                     </p>
                     {tender.pre_bid_meeting_date && (
                       <p className="text-[#4A5568]">
-                        Pre-Bid: <span className="font-medium text-[#14213D]">{new Date(tender.pre_bid_meeting_date).toLocaleString('en-IN')}</span>
+                        Pre-Bid: <span className="font-medium text-[#14213D]">{formatTaskDateTime(tender.pre_bid_meeting_date)} IST</span>
                       </p>
                     )}
                   </div>
@@ -1115,7 +1136,7 @@ export function TenderDossierModal({
                         </div>
                         {tender.internal_approval_at && (
                           <span className="text-[11px] font-mono text-[#4A5568]">
-                            {new Date(tender.internal_approval_at).toLocaleString('en-IN')}
+                            {formatTaskDateTime(tender.internal_approval_at)}
                           </span>
                         )}
                       </div>
@@ -1911,7 +1932,12 @@ export function TenderDossierModal({
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Corrigenda & Deadline Extensions</h4>
                   <p className="text-[11px] text-[#4A5568]">Official portal corrigenda history. Modifying deadline preserves original submission date.</p>
                 </div>
-                <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setIsCorrigendumOpen(true)}>
+                <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => {
+                  setCorrigendumError(null);
+                  // Pre-fill with the current deadline as IST wall clock, so editing keeps the time the user sees.
+                  setNewCorrigendum((prev) => ({ ...prev, new_deadline: prev.new_deadline || toIstLocalInput(tender.submission_deadline) }));
+                  setIsCorrigendumOpen(true);
+                }}>
                   Add Corrigendum
                 </Button>
               </div>
@@ -1933,10 +1959,10 @@ export function TenderDossierModal({
                         <TableCell className="font-bold font-mono text-xs text-[#14213D]">{c.corrigendum_number}</TableCell>
                         <TableCell className="text-xs">{c.issued_date || 'N/A'}</TableCell>
                         <TableCell className="font-mono text-xs text-[#4A5568]">
-                          {c.old_deadline ? new Date(c.old_deadline).toLocaleString('en-IN') : 'N/A'}
+                          {c.old_deadline ? `${formatTaskDateTime(c.old_deadline)} IST` : 'N/A'}
                         </TableCell>
                         <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">
-                          {c.new_deadline ? new Date(c.new_deadline).toLocaleString('en-IN') : 'N/A'}
+                          {c.new_deadline ? `${formatTaskDateTime(c.new_deadline)} IST` : 'N/A'}
                         </TableCell>
                         <TableCell className="text-xs text-[#4A5568]">{c.summary || 'Deadline extended'}</TableCell>
                       </TableRow>
@@ -2089,7 +2115,7 @@ export function TenderDossierModal({
                     <div key={cm.id} className="p-3 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] space-y-1">
                       <div className="flex items-center justify-between text-[11px]">
                         <span className="font-bold text-[#14213D]">{cm.author_name || 'Team Member'}</span>
-                        <span className="text-[#4A5568] font-mono">{new Date(cm.created_at).toLocaleString('en-IN')}</span>
+                        <span className="text-[#4A5568] font-mono">{formatTaskDateTime(cm.created_at)}</span>
                       </div>
                       <p className="text-xs text-[#14213D]">{cm.body}</p>
                     </div>
@@ -2236,7 +2262,7 @@ export function TenderDossierModal({
                       <div className="space-y-0.5 flex-1">
                         <div className="flex items-center justify-between text-[11px]">
                           <span className="font-bold text-[#14213D]">{act.event_type}</span>
-                          <span className="font-mono text-[#4A5568]">{new Date(act.created_at).toLocaleString('en-IN')}</span>
+                          <span className="font-mono text-[#4A5568]">{formatTaskDateTime(act.created_at)}</span>
                         </div>
                         <p className="text-xs text-[#4A5568]">{act.description}</p>
                         {act.performed_by_name && (
@@ -2312,6 +2338,11 @@ export function TenderDossierModal({
         maxWidth="md"
       >
         <div className="space-y-3 text-xs">
+          {corrigendumError && (
+            <InfoCallout variant="danger" onClose={() => setCorrigendumError(null)}>
+              {corrigendumError}
+            </InfoCallout>
+          )}
           <Input
             label="Corrigendum Number"
             value={newCorrigendum.corrigendum_number}
@@ -2322,6 +2353,7 @@ export function TenderDossierModal({
           <Input
             label="New Submission Deadline (IST)"
             type="datetime-local"
+            min={istNowLocalInput()}
             value={newCorrigendum.new_deadline}
             onChange={(e) => setNewCorrigendum({ ...newCorrigendum, new_deadline: e.target.value })}
             required

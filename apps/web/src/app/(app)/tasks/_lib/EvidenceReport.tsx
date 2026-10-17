@@ -12,11 +12,8 @@ import Link from 'next/link';
 import { Lock, Snowflake } from 'lucide-react';
 import {
   Badge,
-  Button,
-  ButtonGroup,
   Card,
   InfoCallout,
-  Input,
   SectionHeader,
   Table,
   TableBody,
@@ -184,7 +181,7 @@ const days = (v: number | null | undefined) => `${v ?? 0} d`;
 const roleLabel = (r: string) => r.replace(/_/g, ' ');
 const Num: React.FC<{ children: React.ReactNode }> = ({ children }) => <span className="font-mono tabular-nums">{children}</span>;
 
-// ------------------------------------------------------------------ period picker
+// ------------------------------------------------------------------ periods
 export type PeriodPreset = 'this_month' | 'last_month' | 'last_30' | 'this_quarter';
 
 const PRESET_LABEL: Record<PeriodPreset, string> = { this_month: 'This month', last_month: 'Last month', last_30: 'Last 30 days', this_quarter: 'This quarter' };
@@ -210,37 +207,15 @@ export const defaultPeriod = () => presetRange('this_month');
 
 export const periodError = (from: string, to: string) => (from && to && from > to ? '"To" must be on or after "From".' : undefined);
 
-export const PeriodPicker: React.FC<{
-  from: string;
-  to: string;
-  onChange: (v: { from: string; to: string }) => void;
-  errors?: Record<string, string>;
-  presets?: PeriodPreset[];
-  children?: React.ReactNode;
-}> = ({ from, to, onChange, errors = {}, presets = ['this_month', 'last_month', 'last_30', 'this_quarter'], children }) => {
-  const toError = errors.to || periodError(from, to);
-  return (
-    <div className="space-y-3">
-      <ButtonGroup className="flex-wrap" role="group" aria-label="Period presets">
-        {presets.map((p) => {
-          const r = presetRange(p);
-          const on = r.from === from && r.to === to;
-          return (
-            <Button key={p} type="button" size="xs" variant={on ? 'primary' : 'secondary'} aria-pressed={on} onClick={() => onChange(r)}>
-              {PRESET_LABEL[p]}
-            </Button>
-          );
-        })}
-      </ButtonGroup>
-      <div className={`grid grid-cols-2 gap-3 items-start ${children ? 'lg:grid-cols-4' : 'sm:max-w-md'}`}>
-        <Input id="period-from" label="From" type="date" value={from} onChange={(e) => e.target.value && onChange({ from: e.target.value, to })} error={errors.from} />
-        <Input id="period-to" label="To" type="date" value={to} min={from || undefined} onChange={(e) => e.target.value && onChange({ from, to: e.target.value })} error={toError} />
-        {children}
-      </div>
-      <p className="text-[11px] text-[#4A5568]">Dates are calendar days in IST.</p>
-    </div>
-  );
-};
+/** The presets a period row offers, in order. */
+export const PERIOD_PRESETS: { key: PeriodPreset; label: string }[] = (['this_month', 'last_month', 'last_30', 'this_quarter'] as const).map((key) => ({ key, label: PRESET_LABEL[key] }));
+
+/** The preset a range matches ("This month" …), or "Custom" — the chip on a Period filter button. */
+export const periodLabel = (from: string, to: string) =>
+  PERIOD_PRESETS.find((p) => {
+    const r = presetRange(p.key);
+    return r.from === from && r.to === to;
+  })?.label || 'Custom';
 
 // ------------------------------------------------------------------ delay mix bar
 type MixKey = 'on_time' | 'late_excused' | 'late_unexcused' | 'open_overdue';

@@ -1,3 +1,4 @@
+import { addIsoDays, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   Inject,
@@ -189,8 +190,8 @@ export class ServicePortalService {
     if (dto.preferred_visit_date && String(dto.preferred_visit_date).trim()) {
       const raw = String(dto.preferred_visit_date).trim().slice(0, 10);
       const valid = /^\d{4}-\d{2}-\d{2}$/.test(raw) && new Date(`${raw}T00:00:00Z`).toISOString().slice(0, 10) === raw;
-      const today = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
-      const max = new Date(Date.now() + 330 * 60000 + 90 * 86400000).toISOString().slice(0, 10);
+      const today = todayInKolkata();
+      const max = addIsoDays(today, 90);
       if (!valid) errors.push('Preferred visit date is not a valid date');
       else if (raw < today) errors.push('Preferred visit date cannot be in the past');
       else if (raw > max) errors.push('Preferred visit date must be within the next 90 days');
