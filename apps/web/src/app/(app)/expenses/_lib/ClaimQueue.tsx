@@ -335,7 +335,7 @@ export const ClaimQueue: React.FC<{
       )}
 
       <Modal isOpen={Boolean(quick)} onClose={() => setQuick(null)} title="Quick view" maxWidth="4xl">
-        {quick && <ClaimDetail key={quick} claimId={quick} />}
+        {quick && <ClaimDetail key={quick} claimId={quick} inModal />}
       </Modal>
       <Toaster />
     </div>

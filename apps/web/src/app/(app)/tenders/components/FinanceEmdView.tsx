@@ -150,17 +150,6 @@ export function FinanceEmdView({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={loadData}
-            isLoading={loading}
-            leftIcon={<RefreshCw className="w-4 h-4" />}
-          >
-            Refresh
-          </Button>
-        </div>
       </div>
 
       {/* KPI Cards */}

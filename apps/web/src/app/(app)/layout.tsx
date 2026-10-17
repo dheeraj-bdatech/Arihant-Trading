@@ -68,7 +68,7 @@ export default function AppLayout({
         <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
           <Navbar onOpenCommand={() => setIsCommandOpen(true)} />
           <div className="relative flex-1 min-h-0">
-            <main key={pathname} className="route-enter absolute inset-0 z-10 overflow-y-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-6 custom-scrollbar">
+            <main key={pathname} className="route-enter absolute inset-0 z-10 overflow-y-auto px-4 pt-5 sm:px-6 lg:px-8 lg:pt-6 custom-scrollbar">
               <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-5">
             {isUnauthorized ? (
               <div className="max-w-2xl mx-auto my-12 bg-white border border-[#DCD8CE] rounded-[10px] p-8 shadow-xs text-center space-y-5">

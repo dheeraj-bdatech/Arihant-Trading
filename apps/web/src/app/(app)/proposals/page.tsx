@@ -25,8 +25,6 @@ import {
   MessageSquare,
   History,
   X,
-  ChevronRight,
-  ChevronLeft,
   Briefcase,
   Copy,
   Check,
@@ -41,6 +39,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useOpenParam } from '@/lib/use-open-param';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { canOpen } from '@/lib/route-access';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
 import { getSocket } from '@/lib/socket';
@@ -54,16 +53,13 @@ import {
   Textarea,
   PageContainer,
   PageHeader,
-  EmptyState,
-  Table,
-  TableHeader,
-  TableBody,
-  TableHead,
-  TableRow,
-  TableCell,
   StatGrid,
   StatCard,
-  Tabs, Spinner, FilterMenu, InfoCallout } from '@/components/ui';
+  RecordViews,
+  toneFor,
+  type RecordItem,
+  type BoardLane,
+  Tabs, Spinner, FilterMenu, InfoCallout, FormSteps, FormSection } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
 import {
@@ -87,6 +83,14 @@ const PROPOSAL_STATUS_FILTERS = [
   { key: 'CLOSED', label: 'Closed' },
   { key: 'LOST', label: 'Lost' },
 ];
+/** Stage-board lanes in workflow order (same statuses as the Status filter). */
+const PROPOSAL_LANES: BoardLane[] = PROPOSAL_STATUS_FILTERS.map((s) => ({ key: s.key, label: s.label, tone: toneFor(s.label) }));
+/** Legacy lowercase / short status values fold into the canonical upper-case lanes. */
+const LEGACY_PROPOSAL_LANE: Record<string, string> = { REQUESTED: 'PROPOSAL_REQUESTED', SENT: 'SENT_TO_CUSTOMER', FOLLOWUP_REQUIRED: 'FOLLOW_UP_REQUIRED' };
+const proposalLaneOf = (status?: string | null) => {
+  const s = String(status || '').toUpperCase();
+  return LEGACY_PROPOSAL_LANE[s] || s || 'PROPOSAL_REQUESTED';
+};
 const SORT_FIELDS = [
   { key: 'updated_at', label: 'Recently updated' },
   { key: 'request_date', label: 'Request date' },
@@ -97,16 +101,13 @@ const SORT_FIELDS = [
 ];
 
 
+/** Proposals fetched per request while the register scrolls. */
+const PROPOSALS_PAGE_SIZE = 25;
+
 export default function ProposalsPage() {
   const { user } = useAuth();
 
-  // Proposals data & pagination
-  const [proposals, setProposals] = useState<any[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [limit] = useState(15);
-  const [isLoading, setIsLoading] = useState(true);
+  // (the proposals register itself is useInfiniteList below, paged as the reader scrolls)
 
   // Dashboard Stats
   const [stats, setStats] = useState<any>({
@@ -271,41 +272,30 @@ export default function ProposalsPage() {
     }
   };
 
-  // Fetch Proposals List with complete multi-column filters, sorting and pagination
-  const fetchProposals = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      const params: any = {
-        page,
-        limit,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-      };
+  // Proposals register with complete multi-column filters and sorting, one page per request,
+  // appended as the register scrolls. `fetchProposals` re-reads the pages already loaded, in place.
+  const fetchProposalsPage = useCallback((page: number) => {
+    const params: any = {
+      page,
+      limit: PROPOSALS_PAGE_SIZE,
+      sort_by: sortBy,
+      sort_order: sortOrder,
+    };
 
-      if (search.trim()) params.search = search.trim();
-      if (selectedStatus && selectedStatus !== 'all') params.status = selectedStatus;
-      if (selectedSector && selectedSector !== 'all') params.sector = selectedSector;
-      if (selectedFollowupCondition && selectedFollowupCondition !== 'all') {
-        params.followup = selectedFollowupCondition;
-      }
-      if (selectedResponsibleId) params.responsible_id = selectedResponsibleId;
-      if (selectedFollowupOwnerId) params.followup_owner_id = selectedFollowupOwnerId;
-      if (fromDate) params.from_date = fromDate;
-      if (toDate) params.to_date = toDate;
-      if (fromDate || toDate) params.date_field = dateField;
-
-      const res = await api.get('/proposals', params);
-      setProposals(res.data || []);
-      setTotal(res.total || 0);
-      setTotalPages(res.totalPages || 1);
-    } catch (err) {
-      console.error('Failed to load proposals:', err);
-    } finally {
-      setIsLoading(false);
+    if (search.trim()) params.search = search.trim();
+    if (selectedStatus && selectedStatus !== 'all') params.status = selectedStatus;
+    if (selectedSector && selectedSector !== 'all') params.sector = selectedSector;
+    if (selectedFollowupCondition && selectedFollowupCondition !== 'all') {
+      params.followup = selectedFollowupCondition;
     }
+    if (selectedResponsibleId) params.responsible_id = selectedResponsibleId;
+    if (selectedFollowupOwnerId) params.followup_owner_id = selectedFollowupOwnerId;
+    if (fromDate) params.from_date = fromDate;
+    if (toDate) params.to_date = toDate;
+    if (fromDate || toDate) params.date_field = dateField;
+
+    return api.get('/proposals', params);
   }, [
-    page,
-    limit,
     search,
     selectedStatus,
     selectedSector,
@@ -318,17 +308,14 @@ export default function ProposalsPage() {
     fromDate,
     toDate,
   ]);
+  const proposalsList = useInfiniteList<any>(fetchProposalsPage);
+  const { rows: proposals, total, loading: isLoading, refresh: fetchProposals } = proposalsList;
 
   // Initial load
   useEffect(() => {
     fetchMasters();
     fetchStats();
   }, []);
-
-  // Reload proposals on filter changes
-  useEffect(() => {
-    fetchProposals();
-  }, [fetchProposals]);
 
   // Real-time Event-Driven Architecture (EDA) live synchronization via Socket.IO
   useEffect(() => {
@@ -451,17 +438,6 @@ export default function ProposalsPage() {
     }
   };
 
-  // Handle interactive table header sort
-  const handleSort = (field: string) => {
-    if (sortBy === field) {
-      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortBy(field);
-      setSortOrder('desc');
-    }
-    setPage(1);
-  };
-
   // Reset Filters
   const handleClearFilters = () => {
     setSearch('');
@@ -475,7 +451,6 @@ export default function ProposalsPage() {
     setFromDate('');
     setToDate('');
     setActiveHudCard(null);
-    setPage(1);
   };
 
   // Create Proposal Submission
@@ -556,7 +531,6 @@ export default function ProposalsPage() {
       setSelectedStatus('all');
       setSelectedFollowupCondition('all');
       setSearch('');
-      setPage(1);
 
       await fetchProposals();
       await fetchStats();
@@ -775,22 +749,99 @@ export default function ProposalsPage() {
   const pickStatus = (status: string) => {
     setSelectedStatus(status);
     setActiveHudCard(null);
-    setPage(1);
   };
   const pickFollowup = (key: string) => {
     setSelectedFollowupCondition((cur: string) => (cur === key ? 'all' : key));
     setActiveHudCard(null);
-    setPage(1);
   };
   const hasActiveFilters = Boolean(
     search || selectedStatus !== 'all' || selectedSector !== 'all' || selectedFollowupCondition !== 'all' || selectedResponsibleId || selectedFollowupOwnerId || fromDate || toDate,
   );
-  const sortHead = (label: string, field: string) => (
-    <TableHead className="cursor-pointer whitespace-nowrap text-xs hover:text-[#0F5E63]" onClick={() => handleSort(field)} aria-sort={sortBy === field ? (sortOrder === 'asc' ? 'ascending' : 'descending') : undefined}>
-      <span>{label}</span>
-      {sortBy === field && (sortOrder === 'asc' ? <ChevronUp className="ml-1 inline h-3 w-3 text-[#0F5E63]" /> : <ChevronDown className="ml-1 inline h-3 w-3 text-[#0F5E63]" />)}
-    </TableHead>
-  );
+
+  // Register rows → RecordItems (cards / stage board). Actions mirror the detail modal's workflow buttons.
+  const openFollowupFor = (p: any) => {
+    setSelectedProposal(p);
+    setFollowupForm({
+      followup_date: istToday(),
+      owner_id: p.followup_owner_id || user?.id || '',
+      remarks: '',
+      outcome: '',
+      next_followup_date: p.next_followup ? proposalDay(p.next_followup) : '',
+    });
+    setFollowupError(null);
+    setIsFollowupDialogOpen(true);
+  };
+  const statusActionFor = (p: any, nextStatus: string) => () => {
+    setSelectedProposal(p);
+    initiateStatusChange(nextStatus);
+  };
+  const primaryFor = (p: any): RecordItem['primary'] => {
+    switch (p.status) {
+      case 'PROPOSAL_REQUESTED':
+        return { label: 'Start preparation', onClick: statusActionFor(p, 'UNDER_PREPARATION') };
+      case 'UNDER_PREPARATION':
+        return { label: 'Submit for review', onClick: statusActionFor(p, 'READY_FOR_REVIEW') };
+      case 'READY_FOR_REVIEW': {
+        if (!['management', 'admin'].includes(user?.role || '')) return { label: 'Awaiting approval', disabled: true };
+        const isCreator = Boolean(
+          user &&
+            [p.created_by_id, p.created_by, p.requested_by_id, p.requested_by, p.responsible_person_id, p.responsible_id].includes(user.id),
+        );
+        if (isCreator) return { label: 'Self-approval not allowed', disabled: true };
+        return { label: 'Approve proposal', onClick: statusActionFor(p, 'APPROVED') };
+      }
+      case 'APPROVED':
+        return { label: 'Mark sent', onClick: statusActionFor(p, 'SENT_TO_CUSTOMER') };
+      case 'SENT_TO_CUSTOMER':
+      case 'FOLLOW_UP_REQUIRED':
+        return { label: 'Log follow-up', onClick: () => openFollowupFor(p) };
+      default:
+        return undefined;
+    }
+  };
+  const todayIst = istToday();
+  const laneByKey = new Map<string, string>();
+  const recordItems: RecordItem[] = proposals.map((p) => {
+    const upper = String(p.status || '').toUpperCase();
+    const lane = proposalLaneOf(p.status);
+    laneByKey.set(String(p.id), lane);
+    const closed = ['CONVERTED', 'CLOSED', 'LOST'].includes(lane);
+    const nextFollowupStr = p.next_followup ? proposalDay(p.next_followup) || null : null;
+    const requiredStr = p.required_date ? proposalDay(p.required_date) || null : null;
+    const isOverdue = Boolean(nextFollowupStr && nextFollowupStr < todayIst && !closed);
+    const fmt = (d?: string | null) => (d ? new Date(d).toLocaleDateString('en-GB') : '—');
+    const badges: RecordItem['badges'] = [];
+    if (p.is_urgent && !closed) badges.push({ label: 'Urgent', tone: 'danger' });
+    if (isOverdue) badges.push({ label: 'Follow-up overdue', tone: 'danger' });
+    if (!nextFollowupStr && ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(lane)) badges.push({ label: 'Follow-up not scheduled', tone: 'warning' });
+    if (p.sent_late) badges.push({ label: 'Sent late', tone: 'warning' });
+    const primary = primaryFor(p);
+    const quick: RecordItem['quick'] = [{ label: `Edit ${p.proposal_number || 'proposal'}`, icon: <Edit2 />, onClick: () => openEditProposal(p) }];
+    if (!closed && primary?.label !== 'Log follow-up') quick.unshift({ label: 'Log follow-up', icon: <MessageSquare />, onClick: () => openFollowupFor(p) });
+    return {
+      key: String(p.id),
+      code: p.proposal_number,
+      title: p.organisation_name || 'Unknown customer',
+      subtitle: [p.product_name, p.sector || 'General'].filter(Boolean).join(' · '),
+      status: { label: PROPOSAL_STATUS_LABELS[p.status] || p.status, tone: toneFor(PROPOSAL_STATUS_LABELS[p.status] || p.status) },
+      badges,
+      due: nextFollowupStr ? { date: nextFollowupStr, label: 'Follow-up', done: closed } : { date: requiredStr, label: 'Needed by', done: closed },
+      owner: p.responsible_name || 'Unassigned',
+      facts: [
+        { label: 'Needed by', value: <span className="font-mono">{fmt(p.required_date)}</span> },
+        upper === 'LOST' && p.lost_reason
+          ? { label: 'Lost reason', value: p.lost_reason }
+          : p.sent_date
+            ? { label: 'Sent', value: <span className="font-mono">{fmt(p.sent_date)}</span> }
+            : { label: 'Version', value: <span className="font-mono">{p.version || 'v1.0'}</span> },
+        { label: 'Follow-up by', value: p.followup_owner_name || p.responsible_name || '—' },
+        ...(p.reference ? [{ label: 'Email ref.', value: p.reference }] : []),
+      ],
+      primary,
+      quick,
+      onOpen: () => openProposalDetails(p),
+    };
+  });
 
   return (
     <PageContainer>
@@ -800,19 +851,6 @@ export default function ProposalsPage() {
         icon={<FileSpreadsheet className="h-6 w-6 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                fetchProposals();
-                fetchStats();
-              }}
-              isLoading={isLoading}
-              title="Refresh register"
-            >
-              <RefreshCw className="h-4 w-4 mr-1" />
-              <span>Refresh</span>
-            </Button>
             <Button
               variant="primary"
               size="sm"
@@ -886,7 +924,6 @@ export default function ProposalsPage() {
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
-                setPage(1);
               }}
               className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
@@ -910,7 +947,6 @@ export default function ProposalsPage() {
                 active: selectedSector === s,
                 onSelect: () => {
                   setSelectedSector(s);
-                  setPage(1);
                 },
               }))}
             />
@@ -930,7 +966,6 @@ export default function ProposalsPage() {
                 active: selectedFollowupCondition === f.key,
                 onSelect: () => {
                   setSelectedFollowupCondition(f.key);
-                  setPage(1);
                 },
               }))}
             />
@@ -944,7 +979,6 @@ export default function ProposalsPage() {
                 active: (selectedResponsibleId || 'all') === u.id,
                 onSelect: () => {
                   setSelectedResponsibleId(u.id === 'all' ? '' : u.id);
-                  setPage(1);
                 },
               }))}
             />
@@ -958,7 +992,6 @@ export default function ProposalsPage() {
                 active: (selectedFollowupOwnerId || 'all') === u.id,
                 onSelect: () => {
                   setSelectedFollowupOwnerId(u.id === 'all' ? '' : u.id);
-                  setPage(1);
                 },
               }))}
             />
@@ -984,7 +1017,6 @@ export default function ProposalsPage() {
                   active: sortBy === f.key,
                   onSelect: () => {
                     setSortBy(f.key);
-                    setPage(1);
                   },
                 })),
                 { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: sortOrder === 'desc', onSelect: () => setSortOrder('desc') },
@@ -1006,7 +1038,6 @@ export default function ProposalsPage() {
               value={dateField}
               onChange={(e) => {
                 setDateField(e.target.value);
-                setPage(1);
               }}
               className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
             >
@@ -1022,7 +1053,6 @@ export default function ProposalsPage() {
                 value={fromDate}
                 onChange={(e) => {
                   setFromDate(e.target.value);
-                  setPage(1);
                 }}
                 className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
               />
@@ -1034,7 +1064,6 @@ export default function ProposalsPage() {
                 value={toDate}
                 onChange={(e) => {
                   setToDate(e.target.value);
-                  setPage(1);
                 }}
                 className="h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
               />
@@ -1046,7 +1075,6 @@ export default function ProposalsPage() {
                 onClick={() => {
                   setFromDate('');
                   setToDate('');
-                  setPage(1);
                 }}
                 className="text-xs text-[#4A5568] hover:text-[#881337]"
               >
@@ -1057,193 +1085,47 @@ export default function ProposalsPage() {
         )}
       </Card>
 
-      {/* 4. Register */}
-      <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
-        <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
-          <h2 className="font-serif text-sm font-bold text-[#14213D]">Proposal register</h2>
-          <span className="font-mono text-xs text-[#4A5568]">
-            {total} {total === 1 ? 'proposal' : 'proposals'}
-          </span>
-        </div>
-        <Table className="[&_td]:px-3 [&_th]:px-3">
-          <TableHeader>
-            <TableRow className="bg-[#FBFAF7]">
-              {sortHead('Proposal', 'proposal_number')}
-              <TableHead className="whitespace-nowrap text-xs">Customer</TableHead>
-              <TableHead className="whitespace-nowrap text-xs">Product</TableHead>
-              <TableHead className="whitespace-nowrap text-xs">Owner</TableHead>
-              {sortHead('Due', 'required_date')}
-              {sortHead('Status', 'status')}
-              {sortHead('Follow-up', 'next_followup')}
-              <TableHead className="w-16 text-right text-xs">
-                <span className="sr-only">Actions</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={8} className="py-12 text-center text-xs text-[#4A5568]">
-                  <Spinner size="md" className="mx-auto mb-2" />
-                  Loading proposals…
-                </TableCell>
-              </TableRow>
-            ) : proposals.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={8} className="py-12">
-                  <EmptyState
-                    icon={FileSpreadsheet}
-                    title="No proposals found"
-                    description={hasActiveFilters ? 'Try clearing the filters to see every proposal.' : 'Create your first proposal request to begin tracking.'}
-                    action={
-                      hasActiveFilters ? (
-                        <Button variant="secondary" size="sm" onClick={handleClearFilters}>
-                          Clear filters
-                        </Button>
-                      ) : (
-                        <Button variant="primary" size="sm" onClick={() => setIsCreateOpen(true)}>
-                          <Plus className="mr-1.5 h-4 w-4" />
-                          <span>New proposal request</span>
-                        </Button>
-                      )
-                    }
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              proposals.map((p) => {
-                const todayStr = istToday();
-                const nextFollowupStr = p.next_followup ? proposalDay(p.next_followup) || null : null;
-                const closed = ['CONVERTED', 'CLOSED', 'LOST', 'converted', 'closed', 'lost'].includes(p.status);
-                const isOverdue = Boolean(nextFollowupStr && nextFollowupStr < todayStr && !closed);
-                const isDueToday = nextFollowupStr === todayStr && !closed;
-                const upper = String(p.status || '').toUpperCase();
-                const fmt = (d?: string | null) => (d ? new Date(d).toLocaleDateString('en-GB') : '—');
-
-                return (
-                  <TableRow key={p.id} className="group cursor-pointer" onClick={() => openProposalDetails(p)}>
-                    <TableCell className="whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs font-bold text-[#0F5E63]">{p.proposal_number}</span>
-                        <span className="rounded bg-[#E3EFEE] px-1 py-px font-mono text-[10px] text-[#0F5E63]">{p.version || 'v1.0'}</span>
-                      </div>
-                      {p.reference && (
-                        <div className="max-w-[130px] truncate text-[11px] text-[#4A5568]" title={p.reference}>
-                          Ref: {p.reference}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="max-w-[160px] truncate text-xs font-semibold text-[#14213D]" title={p.organisation_name}>
-                        {p.organisation_name}
-                      </div>
-                      <div className="max-w-[160px] truncate text-[11px] text-[#4A5568]">{[p.organisation_city, p.sector || 'General'].filter(Boolean).join(' · ')}</div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="max-w-[130px] truncate text-xs font-medium text-[#14213D]" title={p.product_name}>
-                        {p.product_name}
-                      </div>
-                      {p.requested_by_name && <div className="max-w-[130px] truncate text-[11px] text-[#4A5568]">Requested by {p.requested_by_name}</div>}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <div className="max-w-[120px] truncate text-xs font-medium text-[#14213D]" title={p.responsible_name}>
-                        {p.responsible_name || 'Unassigned'}
-                      </div>
-                      {p.followup_owner_name && p.followup_owner_name !== p.responsible_name && (
-                        <div className="max-w-[120px] truncate text-[11px] text-[#4A5568]">Follow-up: {p.followup_owner_name}</div>
-                      )}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <div className="font-mono text-xs text-[#14213D]">{fmt(p.required_date)}</div>
-                      <div className="text-[11px] text-[#4A5568]">
-                        Req. <span className="font-mono">{fmt(p.request_date)}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      {renderStatusBadge(p.status)}
-                      <div className="mt-0.5 max-w-[180px] truncate text-[11px] text-[#4A5568]" title={upper === 'LOST' && p.lost_remarks ? p.lost_remarks : undefined}>
-                        {upper === 'LOST' && p.lost_reason ? (
-                          p.lost_reason
-                        ) : p.sent_date ? (
-                          <>
-                            Sent <span className="font-mono">{fmt(p.sent_date)}</span>
-                          </>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      {isOverdue ? (
-                        <span title={`Was due ${fmt(nextFollowupStr)}`} className="inline-flex items-center gap-1 rounded-full bg-[#FBEBDD] px-2 py-0.5 text-[11px] font-semibold text-[#9A3412]">
-                          <AlertTriangle className="h-3 w-3" />
-                          Overdue
-                        </span>
-                      ) : isDueToday ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-[#FFF8EB] px-2 py-0.5 text-[11px] font-semibold text-[#A15C07]">
-                          <Clock className="h-3 w-3" />
-                          Today
-                        </span>
-                      ) : nextFollowupStr ? (
-                        <span className="font-mono text-xs text-[#14213D]">{fmt(nextFollowupStr)}</span>
-                      ) : ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(upper) ? (
-                        <span className="text-[11px] font-medium text-[#A15C07]">Not scheduled</span>
-                      ) : (
-                        <span className="text-[#8A8578]">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openEditProposal(p)}
-                          className="rounded-md p-1.5 text-[#4A5568] opacity-0 transition-opacity hover:bg-[#E3EFEE] hover:text-[#0F5E63] focus:opacity-100 group-hover:opacity-100"
-                          title="Edit proposal"
-                          aria-label={`Edit ${p.proposal_number}`}
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </button>
-                        <ChevronRight className="h-4 w-4 text-[#C9C4B8] transition-colors group-hover:text-[#0F5E63]" aria-hidden />
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-
-        {/* Pagination Bar */}
-        <div className="px-4 py-3 bg-[#FBFAF7] border-t border-[#DCD8CE] flex items-center justify-between text-xs text-[#4A5568]">
-          <div>
-            Showing proposals <span className="font-semibold text-[#14213D]">{proposals.length > 0 ? (page - 1) * limit + 1 : 0}</span> to{' '}
-            <span className="font-semibold text-[#14213D]">{Math.min(page * limit, total)}</span> of{' '}
-            <span className="font-semibold text-[#14213D]">{total}</span> total
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={page <= 1 || isLoading}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              <ChevronLeft className="h-3.5 w-3.5 mr-0.5" />
-              <span>Previous</span>
-            </Button>
-            <span className="px-2 font-medium">
-              Page {page} of {totalPages}
+      {/* 4. Register — priority cards or a stage board (Cards | Board toggle), one scrolling card */}
+      {isLoading ? (
+        <Card padding="none" className="border-[#DCD8CE] py-12 text-center text-xs text-[#4A5568]">
+          <Spinner size="md" className="mx-auto mb-2" />
+          Loading proposals…
+        </Card>
+      ) : (
+        <RecordViews
+          title="Proposal register"
+          items={recordItems}
+          lanes={PROPOSAL_LANES}
+          laneOf={(i) => laneByKey.get(i.key) ?? 'PROPOSAL_REQUESTED'}
+          storageKey="proposals"
+          defaultView="board"
+          hideEmptyLanes={selectedStatus !== 'all'}
+          summary={
+            <span className="font-mono text-xs">
+              {proposals.length === total ? `${total} ${total === 1 ? 'proposal' : 'proposals'}` : `${proposals.length} of ${total} proposals`}
             </span>
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={page >= totalPages || isLoading}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              <span>Next</span>
-              <ChevronRight className="h-3.5 w-3.5 ml-0.5" />
-            </Button>
-          </div>
-        </div>
-      </Card>
+          }
+          empty={
+            <div className="space-y-3">
+              <p className="font-semibold text-[#14213D]">No proposals found</p>
+              <p>{hasActiveFilters ? 'Try clearing the filters to see every proposal.' : 'Create your first proposal request to begin tracking.'}</p>
+              {hasActiveFilters ? (
+                <Button variant="secondary" size="sm" onClick={handleClearFilters}>
+                  Clear filters
+                </Button>
+              ) : (
+                <Button variant="primary" size="sm" onClick={() => setIsCreateOpen(true)}>
+                  <Plus className="mr-1.5 h-4 w-4" />
+                  <span>New proposal request</span>
+                </Button>
+              )}
+            </div>
+          }
+          onLoadMore={proposalsList.loadMore}
+          hasMore={proposalsList.hasMore}
+          loadingMore={proposalsList.loadingMore}
+        />
+      )}
 
       {/* 5. Create Proposal Request Modal */}
       <Modal
@@ -1256,216 +1138,243 @@ export default function ProposalsPage() {
         description="Register a new commercial price quote inquiry with customer, sector, product, and responsibility tracking."
         maxWidth="2xl"
       >
-        <form onSubmit={handleCreateProposal} className="space-y-4">
-          {formError && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 flex items-center gap-2">
-              <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
-              <span>{formError}</span>
-            </div>
-          )}
+        <form onSubmit={handleCreateProposal}>
+          <FormSteps
+            onCancel={() => {
+              setIsCreateOpen(false);
+              resetCreateForm();
+            }}
+            banner={
+              (formError || duplicateWarning) && (
+                <>
+                  {formError && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                      <span>{formError}</span>
+                    </div>
+                  )}
 
-          {duplicateWarning && (
-            <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-lg text-xs space-y-2">
-              <div className="flex items-start gap-2 text-amber-900">
-                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
-                <div>
-                  <span className="font-bold">Duplicate Proposal Detected: </span>
-                  <span>{duplicateWarning.message}</span>
-                </div>
-              </div>
-              <div className="pt-1">
-                <label className="text-[11px] font-semibold text-amber-950 block mb-1">
-                  Duplicate Override Reason <span className="text-red-600">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. New fiscal budget inquiry or distinct delivery scope"
-                  value={duplicateOverrideReason}
-                  onChange={(e) => setDuplicateOverrideReason(e.target.value)}
-                  className="w-full text-xs py-1.5 px-3 bg-white border border-amber-300 rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-                />
-              </div>
-            </div>
-          )}
+                  {duplicateWarning && (
+                    <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-lg text-xs space-y-2">
+                      <div className="flex items-start gap-2 text-amber-900">
+                        <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
+                        <div>
+                          <span className="font-bold">Duplicate Proposal Detected: </span>
+                          <span>{duplicateWarning.message}</span>
+                        </div>
+                      </div>
+                      <div className="pt-1">
+                        <label className="text-[11px] font-semibold text-amber-950 block mb-1">
+                          Duplicate Override Reason <span className="text-red-600">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. New fiscal budget inquiry or distinct delivery scope"
+                          value={duplicateOverrideReason}
+                          onChange={(e) => setDuplicateOverrideReason(e.target.value)}
+                          className="w-full text-xs py-1.5 px-3 bg-white border border-amber-300 rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )
+            }
+            submit={
+              <Button variant="primary" type="submit" isLoading={isSubmitting}>
+                {duplicateWarning ? 'Override & Create Quote' : 'Create Proposal Request'}
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Customer',
+                icon: <Building />,
+                description: 'Which customer is asking for this quote, and how did the request reach us?',
+                content: (
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-[#14213D]">
+                        Customer / Organisation <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        required
+                        value={newProposal.organisation_id}
+                        onChange={(e) => {
+                          setNewProposal({ ...newProposal, organisation_id: e.target.value });
+                          setDuplicateWarning(null);
+                        }}
+                        className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                      >
+                        <option value="">Select customer organisation...</option>
+                        {organisations.map((org) => (
+                          <option key={org.id} value={org.id}>
+                            {org.name} {org.city ? `(${org.city})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Customer (Organisation) */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-[#14213D]">
-                Customer / Organisation <span className="text-red-500">*</span>
-              </label>
-              <select
-                required
-                value={newProposal.organisation_id}
-                onChange={(e) => {
-                  setNewProposal({ ...newProposal, organisation_id: e.target.value });
-                  setDuplicateWarning(null);
-                }}
-                className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-              >
-                <option value="">Select customer organisation...</option>
-                {organisations.map((org) => (
-                  <option key={org.id} value={org.id}>
-                    {org.name} {org.city ? `(${org.city})` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-[#14213D]">
+                          Sector / Department <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          required
+                          value={newProposal.sector}
+                          onChange={(e) => setNewProposal({ ...newProposal, sector: e.target.value })}
+                          className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                        >
+                          {SECTORS.map((s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
-            {/* Product */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-[#14213D]">
-                Product Required <span className="text-red-500">*</span>
-              </label>
-              <select
-                required
-                value={newProposal.product_id}
-                onChange={(e) => {
-                  setNewProposal({ ...newProposal, product_id: e.target.value });
-                  setDuplicateWarning(null);
-                }}
-                className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-              >
-                <option value="">Select product...</option>
-                {products.map((prod) => (
-                  <option key={prod.id} value={prod.id}>
-                    {prod.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                      <Input
+                        label="Email / Tender Reference"
+                        placeholder="e.g. ATC/BSF/2026/092"
+                        value={newProposal.reference}
+                        onChange={(e) => setNewProposal({ ...newProposal, reference: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Requirement',
+                icon: <Package />,
+                description: 'What product is being quoted, and any specifications to keep in mind.',
+                content: (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-[#14213D]">
+                          Product Required <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          required
+                          value={newProposal.product_id}
+                          onChange={(e) => {
+                            setNewProposal({ ...newProposal, product_id: e.target.value });
+                            setDuplicateWarning(null);
+                          }}
+                          className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                        >
+                          <option value="">Select product...</option>
+                          {products.map((prod) => (
+                            <option key={prod.id} value={prod.id}>
+                              {prod.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
-            {/* Sector */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-[#14213D]">
-                Sector / Department <span className="text-red-500">*</span>
-              </label>
-              <select
-                required
-                value={newProposal.sector}
-                onChange={(e) => setNewProposal({ ...newProposal, sector: e.target.value })}
-                className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-              >
-                {SECTORS.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
+                      <Input
+                        label="Proposal Version"
+                        placeholder="e.g. v1.0"
+                        value={newProposal.version}
+                        onChange={(e) => setNewProposal({ ...newProposal, version: e.target.value })}
+                      />
+                    </div>
 
-            {/* Responsible Person */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-[#14213D]">
-                Responsible Person (Owner) <span className="text-red-500">*</span>
-              </label>
-              <select
-                required
-                value={newProposal.responsible_id}
-                onChange={(e) =>
-                  setNewProposal({
-                    ...newProposal,
-                    responsible_id: e.target.value,
-                    followup_owner_id: newProposal.followup_owner_id || e.target.value,
-                  })
-                }
-                className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-              >
-                <option value="">Select responsible proposal owner...</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.full_name} ({u.role})
-                  </option>
-                ))}
-              </select>
-            </div>
+                    <Textarea
+                      label="Internal Remarks / Tender Specifications"
+                      rows={3}
+                      placeholder="Key technical points, warranty expectations, delivery timelines requested by client..."
+                      value={newProposal.remarks}
+                      onChange={(e) => setNewProposal({ ...newProposal, remarks: e.target.value })}
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Owner',
+                icon: <User />,
+                description: 'Who prepares this quote, and by when it is needed.',
+                content: (
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-[#14213D]">
+                        Responsible Person (Owner) <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        required
+                        value={newProposal.responsible_id}
+                        onChange={(e) =>
+                          setNewProposal({
+                            ...newProposal,
+                            responsible_id: e.target.value,
+                            followup_owner_id: newProposal.followup_owner_id || e.target.value,
+                          })
+                        }
+                        className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                      >
+                        <option value="">Select responsible proposal owner...</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.full_name} ({u.role})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-            {/* Request Date */}
-            <Input
-              type="date"
-              label="Request Date"
-              required
-              value={newProposal.request_date}
-              onChange={(e) => setNewProposal({ ...newProposal, request_date: e.target.value })}
-            />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        type="date"
+                        label="Request Date"
+                        required
+                        value={newProposal.request_date}
+                        onChange={(e) => setNewProposal({ ...newProposal, request_date: e.target.value })}
+                      />
 
-            {/* Required Date */}
-            <Input
-              type="date"
-              label="Required Completion Date"
-              required
-              value={newProposal.required_date}
-              onChange={(e) => setNewProposal({ ...newProposal, required_date: e.target.value })}
-            />
+                      <Input
+                        type="date"
+                        label="Required Completion Date"
+                        required
+                        value={newProposal.required_date}
+                        onChange={(e) => setNewProposal({ ...newProposal, required_date: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Follow-up',
+                icon: <CalendarDays />,
+                description: 'Who chases the customer after the quote goes out, and when to start.',
+                content: (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-[#14213D]">Follow-up Owner</label>
+                      <select
+                        value={newProposal.followup_owner_id}
+                        onChange={(e) => setNewProposal({ ...newProposal, followup_owner_id: e.target.value })}
+                        className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                      >
+                        <option value="">Same as Responsible Person</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.full_name} ({u.role})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-            {/* Proposal Version */}
-            <Input
-              label="Proposal Version"
-              placeholder="e.g. v1.0"
-              value={newProposal.version}
-              onChange={(e) => setNewProposal({ ...newProposal, version: e.target.value })}
-            />
-
-            {/* Email / Reference */}
-            <Input
-              label="Email / Tender Reference"
-              placeholder="e.g. ATC/BSF/2026/092"
-              value={newProposal.reference}
-              onChange={(e) => setNewProposal({ ...newProposal, reference: e.target.value })}
-            />
-
-            {/* Follow-up Owner */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-[#14213D]">Follow-up Owner</label>
-              <select
-                value={newProposal.followup_owner_id}
-                onChange={(e) => setNewProposal({ ...newProposal, followup_owner_id: e.target.value })}
-                className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-              >
-                <option value="">Same as Responsible Person</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.full_name} ({u.role})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Next Follow-up Date */}
-            <Input
-              type="date"
-              label="Initial Follow-up Date (Optional)"
-              value={newProposal.next_followup}
-              onChange={(e) => setNewProposal({ ...newProposal, next_followup: e.target.value })}
-            />
-          </div>
-
-          {/* Remarks */}
-          <Textarea
-            label="Internal Remarks / Tender Specifications"
-            rows={3}
-            placeholder="Key technical points, warranty expectations, delivery timelines requested by client..."
-            value={newProposal.remarks}
-            onChange={(e) => setNewProposal({ ...newProposal, remarks: e.target.value })}
+                    <Input
+                      type="date"
+                      label="Initial Follow-up Date (Optional)"
+                      value={newProposal.next_followup}
+                      onChange={(e) => setNewProposal({ ...newProposal, next_followup: e.target.value })}
+                    />
+                  </div>
+                ),
+              },
+            ]}
           />
-
-          <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
-            <Button
-              variant="outline"
-              size="sm"
-              type="button"
-              onClick={() => {
-                setIsCreateOpen(false);
-                resetCreateForm();
-              }}
-            >
-              Cancel
-            </Button>
-            <Button variant="primary" size="sm" type="submit" isLoading={isSubmitting}>
-              {duplicateWarning ? 'Override & Create Quote' : 'Create Proposal Request'}
-            </Button>
-          </div>
         </form>
       </Modal>
 
@@ -1481,8 +1390,9 @@ export default function ProposalsPage() {
           <div className="space-y-6">
             {/* Top Bar with Number, Badges, and Quick Actions */}
             <div className="p-4 bg-[#FBFAF7] border border-[#DCD8CE] rounded-xl flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-base font-black text-[#0F5E63]">
+              {/* wraps on phones: the number stays on one line and Edit/Delete drop below instead of off the card */}
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="whitespace-nowrap font-mono text-base font-black text-[#0F5E63]">
                   {selectedProposal.proposal_number}
                 </span>
                 <button
@@ -1879,7 +1789,7 @@ export default function ProposalsPage() {
             {detailsTab === 'followups' && (
               <div className="space-y-4">
                 {/* Active Follow-up Banner */}
-                <div className="p-3 bg-[#F8FAFC] border border-[#DCD8CE] rounded-xl flex items-center justify-between">
+                <div className="p-3 bg-[#F8FAFC] border border-[#DCD8CE] rounded-xl flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs">
                     <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Current Follow-up Status</span>
                     <div className="font-semibold text-[#14213D] mt-0.5">
@@ -2093,57 +2003,65 @@ export default function ProposalsPage() {
               {followupError}
             </InfoCallout>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              type="date"
-              label="Follow-up Date"
-              required
-              max={istToday()}
-              value={followupForm.followup_date}
-              onChange={(e) => setFollowupForm({ ...followupForm, followup_date: e.target.value })}
-            />
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-[#14213D]">
-                Follow-up Owner <span className="text-red-500">*</span>
-              </label>
-              <select
+          <FormSection title="Interaction" icon={<Calendar />} description="When the customer was contacted, and by whom.">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                type="date"
+                label="Follow-up Date"
                 required
-                value={followupForm.owner_id}
-                onChange={(e) => setFollowupForm({ ...followupForm, owner_id: e.target.value })}
-                className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-              >
-                <option value="">Select owner...</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.full_name}
-                  </option>
-                ))}
-              </select>
+                max={istToday()}
+                value={followupForm.followup_date}
+                onChange={(e) => setFollowupForm({ ...followupForm, followup_date: e.target.value })}
+              />
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-[#14213D]">
+                  Follow-up Owner <span className="text-red-500">*</span>
+                </label>
+                <select
+                  required
+                  value={followupForm.owner_id}
+                  onChange={(e) => setFollowupForm({ ...followupForm, owner_id: e.target.value })}
+                  className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                >
+                  <option value="">Select owner...</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.full_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
+          </FormSection>
 
-          <Textarea
-            label="Meeting / Call Discussion Remarks"
-            required
-            rows={3}
-            placeholder="Discussed pricing terms, client requested revised delivery timeline..."
-            value={followupForm.remarks}
-            onChange={(e) => setFollowupForm({ ...followupForm, remarks: e.target.value })}
-          />
+          <FormSection title="Discussion" icon={<MessageSquare />} description="What was discussed, where it stands, and when to check in next.">
+            <div className="space-y-3">
+              <Textarea
+                label="Meeting / Call Discussion Remarks"
+                required
+                rows={3}
+                placeholder="Discussed pricing terms, client requested revised delivery timeline..."
+                value={followupForm.remarks}
+                onChange={(e) => setFollowupForm({ ...followupForm, remarks: e.target.value })}
+              />
 
-          <Input
-            label="Outcome / Current Result"
-            placeholder="e.g. Positive acknowledge, sample demo requested"
-            value={followupForm.outcome}
-            onChange={(e) => setFollowupForm({ ...followupForm, outcome: e.target.value })}
-          />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Input
+                  label="Outcome / Current Result"
+                  placeholder="e.g. Positive acknowledge, sample demo requested"
+                  value={followupForm.outcome}
+                  onChange={(e) => setFollowupForm({ ...followupForm, outcome: e.target.value })}
+                />
 
-          <Input
-            type="date"
-            label="Next Follow-up Date (Optional)"
-            value={followupForm.next_followup_date}
-            onChange={(e) => setFollowupForm({ ...followupForm, next_followup_date: e.target.value })}
-          />
+                <Input
+                  type="date"
+                  label="Next Follow-up Date (Optional)"
+                  value={followupForm.next_followup_date}
+                  onChange={(e) => setFollowupForm({ ...followupForm, next_followup_date: e.target.value })}
+                />
+              </div>
+            </div>
+          </FormSection>
 
           <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
             <Button variant="outline" size="sm" type="button" onClick={() => setIsFollowupDialogOpen(false)}>
@@ -2171,79 +2089,87 @@ export default function ProposalsPage() {
                 {editError}
               </InfoCallout>
             )}
-            <div className="grid grid-cols-2 gap-3">
-              <Input
-                type="date"
-                label="Required Completion Date"
-                required
-                value={editForm.required_date}
-                min={proposalDay(selectedProposal.request_date) || undefined}
-                onChange={(e) => setEditForm({ ...editForm, required_date: e.target.value })}
-              />
-              <Input
-                label="Proposal Version"
-                placeholder="e.g. v1.1"
-                value={editForm.version}
-                onChange={(e) => setEditForm({ ...editForm, version: e.target.value })}
-              />
-            </div>
+            <FormSection title="Schedule & Reference" icon={<CalendarDays />} description="Due date, version and the customer's reference for this quote.">
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Input
+                    type="date"
+                    label="Required Completion Date"
+                    required
+                    value={editForm.required_date}
+                    min={proposalDay(selectedProposal.request_date) || undefined}
+                    onChange={(e) => setEditForm({ ...editForm, required_date: e.target.value })}
+                  />
+                  <Input
+                    label="Proposal Version"
+                    placeholder="e.g. v1.1"
+                    value={editForm.version}
+                    onChange={(e) => setEditForm({ ...editForm, version: e.target.value })}
+                  />
+                </div>
 
-            {editForm.required_date !== proposalDay(selectedProposal.required_date) && (
-              <Input
-                label="Reason for changing the required date"
-                required
-                placeholder="e.g. Customer extended the submission window"
-                value={editForm.required_date_change_reason}
-                onChange={(e) => setEditForm({ ...editForm, required_date_change_reason: e.target.value })}
-              />
-            )}
+                {editForm.required_date !== proposalDay(selectedProposal.required_date) && (
+                  <Input
+                    label="Reason for changing the required date"
+                    required
+                    placeholder="e.g. Customer extended the submission window"
+                    value={editForm.required_date_change_reason}
+                    onChange={(e) => setEditForm({ ...editForm, required_date_change_reason: e.target.value })}
+                  />
+                )}
 
-            <Input
-              label="Email / Tender Reference"
-              placeholder="e.g. ATC/BSF/2026/092"
-              value={editForm.reference}
-              onChange={(e) => setEditForm({ ...editForm, reference: e.target.value })}
-            />
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-[#14213D]">Responsible Person</label>
-                <select
-                  value={editForm.responsible_id}
-                  onChange={(e) => setEditForm({ ...editForm, responsible_id: e.target.value })}
-                  className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-                >
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.full_name} ({u.role})
-                    </option>
-                  ))}
-                </select>
+                <Input
+                  label="Email / Tender Reference"
+                  placeholder="e.g. ATC/BSF/2026/092"
+                  value={editForm.reference}
+                  onChange={(e) => setEditForm({ ...editForm, reference: e.target.value })}
+                />
               </div>
+            </FormSection>
 
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-[#14213D]">Follow-up Owner</label>
-                <select
-                  value={editForm.followup_owner_id}
-                  onChange={(e) => setEditForm({ ...editForm, followup_owner_id: e.target.value })}
-                  className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-                >
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.full_name} ({u.role})
-                    </option>
-                  ))}
-                </select>
+            <FormSection title="Owners & Notes" icon={<User />} description="Who prepares the quote, who follows up, and internal notes.">
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-[#14213D]">Responsible Person</label>
+                    <select
+                      value={editForm.responsible_id}
+                      onChange={(e) => setEditForm({ ...editForm, responsible_id: e.target.value })}
+                      className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                    >
+                      {users.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.full_name} ({u.role})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-[#14213D]">Follow-up Owner</label>
+                    <select
+                      value={editForm.followup_owner_id}
+                      onChange={(e) => setEditForm({ ...editForm, followup_owner_id: e.target.value })}
+                      className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                    >
+                      {users.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.full_name} ({u.role})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <Textarea
+                  label="Internal Remarks / Notes"
+                  rows={3}
+                  placeholder="Add or update notes..."
+                  value={editForm.remarks}
+                  onChange={(e) => setEditForm({ ...editForm, remarks: e.target.value })}
+                />
               </div>
-            </div>
-
-            <Textarea
-              label="Internal Remarks / Notes"
-              rows={3}
-              placeholder="Add or update notes..."
-              value={editForm.remarks}
-              onChange={(e) => setEditForm({ ...editForm, remarks: e.target.value })}
-            />
+            </FormSection>
 
             <div className="flex justify-end gap-2 pt-3 border-t border-[#F0F5FC]">
               <Button variant="outline" size="sm" type="button" onClick={() => setIsEditOpen(false)}>

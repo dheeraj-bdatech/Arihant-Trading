@@ -610,8 +610,8 @@ export function Equipment3DViewer({ product, className = '' }: Equipment3DViewer
           </div>
         </div>
 
-        {/* Viewport Mode Controls */}
-        <div className="flex max-w-full items-center gap-1 overflow-x-auto pointer-events-auto bg-white/90 backdrop-blur-md border border-[#DCD8CE] p-1 rounded-xl shadow-sm">
+        {/* Viewport Mode Controls (overflowX inline: theme.css resets `.overflow-x-auto` below 1180px) */}
+        <div style={{ overflowX: 'auto' }} className="flex max-w-full items-center gap-1 pointer-events-auto bg-white/90 backdrop-blur-md border border-[#DCD8CE] p-1 rounded-xl shadow-sm">
           <button
             onClick={() => setRenderMode('standard')}
             className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${

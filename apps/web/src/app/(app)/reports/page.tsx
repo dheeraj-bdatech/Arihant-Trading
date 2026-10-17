@@ -29,7 +29,6 @@ import {
   CardTitle,
   CardDescription,
   CardContent,
-  Badge,
   Button,
   PageContainer,
   PageHeader,
@@ -38,8 +37,24 @@ import {
   PageLoader,
   InfoCallout,
   FilterMenu,
+  RecordViews,
+  rowDetails,
+  toneFor,
+  type BoardLane,
+  type RecordItem,
 } from '@/components/ui';
-import { formatLakh, formatINR } from '@arihant/shared';
+import {
+  formatLakh,
+  formatINR,
+  TENDER_STATUSES,
+  LEAD_STATUSES,
+  EXPENSE_CLAIM_STATUSES,
+  EXPENSE_STATUS_LABELS,
+  SERVICE_STATUS_LABELS,
+  SERVICE_DONE_STATUSES,
+  normalizeServiceStatus,
+  type ServiceStatus,
+} from '@arihant/shared';
 
 /** Never let a missing field render as "undefined"/"null". */
 const txt = (v: unknown, fallback = '—'): string =>
@@ -50,6 +65,41 @@ const fmtDate = (v: unknown): string => {
   const d = new Date(v as string);
   return Number.isNaN(d.getTime()) ? txt(v) : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 };
+/** Maps rows to RecordItems and remembers each record's lane (unknown statuses go to "Other"). */
+function register<T>(list: T[], toItem: (row: T) => RecordItem, laneKey: (row: T) => string) {
+  const lanes = new Map<string, string>();
+  const items = list.map((row) => {
+    const item = toItem(row);
+    lanes.set(item.key, laneKey(row));
+    return item;
+  });
+  return { items, laneOf: (item: RecordItem) => lanes.get(item.key) ?? 'other' };
+}
+const cap = (v: unknown) => {
+  const t = pretty(v);
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
+const lanesFor = (keys: readonly string[], label: (k: string) => string = cap): BoardLane[] =>
+  [...keys, 'other'].map((k) => ({ key: k, label: k === 'other' ? 'Other' : label(k), tone: toneFor(k === 'other' ? '' : label(k)) }));
+const laneIn = (keys: readonly string[], v: unknown) => {
+  const k = String(v || '').toLowerCase();
+  return keys.includes(k) ? k : 'other';
+};
+
+const TENDER_LANES = lanesFor(TENDER_STATUSES);
+/** Bid closing only drives urgency while the bid is still being prepared. */
+const TENDER_PRE_SUBMISSION = ['identified', 'awaiting_approval', 'under_preparation', 'on_hold'];
+const LEAD_LANES = lanesFor(LEAD_STATUSES);
+const LEAD_CLOSED = ['converted', 'won', 'lost', 'dropped'];
+const VISIT_STATUSES = ['planned', 'modified', 'rescheduled', 'completed', 'not_completed', 'cancelled'];
+const VISIT_LANES = lanesFor(VISIT_STATUSES);
+const VISIT_DONE = ['completed', 'not_completed', 'cancelled'];
+// Expense report rows carry the claim's status label (see fetch below), so lanes key on the label.
+const EXPENSE_LANES = lanesFor(EXPENSE_CLAIM_STATUSES.map((s) => EXPENSE_STATUS_LABELS[s].toLowerCase()), (k) => EXPENSE_CLAIM_STATUSES.map((s) => EXPENSE_STATUS_LABELS[s]).find((l) => l.toLowerCase() === k) ?? cap(k));
+const EXPENSE_LANE_KEYS = EXPENSE_LANES.map((l) => l.key);
+const SERVICE_STATUSES = Object.keys(SERVICE_STATUS_LABELS) as ServiceStatus[];
+const SERVICE_LANES = lanesFor(SERVICE_STATUSES, (k) => SERVICE_STATUS_LABELS[k as ServiceStatus] ?? cap(k));
+
 const rows = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : Array.isArray(res?.items) ? res.items : []);
 
 // `access` = the module read permission the dataset needs; expense reports are scoped server-side for every role.
@@ -126,6 +176,110 @@ export default function ConsolidatedReportsPage() {
   const vVisits = visits.filter((r) => matches(r) && byStatus(r));
   const vExpenses = expenses.filter((r) => matches(r) && byStatus(r));
   const vTickets = tickets.filter((r) => matches(r) && byStatus(r));
+
+  const tenderRegister = register(
+    vTenders,
+    (t): RecordItem => ({
+      key: String(t.id),
+      code: t.tender_no,
+      title: txt(t.organisation_name || t.organisation || t.department),
+      subtitle: t.city ? txt(t.city) : undefined,
+      status: { label: cap(t.status), tone: toneFor(t.status) },
+      badges: [{ label: t.category?.toUpperCase() || 'GENERAL', tone: t.category === 'pq' ? 'danger' : 'neutral' }],
+      due: { date: t.bid_closing_date || t.submission_deadline, label: 'Closes', done: !TENDER_PRE_SUBMISSION.includes(String(t.status || '').toLowerCase()) },
+      facts: [
+        { label: 'EMD fee', value: t.emd_fee ? formatINR(t.emd_fee) : 'Exempt' },
+        { label: 'Qty', value: t.quantity || '-' },
+      ],
+      details: rowDetails(t),
+    }),
+    (t) => laneIn(TENDER_STATUSES, t.status),
+  );
+
+  const leadRegister = register(
+    vLeads,
+    (l): RecordItem => ({
+      key: String(l.id),
+      title: txt(l.organisation_name),
+      subtitle: txt(l.product_name),
+      status: { label: cap(l.status), tone: toneFor(l.status) },
+      badges: l.category ? [{ label: txt(l.category).toUpperCase(), tone: 'neutral' }] : [],
+      due: { date: l.next_followup_date, label: 'Follow-up', done: LEAD_CLOSED.includes(String(l.status || '').toLowerCase()) },
+      value: l.value_lakh || l.estimated_value_lakh ? `₹ ${l.value_lakh || l.estimated_value_lakh} L` : undefined,
+      owner: l.assigned_to_name || 'Unassigned',
+      facts: [
+        { label: 'Probability', value: cap(l.probability) },
+        { label: 'Classification', value: txt(l.category).toUpperCase() },
+      ],
+      details: rowDetails(l),
+    }),
+    (l) => laneIn(LEAD_STATUSES, l.status),
+  );
+
+  const visitRegister = register(
+    vVisits,
+    (v): RecordItem => ({
+      key: String(v.id),
+      title: txt(v.organisation_name),
+      subtitle: txt(v.location || v.city),
+      status: { label: cap(v.status), tone: toneFor(v.status) },
+      badges: v.manager_name ? [{ label: `Directive by ${v.manager_name}`, tone: 'info' }] : [],
+      due: { date: v.planned_date, label: 'Planned', done: VISIT_DONE.includes(String(v.status || '').toLowerCase()) },
+      owner: txt(v.assignee_name || v.assigned_to_name || v.planned_by_name),
+      facts: [
+        { label: 'Purpose', value: v.purpose || 'Client meeting' },
+        { label: 'Planned', value: fmtDate(v.planned_date) },
+      ],
+      details: rowDetails(v),
+    }),
+    (v) => laneIn(VISIT_STATUSES, v.status),
+  );
+
+  const expenseRegister = register(
+    vExpenses,
+    (e): RecordItem => ({
+      key: String(e.id),
+      title: txt(e.employee_name),
+      subtitle: e.purpose || 'Travel expense',
+      status: { label: txt(e.status), tone: toneFor(e.status) },
+      due: { date: e.expense_date, label: 'Spent', done: true },
+      value: formatINR(e.amount),
+      facts: [
+        { label: 'Category', value: cap(e.category) },
+        { label: 'Date', value: fmtDate(e.expense_date) },
+      ],
+      details: rowDetails(e),
+    }),
+    (e) => laneIn(EXPENSE_LANE_KEYS, EXPENSE_STATUS_LABELS[e.status as keyof typeof EXPENSE_STATUS_LABELS] || e.status),
+  );
+
+  const serviceRegister = register(
+    vTickets,
+    (s): RecordItem => {
+      const st = normalizeServiceStatus(s.status);
+      return {
+        key: String(s.id),
+        code: txt(s.ticket_no || s.ticket_number),
+        title: txt(s.organisation_name),
+        subtitle: txt(s.complaint || s.complaint_description),
+        status: { label: SERVICE_STATUS_LABELS[st] ?? cap(s.status), tone: toneFor(st) },
+        badges: s.priority ? [{ label: txt(s.priority).toUpperCase(), tone: s.priority === 'critical' ? 'danger' : 'neutral' }] : [],
+        due: { date: s.sla_resolution_due_at || s.planned_visit_date, label: 'SLA due', done: SERVICE_DONE_STATUSES.includes(st) },
+        owner: s.assigned_to_name || 'Unassigned',
+        facts: [
+          { label: 'Asset S/N', value: s.equipment_serial || 'N/A' },
+          { label: 'Warranty', value: cap(s.warranty_status) },
+        ],
+        details: rowDetails(s),
+      };
+    },
+    (s) => laneIn(SERVICE_STATUSES, normalizeServiceStatus(s.status)),
+  );
+
+  const filtersOn = Boolean(searchTerm.trim()) || statusFilter !== 'all';
+  const emptyText = filtersOn ? 'No records match this search or status.' : 'No records in this report yet.';
+  const summaryOf = (shown: number, total: number, one: string, many: string) =>
+    shown === total ? `${total} ${total === 1 ? one : many}` : `${shown} of ${total} ${total === 1 ? one : many}`;
 
   const activeRows: any[] = { tenders, leads, visits, expenses, service: tickets }[activeTab] || [];
   const statusOptions = Array.from(new Set(activeRows.map((r) => String(r.status || '').toLowerCase()).filter(Boolean))).sort();
@@ -242,9 +396,6 @@ export default function ConsolidatedReportsPage() {
         icon={<FileText className="w-5 h-5 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2.5">
-            <Button variant="outline" onClick={fetchAllReportData} isLoading={isLoading} leftIcon={<RefreshCw className="h-4 w-4" />}>
-              Reload
-            </Button>
             {activeTab === 'tenders' && (
               <Button variant="outline" onClick={handleExportTenders}>
                 <Download className="h-4 w-4 mr-2" />
@@ -366,206 +517,63 @@ export default function ConsolidatedReportsPage() {
       {isLoading ? (
         <PageLoader label="Loading consolidated records" />
       ) : (
-        <div className="bg-white border border-[#DCD8CE] rounded-2xl shadow-xs overflow-hidden">
+        <>
           {activeTab === 'tenders' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
-                  <tr>
-                    <th className="whitespace-nowrap px-3 py-3">Bid Number</th>
-                    <th className="whitespace-nowrap px-3 py-3">Department / Org</th>
-                    <th className="whitespace-nowrap px-3 py-3">Category</th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">Qty</th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">EMD Fee</th>
-                    <th className="whitespace-nowrap px-3 py-3">Bid Closing</th>
-                    <th className="whitespace-nowrap px-3 py-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {vTenders.map((t) => (
-                    <tr key={t.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-3 py-3 font-semibold text-[#0F5E63]">{t.tender_no}</td>
-                      <td className="px-3 py-3 text-[#14213D]"><div className="max-w-[260px] truncate" title={txt(t.organisation_name || t.organisation || t.department)}>{txt(t.organisation_name || t.organisation || t.department)}</div></td>
-                      <td className="px-3 py-3">
-                        <Badge variant={t.category === 'pq' ? 'urgent' : 'outline'}>
-                          {t.category?.toUpperCase() || 'GENERAL'}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3 text-right font-medium">{t.quantity || '-'}</td>
-                      <td className="px-3 py-3 text-right font-medium text-emerald-700">
-                        {t.emd_fee ? formatINR(t.emd_fee) : 'Exempt'}
-                      </td>
-                      <td className="px-3 py-3 text-[#4A5568]">{fmtDate(t.bid_closing_date || t.submission_deadline)}</td>
-                      <td className="px-3 py-3">
-                        <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700">
-                          {pretty(t.status)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <RecordViews
+              storageKey="reports-tenders"
+              items={tenderRegister.items}
+              lanes={TENDER_LANES}
+              laneOf={tenderRegister.laneOf}
+              hideEmptyLanes
+              summary={summaryOf(vTenders.length, tenders.length, 'bid', 'bids')}
+              empty={emptyText}
+            />
           )}
-
           {activeTab === 'leads' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
-                  <tr>
-                    <th className="whitespace-nowrap px-3 py-3">Customer Organisation</th>
-                    <th className="whitespace-nowrap px-3 py-3">Product</th>
-                    <th className="whitespace-nowrap px-3 py-3">Classification</th>
-                    <th className="whitespace-nowrap px-3 py-3">Probability</th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">Value (Lakh)</th>
-                    <th className="whitespace-nowrap px-3 py-3">Assigned Rep</th>
-                    <th className="whitespace-nowrap px-3 py-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {vLeads.map((l) => (
-                    <tr key={l.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-3 py-3 font-medium text-[#14213D]"><div className="max-w-[220px] truncate" title={txt(l.organisation_name)}>{txt(l.organisation_name)}</div></td>
-                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[200px] truncate" title={txt(l.product_name)}>{txt(l.product_name)}</div></td>
-                      <td className="px-3 py-3">
-                        <Badge variant="outline">{txt(l.category).toUpperCase()}</Badge>
-                      </td>
-                      <td className="px-3 py-3 capitalize">{txt(l.probability)}</td>
-                      <td className="px-3 py-3 text-right font-bold text-[#14213D]">
-                        {l.value_lakh || l.estimated_value_lakh ? `₹ ${l.value_lakh || l.estimated_value_lakh} L` : '—'}
-                      </td>
-                      <td className="px-3 py-3 text-[#4A5568]">{l.assigned_to_name || 'Unassigned'}</td>
-                      <td className="px-3 py-3">
-                        <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700">
-                          {pretty(l.status)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <RecordViews
+              storageKey="reports-leads"
+              items={leadRegister.items}
+              lanes={LEAD_LANES}
+              laneOf={leadRegister.laneOf}
+              hideEmptyLanes
+              summary={summaryOf(vLeads.length, leads.length, 'lead', 'leads')}
+              empty={emptyText}
+            />
           )}
-
           {activeTab === 'visits' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
-                  <tr>
-                    <th className="whitespace-nowrap px-3 py-3">Client & Destination</th>
-                    <th className="whitespace-nowrap px-3 py-3">Planned Date</th>
-                    <th className="whitespace-nowrap px-3 py-3">Sales Engineer</th>
-                    <th className="whitespace-nowrap px-3 py-3">Purpose</th>
-                    <th className="whitespace-nowrap px-3 py-3">Manager Also-Meet Directive</th>
-                    <th className="whitespace-nowrap px-3 py-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {vVisits.map((v) => (
-                    <tr key={v.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-3 py-3">
-                        <p className="max-w-[220px] truncate font-semibold text-[#14213D]" title={txt(v.organisation_name)}>{txt(v.organisation_name)}</p>
-                        <p className="text-[11px] text-[#4A5568]">{txt(v.location || v.city)}</p>
-                      </td>
-                      <td className="px-3 py-3 text-[#4A5568]">{fmtDate(v.planned_date)}</td>
-                      <td className="px-3 py-3 text-[#14213D] font-medium">{txt(v.assignee_name || v.assigned_to_name || v.planned_by_name)}</td>
-                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[220px] truncate" title={v.purpose || 'Client meeting'}>{v.purpose || 'Client meeting'}</div></td>
-                      <td className="px-3 py-3">
-                        {v.manager_name ? (
-                          <span className="text-[11px] font-medium text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-200">
-                            Directive by {v.manager_name}
-                          </span>
-                        ) : (
-                          <span className="text-[#A1B3D3]">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3">
-                        <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700">
-                          {pretty(v.status)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <RecordViews
+              storageKey="reports-visits"
+              items={visitRegister.items}
+              lanes={VISIT_LANES}
+              laneOf={visitRegister.laneOf}
+              hideEmptyLanes
+              summary={summaryOf(vVisits.length, visits.length, 'visit', 'visits')}
+              empty={emptyText}
+            />
           )}
-
           {activeTab === 'expenses' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
-                  <tr>
-                    <th className="whitespace-nowrap px-3 py-3">Employee</th>
-                    <th className="whitespace-nowrap px-3 py-3">Date</th>
-                    <th className="whitespace-nowrap px-3 py-3">Category</th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">Amount</th>
-                    <th className="whitespace-nowrap px-3 py-3">Purpose</th>
-                    <th className="whitespace-nowrap px-3 py-3">Stage Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {vExpenses.map((e) => (
-                    <tr key={e.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-3 py-3 font-medium text-[#14213D]">{txt(e.employee_name)}</td>
-                      <td className="px-3 py-3 text-[#4A5568]">{fmtDate(e.expense_date)}</td>
-                      <td className="px-3 py-3 capitalize">{pretty(e.category)}</td>
-                      <td className="px-3 py-3 text-right font-bold text-[#14213D]">{formatINR(e.amount)}</td>
-                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[280px] truncate" title={e.purpose || 'Travel expense'}>{e.purpose || 'Travel expense'}</div></td>
-                      <td className="px-3 py-3">
-                        <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800">
-                          {pretty(e.status)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <RecordViews
+              storageKey="reports-expenses"
+              items={expenseRegister.items}
+              lanes={EXPENSE_LANES}
+              laneOf={expenseRegister.laneOf}
+              hideEmptyLanes
+              summary={summaryOf(vExpenses.length, expenses.length, 'expense line', 'expense lines')}
+              empty={emptyText}
+            />
           )}
-
           {activeTab === 'service' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] uppercase font-bold text-[10px]">
-                  <tr>
-                    <th className="whitespace-nowrap px-3 py-3">Ticket No</th>
-                    <th className="whitespace-nowrap px-3 py-3">Customer & Asset</th>
-                    <th className="whitespace-nowrap px-3 py-3">Priority</th>
-                    <th className="whitespace-nowrap px-3 py-3">Warranty SLA</th>
-                    <th className="whitespace-nowrap px-3 py-3">Assigned Engineer</th>
-                    <th className="whitespace-nowrap px-3 py-3">Complaint Summary</th>
-                    <th className="whitespace-nowrap px-3 py-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {vTickets.map((s) => (
-                    <tr key={s.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-3 py-3 font-semibold text-[#0F5E63]">{txt(s.ticket_no || s.ticket_number)}</td>
-                      <td className="px-3 py-3">
-                        <p className="max-w-[220px] truncate font-medium text-[#14213D]" title={txt(s.organisation_name)}>{txt(s.organisation_name)}</p>
-                        <p className="text-[11px] text-[#4A5568]">S/N: {s.equipment_serial || 'N/A'}</p>
-                      </td>
-                      <td className="px-3 py-3">
-                        <Badge variant={s.priority === 'critical' ? 'urgent' : 'outline'}>
-                          {txt(s.priority).toUpperCase()}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3 capitalize text-[#4A5568]">{pretty(s.warranty_status)}</td>
-                      <td className="px-3 py-3 text-[#14213D] font-medium">{s.assigned_to_name || 'Unassigned'}</td>
-                      <td className="px-3 py-3 text-[#4A5568]"><div className="max-w-[240px] truncate" title={txt(s.complaint || s.complaint_description)}>{txt(s.complaint || s.complaint_description)}</div></td>
-                      <td className="px-3 py-3">
-                        <span className="capitalize px-2 py-0.5 rounded-full text-[11px] font-semibold bg-cyan-50 text-cyan-800">
-                          {pretty(s.status)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <RecordViews
+              storageKey="reports-service"
+              items={serviceRegister.items}
+              lanes={SERVICE_LANES}
+              laneOf={serviceRegister.laneOf}
+              hideEmptyLanes
+              summary={summaryOf(vTickets.length, tickets.length, 'ticket', 'tickets')}
+              empty={emptyText}
+            />
           )}
-        </div>
+        </>
       )}
     </PageContainer>
   );

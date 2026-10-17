@@ -2,8 +2,8 @@
 
 /** Module 8 settings (admin): thresholds & SLAs, assignment rules, categories, department heads. */
 import React, { useEffect, useState } from 'react';
-import { Plus, Save, Settings2 } from 'lucide-react';
-import { Badge, Button, Card, Checkbox, EmptyState, InfoCallout, Input, Modal, PageContainer, PageHeader, PageLoader, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
+import { Plus, Save, Settings2, ShieldCheck, Tag } from 'lucide-react';
+import { Badge, Button, Card, Checkbox, EmptyState, FormSection, InfoCallout, Input, Modal, PageContainer, PageHeader, PageLoader, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { TASK_HOLIDAY_POLICIES, TASK_HOLIDAY_POLICY_LABELS, TASK_LEAVE_POLICY_LABELS } from '@arihant/shared';
@@ -251,24 +251,30 @@ const CategoriesCard: React.FC<{ onToast: (k: 'success' | 'error', t: string) =>
       )}
       {editing && (
         <Modal isOpen onClose={() => setEditing(null)} title={editing.id ? 'Edit category' : 'New category'} maxWidth="md">
-          <form onSubmit={save} className="space-y-3">
-            <Input label="Code *" value={editing.code || ''} onChange={(e) => setEditing({ ...editing, code: e.target.value.toUpperCase() })} disabled={Boolean(editing.id)} maxLength={30} error={errors.code} helperText="Capital letters, digits, underscores. Cannot change later." />
-            <Input label="Name *" value={editing.name || ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} maxLength={80} error={errors.name} />
-            <Select
-              label="Required link"
-              value={editing.requires_link_type || ''}
-              onChange={(e) => setEditing({ ...editing, requires_link_type: (e.target.value || null) as any })}
-              options={[
-                { value: '', label: 'None' },
-                { value: 'customer', label: 'Customer' },
-                { value: 'tender', label: 'Tender' },
-                { value: 'demo', label: 'Demo (or customer)' },
-                { value: 'service', label: 'Service ticket (or customer)' },
-              ]}
-            />
-            <Input label="Display order" type="number" min={0} value={String(editing.display_order ?? 0)} onChange={(e) => setEditing({ ...editing, display_order: Number(e.target.value) })} error={errors.display_order} />
-            <Checkbox checked={Boolean(editing.default_evidence_required)} onChange={(e) => setEditing({ ...editing, default_evidence_required: e.target.checked })} label="Evidence required by default" />
-            <Checkbox checked={editing.is_active ?? true} onChange={(e) => setEditing({ ...editing, is_active: e.target.checked })} label="Active" description="Inactive categories cannot be chosen for new tasks; existing tasks keep them." />
+          <form onSubmit={save} className="space-y-5">
+            <FormSection title="Category" icon={<Tag />} description="How the category is named and where it sits in lists.">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                <Input label="Code *" value={editing.code || ''} onChange={(e) => setEditing({ ...editing, code: e.target.value.toUpperCase() })} disabled={Boolean(editing.id)} maxLength={30} error={errors.code} helperText="Capital letters, digits, underscores. Cannot change later." />
+                <Input label="Name *" value={editing.name || ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} maxLength={80} error={errors.name} />
+              </div>
+              <Input label="Display order" type="number" min={0} value={String(editing.display_order ?? 0)} onChange={(e) => setEditing({ ...editing, display_order: Number(e.target.value) })} error={errors.display_order} />
+            </FormSection>
+            <FormSection title="Rules" icon={<ShieldCheck />} description="What tasks in this category must link to or include.">
+              <Select
+                label="Required link"
+                value={editing.requires_link_type || ''}
+                onChange={(e) => setEditing({ ...editing, requires_link_type: (e.target.value || null) as any })}
+                options={[
+                  { value: '', label: 'None' },
+                  { value: 'customer', label: 'Customer' },
+                  { value: 'tender', label: 'Tender' },
+                  { value: 'demo', label: 'Demo (or customer)' },
+                  { value: 'service', label: 'Service ticket (or customer)' },
+                ]}
+              />
+              <Checkbox checked={Boolean(editing.default_evidence_required)} onChange={(e) => setEditing({ ...editing, default_evidence_required: e.target.checked })} label="Evidence required by default" />
+              <Checkbox checked={editing.is_active ?? true} onChange={(e) => setEditing({ ...editing, is_active: e.target.checked })} label="Active" description="Inactive categories cannot be chosen for new tasks; existing tasks keep them." />
+            </FormSection>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="ghost" onClick={() => setEditing(null)} disabled={busy}>
                 Cancel

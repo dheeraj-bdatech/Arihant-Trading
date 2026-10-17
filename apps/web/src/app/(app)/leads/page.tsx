@@ -11,7 +11,6 @@ import {
   User,
   Phone,
   Mail,
-  Calendar,
   Clock,
   ChevronRight,
   RefreshCw,
@@ -37,7 +36,6 @@ import {
   Compass,
   DollarSign,
   AlertCircle,
-  Eye,
   Edit,
   History,
   Activity,
@@ -54,6 +52,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useOpenParam } from '@/lib/use-open-param';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
 import {
   Button,
@@ -63,6 +62,8 @@ import {
   CardTitle,
   CardContent,
   Modal,
+  FormSteps,
+  FormSection,
   Input,
   Select,
   Textarea,
@@ -74,7 +75,12 @@ import {
   TableBody,
   TableRow,
   TableHead,
-  TableCell, Spinner, PageLoader, StatGrid, FilterMenu } from '@/components/ui';
+  TableCell, Spinner, PageLoader, StatGrid, FilterMenu,
+  RecordViews,
+  toneFor,
+  ScrollStrip,
+} from '@/components/ui';
+import type { BoardLane, RecordItem } from '@/components/ui';
 import { formatLakh, LeadStatus, LeadCategory, LeadType, LeadLossReason, InteractionType, FollowUpStatus } from '@arihant/shared';
 
 const LEAD_CATEGORY_OPTIONS: { value: LeadCategory; label: string }[] = [
@@ -195,6 +201,9 @@ const getStandardKitAccessories = (productName?: string, category?: string) => {
   ];
 };
 
+/** Leads fetched per request while the register scrolls. */
+const LEADS_PAGE_SIZE = 25;
+
 export default function LeadsPage() {
   const { user, hasRole, switchRole } = useAuth();
   const canReassign = hasRole(['management', 'regional_manager', 'admin']);
@@ -226,13 +235,7 @@ export default function LeadsPage() {
   const [isLoadingLeadTeamAvailability, setIsLoadingLeadTeamAvailability] = useState(false);
   const [organisationsList, setOrganisationsList] = useState<any[]>([]);
 
-  // 1. Leads State
-  const [leads, setLeads] = useState<any[]>([]);
-  const [leadsTotal, setLeadsTotal] = useState(0);
-  const [leadsPage, setLeadsPage] = useState(1);
-  const [leadsLimit, setLeadsLimit] = useState(50);
-  const [leadsTotalPages, setLeadsTotalPages] = useState(1);
-  const [leadsLoading, setLeadsLoading] = useState(true);
+  // 1. Leads State (the register itself is useInfiniteList below, paged as the reader scrolls)
   const [leadFilters, setLeadFilters] = useState({
     search: '',
     lead_status: '',
@@ -682,13 +685,13 @@ export default function LeadsPage() {
     }
   }, []);
 
-  // Fetch Leads Register
-  const fetchLeads = useCallback(async () => {
-    try {
-      setLeadsLoading(true);
-      const res = await api.get('/leads', {
-        page: leadsPage,
-        limit: leadsLimit,
+  // Leads Register: one page per request, appended as the register scrolls (infinite scroll).
+  // `fetchLeads` re-reads the pages already loaded, in place, after an edit.
+  const fetchLeadsPage = useCallback(
+    (page: number) =>
+      api.get('/leads', {
+        page,
+        limit: LEADS_PAGE_SIZE,
         search: leadFilters.search || undefined,
         lead_status: leadFilters.lead_status || undefined,
         lead_type: leadFilters.lead_type || undefined,
@@ -697,19 +700,11 @@ export default function LeadsPage() {
         followup: leadFilters.followup || undefined,
         sort_by: leadFilters.sort_by !== 'created_at' ? leadFilters.sort_by : undefined,
         sort_dir: leadFilters.sort_dir !== 'desc' ? leadFilters.sort_dir : undefined,
-      });
-
-      const list = Array.isArray(res) ? res : (res?.data || []);
-      setLeads(list);
-      setLeadsTotal(res?.total ?? list.length);
-      setLeadsTotalPages(res?.totalPages ?? 1);
-    } catch (err) {
-      console.error('Failed to load leads:', err);
-      setLeads([]);
-    } finally {
-      setLeadsLoading(false);
-    }
-  }, [leadsPage, leadsLimit, leadFilters]);
+      }),
+    [leadFilters],
+  );
+  const leadsList = useInfiniteList<any>(fetchLeadsPage, { enabled: activeTab === 'leads' });
+  const { rows: leads, total: leadsTotal, loading: leadsLoading, refresh: fetchLeads } = leadsList;
 
   // Fetch Customers Register
   const fetchCustomers = useCallback(async () => {
@@ -797,11 +792,6 @@ export default function LeadsPage() {
     }
   }, []);
 
-  // Reset pages when filters change to prevent 0-record offset mismatches
-  useEffect(() => {
-    setLeadsPage(1);
-  }, [leadFilters]);
-
   useEffect(() => {
     setCustomersPage(1);
   }, [customerSearch]);
@@ -813,11 +803,11 @@ export default function LeadsPage() {
   }, [fetchDashboardStats, fetchCustomers]);
 
   useEffect(() => {
-    if (activeTab === 'leads') fetchLeads();
-    else if (activeTab === 'customers') fetchCustomers();
+    // The leads register loads itself (useInfiniteList) whenever its tab is open.
+    if (activeTab === 'customers') fetchCustomers();
     else if (activeTab === 'followups') fetchFollowups();
     else if (activeTab === 'reports') fetchReports();
-  }, [activeTab, fetchLeads, fetchCustomers, fetchFollowups, fetchReports]);
+  }, [activeTab, fetchCustomers, fetchFollowups, fetchReports]);
 
   // Debounced Duplicate Detection during Lead Creation
   useEffect(() => {
@@ -1667,6 +1657,71 @@ export default function LeadsPage() {
   const clearLeadFilters = () =>
     setLeadFilters((prev) => ({ ...prev, search: '', lead_status: '', lead_type: '', sector: '', lead_source: '', followup: '' }));
   const moreLeadFiltersActive = [leadFilters.lead_type, leadFilters.lead_source, leadFilters.sector].filter(Boolean).length;
+
+  // Lead register as priority cards / stage board (RecordViews).
+  const LEAD_LANE_ALIAS: Record<string, string> = { won: 'converted', dropped: 'lost', open: 'new', quoted: 'proposal' };
+  const leadLaneKey = (status: string | null | undefined) => {
+    const s = String(status || 'new').toLowerCase();
+    return LEAD_LANE_ALIAS[s] || s;
+  };
+  const leadLanes: BoardLane[] = LEAD_STATUS_OPTIONS.map((o) => {
+    const key = o.value === 'dropped' ? 'lost' : o.value;
+    return { key, label: o.label, tone: toneFor(o.label) };
+  });
+  const leadStatusLabel = (key: string) => leadLanes.find((l) => l.key === key)?.label || key.replace(/_/g, ' ');
+  const openLogTouch = (lead: any) => {
+    setInteractionForm({
+      ...interactionForm,
+      lead_id: lead.id,
+      organisation_id: lead.organisation_id,
+      contact_id: lead.primary_contact_id || '',
+    });
+    setIsLogInteractionOpen(true);
+  };
+  const leadLaneById = new Map<string, string>();
+  const leadRecordItems: RecordItem[] = leads.map((lead) => {
+    const lane = leadLaneKey(lead.lead_status || lead.status);
+    leadLaneById.set(lead.id, lane);
+    const closed = lane === 'converted' || lane === 'lost';
+    const products: string[] =
+      lead.product_interests && lead.product_interests.length > 0
+        ? lead.product_interests.map((p: any) => p.name || p.product_name).filter(Boolean)
+        : lead.product_name
+        ? [lead.product_name]
+        : [];
+    const productText = products.length > 2 ? `${products.slice(0, 2).join(', ')} +${products.length - 2}` : products.join(', ');
+    const phone = lead.contact_mobile || lead.contact_phone;
+    const lastTouch = lead.last_contact_date || lead.last_interaction_at;
+    const category = LEAD_CATEGORY_OPTIONS.find((c) => c.value === lead.category)?.label;
+    const facts: { label: string; value: React.ReactNode }[] = [
+      {
+        label: 'Contact',
+        value: lead.contact_name
+          ? `${lead.contact_name}${lead.contact_designation ? ` · ${lead.contact_designation}` : ''}`
+          : 'Unspecified',
+      },
+      { label: 'Last touch', value: lastTouch ? new Date(lastTouch).toLocaleDateString('en-IN') : 'None logged' },
+      { label: 'Source', value: lead.source || 'Direct' },
+      { label: category ? 'Category' : 'Sector', value: category || lead.sector || 'Defence / Security' },
+    ];
+    return {
+      key: lead.id,
+      code: lead.lead_type === 're_approached' ? 'Re-approached' : 'Fresh',
+      title: lead.organisation_name || lead.product_name || 'Procurement Opportunity',
+      subtitle: [productText, lead.city].filter(Boolean).join(' · ') || undefined,
+      status: { label: leadStatusLabel(lane), tone: toneFor(leadStatusLabel(lane)) },
+      due: { date: lead.next_followup_at || lead.next_followup_date, label: 'Follow-up', done: closed },
+      value: formatLakh(lead.value_lakh || lead.estimated_value_lakh || 0),
+      owner: lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned',
+      facts,
+      primary: { label: 'Log touch', icon: <MessageSquare />, onClick: () => openLogTouch(lead) },
+      quick: phone
+        ? [{ label: `Call ${lead.contact_name || 'contact'}`, icon: <Phone />, onClick: () => { window.location.href = `tel:${phone}`; } }]
+        : undefined,
+      onOpen: () => handleOpenLead(lead.id),
+    };
+  });
+
   const followupsDueTodayTab = followupStats?.dueToday ?? followupStats?.due_today;
   // View menu (first control of the filter row) — one option per workspace register.
   const workspaceViewOptions = [
@@ -1771,27 +1826,13 @@ export default function LeadsPage() {
   ];
 
   return (
-    <div className="space-y-6 pb-12 animate-in fade-in duration-200">
+    <div className="space-y-6 animate-in fade-in duration-200">
       {/* 1. Page Header */}
       <PageHeader
         title="Lead & Customer Management"
         icon={<Target className="h-7 w-7 text-[#0F5E63]" />}
         actions={
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                fetchDashboardStats();
-                fetchLeads();
-                fetchCustomers();
-                if (activeTab === 'followups') fetchFollowups();
-                else if (activeTab === 'reports') fetchReports();
-              }}
-              leftIcon={<RefreshCw className="h-4 w-4" />}
-            >
-              Sync
-            </Button>
             <Button
               variant="primary"
               size="sm"
@@ -2028,17 +2069,13 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       {activeTab === 'leads' && (
         <div className="space-y-4">
-          {/* Lead register */}
-          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
-            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
-              <h2 className="font-serif text-sm font-bold text-[#14213D]">Lead register</h2>
-              <span className="font-mono text-xs text-[#4A5568]">
-                Showing {leads.length} of {leadsTotal} {leadsTotal === 1 ? 'opportunity' : 'opportunities'}
-              </span>
-            </div>
-            {leadsLoading ? (
+          {/* Lead register: priority cards / stage board */}
+          {leadsLoading ? (
+            <Card padding="none" className="border-[#DCD8CE]">
               <PageLoader label="Loading pipeline" />
-            ) : leads.length === 0 ? (
+            </Card>
+          ) : leads.length === 0 ? (
+            <Card padding="none" className="border-[#DCD8CE]">
               <div className="py-12">
                 <EmptyState
                   icon={Target}
@@ -2057,204 +2094,26 @@ export default function LeadsPage() {
                   }
                 />
               </div>
-            ) : (
-              <Table className="[&_td]:px-3 [&_th]:px-3">
-                <TableHeader>
-                  <TableRow className="bg-[#FBFAF7]">
-                    <TableHead className="whitespace-nowrap text-xs">Opportunity</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">Organisation & Contact</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">Owner</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">Products</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">Stage / Value</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">Follow-up</TableHead>
-                    <TableHead className="w-16 text-right text-xs">
-                      <span className="sr-only">Actions</span>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {leads.map((lead) => (
-                    <TableRow key={lead.id} className="group cursor-pointer" onClick={() => handleOpenLead(lead.id)}>
-                      <TableCell>
-                        <div className="w-[180px]">
-                        <div
-                          className="truncate text-xs font-bold text-[#14213D] transition-colors group-hover:text-[#0F5E63]"
-                          title={lead.product_name || (lead.product_interests && lead.product_interests[0]?.name) || lead.organisation_name || 'Procurement Opportunity'}
-                        >
-                          {lead.product_name || (lead.product_interests && lead.product_interests[0]?.name) || lead.organisation_name || 'Procurement Opportunity'}
-                        </div>
-                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[#4A5568]">
-                          <span className="shrink-0 font-mono">#{lead.id.slice(0, 8)}</span>
-                          <span className="min-w-0 truncate" title={`Source: ${lead.source || 'Direct'}`}>• {lead.source || 'Direct'}</span>
-                          {lead.lead_type === 're_approached' ? (
-                            <Badge variant="warning" size="sm" className="shrink-0 text-[9px] font-bold">RE-APPROACHED</Badge>
-                          ) : (
-                            <Badge variant="info" size="sm" className="shrink-0 text-[9px] font-bold">FRESH</Badge>
-                          )}
-                        </div>
-                        </div>
-                      </TableCell>
-
-                      <TableCell>
-                        <div className="w-[170px]">
-                        <div className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-[#14213D]">
-                          <Building className="h-3.5 w-3.5 shrink-0 text-[#4A5568]" />
-                          <span className="truncate" title={lead.organisation_name || undefined}>{lead.organisation_name || '—'}</span>
-                        </div>
-                        <div
-                          className="truncate text-[11px] text-[#4A5568]"
-                          title={`${lead.sector || 'Defence / Security'}${lead.city || lead.state ? ` • ${lead.city ? `${lead.city}, ` : ''}${lead.state || ''}` : ''}`}
-                        >
-                          {lead.sector || 'Defence / Security'}
-                          {(lead.city || lead.state) && <> • {lead.city ? `${lead.city}, ` : ''}{lead.state || ''}</>}
-                        </div>
-                        <div className="flex min-w-0 items-center gap-1 text-[11px] text-[#4A5568]">
-                          <User className="h-3 w-3 shrink-0" />
-                          {lead.contact_name ? (
-                            <span
-                              className="truncate"
-                              title={`${lead.contact_name}${lead.contact_designation || lead.contact_mobile || lead.contact_phone ? ` · ${lead.contact_designation || lead.contact_mobile || lead.contact_phone}` : ''}`}
-                            >
-                              {lead.contact_name}
-                              {(lead.contact_designation || lead.contact_mobile || lead.contact_phone) && ` · ${lead.contact_designation || lead.contact_mobile || lead.contact_phone}`}
-                            </span>
-                          ) : (
-                            <span className="italic">Contact unspecified</span>
-                          )}
-                        </div>
-                        </div>
-                      </TableCell>
-
-                      <TableCell>
-                        <div className="max-w-[120px] truncate text-xs font-semibold text-[#14213D]" title={lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned'}>
-                          {lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned'}
-                        </div>
-                        {lead.regional_manager_name && (
-                          <div className="max-w-[120px] truncate text-[11px] text-[#4A5568]" title={`RM: ${lead.regional_manager_name}`}>RM: {lead.regional_manager_name}</div>
-                        )}
-                      </TableCell>
-
-                      <TableCell>
-                        {lead.product_interests && lead.product_interests.length > 0 ? (
-                          <div className="flex w-[130px] flex-wrap gap-1">
-                            {lead.product_interests.slice(0, 2).map((p: any) => (
-                              <span
-                                key={p.product_id || p.id}
-                                className="max-w-[130px] truncate rounded bg-[#E3EFEE] px-1.5 py-0.5 text-[10px] font-medium text-[#0F5E63]"
-                                title={p.name || p.product_name}
-                              >
-                                {p.name || p.product_name}
-                              </span>
-                            ))}
-                            {lead.product_interests.length > 2 && (
-                              <span className="text-[10px] text-[#4A5568]">+{lead.product_interests.length - 2}</span>
-                            )}
-                          </div>
-                        ) : lead.product_name ? (
-                          <span className="inline-block max-w-[130px] truncate rounded bg-[#E3EFEE] px-1.5 py-0.5 text-[10px] font-medium text-[#0F5E63]" title={lead.product_name}>
-                            {lead.product_name}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] italic text-[#4A5568]">None tagged</span>
-                        )}
-                      </TableCell>
-
-                      <TableCell className="whitespace-nowrap">
-                        {getStatusBadge(lead.lead_status || lead.status)}
-                        <div className="mt-1 font-mono text-[11px] font-bold text-[#0F5E63]" title="Estimated value">
-                          {formatLakh(lead.value_lakh || lead.estimated_value_lakh || 0)}
-                        </div>
-                      </TableCell>
-
-                      <TableCell className="whitespace-nowrap">
-                        {lead.next_followup_at || lead.next_followup_date ? (
-                          <div className="flex items-center gap-1 font-mono text-[11px] text-[#14213D]">
-                            <Calendar className="h-3 w-3 text-[#4A5568]" />
-                            <span>{new Date(lead.next_followup_at || lead.next_followup_date).toLocaleDateString('en-IN')}</span>
-                          </div>
-                        ) : (
-                          <span className="text-[11px] italic text-[#4A5568]">None set</span>
-                        )}
-                      </TableCell>
-
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                          <Button
-                            size="xs"
-                            variant="secondary"
-                            title="Log touch"
-                            aria-label="Log touch"
-                            onClick={() => {
-                              setInteractionForm({
-                                ...interactionForm,
-                                lead_id: lead.id,
-                                organisation_id: lead.organisation_id,
-                                contact_id: lead.primary_contact_id || '',
-                              });
-                              setIsLogInteractionOpen(true);
-                            }}
-                          >
-                            <MessageSquare className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            title="Inspect lead"
-                            aria-label="Inspect lead"
-                            onClick={() => handleOpenLead(lead.id)}
-                          >
-                            <Eye className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-
-            {/* Footer: rows per page + pagination */}
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#ECE9E2] px-4 py-2.5">
-              <div className="flex items-center gap-2 text-xs text-[#4A5568]">
-                <span>
-                  Page {leadsPage} of {Math.max(1, leadsTotalPages)}
+            </Card>
+          ) : (
+            <RecordViews
+              items={leadRecordItems}
+              lanes={leadLanes}
+              laneOf={(item) => leadLaneById.get(item.key) || 'new'}
+              storageKey="leads"
+              defaultView="cards"
+              hideEmptyLanes
+              summary={
+                <span className="font-mono text-xs">
+                  {leads.length} of {leadsTotal} {leadsTotal === 1 ? 'lead' : 'leads'}
                 </span>
-                <FilterMenu
-                  label={`${leadsLimit} rows`}
-                  neutralKeys={['15', '25', '50', '100']}
-                  options={[15, 25, 50, 100].map((n) => ({
-                    key: String(n),
-                    label: `${n} per page`,
-                    active: leadsLimit === n,
-                    onSelect: () => {
-                      setLeadsLimit(n);
-                      setLeadsPage(1);
-                    },
-                  }))}
-                />
-              </div>
-              {leadsTotalPages > 1 && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={leadsPage <= 1}
-                    onClick={() => setLeadsPage((p) => Math.max(1, p - 1))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={leadsPage >= leadsTotalPages}
-                    onClick={() => setLeadsPage((p) => Math.min(leadsTotalPages, p + 1))}
-                  >
-                    Next
-                  </Button>
-                </div>
-              )}
-            </div>
-          </Card>
+              }
+              empty="No opportunities match your filter."
+              onLoadMore={leadsList.loadMore}
+              hasMore={leadsList.hasMore}
+              loadingMore={leadsList.loadingMore}
+            />
+          )}
         </div>
       )}
 
@@ -2724,24 +2583,31 @@ export default function LeadsPage() {
         description="Capture comprehensive opportunity intelligence, contact person, jurisdiction, and initial interaction."
         maxWidth="4xl"
       >
-        <form onSubmit={handleCreateLead} className="space-y-4 text-xs">
-          {(createLeadError || formError) && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 flex items-center gap-2">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              <span className="font-medium">{createLeadError || formError}</span>
-            </div>
-          )}
-
-          {/* 1. Organisation & Geography */}
-          <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-            <div className="flex items-center justify-between border-b border-[#DCD8CE] pb-2">
-              <div className="flex items-center gap-2">
-                <Building className="h-4 w-4 text-[#0F5E63]" />
-                <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                  1. Organisation & Jurisdiction
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
+        <form onSubmit={handleCreateLead} className="text-xs">
+          <FormSteps
+            onCancel={handleCloseCreateLead}
+            banner={
+              (createLeadError || formError) && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span className="font-medium">{createLeadError || formError}</span>
+                </div>
+              )
+            }
+            submit={
+              <Button type="submit" variant="primary" isLoading={actionLoading}>
+                Register Lead Opportunity
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Organisation',
+                icon: <Building />,
+                description: 'Which agency is this opportunity with? Pick an existing account or create a new one.',
+                content: (
+          <div className="space-y-3">
+            <div>
+              <div className="inline-flex items-center gap-1.5 rounded-lg bg-[#FBFAF7] p-1">
                 <button
                   type="button"
                   onClick={() => setLeadForm({ ...leadForm, organisation_mode: 'new' })}
@@ -2851,9 +2717,17 @@ export default function LeadsPage() {
                 />
               </div>
             )}
-
+          </div>
+                ),
+              },
+              {
+                title: 'Location',
+                icon: <MapPin />,
+                description: 'Where the agency is based — this decides the zone and region that own the lead.',
+                content: (
+          <div className="space-y-3">
             {/* City, State, Zone, Region, Sector */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Input
                 label="City *"
                 required
@@ -2903,15 +2777,14 @@ export default function LeadsPage() {
               />
             </div>
           </div>
-
-          {/* 2. Key Contact Person */}
-          <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-            <div className="flex items-center gap-2 border-b border-[#DCD8CE] pb-2">
-              <User className="h-4 w-4 text-[#0F5E63]" />
-              <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                2. Contact Person Details
-              </span>
-            </div>
+                ),
+              },
+              {
+                title: 'Contact',
+                icon: <User />,
+                description: 'The officer you are dealing with.',
+                content: (
+          <div className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
                 label="Contact Person Name *"
@@ -2945,17 +2818,16 @@ export default function LeadsPage() {
               />
             </div>
           </div>
-
-          {/* 3. Product Interest, Source & Lead Status */}
-          <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-            <div className="flex items-center gap-2 border-b border-[#DCD8CE] pb-2">
-              <Target className="h-4 w-4 text-[#0F5E63]" />
-              <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                3. Product Interest, Category, Source & Status
-              </span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
+                ),
+              },
+              {
+                title: 'Opportunity',
+                icon: <Target />,
+                description: 'What they are interested in, how the lead came in, and its current status.',
+                content: (
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5 sm:col-span-2">
                 <Select
                   label="Product Interests *"
                   required={leadForm.product_ids.length === 0}
@@ -3052,15 +2924,14 @@ export default function LeadsPage() {
               </div>
             </div>
           </div>
-
-          {/* 4. Salesperson & Regional Manager */}
-          <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-            <div className="flex items-center gap-2 border-b border-[#DCD8CE] pb-2">
-              <Users className="h-4 w-4 text-[#0F5E63]" />
-              <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                4. Ownership & Jurisdiction
-              </span>
-            </div>
+                ),
+              },
+              {
+                title: 'Follow-up',
+                icon: <Clock />,
+                description: 'Who owns the lead, the last conversation and the next step.',
+                content: (
+          <div className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Select
                 label="Assigned Salesperson *"
@@ -3081,16 +2952,6 @@ export default function LeadsPage() {
                   ...usersList.filter((u) => u.role === 'regional_manager' || u.role === 'management' || u.role === 'admin').map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
                 ]}
               />
-            </div>
-          </div>
-
-          {/* 5. Last Interaction, Next Follow-Up & Remarks */}
-          <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-            <div className="flex items-center gap-2 border-b border-[#DCD8CE] pb-2">
-              <Clock className="h-4 w-4 text-[#0F5E63]" />
-              <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                5. Interactions, Follow-Up & Remarks
-              </span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Input
@@ -3121,20 +2982,10 @@ export default function LeadsPage() {
               rows={3}
             />
           </div>
-
-          <div className="flex items-center justify-between pt-3 border-t border-[#DCD8CE]">
-            <span className="text-[11px] text-[#4A5568]">
-              * Required fields. All 18 parameters will be synced into the live pipeline.
-            </span>
-            <div className="flex items-center gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={handleCloseCreateLead}>
-                Cancel
-              </Button>
-              <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
-                Register Lead Opportunity
-              </Button>
-            </div>
-          </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -3151,7 +3002,7 @@ export default function LeadsPage() {
         {selectedLead && (
           <div className="space-y-5 text-xs">
             {/* Meta Executive Metrics Strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 p-4 rounded-xl bg-white border border-[#DCD8CE]">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 p-4 rounded-xl bg-white border border-[#DCD8CE]">
               <div>
                 <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Current Stage</span>
                 <div className="mt-1">{getStatusBadge(selectedLead.lead_status || selectedLead.status)}</div>
@@ -3327,7 +3178,7 @@ export default function LeadsPage() {
             </div>
 
             {/* Section tabs */}
-            <div className="flex items-center gap-1 border-b border-[#DCD8CE] overflow-x-auto" role="tablist">
+            <ScrollStrip role="tablist" aria-label="Lead sections" activeKey={leadDetailTab} wrapperClassName="border-b border-[#DCD8CE]" className="items-center gap-1 pb-px">
               {([
                 ['overview', 'Overview', null],
                 ['activity', 'Activity & Notes', null],
@@ -3351,7 +3202,7 @@ export default function LeadsPage() {
                   {count ? <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-[#E3EFEE] text-[#0F5E63] text-[10px]">{count}</span> : null}
                 </button>
               ))}
-            </div>
+            </ScrollStrip>
 
             {leadDetailTab === 'overview' && (
               <div className="space-y-5 animate-in fade-in duration-150">
@@ -3579,7 +3430,7 @@ export default function LeadsPage() {
               <div className="space-y-5 animate-in fade-in duration-150">
             {/* Product Interests Section */}
             <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                   <Briefcase className="h-4 w-4 text-[#0F5E63]" />
                   <span>Product Interests</span>
@@ -3590,7 +3441,7 @@ export default function LeadsPage() {
                       if (e.target.value) handleAddProductInterest(e.target.value);
                       e.target.value = '';
                     }}
-                    className="px-2 py-1 text-[11px] bg-white border border-[#DCD8CE] rounded-lg text-[#14213D]"
+                    className="max-w-full px-2 py-1 text-[11px] bg-white border border-[#DCD8CE] rounded-lg text-[#14213D]"
                   >
                     <option value="">+ Add Product Interest</option>
                     {productsList.map((p) => (
@@ -3637,12 +3488,12 @@ export default function LeadsPage() {
               <div className="space-y-5 animate-in fade-in duration-150">
             {/* Salesperson Assignment History Audit */}
             <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                   <ShieldCheck className="h-4 w-4 text-[#0F5E63]" />
                   <span>Salesperson Ownership Audit History</span>
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {!canReassign && (
                     <span className="text-[10px] font-medium text-[#4A5568] bg-[#E3EFEE] px-2 py-0.5 rounded-full border border-[#DCD8CE]">
                       Managerial Action
@@ -3705,7 +3556,7 @@ export default function LeadsPage() {
             )}
 
             {/* Action Bar */}
-            <div className="flex items-center justify-between pt-2 border-t border-[#DCD8CE]">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#DCD8CE]">
               <Button
                 variant="outline"
                 size="sm"
@@ -3717,7 +3568,7 @@ export default function LeadsPage() {
               >
                 Open 360° Account View
               </Button>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant="secondary"
                   size="sm"
@@ -3881,7 +3732,7 @@ export default function LeadsPage() {
             placeholder="e.g. Territory reorganization / officer transferred to Delhi HQ"
           />
 
-          <div className="flex items-center justify-between pt-2 border-t border-[#DCD8CE]">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#DCD8CE]">
             {!canReassign ? (
               <span className="text-[11px] text-amber-700 font-medium">
                 Switch role above to enable transfer.
@@ -3920,58 +3771,91 @@ export default function LeadsPage() {
         maxWidth="4xl"
         zIndex={60}
       >
-        <form onSubmit={handleSubmitDemoTransition} className="space-y-4 text-xs">
-          {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
-              {formError}
-            </div>
-          )}
+        <form onSubmit={handleSubmitDemoTransition} className="text-xs">
+          <FormSteps
+            onCancel={() => setIsDemoModalOpen(false)}
+            banner={
+              <div className="space-y-3">
+                {formError && (
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+                    {formError}
+                  </div>
+                )}
 
-          {/* Context Strip: Customer, Location, Requested Date, Salesperson */}
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-            <div>
-              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Customer:</span>
-              <span className="font-semibold text-[#14213D] truncate block">
-                🏢 {selectedLead?.organisation_name}
-              </span>
+                {/* Context Strip: Customer, Location, Requested Date, Salesperson */}
+                <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Customer:</span>
+                    <span className="font-semibold text-[#14213D] truncate block">
+                      🏢 {selectedLead?.organisation_name}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Location:</span>
+                    <span className="font-semibold text-[#14213D] truncate block">
+                      📍 {demoForm.location || selectedLead?.city || 'Client Site / Field'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Requested Date:</span>
+                    <span className="font-semibold text-[#14213D] block font-mono">
+                      📅 {demoForm.requested_date ? new Date(demoForm.requested_date).toLocaleDateString() : 'Pending'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Lead Salesperson:</span>
+                    <span className="font-semibold text-[#14213D] truncate block">
+                      👤 {usersList.find((u) => u.id === selectedLead?.assigned_to)?.full_name || selectedLead?.assigned_to_user?.full_name || user?.full_name || 'Assigned Officer'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            }
+            submit={
+              <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
+                Schedule Demo & Advance Lifecycle
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Schedule',
+                icon: <CalendarDays />,
+                description: 'When and where the demonstration will take place.',
+                content: (
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                type="date"
+                label="Demo Date *"
+                required
+                value={demoForm.requested_date}
+                onChange={(e) => setDemoForm((prev) => ({ ...prev, requested_date: e.target.value }))}
+              />
+              <Input
+                type="time"
+                label="Scheduled Time"
+                value={demoForm.requested_time}
+                onChange={(e) => setDemoForm((prev) => ({ ...prev, requested_time: e.target.value }))}
+              />
             </div>
-            <div>
-              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Location:</span>
-              <span className="font-semibold text-[#14213D] truncate block">
-                📍 {demoForm.location || selectedLead?.city || 'Client Site / Field'}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Requested Date:</span>
-              <span className="font-semibold text-[#14213D] block font-mono">
-                📅 {demoForm.requested_date ? new Date(demoForm.requested_date).toLocaleDateString() : 'Pending'}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Lead Salesperson:</span>
-              <span className="font-semibold text-[#14213D] truncate block">
-                👤 {usersList.find((u) => u.id === selectedLead?.assigned_to)?.full_name || selectedLead?.assigned_to_user?.full_name || user?.full_name || 'Assigned Officer'}
-              </span>
-            </div>
-          </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
-              type="date"
-              label="Demo Date *"
+              label="Location (Demo Venue / Department / Base) *"
               required
-              value={demoForm.requested_date}
-              onChange={(e) => setDemoForm((prev) => ({ ...prev, requested_date: e.target.value }))}
-            />
-            <Input
-              type="time"
-              label="Scheduled Time"
-              value={demoForm.requested_time}
-              onChange={(e) => setDemoForm((prev) => ({ ...prev, requested_time: e.target.value }))}
+              value={demoForm.location}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, location: e.target.value }))}
+              placeholder="e.g. Tactical Range, Ordnance Factory Jodhpur"
+              helperText="Auto-populated from account/trip location. Edit if field site differs."
             />
           </div>
-
-          {/* Equipment & Specific Kit Selection (Row 1: Two Selects, Below: Full-width Details) */}
+                ),
+              },
+              {
+                title: 'Equipment',
+                icon: <Layers />,
+                description: 'Which product and demo kit to take. Pick one from the live fleet list if you like.',
+                content: (
+          /* Equipment & Specific Kit Selection (Row 1: Two Selects, Below: Full-width Details) */
           <div className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
               <Select
@@ -4130,7 +4014,7 @@ export default function LeadsPage() {
             {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) - Full Width */}
             {!selectedLeadEquipUnit && activeLeadDemoFleet && activeLeadDemoFleet.units.length > 0 && (
               <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                   <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
                     Available Demo Kits in Fleet ({activeLeadDemoFleet.units.length}):
                   </span>
@@ -4266,20 +4150,29 @@ export default function LeadsPage() {
                 )}
               </div>
             )}
+
+            <Input
+              label="Additional Custom Accessories / Test Samples Needed (Optional)"
+              value={demoForm.custom_accessories}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, custom_accessories: e.target.value }))}
+              placeholder={
+                demoForm.equipment_required === 'custom'
+                  ? "Enter custom model name, serial number and accessories..."
+                  : "e.g. Test calibration pieces, knife sample, spare batteries, vehicle gate pass"
+              }
+            />
           </div>
-
-          <Input
-            label="Location (Demo Venue / Department / Base) *"
-            required
-            value={demoForm.location}
-            onChange={(e) => setDemoForm((prev) => ({ ...prev, location: e.target.value }))}
-            placeholder="e.g. Tactical Range, Ordnance Factory Jodhpur"
-            helperText="Auto-populated from account/trip location. Edit if field site differs."
-          />
-
+                ),
+              },
+              {
+                title: 'Specialist',
+                icon: <UserCheck />,
+                description: 'Who from the demo team will run it. Availability is shown for the chosen date.',
+                content: (
+          <div className="space-y-3">
           {/* Assigned Demo Team Specialist Allocation & Live Availability */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
               <label className="text-xs font-semibold text-[#14213D]">
                 Assigned Demo Team Specialist *
               </label>
@@ -4306,7 +4199,7 @@ export default function LeadsPage() {
             {/* Pre-selection Demo Team Member Roster (when none selected yet) */}
             {!selectedLeadDemoMember && (
               <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                   <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
                     Demo Team Availability on {new Date(demoForm.requested_date).toLocaleDateString()}:
                   </span>
@@ -4393,42 +4286,6 @@ export default function LeadsPage() {
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Purpose / Demonstration Objective *"
-              required
-              value={demoForm.purpose}
-              onChange={(e) => setDemoForm((prev) => ({ ...prev, purpose: e.target.value }))}
-              placeholder="e.g. Live range trials & ballistic validation"
-            />
-            <Input
-              label="Expected Audience / Evaluation Committee *"
-              required
-              value={demoForm.expected_audience}
-              onChange={(e) => setDemoForm((prev) => ({ ...prev, expected_audience: e.target.value }))}
-              placeholder="e.g. Technical Evaluation Committee & Board Officers"
-            />
-          </div>
-
-          <Input
-            label="Additional Custom Accessories / Test Samples Needed (Optional)"
-            value={demoForm.custom_accessories}
-            onChange={(e) => setDemoForm((prev) => ({ ...prev, custom_accessories: e.target.value }))}
-            placeholder={
-              demoForm.equipment_required === 'custom'
-                ? "Enter custom model name, serial number and accessories..."
-                : "e.g. Test calibration pieces, knife sample, spare batteries, vehicle gate pass"
-            }
-          />
-
-          <Textarea
-            label="Special Requirements & Field Deployment Instructions"
-            value={demoForm.reminder_notes}
-            onChange={(e) => setDemoForm((prev) => ({ ...prev, reminder_notes: e.target.value }))}
-            rows={2}
-            placeholder="e.g. Gate pass required at security entry. 230V power needed. Carry identity documentation."
-          />
-
           {/* Auto Remind Card */}
           <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
             <input
@@ -4446,15 +4303,44 @@ export default function LeadsPage() {
               </span>
             </div>
           </label>
-
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsDemoModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
-              Schedule Demo & Advance Lifecycle
-            </Button>
           </div>
+                ),
+              },
+              {
+                title: 'Objective',
+                icon: <Target />,
+                description: 'Why the demo is happening, who will attend, and anything the field team must know.',
+                content: (
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                label="Purpose / Demonstration Objective *"
+                required
+                value={demoForm.purpose}
+                onChange={(e) => setDemoForm((prev) => ({ ...prev, purpose: e.target.value }))}
+                placeholder="e.g. Live range trials & ballistic validation"
+              />
+              <Input
+                label="Expected Audience / Evaluation Committee *"
+                required
+                value={demoForm.expected_audience}
+                onChange={(e) => setDemoForm((prev) => ({ ...prev, expected_audience: e.target.value }))}
+                placeholder="e.g. Technical Evaluation Committee & Board Officers"
+              />
+            </div>
+
+            <Textarea
+              label="Special Requirements & Field Deployment Instructions"
+              value={demoForm.reminder_notes}
+              onChange={(e) => setDemoForm((prev) => ({ ...prev, reminder_notes: e.target.value }))}
+              rows={2}
+              placeholder="e.g. Gate pass required at security entry. 230V power needed. Carry identity documentation."
+            />
+          </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -4488,73 +4374,85 @@ export default function LeadsPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Proposal Reference / RFP No. *"
-              required
-              value={proposalForm.reference}
-              onChange={(e) => setProposalForm((prev) => ({ ...prev, reference: e.target.value }))}
-              placeholder="e.g. RFP-ORD-2026-0042"
-            />
-            <Input
-              type="date"
-              label="Submission Deadline Date *"
-              required
-              value={proposalForm.required_date}
-              onChange={(e) => setProposalForm((prev) => ({ ...prev, required_date: e.target.value }))}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              type="number"
-              label="Estimated Deal Value (₹ Lakh)"
-              value={proposalForm.deal_value}
-              onChange={(e) => setProposalForm((prev) => ({ ...prev, deal_value: e.target.value }))}
-              placeholder="e.g. 78.00"
-            />
-            <Select
-              label="Responsible Bid / Proposal Specialist *"
-              required
-              value={proposalForm.responsible_person_id}
-              onChange={(e) => setProposalForm((prev) => ({ ...prev, responsible_person_id: e.target.value }))}
-              options={[
-                { value: '', label: 'Select Specialist' },
-                ...usersList.map((u) => ({
-                  value: u.id,
-                  label: `${u.full_name} (${u.role.replace('_', ' ').toUpperCase()})`,
-                })),
-              ]}
-            />
-          </div>
-
-          <Textarea
-            label="Proposal Scope, Technical Specs & Clauses"
-            value={proposalForm.remarks}
-            onChange={(e) => setProposalForm((prev) => ({ ...prev, remarks: e.target.value }))}
-            rows={3}
-            placeholder="e.g. Supply of tactical communication units with 3-year OEM warranty, on-site commissioning, and compliance certification."
-          />
-
-          {/* Auto Remind Card */}
-          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={proposalForm.auto_remind}
-              onChange={(e) => setProposalForm((prev) => ({ ...prev, auto_remind: e.target.checked }))}
-              className="mt-0.5 rounded text-[#0F5E63] focus:ring-[#0F5E63]"
-            />
-            <div>
-              <span className="text-xs font-bold text-[#0F5E63] block">
-                Auto-remind proposal specialist & register deadline task on their dashboard
-              </span>
-              <span className="text-[11px] text-[#4A5568]">
-                Dispatches a notification to the assigned specialist and creates a high-priority deadline task in their accountability queue.
-              </span>
+          <FormSection
+            title="Proposal"
+            icon={<FileText />}
+            description="The RFP being answered, its value and what the proposal covers."
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                label="Proposal Reference / RFP No. *"
+                required
+                value={proposalForm.reference}
+                onChange={(e) => setProposalForm((prev) => ({ ...prev, reference: e.target.value }))}
+                placeholder="e.g. RFP-ORD-2026-0042"
+              />
+              <Input
+                type="number"
+                label="Estimated Deal Value (₹ Lakh)"
+                value={proposalForm.deal_value}
+                onChange={(e) => setProposalForm((prev) => ({ ...prev, deal_value: e.target.value }))}
+                placeholder="e.g. 78.00"
+              />
             </div>
-          </label>
 
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
+            <Textarea
+              label="Proposal Scope, Technical Specs & Clauses"
+              value={proposalForm.remarks}
+              onChange={(e) => setProposalForm((prev) => ({ ...prev, remarks: e.target.value }))}
+              rows={3}
+              placeholder="e.g. Supply of tactical communication units with 3-year OEM warranty, on-site commissioning, and compliance certification."
+            />
+          </FormSection>
+
+          <FormSection
+            title="Deadline & owner"
+            icon={<UserCheck />}
+            description="When it must be submitted and who is drafting it."
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                type="date"
+                label="Submission Deadline Date *"
+                required
+                value={proposalForm.required_date}
+                onChange={(e) => setProposalForm((prev) => ({ ...prev, required_date: e.target.value }))}
+              />
+              <Select
+                label="Responsible Bid / Proposal Specialist *"
+                required
+                value={proposalForm.responsible_person_id}
+                onChange={(e) => setProposalForm((prev) => ({ ...prev, responsible_person_id: e.target.value }))}
+                options={[
+                  { value: '', label: 'Select Specialist' },
+                  ...usersList.map((u) => ({
+                    value: u.id,
+                    label: `${u.full_name} (${u.role.replace('_', ' ').toUpperCase()})`,
+                  })),
+                ]}
+              />
+            </div>
+
+            {/* Auto Remind Card */}
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={proposalForm.auto_remind}
+                onChange={(e) => setProposalForm((prev) => ({ ...prev, auto_remind: e.target.checked }))}
+                className="mt-0.5 rounded text-[#0F5E63] focus:ring-[#0F5E63]"
+              />
+              <div>
+                <span className="text-xs font-bold text-[#0F5E63] block">
+                  Auto-remind proposal specialist & register deadline task on their dashboard
+                </span>
+                <span className="text-[11px] text-[#4A5568]">
+                  Dispatches a notification to the assigned specialist and creates a high-priority deadline task in their accountability queue.
+                </span>
+              </div>
+            </label>
+          </FormSection>
+
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
             <Button type="button" variant="ghost" size="sm" onClick={() => setIsProposalModalOpen(false)}>
               Cancel
             </Button>
@@ -4595,37 +4493,67 @@ export default function LeadsPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              type="date"
-              label="Discussion Date (When) *"
-              required
-              value={discussionForm.discussion_date}
-              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, discussion_date: e.target.value }))}
-            />
-            <Input
-              type="time"
-              label="Discussion Time (When) *"
-              required
-              value={discussionForm.discussion_time}
-              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, discussion_time: e.target.value }))}
-            />
-          </div>
+          <FormSection
+            title="When & where"
+            icon={<CalendarDays />}
+            description="Meeting time, format and where everyone joins."
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                type="date"
+                label="Discussion Date (When) *"
+                required
+                value={discussionForm.discussion_date}
+                onChange={(e) => setDiscussionForm((prev) => ({ ...prev, discussion_date: e.target.value }))}
+              />
+              <Input
+                type="time"
+                label="Discussion Time (When) *"
+                required
+                value={discussionForm.discussion_time}
+                onChange={(e) => setDiscussionForm((prev) => ({ ...prev, discussion_time: e.target.value }))}
+              />
+              <Select
+                label="Meeting Format / Mode *"
+                required
+                value={discussionForm.mode}
+                onChange={(e) => setDiscussionForm((prev) => ({ ...prev, mode: e.target.value }))}
+                options={[
+                  { value: 'in_person', label: 'In-Person Executive Meeting' },
+                  { value: 'tender_committee', label: 'Tender Committee Session' },
+                  { value: 'video_call', label: 'Video Conference (VC / Teams / Meet)' },
+                  { value: 'telephonic', label: 'Telephonic Briefing' },
+                  { value: 'site_visit', label: 'Site / Facility Inspection' },
+                ]}
+              />
+              {(() => {
+                const isLink = discussionForm.mode === 'video_call';
+                const isPhone = discussionForm.mode === 'telephonic';
+                return (
+                  <Input
+                    label={isLink ? 'Meeting Link *' : isPhone ? 'Dial-in Number / Bridge *' : 'Meeting Venue *'}
+                    required
+                    type={isLink ? 'url' : 'text'}
+                    value={discussionForm.venue}
+                    onChange={(e) => setDiscussionForm((prev) => ({ ...prev, venue: e.target.value }))}
+                    placeholder={
+                      isLink
+                        ? 'e.g. https://meet.google.com/xyz'
+                        : isPhone
+                        ? 'e.g. +91 98765 43210 or conference bridge ID'
+                        : 'e.g. Conference Room B, HQ Jodhpur'
+                    }
+                  />
+                );
+              })()}
+            </div>
+          </FormSection>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Select
-              label="Meeting Format / Mode *"
-              required
-              value={discussionForm.mode}
-              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, mode: e.target.value }))}
-              options={[
-                { value: 'in_person', label: 'In-Person Executive Meeting' },
-                { value: 'tender_committee', label: 'Tender Committee Session' },
-                { value: 'video_call', label: 'Video Conference (VC / Teams / Meet)' },
-                { value: 'telephonic', label: 'Telephonic Briefing' },
-                { value: 'site_visit', label: 'Site / Facility Inspection' },
-              ]}
-            />
+          <FormSection
+            title="Owner & agenda"
+            icon={<UserCheck />}
+            description="Who leads the discussion and what will be covered."
+          >
             <Select
               label="Assigned Discussion Lead / Member *"
               required
@@ -4639,56 +4567,35 @@ export default function LeadsPage() {
                 })),
               ]}
             />
-          </div>
 
-          {(() => {
-            const isLink = discussionForm.mode === 'video_call';
-            const isPhone = discussionForm.mode === 'telephonic';
-            return (
-              <Input
-                label={isLink ? 'Meeting Link *' : isPhone ? 'Dial-in Number / Bridge *' : 'Meeting Venue *'}
-                required
-                type={isLink ? 'url' : 'text'}
-                value={discussionForm.venue}
-                onChange={(e) => setDiscussionForm((prev) => ({ ...prev, venue: e.target.value }))}
-                placeholder={
-                  isLink
-                    ? 'e.g. https://meet.google.com/xyz'
-                    : isPhone
-                    ? 'e.g. +91 98765 43210 or conference bridge ID'
-                    : 'e.g. Conference Room B, HQ Jodhpur'
-                }
-              />
-            );
-          })()}
-
-          <Textarea
-            label="Meeting Agenda & Tender Discussion Topics"
-            value={discussionForm.agenda}
-            onChange={(e) => setDiscussionForm((prev) => ({ ...prev, agenda: e.target.value }))}
-            rows={3}
-            placeholder="e.g. Review specification compliance, tender clauses, earnest money deposit terms, and delivery milestones."
-          />
-
-          {/* Auto Remind Card */}
-          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={discussionForm.auto_remind}
-              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, auto_remind: e.target.checked }))}
-              className="mt-0.5 rounded text-[#0F5E63] focus:ring-[#0F5E63]"
+            <Textarea
+              label="Meeting Agenda & Tender Discussion Topics"
+              value={discussionForm.agenda}
+              onChange={(e) => setDiscussionForm((prev) => ({ ...prev, agenda: e.target.value }))}
+              rows={3}
+              placeholder="e.g. Review specification compliance, tender clauses, earnest money deposit terms, and delivery milestones."
             />
-            <div>
-              <span className="text-xs font-bold text-[#0F5E63] block">
-                Auto-remind team member & register calendar task on their side
-              </span>
-              <span className="text-[11px] text-[#4A5568]">
-                Sends an instant reminder and logs an urgent meeting task on the designated team member's personal dashboard.
-              </span>
-            </div>
-          </label>
 
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
+            {/* Auto Remind Card */}
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#E3EFEE]/50 border border-[#0F5E63]/30 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={discussionForm.auto_remind}
+                onChange={(e) => setDiscussionForm((prev) => ({ ...prev, auto_remind: e.target.checked }))}
+                className="mt-0.5 rounded text-[#0F5E63] focus:ring-[#0F5E63]"
+              />
+              <div>
+                <span className="text-xs font-bold text-[#0F5E63] block">
+                  Auto-remind team member & register calendar task on their side
+                </span>
+                <span className="text-[11px] text-[#4A5568]">
+                  Sends an instant reminder and logs an urgent meeting task on the designated team member's personal dashboard.
+                </span>
+              </div>
+            </label>
+          </FormSection>
+
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
             <Button type="button" variant="ghost" size="sm" onClick={() => setIsDiscussionModalOpen(false)}>
               Cancel
             </Button>
@@ -4750,12 +4657,14 @@ export default function LeadsPage() {
               </div>
             </div>
 
-            {/* Sub-Navigation Tabs */}
-            <div className="flex items-center gap-1.5 border-b border-[#DCD8CE] pb-2">
+            {/* Sub-Navigation Tabs: one sliding row on phones */}
+            <ScrollStrip role="tablist" aria-label="Customer 360 sections" activeKey={c360Tab} wrapperClassName="border-b border-[#DCD8CE]" className="items-center gap-1.5 pb-2">
               <button
                 type="button"
+                role="tab"
+                aria-selected={c360Tab === 'management'}
                 onClick={() => setC360Tab('management')}
-                className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
+                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'management'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
                     : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
@@ -4767,8 +4676,10 @@ export default function LeadsPage() {
 
               <button
                 type="button"
+                role="tab"
+                aria-selected={c360Tab === 'timeline'}
                 onClick={() => setC360Tab('timeline')}
-                className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
+                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'timeline'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
                     : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
@@ -4783,8 +4694,10 @@ export default function LeadsPage() {
 
               <button
                 type="button"
+                role="tab"
+                aria-selected={c360Tab === 'contacts'}
                 onClick={() => setC360Tab('contacts')}
-                className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
+                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'contacts'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
                     : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
@@ -4799,8 +4712,10 @@ export default function LeadsPage() {
 
               <button
                 type="button"
+                role="tab"
+                aria-selected={c360Tab === 'deals'}
                 onClick={() => setC360Tab('deals')}
-                className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
+                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'deals'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
                     : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
@@ -4815,8 +4730,10 @@ export default function LeadsPage() {
 
               <button
                 type="button"
+                role="tab"
+                aria-selected={c360Tab === 'linked'}
                 onClick={() => setC360Tab('linked')}
-                className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
+                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'linked'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
                     : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
@@ -4825,7 +4742,7 @@ export default function LeadsPage() {
                 <Layers className="h-3.5 w-3.5" />
                 <span>Linked records</span>
               </button>
-            </div>
+            </ScrollStrip>
 
             {/* TAB 1: EXECUTIVE MANAGEMENT INTELLIGENCE HUD */}
             {c360Tab === 'management' && (
@@ -5104,7 +5021,7 @@ export default function LeadsPage() {
                   {customerManagementSummary?.current_opportunity_status && customerManagementSummary.current_opportunity_status.length > 0 ? (
                     <div className="divide-y divide-[#DCD8CE] border border-[#DCD8CE] rounded-lg overflow-hidden">
                       {customerManagementSummary.current_opportunity_status.map((opp: any) => (
-                        <div key={opp.id} className="p-2.5 bg-white flex items-center justify-between text-[11px] hover:bg-[#F8FAFC]">
+                        <div key={opp.id} className="p-2.5 bg-white flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between text-[11px] hover:bg-[#F8FAFC]">
                           <div>
                             <div className="font-bold text-[#14213D] flex items-center gap-2">
                               <span>{opp.product_name}</span>
@@ -5125,7 +5042,7 @@ export default function LeadsPage() {
                               )}
                             </div>
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex flex-wrap items-center gap-3">
                             <span className="font-mono font-bold text-gray-800">
                               {formatLakh(opp.value_lakh || 0)}
                             </span>
@@ -5218,7 +5135,7 @@ export default function LeadsPage() {
                           key={it.id}
                           className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs hover:border-[#0F5E63] transition-colors"
                         >
-                          <div className="flex items-center justify-between">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <span className="text-base">{icon}</span>
                               <Badge variant="outline" size="sm" className="uppercase font-bold text-[10px]">
@@ -5365,7 +5282,7 @@ export default function LeadsPage() {
                     {customerLeads.map((ld) => (
                       <div
                         key={ld.id}
-                        className="p-3 rounded-xl bg-[#F8FAFC] border border-[#DCD8CE] flex items-center justify-between hover:border-[#0F5E63] transition-colors cursor-pointer"
+                        className="p-3 rounded-xl bg-[#F8FAFC] border border-[#DCD8CE] flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between hover:border-[#0F5E63] transition-colors cursor-pointer"
                         onClick={() => {
                           setIsCustomer360Open(false);
                           handleOpenLead(ld.id);
@@ -5392,7 +5309,7 @@ export default function LeadsPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
                           <span className="font-mono font-bold text-gray-800">
                             {formatLakh(ld.value_lakh || ld.estimated_value_lakh || 0)}
                           </span>
@@ -5455,14 +5372,29 @@ export default function LeadsPage() {
         maxWidth="lg"
         zIndex={70}
       >
-        <form onSubmit={handleLogInteraction} className="space-y-4 text-xs">
-          {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
-              {formError}
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
+        <form onSubmit={handleLogInteraction} className="text-xs">
+          <FormSteps
+            onCancel={() => setIsLogInteractionOpen(false)}
+            banner={
+              formError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+                  {formError}
+                </div>
+              )
+            }
+            submit={
+              <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
+                Save Touchpoint
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Interaction',
+                icon: <MessageSquare />,
+                description: 'How and when you spoke to the client, and with whom.',
+                content: (
+          <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Select
               label="Interaction Channel *"
               value={interactionForm.type}
@@ -5503,70 +5435,75 @@ export default function LeadsPage() {
               ]}
             />
           )}
-
-          <Textarea
-            label="Minutes / Discussion Notes *"
-            required
-            value={interactionForm.notes}
-            onChange={(e) => setInteractionForm({ ...interactionForm, notes: e.target.value })}
-            placeholder="Key discussion points, specifications requested, procurement timing, decision maker feedback..."
-          />
-
-          <div className="grid grid-cols-2 gap-3">
+          </div>
+                ),
+              },
+              {
+                title: 'Minutes',
+                icon: <FileText />,
+                description: 'What was discussed and how the client responded.',
+                content: (
+          <div className="space-y-3">
+            <Textarea
+              label="Minutes / Discussion Notes *"
+              required
+              value={interactionForm.notes}
+              onChange={(e) => setInteractionForm({ ...interactionForm, notes: e.target.value })}
+              placeholder="Key discussion points, specifications requested, procurement timing, decision maker feedback..."
+            />
             <Input
               label="Client Outcome / Feedback"
               value={interactionForm.outcome}
               onChange={(e) => setInteractionForm({ ...interactionForm, outcome: e.target.value })}
               placeholder="e.g. Approved technical trial"
             />
+          </div>
+                ),
+              },
+              {
+                title: 'Next step',
+                icon: <Clock />,
+                description: 'What happens next. A due date here creates a follow-up automatically.',
+                content: (
+          <div className="space-y-3">
             <Input
               label="Next Action Step"
               value={interactionForm.next_action}
               onChange={(e) => setInteractionForm({ ...interactionForm, next_action: e.target.value })}
               placeholder="e.g. Send formal quote & compliance"
             />
-          </div>
-
-          {/* Follow-up scheduler */}
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
             <Input
-              label="Schedule Next Touchpoint Due Date (Auto-creates Follow-up)"
+              label="Next Touchpoint Due Date (Auto-creates Follow-up)"
               type="date"
               value={interactionForm.next_followup_date}
               onChange={(e) => setInteractionForm({ ...interactionForm, next_followup_date: e.target.value })}
             />
           </div>
-
-          {/* Supporting Document Attachment */}
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2">
-            <span className="font-bold text-[#14213D] block text-[11px] flex items-center gap-1.5">
-              <Paperclip className="h-3.5 w-3.5 text-[#4A5568]" />
-              <span>Attach Supporting Document (Proposal / MOM)</span>
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              <Input
-                label="Document Name"
-                value={interactionForm.attachment_title}
-                onChange={(e) => setInteractionForm({ ...interactionForm, attachment_title: e.target.value })}
-                placeholder="e.g. RAF_MOM_Signed.pdf"
-              />
-              <Input
-                label="File URL / Storage Link"
-                value={interactionForm.attachment_url}
-                onChange={(e) => setInteractionForm({ ...interactionForm, attachment_url: e.target.value })}
-                placeholder="https://storage.arihant.com/docs/..."
-              />
-            </div>
+                ),
+              },
+              {
+                title: 'Attachment',
+                icon: <Paperclip />,
+                description: 'Optional: link a supporting document such as a proposal or MOM.',
+                content: (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Document Name"
+              value={interactionForm.attachment_title}
+              onChange={(e) => setInteractionForm({ ...interactionForm, attachment_title: e.target.value })}
+              placeholder="e.g. RAF_MOM_Signed.pdf"
+            />
+            <Input
+              label="File URL / Storage Link"
+              value={interactionForm.attachment_url}
+              onChange={(e) => setInteractionForm({ ...interactionForm, attachment_url: e.target.value })}
+              placeholder="https://storage.arihant.com/docs/..."
+            />
           </div>
-
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsLogInteractionOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" size="sm" isLoading={actionLoading}>
-              Save Touchpoint
-            </Button>
-          </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -5588,21 +5525,31 @@ export default function LeadsPage() {
             </div>
           )}
 
-          <Input
-            label="Touchpoint Outcome"
-            value={completionOutcome}
-            onChange={(e) => setCompletionOutcome(e.target.value)}
-            placeholder="e.g. Officer agreed to physical demonstration on 28th"
-          />
+          <FormSection
+            title="Outcome"
+            icon={<CheckCircle2 />}
+            description="How the touchpoint went."
+          >
+            <Input
+              label="Touchpoint Outcome"
+              value={completionOutcome}
+              onChange={(e) => setCompletionOutcome(e.target.value)}
+              placeholder="e.g. Officer agreed to physical demonstration on 28th"
+            />
 
-          <Textarea
-            label="Remarks / Minutes"
-            value={completionRemarks}
-            onChange={(e) => setCompletionRemarks(e.target.value)}
-            placeholder="Details of client discussion..."
-          />
+            <Textarea
+              label="Remarks / Minutes"
+              value={completionRemarks}
+              onChange={(e) => setCompletionRemarks(e.target.value)}
+              placeholder="Details of client discussion..."
+            />
+          </FormSection>
 
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2">
+          <FormSection
+            title="Next follow-up"
+            icon={<CalendarDays />}
+            description="Optionally book the next reminder for this lead."
+          >
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -5616,7 +5563,7 @@ export default function LeadsPage() {
             </label>
 
             {scheduleNextFollowup && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Input
                   label="Next Follow-up Due Date *"
                   type="date"
@@ -5633,7 +5580,7 @@ export default function LeadsPage() {
                 />
               </div>
             )}
-          </div>
+          </FormSection>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DCD8CE]">
             <Button type="button" variant="ghost" size="sm" onClick={() => setIsCompleteFollowupOpen(false)}>
@@ -5664,7 +5611,7 @@ export default function LeadsPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input
               label="New Due Date *"
               type="date"

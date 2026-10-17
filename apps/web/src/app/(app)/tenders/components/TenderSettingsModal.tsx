@@ -14,6 +14,7 @@ import {
   TableRow,
   TableCell,
   InfoCallout,
+  ScrollStrip,
 } from '@/components/ui';
 import {
   Settings,
@@ -221,7 +222,7 @@ export function TenderSettingsModal({
     >
       <div className="space-y-6 text-xs">
         {/* Subtabs */}
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-[#DCD8CE] pb-2">
+        <ScrollStrip role="tablist" aria-label="Settings sections" activeKey={activeTab} wrapperClassName="border-b border-[#DCD8CE]" className="items-center gap-1.5 pb-2">
           {[
             { id: 'categories', label: 'Categories' },
             { id: 'portals', label: 'Portals & Competitors' },
@@ -231,8 +232,11 @@ export function TenderSettingsModal({
           ].map((tab) => (
             <button
               key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                 activeTab === tab.id
                   ? 'bg-[#0F5E63] text-white shadow-sm'
                   : 'text-[#4A5568] hover:bg-[#FBFAF7] hover:text-[#14213D]'
@@ -241,7 +245,7 @@ export function TenderSettingsModal({
               {tab.label}
             </button>
           ))}
-        </div>
+        </ScrollStrip>
 
         {/* Tab 1: Categories */}
         {activeTab === 'categories' && (
@@ -272,7 +276,7 @@ export function TenderSettingsModal({
                   required
                 />
               </div>
-              <div className="flex-2 min-w-[180px]">
+              <div className="flex-[2] min-w-[180px]">
                 <label className="block text-[10px] font-semibold text-[#14213D] mb-1">
                   Display Label *
                 </label>
@@ -459,7 +463,7 @@ export function TenderSettingsModal({
                   required
                 />
               </div>
-              <div className="flex-2 min-w-[200px]">
+              <div className="flex-[2] min-w-[200px]">
                 <label className="block text-[10px] font-semibold text-[#14213D] mb-1">
                   Description Label *
                 </label>

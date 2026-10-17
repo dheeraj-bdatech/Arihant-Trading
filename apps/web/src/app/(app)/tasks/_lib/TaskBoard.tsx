@@ -274,7 +274,8 @@ export const TaskBoard: React.FC<{
 
       <p className="hidden text-[11px] text-[#4A5568] md:block">Drag a card to another column, or use its ⋮ menu. Only moves allowed for you are applied.</p>
 
-      <div className="-mx-1 overflow-x-auto px-1 pb-2">
+      {/* overflowX inline: theme.css resets `.overflow-x-auto` below 1180px for stacked tables */}
+      <div className="custom-scrollbar -mx-1 overscroll-x-contain px-1 pb-2" style={{ overflowX: 'auto' }}>
         <div className="flex items-stretch gap-3 snap-x snap-mandatory lg:snap-none">
           {columns.map((col) => {
             const meta = COLUMN_META[col.id];

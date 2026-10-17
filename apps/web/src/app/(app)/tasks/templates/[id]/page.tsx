@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ArrowLeft, CalendarClock, History, Pause, Pencil, Play, Repeat, Square } from 'lucide-react';
-import { Badge, Button, Card, Checkbox, InfoCallout, Input, Modal, PageContainer, PageHeader, PageLoader, Select, Textarea } from '@/components/ui';
+import { Badge, Button, Card, Checkbox, FormSteps, InfoCallout, Input, Modal, PageContainer, PageHeader, PageLoader, Select, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import {
   TASK_HOLIDAY_POLICIES,
@@ -240,97 +240,136 @@ const EditSeriesModal: React.FC<{
 
   return (
     <Modal isOpen={open} onClose={busy ? () => undefined : onClose} title="Edit series" description={t.title} maxWidth="2xl">
-      <form onSubmit={save} noValidate className="space-y-4">
-        <InfoCallout variant="info">
-          Changes apply to future instances that have not started; instances already in progress keep their details. To change a single instance, edit that task instead.
-        </InfoCallout>
-        <Input id="edit-title" label="Title *" value={s.title} maxLength={TASK_TEXT_LIMITS.title} onChange={(e) => set({ title: e.target.value })} error={errors.title} />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <Textarea id="edit-description" label="Description" rows={3} maxLength={TASK_TEXT_LIMITS.description} value={s.description} onChange={(e) => set({ description: e.target.value })} error={errors.description} />
-          <Textarea id="edit-outcome" label="Expected outcome" rows={3} maxLength={TASK_TEXT_LIMITS.expected_outcome} value={s.expected_outcome} onChange={(e) => set({ expected_outcome: e.target.value })} error={errors.expected_outcome} />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <UserSelect
-            label="Assignee *"
-            value={s.assigned_to}
-            onChange={(v) => set({ assigned_to: v })}
-            users={users}
-            error={errors.assigned_to}
-            helperText={s.assigned_to !== t.assigned_to ? 'Upcoming tasks that have not started move to the new assignee.' : linked ? 'Your team, and colleagues for linked work.' : 'Your team.'}
-          />
-          <Select
-            id="edit-priority"
-            label="Priority"
-            value={s.priority}
-            searchable={false}
-            onChange={(e) => set({ priority: e.target.value as TaskPriority })}
-            options={TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] }))}
-            error={errors.priority}
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-4 items-start">
-          <Input
-            id="edit-due-offset"
-            type="number"
-            inputMode="numeric"
-            min={0}
-            max={60}
-            label="Due after (days)"
-            value={s.due_offset_days}
-            onChange={(e) => set({ due_offset_days: e.target.value.replace(/[^\d]/g, '') })}
-            error={errors.due_offset_days}
-            helperText={Number(s.due_offset_days) > 0 ? `${s.due_offset_days} day(s) after each occurrence` : 'Same day'}
-          />
-          <Input id="edit-due-time" type="time" label="Due time (IST)" value={s.due_time} onChange={(e) => set({ due_time: e.target.value })} error={errors.due_time} />
-        </div>
-        <div className="grid grid-cols-2 gap-4 items-start">
-          <Input id="edit-end-date" type="date" label="Ends on" min={t.start_date} value={s.end_date} onChange={(e) => set({ end_date: e.target.value })} error={errors.end_date} helperText="Leave empty for no end date." />
-          <Input
-            id="edit-max-occurrences"
-            type="number"
-            inputMode="numeric"
-            min={1}
-            max={1000}
-            label="Max occurrences"
-            value={s.max_occurrences}
-            onChange={(e) => set({ max_occurrences: e.target.value.replace(/[^\d]/g, '') })}
-            error={errors.max_occurrences}
-            helperText="Leave empty for no limit."
-          />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <Select
-            id="edit-holiday-policy"
-            label="If it falls on a holiday / weekly off"
-            value={s.holiday_policy}
-            searchable={false}
-            onChange={(e) => set({ holiday_policy: e.target.value as TaskHolidayPolicy })}
-            options={TASK_HOLIDAY_POLICIES.map((p) => ({ value: p, label: TASK_HOLIDAY_POLICY_LABELS[p] }))}
-            error={errors.holiday_policy}
-          />
-          <Select
-            id="edit-leave-policy"
-            label="If the assignee is on approved leave"
-            value={s.leave_policy}
-            searchable={false}
-            onChange={(e) => set({ leave_policy: e.target.value as TaskLeavePolicy })}
-            options={(['skip', 'keep'] as TaskLeavePolicy[]).map((p) => ({ value: p, label: TASK_LEAVE_POLICY_LABELS[p] }))}
-            error={errors.leave_policy}
-          />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Checkbox id="edit-evidence" checked={s.evidence_required} onChange={(e) => set({ evidence_required: e.target.checked })} label="Evidence required" description="Proof file and remarks needed to complete." />
-          <Checkbox id="edit-approval" checked={s.approval_required} onChange={(e) => set({ approval_required: e.target.checked })} label="Approval required" description="Manager approves each completion." />
-        </div>
-        {message && <InfoCallout variant={message === 'Nothing has changed.' ? 'neutral' : 'danger'}>{message}</InfoCallout>}
-        <div className="flex justify-end gap-2 pt-1">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </Button>
-          <Button type="submit" isLoading={busy} disabled={busy} leftIcon={<Pencil className="h-4 w-4" />}>
-            Save changes
-          </Button>
-        </div>
+      <form onSubmit={save} noValidate>
+        <FormSteps
+          onCancel={onClose}
+          busy={busy}
+          banner={message && <InfoCallout variant={message === 'Nothing has changed.' ? 'neutral' : 'danger'}>{message}</InfoCallout>}
+          submit={
+            <Button type="submit" isLoading={busy} disabled={busy} leftIcon={<Pencil className="h-4 w-4" />}>
+              Save changes
+            </Button>
+          }
+          steps={[
+            {
+              title: 'Details',
+              icon: <Pencil />,
+              description: 'What each task in this series is about.',
+              content: (
+                <div className="space-y-3">
+                  <InfoCallout variant="info">
+                    Changes apply to future instances that have not started; instances already in progress keep their details. To change a single instance, edit that task instead.
+                  </InfoCallout>
+                  <Input id="edit-title" label="Title *" value={s.title} maxLength={TASK_TEXT_LIMITS.title} onChange={(e) => set({ title: e.target.value })} error={errors.title} />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                    <Textarea id="edit-description" label="Description" rows={3} maxLength={TASK_TEXT_LIMITS.description} value={s.description} onChange={(e) => set({ description: e.target.value })} error={errors.description} />
+                    <Textarea id="edit-outcome" label="Expected outcome" rows={3} maxLength={TASK_TEXT_LIMITS.expected_outcome} value={s.expected_outcome} onChange={(e) => set({ expected_outcome: e.target.value })} error={errors.expected_outcome} />
+                  </div>
+                </div>
+              ),
+            },
+            {
+              title: 'Assignment',
+              icon: <Repeat />,
+              description: 'Who does the work, how urgent it is, and what finishing needs.',
+              content: (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                    <UserSelect
+                      label="Assignee *"
+                      value={s.assigned_to}
+                      onChange={(v) => set({ assigned_to: v })}
+                      users={users}
+                      error={errors.assigned_to}
+                      helperText={s.assigned_to !== t.assigned_to ? 'Upcoming tasks that have not started move to the new assignee.' : linked ? 'Your team, and colleagues for linked work.' : 'Your team.'}
+                    />
+                    <Select
+                      id="edit-priority"
+                      label="Priority"
+                      value={s.priority}
+                      searchable={false}
+                      onChange={(e) => set({ priority: e.target.value as TaskPriority })}
+                      options={TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] }))}
+                      error={errors.priority}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                    <Checkbox id="edit-evidence" checked={s.evidence_required} onChange={(e) => set({ evidence_required: e.target.checked })} label="Evidence required" description="Proof file and remarks needed to complete." />
+                    <Checkbox id="edit-approval" checked={s.approval_required} onChange={(e) => set({ approval_required: e.target.checked })} label="Approval required" description="Manager approves each completion." />
+                  </div>
+                </div>
+              ),
+            },
+            {
+              title: 'Schedule',
+              icon: <CalendarClock />,
+              description: 'When each task falls due, and when the series stops.',
+              content: (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                    <Input
+                      id="edit-due-offset"
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={60}
+                      label="Due after (days)"
+                      value={s.due_offset_days}
+                      onChange={(e) => set({ due_offset_days: e.target.value.replace(/[^\d]/g, '') })}
+                      error={errors.due_offset_days}
+                      helperText={Number(s.due_offset_days) > 0 ? `${s.due_offset_days} day(s) after each occurrence` : 'Same day'}
+                    />
+                    <Input id="edit-due-time" type="time" label="Due time (IST)" value={s.due_time} onChange={(e) => set({ due_time: e.target.value })} error={errors.due_time} />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                    <Input id="edit-end-date" type="date" label="Ends on" min={t.start_date} value={s.end_date} onChange={(e) => set({ end_date: e.target.value })} error={errors.end_date} helperText="Leave empty for no end date." />
+                    <Input
+                      id="edit-max-occurrences"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={1000}
+                      label="Max occurrences"
+                      value={s.max_occurrences}
+                      onChange={(e) => set({ max_occurrences: e.target.value.replace(/[^\d]/g, '') })}
+                      error={errors.max_occurrences}
+                      helperText="Leave empty for no limit."
+                    />
+                  </div>
+                </div>
+              ),
+            },
+            {
+              title: 'Exceptions',
+              icon: <Pause />,
+              description: 'What happens when a date lands on a holiday or the assignee is on leave.',
+              content: (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                    <Select
+                      id="edit-holiday-policy"
+                      label="If it falls on a holiday / weekly off"
+                      value={s.holiday_policy}
+                      searchable={false}
+                      onChange={(e) => set({ holiday_policy: e.target.value as TaskHolidayPolicy })}
+                      options={TASK_HOLIDAY_POLICIES.map((p) => ({ value: p, label: TASK_HOLIDAY_POLICY_LABELS[p] }))}
+                      error={errors.holiday_policy}
+                    />
+                    <Select
+                      id="edit-leave-policy"
+                      label="If the assignee is on approved leave"
+                      value={s.leave_policy}
+                      searchable={false}
+                      onChange={(e) => set({ leave_policy: e.target.value as TaskLeavePolicy })}
+                      options={(['skip', 'keep'] as TaskLeavePolicy[]).map((p) => ({ value: p, label: TASK_LEAVE_POLICY_LABELS[p] }))}
+                      error={errors.leave_policy}
+                    />
+                  </div>
+                </div>
+              ),
+            },
+          ]}
+        />
       </form>
     </Modal>
   );

@@ -28,7 +28,7 @@ import {
   Undo2,
   Wrench,
 } from 'lucide-react';
-import { Badge, Button, Card, InfoCallout, Input, Modal, PageLoader, RowMenu, Select, Textarea } from '@/components/ui';
+import { Badge, Button, Card, FormSteps, InfoCallout, Input, Modal, PageLoader, RowMenu, Select, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { canOpen } from '@/lib/route-access';
@@ -189,7 +189,7 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
   ].filter(Boolean) as { label: string; value: string; href: string | null }[];
 
   return (
-    <div className="space-y-5 pb-24 md:pb-12">
+    <div className="space-y-5 pb-16 md:pb-0">
       {/* Title row */}
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => router.back()}>
@@ -756,37 +756,67 @@ const EditTaskModal: React.FC<{ task: TaskDetail; onClose: () => void; onSaved: 
 
   return (
     <Modal isOpen onClose={onClose} title="Edit task" description="Deadline changes go through “Extend deadline” so they are recorded." maxWidth="2xl">
-      <form onSubmit={save} className="space-y-4">
-        <Input label="Title *" value={v.title} onChange={(e) => set('title', e.target.value)} maxLength={200} error={errors.title} />
-        <Textarea label="Description" value={v.description} onChange={(e) => set('description', e.target.value)} rows={3} maxLength={5000} error={errors.description} />
-        <Textarea label="Expected outcome" value={v.expected_outcome} onChange={(e) => set('expected_outcome', e.target.value)} rows={2} maxLength={1000} error={errors.expected_outcome} />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Select label="Priority" value={v.priority} onChange={(e) => set('priority', e.target.value)} options={TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] }))} error={errors.priority} />
-          <Select label="Category" value={v.category_id} onChange={(e) => set('category_id', e.target.value)} options={categories.map((c) => ({ value: c.id, label: c.name }))} error={errors.category_id} />
-        </div>
-        {cat?.requires_link_type === 'customer' && <LinkPicker type="customer" required value={v.customer_id} onChange={(id) => set('customer_id', id)} error={errors.customer_id} />}
-        {cat?.requires_link_type === 'tender' && <LinkPicker type="tender" required value={v.tender_id} onChange={(id) => set('tender_id', id)} error={errors.tender_id} />}
-        {cat?.requires_link_type === 'demo' && <LinkPicker type="demo" value={v.demo_id} onChange={(id) => set('demo_id', id)} error={errors.demo_id} helperText="Or link the customer below." />}
-        {cat?.requires_link_type === 'service' && <LinkPicker type="service" value={v.service_ticket_id} onChange={(id) => set('service_ticket_id', id)} error={errors.service_ticket_id} helperText="Or link the customer below." />}
-        {cat?.requires_link_type && cat.requires_link_type !== 'customer' && cat.requires_link_type !== 'tender' && <LinkPicker type="customer" value={v.customer_id} onChange={(id) => set('customer_id', id)} error={errors.customer_id} />}
-        <div className="flex flex-wrap gap-4 text-sm">
-          <label className="inline-flex items-center gap-2">
-            <input type="checkbox" checked={v.evidence_required} onChange={(e) => set('evidence_required', e.target.checked)} className="accent-[#0F5E63] h-4 w-4" /> Evidence required
-          </label>
-          <label className="inline-flex items-center gap-2">
-            <input type="checkbox" checked={v.approval_required} onChange={(e) => set('approval_required', e.target.checked)} className="accent-[#0F5E63] h-4 w-4" /> Approval required
-          </label>
-        </div>
-        <Input label="Reason for the change (optional)" value={v.reason} onChange={(e) => set('reason', e.target.value)} maxLength={500} />
-        {(errors._ || errors.deadline || errors.version) && <InfoCallout variant="danger">{errors._ || errors.deadline || errors.version}</InfoCallout>}
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </Button>
-          <Button type="submit" isLoading={busy}>
-            Save changes
-          </Button>
-        </div>
+      <form onSubmit={save}>
+        <FormSteps
+          onCancel={onClose}
+          busy={busy}
+          banner={(errors._ || errors.deadline || errors.version) && <InfoCallout variant="danger">{errors._ || errors.deadline || errors.version}</InfoCallout>}
+          submit={
+            <Button type="submit" isLoading={busy}>
+              Save changes
+            </Button>
+          }
+          steps={[
+            {
+              title: 'Details',
+              icon: <Pencil />,
+              description: 'What the task is and what a good result looks like.',
+              content: (
+                <div className="space-y-3">
+                  <Input label="Title *" value={v.title} onChange={(e) => set('title', e.target.value)} maxLength={200} error={errors.title} />
+                  <Textarea label="Description" value={v.description} onChange={(e) => set('description', e.target.value)} rows={3} maxLength={5000} error={errors.description} />
+                  <Textarea label="Expected outcome" value={v.expected_outcome} onChange={(e) => set('expected_outcome', e.target.value)} rows={2} maxLength={1000} error={errors.expected_outcome} />
+                </div>
+              ),
+            },
+            {
+              title: 'Category',
+              icon: <Flag />,
+              description: 'How urgent it is, what kind of work it is, and the record it belongs to.',
+              content: (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Select label="Priority" value={v.priority} onChange={(e) => set('priority', e.target.value)} options={TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] }))} error={errors.priority} />
+                    <Select label="Category" value={v.category_id} onChange={(e) => set('category_id', e.target.value)} options={categories.map((c) => ({ value: c.id, label: c.name }))} error={errors.category_id} />
+                  </div>
+                  {cat?.requires_link_type === 'customer' && <LinkPicker type="customer" required value={v.customer_id} onChange={(id) => set('customer_id', id)} error={errors.customer_id} />}
+                  {cat?.requires_link_type === 'tender' && <LinkPicker type="tender" required value={v.tender_id} onChange={(id) => set('tender_id', id)} error={errors.tender_id} />}
+                  {cat?.requires_link_type === 'demo' && <LinkPicker type="demo" value={v.demo_id} onChange={(id) => set('demo_id', id)} error={errors.demo_id} helperText="Or link the customer below." />}
+                  {cat?.requires_link_type === 'service' && <LinkPicker type="service" value={v.service_ticket_id} onChange={(id) => set('service_ticket_id', id)} error={errors.service_ticket_id} helperText="Or link the customer below." />}
+                  {cat?.requires_link_type && cat.requires_link_type !== 'customer' && cat.requires_link_type !== 'tender' && <LinkPicker type="customer" value={v.customer_id} onChange={(id) => set('customer_id', id)} error={errors.customer_id} />}
+                </div>
+              ),
+            },
+            {
+              title: 'Rules',
+              icon: <ShieldAlert />,
+              description: 'What is needed to finish it, and why you are making this change.',
+              content: (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    <label className="inline-flex items-center gap-2">
+                      <input type="checkbox" checked={v.evidence_required} onChange={(e) => set('evidence_required', e.target.checked)} className="accent-[#0F5E63] h-4 w-4" /> Evidence required
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input type="checkbox" checked={v.approval_required} onChange={(e) => set('approval_required', e.target.checked)} className="accent-[#0F5E63] h-4 w-4" /> Approval required
+                    </label>
+                  </div>
+                  <Input label="Reason for the change (optional)" value={v.reason} onChange={(e) => set('reason', e.target.value)} maxLength={500} />
+                </div>
+              ),
+            },
+          ]}
+        />
       </form>
     </Modal>
   );

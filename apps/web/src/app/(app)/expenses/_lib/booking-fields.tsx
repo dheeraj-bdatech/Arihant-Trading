@@ -70,7 +70,7 @@ export const FieldTile: React.FC<{
   <div className={twMerge('min-w-0', className)}>
     <div
       className={twMerge(
-        'field-tile relative h-full rounded-lg border px-3.5 pt-2 pb-2.5 transition-colors',
+        'field-tile relative rounded-lg border px-3.5 pt-2 pb-2.5 transition-colors',
         readOnly ? 'bg-[#FBFAF7] border-[#DCD8CE]' : 'bg-white border-[#C9C4B8] hover:border-[#0F5E63]/60',
         'focus-within:border-[#0F5E63] focus-within:ring-2 focus-within:ring-[#0F5E63]/15',
         error && 'border-[#881337] hover:border-[#881337] focus-within:border-[#881337] focus-within:ring-[#881337]/15',
@@ -96,7 +96,7 @@ export const TileInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttri
   <input
     ref={ref}
     className={twMerge(
-      'field-tile-control mt-0.5 block w-full min-w-0 bg-transparent text-[15px] font-semibold text-[#14213D] outline-none placeholder:font-normal placeholder:text-[#8A8578] read-only:cursor-default',
+      'field-tile-control mt-0.5 block h-7 w-full min-w-0 bg-transparent text-[15px] leading-7 font-semibold text-[#14213D] outline-none placeholder:font-normal placeholder:text-[#8A8578] read-only:cursor-default',
       className,
     )}
     {...props}
@@ -219,7 +219,15 @@ export const Stepper: React.FC<{ steps: { label: string; state: StepState }[] }>
       <li key={s.label} className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 last:flex-none">
         <span className="flex min-w-0 items-center gap-2">
           <StepDot n={i + 1} state={s.state} onDark />
-          <span className={twMerge('truncate text-xs font-semibold sm:text-[13px]', s.state === 'pending' ? 'text-white/60' : 'text-white')}>{s.label}</span>
+          <span
+            className={twMerge(
+              'truncate text-xs font-semibold sm:inline sm:text-[13px]',
+              s.state === 'active' ? 'inline' : 'hidden',
+              s.state === 'pending' ? 'text-white/60' : 'text-white',
+            )}
+          >
+            {s.label}
+          </span>
         </span>
         {i < steps.length - 1 && <span className={twMerge('h-px min-w-4 flex-1', s.state === 'done' ? 'bg-[#F2B872]' : 'bg-white/20')} />}
       </li>

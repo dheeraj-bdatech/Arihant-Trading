@@ -64,6 +64,7 @@ import { TaskConflictCallout, TaskViewMenu, TaskViewRow, useToaster, useUrlFilte
 import { DeadlineInput, UserSelect } from '../_lib/pickers';
 import { TaskActionDialog, type TaskDialogAction } from '../_lib/TaskActions';
 import { TaskCards, TaskPagination, TaskSearchInput, TaskTable, rowActorKinds, useTaskList } from '../_lib/TaskList';
+import { NewTaskButton } from '../_lib/NewTaskModal';
 
 /** Filter params — also used by dashboard drill-down links, so the names must not change. */
 const EDITABLE = ['search', 'assignee_ids', 'category_ids', 'priority', 'statuses', 'recurrence_type', 'deadline_from', 'deadline_to', 'has_open_blocker', 'no_update', 'delay_class'] as const;
@@ -285,11 +286,9 @@ function TeamTasks() {
         title="Team Tasks"
         icon={<Users className="h-5 w-5" />}
         actions={
-          <Link href="/tasks/new">
-            <Button size="sm" leftIcon={<Plus className="h-4 w-4" />}>
-              Assign Task
-            </Button>
-          </Link>
+          <NewTaskButton size="sm" leftIcon={<Plus className="h-4 w-4" />}>
+            Assign Task
+          </NewTaskButton>
         }
       />
 
@@ -458,9 +457,7 @@ function TeamTasks() {
                     Clear filters
                   </Button>
                 ) : (
-                  <Link href="/tasks/new">
-                    <Button leftIcon={<Plus className="h-4 w-4" />}>Assign Task</Button>
-                  </Link>
+                  <NewTaskButton leftIcon={<Plus className="h-4 w-4" />}>Assign Task</NewTaskButton>
                 )
               }
             />

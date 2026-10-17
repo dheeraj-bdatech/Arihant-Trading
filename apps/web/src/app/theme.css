@@ -428,7 +428,9 @@ button[aria-haspopup='listbox'] { border: 1.5px solid var(--th-ctrl) !important;
 button[aria-haspopup='listbox']:hover, button[aria-haspopup='listbox'][aria-expanded='true'] { border-color: var(--th-primary) !important; box-shadow: var(--th-shadow-sm); }
 
 /* never let toolbar items overlap: below the one-line breakpoint, tabs get a full row and tools wrap beneath */
-.toolbar-box__main > *:not([data-tabs]) { flex-shrink: 0; }
+.toolbar-box__main > *:not([data-tabs]):not([data-tabs-wrap]) { flex-shrink: 0; }
+/* Tabs: the box around a sliding tab row (ScrollStrip) shrinks like the row itself used to */
+.toolbar-box__main > [data-tabs-wrap] { flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .toolbar-box__tools > *, .toolbar-box__actions > * { flex-shrink: 0; }
 @media (max-width: 1359px) {
   .toolbar-box__main { flex: 1 1 100%; }
@@ -448,7 +450,8 @@ button[aria-haspopup='listbox']:hover, button[aria-haspopup='listbox'][aria-expa
   table[data-stackable] tbody td:first-child { grid-column: 1 / -1; padding-bottom: 8px !important; border-bottom: 1px dashed var(--th-line) !important; }
   table[data-stackable] tbody td:not(:first-child)::before { content: attr(data-label); display: block; margin-bottom: 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--th-faint); }
   table[data-stackable] tbody td[colspan] { grid-column: 1 / -1; }
-  .overflow-x-auto { overflow-x: visible; }
+  /* not inside dialogs: there the body would pan sideways (or clip the table) instead of the table scrolling */
+  .overflow-x-auto:not([role='dialog'] *) { overflow-x: visible; }
 }
 @media (max-width: 560px) { table[data-stackable] tbody tr { grid-template-columns: 1fr; } }
 
@@ -554,7 +557,24 @@ html[data-app-theme] .md-search input:focus { box-shadow: 0 0 0 2px var(--th-pri
 html[data-app-theme] .app-logo { background: transparent; box-shadow: none; color: var(--th-primary); }
 
 /* ---- top app bar ---- */
-html[data-app-theme] .app-header { background-color: var(--th-bg-flat); border-bottom: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* Glossy frosted top bar: translucent white with a sheen, blur behind, and a visible base line with a teal accent. */
+html[data-app-theme] .app-header {
+  background: var(--glass-bg-thin);
+  border-bottom: 1px solid #DCD8CE;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 10px 28px -18px rgba(20, 33, 61, 0.45);
+  -webkit-backdrop-filter: saturate(180%) blur(18px);
+  backdrop-filter: saturate(180%) blur(18px);
+}
+html[data-app-theme] .app-header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(15, 94, 99, 0) 0%, rgba(15, 94, 99, 0.85) 25%, rgba(15, 94, 99, 0.85) 75%, rgba(15, 94, 99, 0) 100%);
+  pointer-events: none;
+}
 html[data-app-theme] .app-search { border: 0; border-radius: 9999px; background: var(--md-surface-high); }
 html[data-app-theme] .app-search:hover { background: var(--md-surface-highest); border: 0; }
 html[data-app-theme] .app-hbtn { border: 0; border-radius: 9999px; background: transparent; color: var(--th-mute); }
@@ -645,3 +665,67 @@ html .field-tile :is(input, textarea, button[aria-haspopup='listbox']).field-til
 html .field-tile :is(input, textarea, button[aria-haspopup='listbox']).field-tile-control:is(:hover, :focus) {
   border-width: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; outline: none;
 }
+
+/* ---- page actions docked at the end of the page's filter / tabs row (ToolbarActions → useActionDock) ---- */
+.toolbar-dock { order: 999; margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.toolbar-dock:empty { display: none; }
+.toolbar-dock-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+
+/* =====================================================================
+   GLOSS — one frosted-glass recipe for the header, search fields, cards, KPI tiles and toolbars.
+   Translucent white with a top sheen, a visible hairline border, an inner highlight, soft drop
+   shadow and background blur. A faint ambient wash on the canvas gives the glass something to show.
+   ===================================================================== */
+html[data-app-theme] {
+  --glass-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0.62) 100%);
+  --glass-bg-thin: linear-gradient(180deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.45) 100%);
+  --glass-line: rgba(201, 196, 184, 0.75);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 10px 28px -20px rgba(20, 33, 61, 0.4);
+  --glass-shadow-lift: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 16px 36px -18px rgba(20, 33, 61, 0.45);
+  --glass-blur: saturate(180%) blur(16px);
+}
+html[data-app-theme='material'] {
+  --th-wallpaper:
+    radial-gradient(900px 520px at 88% -8%, rgba(15, 94, 99, 0.10), transparent 70%),
+    radial-gradient(760px 480px at -6% 104%, rgba(154, 52, 18, 0.07), transparent 70%),
+    linear-gradient(180deg, #F8F7F3 0%, #F3F1EB 100%);
+}
+
+/* cards, KPI tiles, tables, toolbars and plain white panels (not dialogs, nor anything inside one:
+   the dialog panel is itself a rounded white box, and glass there lets the page show through) */
+html[data-app-theme] :is(.ui-card, .ui-stat, .ui-table-wrap, .toolbar-box):not([role='dialog']):not([role='dialog'] *),
+html[data-app-theme] .bg-white:is(.rounded-xl, .rounded-2xl, .rounded-\[14px\], .rounded-\[10px\]).border:not([role='dialog']):not([role='dialog'] *):not(input):not(select):not(textarea):not(button) {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+html[data-app-theme] :is(.ui-card--interactive:hover, a:hover > .ui-stat, .ui-stat.cursor-pointer:hover):not([role='dialog'] *) {
+  box-shadow: var(--glass-shadow-lift);
+  border-color: rgba(15, 94, 99, 0.45);
+}
+
+/* header search + sidebar "Find a module": glass pill with a visible edge */
+html[data-app-theme] .app-search,
+html[data-app-theme] .md-search input {
+  background: var(--glass-bg) !important;
+  border: 1px solid #C9C4B8 !important;
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 6px 16px -12px rgba(20, 33, 61, 0.45);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  color: #14213D;
+}
+html[data-app-theme] .app-search:hover,
+html[data-app-theme] .md-search input:hover { border-color: #0F5E63 !important; background: var(--glass-bg) !important; }
+html[data-app-theme] .md-search input:focus { border-color: #0F5E63 !important; box-shadow: 0 0 0 3px rgba(15, 94, 99, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.95); }
+html[data-app-theme] .app-search :is(span, svg) { color: #4A5568; }
+/* a filter row hosting page actions may wrap them onto a second line instead of overflowing */
+:has(> .toolbar-dock) { flex-wrap: wrap !important; }
+
+/* ---- record layouts (components/ui/Records.tsx): 44px targets, 56px on phones = glove mode by default ---- */
+.rec { --rec-tap: 44px; }
+@media (max-width: 767px) { .rec { --rec-tap: 56px; } }
+.rec .rec-tap { min-height: var(--rec-tap); min-width: var(--rec-tap); }
+.rec .rec-row { min-height: calc(var(--rec-tap) + 8px); }

@@ -318,8 +318,11 @@ TND-MHA-2026-003,Procurement of Tactical Shields,CISF Airport Security,MHA,45000
                       <TableCell className="font-mono text-xs font-semibold text-[#0F5E63]">
                         {r.tender_number || 'Missing'}
                       </TableCell>
-                      <TableCell className="max-w-[180px] truncate">
-                        {r.tender_title || 'Untitled'}
+                      <TableCell>
+                        {/* truncation needs a sized block: a table cell grows to fit its text */}
+                        <div className="max-w-[180px] truncate" title={r.tender_title || undefined}>
+                          {r.tender_title || 'Untitled'}
+                        </div>
                       </TableCell>
                       <TableCell>{r.organisation || 'Prospect'}</TableCell>
                       <TableCell>
@@ -339,7 +342,7 @@ TND-MHA-2026-003,Procurement of Tactical Shields,CISF Airport Security,MHA,45000
               </Table>
             </div>
 
-            <div className="flex justify-between items-center pt-3 border-t border-[#ECE9E2]">
+            <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t border-[#ECE9E2]">
               <Button
                 variant="outline"
                 size="sm"

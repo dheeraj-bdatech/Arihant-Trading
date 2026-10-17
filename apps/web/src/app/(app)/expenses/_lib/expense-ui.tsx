@@ -412,7 +412,7 @@ export const ReceiptViewer: React.FC<{ attachment: ExpenseAttachment | null; onC
             <Spinner size="lg" />
           ) : isImage ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={url} alt={attachment.file_name} className="max-h-[70vh] w-auto object-contain" />
+            <img src={url} alt={attachment.file_name} className="max-h-[70vh] max-w-full h-auto w-auto object-contain" />
           ) : isPdf ? (
             <iframe src={url} title={attachment.file_name} className="w-full h-[70vh]" />
           ) : (

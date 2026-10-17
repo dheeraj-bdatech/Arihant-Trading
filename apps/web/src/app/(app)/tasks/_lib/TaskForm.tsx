@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, ArrowLeft, CalendarClock, Camera, Link2, ListChecks, Paperclip, Plus, Repeat, Send, ShieldCheck, Upload, Users, X } from 'lucide-react';
-import { Badge, Button, Card, Checkbox, InfoCallout, Input, Select, Spinner, Textarea } from '@/components/ui';
+import { Badge, Button, Card, Checkbox, FormSteps, InfoCallout, Input, Select, Spinner, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import {
   TASK_HOLIDAY_POLICIES,
@@ -333,9 +333,32 @@ const WeekdayChips: React.FC<{ label: string; value: number[]; onChange: (v: num
 );
 
 // ======================================================================== the form
-export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) => {
+export interface TaskFormProps {
+  prefill?: TaskFormPrefill;
+  /**
+   * 'modal': rendered inside a popup — one section per step, and after saving the popup closes
+   * (onCreated gets the message) instead of navigating away. 'page' (default): the full page form.
+   */
+  variant?: 'page' | 'modal';
+  onClose?: () => void;
+  onCreated?: (result: { message: string; href: string }) => void;
+  /** Lets the popup ask before an outside click / Esc throws away unsaved input. */
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', onClose, onCreated, onDirtyChange }) => {
+  const modal = variant === 'modal';
   const router = useRouter();
   const { push, Toaster } = useToaster();
+  // In the popup every section is a step with its own heading, so section cards and titles step aside.
+  const Panel = useMemo<React.FC<{ className?: string; children?: React.ReactNode }>>(
+    () => (modal ? ({ children }) => <div className="space-y-4">{children}</div> : Card),
+    [modal],
+  );
+  const Title = useMemo<typeof SectionTitle>(
+    () => (modal ? ({ right }) => (right ? <div className="flex justify-end">{right}</div> : null) : SectionTitle),
+    [modal],
+  );
   const { categories, loading: categoriesLoading } = useTaskCategories();
   const { summary } = useTaskSummary();
   const { settings } = useTaskSettings();
@@ -489,8 +512,13 @@ export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) =
 
   const leave = (href: string) => {
     if (dirty && !window.confirm('Discard this task? Nothing has been saved yet.')) return;
-    router.push(href);
+    if (modal && onClose) onClose();
+    else router.push(href);
   };
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   // ------------------------------------------------------------------ assignee options (leave on the deadline / series start)
   const deadlineDate = form.deadline.split('T')[0];
@@ -717,7 +745,12 @@ export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) =
         const n = res.data.length;
         push('success', `${n > 1 ? `${n} recurring series created` : 'Recurring series created'} — ${res.generated} upcoming task${res.generated === 1 ? '' : 's'} generated.`);
         setCreated({ href: `/tasks/templates/${res.data[0]?.id}`, message: 'Series created.', failures: [] });
-        router.push(res.data[0] ? `/tasks/templates/${res.data[0].id}` : '/tasks/templates');
+        const seriesHref = res.data[0] ? `/tasks/templates/${res.data[0].id}` : '/tasks/templates';
+        if (modal) {
+          onDirtyChange?.(false);
+          onCreated?.({ message: `${n > 1 ? `${n} recurring series created` : 'Recurring series created'} — ${res.generated} upcoming task${res.generated === 1 ? '' : 's'} generated.`, href: seriesHref });
+          onClose?.();
+        } else router.push(seriesHref);
         return;
       }
       const res = await api.post<{ data: { id: string; task_number: string; title: string }[]; group_id: string | null; warnings: { field: string; message: string }[] }>('/tasks', body);
@@ -739,8 +772,14 @@ export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) =
         window.setTimeout(() => document.getElementById('tf-created')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0);
       } else {
         setCreated({ href, message, failures: [] });
-        push('success', message);
-        router.push(href);
+        if (modal) {
+          onDirtyChange?.(false);
+          onCreated?.({ message, href });
+          onClose?.();
+        } else {
+          push('success', message);
+          router.push(href);
+        }
       }
     } catch (err) {
       const errs = { ...fieldErrors(err) };
@@ -795,15 +834,595 @@ export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) =
   const submitLabel = recurring ? (count > 1 ? `Create ${count} recurring series` : 'Create recurring task') : count > 1 ? `Assign ${count} tasks` : 'Create task';
   const disabled = submitting || Boolean(created);
 
-  return (
-    <form onSubmit={submit} noValidate className="space-y-5 pb-4 md:pb-12" aria-busy={submitting}>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => leave('/tasks')}>
-          Back
-        </Button>
-        <h2 className="font-serif text-xl text-[#14213D]">{recurring ? 'New recurring task' : 'New task'}</h2>
-      </div>
+  const sections: { title: string; icon: React.ReactNode; description?: string; node: React.ReactNode }[] = [
+    {
+      title: 'Task',
+      icon: <ListChecks />,
+      description: 'What needs to be done — title, details and category.',
+      node: (
+          <Panel className="p-4 sm:p-5 space-y-4 overflow-visible">
+            <Title icon={<ListChecks className="h-4 w-4" />} title="What needs to be done" />
+            <div id="tf-title">
+              <Input
+                id="tf-title-input"
+                label="Title *"
+                value={form.title}
+                maxLength={TASK_TEXT_LIMITS.title}
+                placeholder="e.g. Submit pre-bid queries for the CRPF tender"
+                onChange={(e) => update({ title: e.target.value })}
+                error={errors.title}
+                helperText={`${form.title.length}/${TASK_TEXT_LIMITS.title}`}
+                disabled={disabled}
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+              <div id="tf-category_id">
+                <Select
+                  id="tf-category-select"
+                  label="Category *"
+                  value={form.category_id}
+                  onChange={(e) => setCategory(e.target.value)}
+                  disabled={disabled || categoriesLoading}
+                  options={[{ value: '', label: categoriesLoading ? 'Loading categories…' : 'Choose a category…' }, ...categories.map((c) => ({ value: c.id, label: c.name }))]}
+                  error={errors.category_id}
+                  helperText={category ? (category.requires_link_type ? CATEGORY_HINT[category.requires_link_type] : 'No link required.') + (category.default_evidence_required ? ' Evidence is required by default.' : '') : undefined}
+                />
+              </div>
+              <div id="tf-priority">
+                <Select
+                  id="tf-priority-select"
+                  label="Priority"
+                  value={form.priority}
+                  onChange={(e) => update({ priority: e.target.value as TaskPriority })}
+                  disabled={disabled}
+                  searchable={false}
+                  options={TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] }))}
+                  error={errors.priority}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+              <div id="tf-description">
+                <Textarea
+                  id="tf-description-input"
+                  label="Description"
+                  rows={4}
+                  value={form.description}
+                  maxLength={TASK_TEXT_LIMITS.description}
+                  placeholder="Context, instructions, people to contact…"
+                  onChange={(e) => update({ description: e.target.value })}
+                  error={errors.description}
+                  disabled={disabled}
+                />
+              </div>
+              <div id="tf-expected_outcome">
+                <Textarea
+                  id="tf-expected-outcome-input"
+                  label="Expected outcome"
+                  rows={4}
+                  value={form.expected_outcome}
+                  maxLength={TASK_TEXT_LIMITS.expected_outcome}
+                  placeholder="What does “done” look like? e.g. Queries uploaded on GeM and acknowledgement saved."
+                  onChange={(e) => update({ expected_outcome: e.target.value })}
+                  error={errors.expected_outcome}
+                  helperText="Used by the approver to judge completion."
+                  disabled={disabled}
+                />
+              </div>
+            </div>
+          </Panel>
+      ),
+    },
+    {
+      title: 'Linked work',
+      icon: <Link2 />,
+      description: requiredTypes.length ? `${category?.name} tasks must be linked. Linked work can also be requested from colleagues outside your team.` : 'Optional. Linking lets you request work from colleagues outside your team.',
+      node: (
+          <Panel className="p-4 sm:p-5 space-y-4 overflow-visible">
+            <Title
+              icon={<Link2 className="h-4 w-4" />}
+              title="Linked work"
+              description={requiredTypes.length ? `${category?.name} tasks must be linked. Linked work can also be requested from colleagues outside your team.` : 'Optional. Linking lets you request work from colleagues outside your team.'}
+            />
+            {requiredTypes.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">{requiredTypes.map((t) => linkPicker(t, true, false))}</div>}
+            {optionalTypes.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">{optionalTypes.map((t) => linkPicker(t, false, true))}</div>}
+            {addableTypes.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-[#4A5568]">{requiredTypes.length ? 'Also link to' : 'Link to'}</span>
+                {addableTypes.map((t) => (
+                  <Button key={t} type="button" size="xs" variant="secondary" leftIcon={<Plus className="h-3 w-3" />} onClick={() => setExtraLinks((x) => [...x, t])} disabled={disabled}>
+                    {LINK_NAME[t]}
+                  </Button>
+                ))}
+              </div>
+            )}
+          </Panel>
+      ),
+    },
+    {
+      title: 'Assign',
+      icon: <Users />,
+      description: 'Who should do it.',
+      node: (
+          <Panel className="p-4 sm:p-5 space-y-4 overflow-visible">
+            <Title
+              icon={<Users className="h-4 w-4" />}
+              title="Assign to"
+              right={assigneesLoading ? <Spinner size="sm" /> : undefined}
+            />
+            <div id="tf-assignee_ids">
+              <AssigneePicker value={form.assignee_ids} onChange={(v) => update({ assignee_ids: v })} options={assigneeOptions} allowPeers={linked} error={errors.assignee_ids} />
+              {!linked && <p className="text-[11px] text-[#4A5568] mt-1">Colleagues outside your team can be chosen once the task is linked to a customer, tender, demo or service ticket.</p>}
+            </div>
 
+            {count > 1 && (
+              <InfoCallout variant="info" title={recurring ? `Creates ${count} separate recurring series` : `Creates ${count} separate tasks`}>
+                {recurring ? 'One series per person, each generating its own tasks.' : 'Creates one separate task per person, tracked independently.'}
+              </InfoCallout>
+            )}
+
+            {selectedAssignees.length === 1 && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Input id="tf-manager" label="Reporting manager" value={selectedAssignees[0].manager_name || 'No manager set'} readOnly disabled helperText="Filled in from the employee record." />
+                <Input id="tf-department" label="Department" value={selectedAssignees[0].department_name || 'Not set'} readOnly disabled />
+              </div>
+            )}
+
+            {selectedAssignees.some((s) => s.on_leave) && (
+              <InfoCallout variant="warning" title="Approved leave">
+                <ul className="space-y-1 text-xs">
+                  {selectedAssignees
+                    .filter((s) => s.on_leave)
+                    .map((s) => (
+                      <li key={s.id}>
+                        <span className="font-semibold">{s.full_name}</span> is on approved {s.on_leave!.leave_type.replace(/_/g, ' ')} leave {formatTaskDate(s.on_leave!.from_date)} → {formatTaskDate(s.on_leave!.to_date)}
+                        {recurring ? ' (on the series start date). Occurrences during leave follow the leave policy below.' : ', covering the deadline.'}
+                      </li>
+                    ))}
+                </ul>
+              </InfoCallout>
+            )}
+
+            {scopeProblems.length > 0 && (
+              <InfoCallout variant="danger" title="Cannot assign to everyone selected">
+                <ul className="space-y-1 text-xs">
+                  {scopeProblems.map((p) => (
+                    <li key={p.assignee_id}>
+                      <span className="font-semibold">{nameOf(p.assignee_id)}:</span> {p.reason}
+                    </li>
+                  ))}
+                </ul>
+              </InfoCallout>
+            )}
+          </Panel>
+      ),
+    },
+    {
+      title: 'Schedule',
+      icon: <CalendarClock />,
+      description: 'When it is due. Dates and times are IST.',
+      node: (
+          <Panel className="p-4 sm:p-5 space-y-4 overflow-visible">
+            <Title icon={<CalendarClock className="h-4 w-4" />} title="Schedule" description="Dates and times are IST." />
+
+            <fieldset id="tf-recurrence_type">
+              <legend className="block text-xs font-semibold text-[#14213D] mb-1.5">Frequency</legend>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                {TASK_RECURRENCE_TYPES.map((t, i) => (
+                  <label
+                    key={t}
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+                      form.frequency === t ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D] hover:border-[#0F5E63]'
+                    } ${i === TASK_RECURRENCE_TYPES.length - 1 ? 'col-span-2 sm:col-span-1' : ''}`}
+                  >
+                    <input type="radio" name="frequency" value={t} checked={form.frequency === t} onChange={() => setFrequency(t)} disabled={disabled} className="accent-[#0F5E63]" />
+                    {t !== 'one_time' && <Repeat className="h-3.5 w-3.5 shrink-0" aria-hidden />}
+                    <span className="truncate">{TASK_RECURRENCE_LABELS[t]}</span>
+                  </label>
+                ))}
+              </div>
+              <FieldError message={errors.recurrence_type} />
+            </fieldset>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+              <div id="tf-start_date">
+                <Input
+                  id="tf-start-date-input"
+                  type="date"
+                  label={recurring ? 'Series starts on *' : 'Start date'}
+                  value={form.start_date}
+                  min={recurring ? today : undefined}
+                  onChange={(e) => update({ start_date: e.target.value })}
+                  error={fe('start_date')}
+                  disabled={disabled}
+                />
+                {!recurring && form.start_date && form.start_date < today && <WarnLine>Start date is in the past.</WarnLine>}
+              </div>
+              {!recurring && (
+                <div id="tf-deadline">
+                  <DeadlineInput
+                    label="Deadline"
+                    required
+                    value={form.deadline}
+                    min={form.start_date || undefined}
+                    onChange={(v) => update({ deadline: v })}
+                    error={errors.deadline}
+                    helperText={(() => {
+                      const inst = deadlineInstant(form.deadline);
+                      if (inst && inst.getTime() < Date.now() && !form.is_backlog)
+                        return canBacklog ? 'This deadline has already passed — tick “Backlog entry” below to record already-late work.' : 'This deadline has already passed.';
+                      return undefined;
+                    })()}
+                  />
+                </div>
+              )}
+            </div>
+
+            {recurring && (
+              <div id="tf-recurrence" className="rounded-[14px] border border-[#DCD8CE] bg-[#FBFAF7] p-3 sm:p-4 space-y-4">
+                {form.frequency === 'custom' && (
+                  <div className="grid grid-cols-2 gap-3 items-start">
+                    <Input
+                      id="tf-interval"
+                      label="Repeat every *"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={rec.unit === 'daily' ? 365 : rec.unit === 'weekly' ? 52 : 12}
+                      value={rec.interval}
+                      onChange={(e) => updateRec({ interval: e.target.value.replace(/[^\d]/g, '') })}
+                      error={fe('recurrence_rule.interval')}
+                      disabled={disabled}
+                    />
+                    <Select
+                      id="tf-unit"
+                      label="Unit"
+                      value={rec.unit}
+                      searchable={false}
+                      onChange={(e) => updateRec({ unit: e.target.value as Unit })}
+                      disabled={disabled}
+                      options={[
+                        { value: 'daily', label: Number(rec.interval) === 1 ? 'Day' : 'Days' },
+                        { value: 'weekly', label: Number(rec.interval) === 1 ? 'Week' : 'Weeks' },
+                        { value: 'monthly', label: Number(rec.interval) === 1 ? 'Month' : 'Months' },
+                      ]}
+                    />
+                  </div>
+                )}
+
+                {unit === 'daily' && (
+                  <WeekdayChips
+                    label="On these days"
+                    value={rec.dailyWeekdays}
+                    onChange={(v) => updateRec({ dailyWeekdays: v })}
+                    error={fe('recurrence_rule.weekdays')}
+                    hint={rec.dailyWeekdays.length === 0 || rec.dailyWeekdays.length === 7 ? 'Every day of the week.' : 'Only on the highlighted days. Clear all to repeat every day.'}
+                  />
+                )}
+                {unit === 'weekly' && (
+                  <WeekdayChips label="On *" value={rec.weeklyWeekdays} onChange={(v) => updateRec({ weeklyWeekdays: v })} error={fe('recurrence_rule.weekdays')} hint="Pick one or more weekdays." />
+                )}
+                {unit === 'monthly' && (
+                  <div>
+                    <span className="block text-xs font-semibold text-[#14213D] mb-1.5">On day(s) of the month *</span>
+                    <div role="group" aria-label="Days of the month" className="grid grid-cols-7 gap-1.5">
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                        <Chip key={d} on={rec.monthDays.includes(d)} onClick={() => updateRec({ monthDays: toggle(rec.monthDays, d) })} className="h-8 font-mono" ariaLabel={`Day ${d}`} disabled={disabled}>
+                          {d}
+                        </Chip>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Chip on={rec.monthLast === 'last_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_day' ? 'none' : 'last_day' })} className="h-8 px-3" disabled={disabled}>
+                        Last day
+                      </Chip>
+                      <Chip on={rec.monthLast === 'last_working_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_working_day' ? 'none' : 'last_working_day' })} className="h-8 px-3" disabled={disabled}>
+                        Last working day
+                      </Chip>
+                    </div>
+                    {fe('recurrence_rule.month_days') ? (
+                      <FieldError message={fe('recurrence_rule.month_days')} />
+                    ) : (
+                      <p className="text-[11px] text-[#4A5568] mt-1">Days 29–31 fall back to the last day of shorter months. “Last working day” skips weekly offs and holidays.</p>
+                    )}
+                  </div>
+                )}
+
+                {ruleCheck.rule && <p className="text-xs font-semibold text-[#0F5E63]">{describeRecurrence(form.frequency, ruleCheck.rule)}</p>}
+                {ruleErrorList.length > 0 && (
+                  <ul className="space-y-0.5">
+                    {ruleErrorList.map(([k, v]) => (
+                      <li key={k} className="text-xs text-[#881337] font-medium">
+                        {v}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <fieldset id="tf-end_date" className="space-y-2">
+                  <legend className="block text-xs font-semibold text-[#14213D] mb-1.5">Ends</legend>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {(
+                      [
+                        ['never', 'Never'],
+                        ['on_date', 'On a date'],
+                        ['after', 'After N occurrences'],
+                      ] as [EndMode, string][]
+                    ).map(([m, label]) => (
+                      <label
+                        key={m}
+                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${rec.endMode === m ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D]'}`}
+                      >
+                        <input type="radio" name="end_mode" value={m} checked={rec.endMode === m} onChange={() => updateRec({ endMode: m }, ['end_date', 'max_occurrences'])} disabled={disabled} className="accent-[#0F5E63]" />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  {rec.endMode === 'on_date' && (
+                    <Input
+                      id="tf-end-date-input"
+                      type="date"
+                      label="Last date *"
+                      min={form.start_date || today}
+                      value={rec.endDate}
+                      onChange={(e) => updateRec({ endDate: e.target.value }, ['end_date'])}
+                      error={fe('end_date')}
+                      disabled={disabled}
+                    />
+                  )}
+                  {rec.endMode !== 'on_date' && fe('end_date') && <FieldError message={fe('end_date')} />}
+                  {rec.endMode === 'after' && (
+                    <div id="tf-max_occurrences">
+                      <Input
+                        id="tf-max-occurrences-input"
+                        type="number"
+                        inputMode="numeric"
+                        label="Number of occurrences *"
+                        min={1}
+                        max={1000}
+                        value={rec.maxOccurrences}
+                        onChange={(e) => updateRec({ maxOccurrences: e.target.value.replace(/[^\d]/g, '') }, ['max_occurrences'])}
+                        error={fe('max_occurrences')}
+                        helperText="Skipped occurrences (holidays, leave) count towards this number."
+                        disabled={disabled}
+                      />
+                    </div>
+                  )}
+                  {rec.endMode !== 'after' && fe('max_occurrences') && <FieldError message={fe('max_occurrences')} />}
+                </fieldset>
+
+                <div className="grid grid-cols-2 gap-3 items-start">
+                  <div id="tf-due_offset_days">
+                    <Input
+                      id="tf-due-offset-input"
+                      type="number"
+                      inputMode="numeric"
+                      label="Due after (days)"
+                      min={0}
+                      max={60}
+                      value={rec.dueOffset}
+                      onChange={(e) => updateRec({ dueOffset: e.target.value.replace(/[^\d]/g, '') }, ['due_offset_days'])}
+                      error={fe('due_offset_days')}
+                      helperText={Number(rec.dueOffset) > 0 ? `${rec.dueOffset} day(s) after each occurrence` : 'Same day'}
+                      disabled={disabled}
+                    />
+                  </div>
+                  <div id="tf-due_time">
+                    <Input
+                      id="tf-due-time-input"
+                      type="time"
+                      label="Due time (IST)"
+                      value={rec.dueTime}
+                      onChange={(e) => updateRec({ dueTime: e.target.value }, ['due_time'])}
+                      error={fe('due_time')}
+                      disabled={disabled}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+                  <div id="tf-holiday_policy">
+                    <Select
+                      id="tf-holiday-policy"
+                      label="If it falls on a holiday / weekly off"
+                      value={holidayPolicy}
+                      searchable={false}
+                      onChange={(e) => updateRec({ holidayPolicy: e.target.value as TaskHolidayPolicy }, ['holiday_policy'])}
+                      options={TASK_HOLIDAY_POLICIES.map((p) => ({ value: p, label: TASK_HOLIDAY_POLICY_LABELS[p] }))}
+                      error={errors.holiday_policy}
+                      helperText={rec.holidayPolicy ? undefined : `Default for ${unit === 'daily' ? 'daily' : 'weekly / monthly'} work.`}
+                      disabled={disabled}
+                    />
+                  </div>
+                  <div id="tf-leave_policy">
+                    <Select
+                      id="tf-leave-policy"
+                      label="If the assignee is on approved leave"
+                      value={rec.leavePolicy}
+                      searchable={false}
+                      onChange={(e) => updateRec({ leavePolicy: e.target.value as TaskLeavePolicy }, ['leave_policy'])}
+                      options={(['skip', 'keep'] as TaskLeavePolicy[]).map((p) => ({ value: p, label: TASK_LEAVE_POLICY_LABELS[p] }))}
+                      error={errors.leave_policy}
+                      helperText="Skipped occurrences are recorded and never counted as missed."
+                      disabled={disabled}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-[#14213D]">Next 10 occurrences{form.assignee_ids.length ? ` for ${nameOf(form.assignee_ids[0])}` : ''}</span>
+                    {previewLoading && <Spinner size="sm" />}
+                  </div>
+                  {!previewBody ? (
+                    <p className="text-xs text-[#8A8578]">Fix the schedule above to see the upcoming dates.</p>
+                  ) : Object.keys(previewError).length ? (
+                    <ul className="space-y-0.5">
+                      {Object.entries(previewError).map(([k, v]) => (
+                        <li key={k} className="text-xs text-[#881337] font-medium">
+                          {v}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : preview ? (
+                    <div className={previewLoading ? 'opacity-60 transition-opacity' : ''}>
+                      <OccurrenceList rows={preview} />
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[#8A8578]">Calculating…</p>
+                  )}
+                  {count > 1 && <p className="text-[11px] text-[#4A5568]">Holidays and leave can differ per person — each series follows its own assignee’s calendar.</p>}
+                </div>
+              </div>
+            )}
+          </Panel>
+      ),
+    },
+    {
+      title: 'Rules',
+      icon: <ShieldCheck />,
+      description: 'What is needed before the task can be closed.',
+      node: (
+          <Panel className="p-4 sm:p-5 space-y-4 overflow-visible">
+            <Title icon={<ShieldCheck className="h-4 w-4" />} title="Completion rules" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+              <div id="tf-evidence_required">
+                <Checkbox
+                  id="tf-evidence-checkbox"
+                  checked={form.evidence_required}
+                  onChange={(e) => {
+                    setEvidenceTouched(true);
+                    update({ evidence_required: e.target.checked });
+                  }}
+                  disabled={disabled}
+                  label="Evidence required"
+                  description="To complete, the assignee must attach proof (photo, signed document…) and write remarks."
+                />
+                <FieldError message={errors.evidence_required} />
+              </div>
+              <div id="tf-approval_required">
+                <Checkbox
+                  id="tf-approval-checkbox"
+                  checked={form.approval_required}
+                  onChange={(e) => update({ approval_required: e.target.checked })}
+                  disabled={disabled}
+                  label="Approval required"
+                  description="Completion goes to the assignee’s manager to approve before it counts as done."
+                />
+                <FieldError message={errors.approval_required} />
+              </div>
+              {canBacklog && !recurring && (
+                <div id="tf-is_backlog" className="md:col-span-2">
+                  <Checkbox
+                    id="tf-backlog-checkbox"
+                    checked={form.is_backlog}
+                    onChange={(e) => update({ is_backlog: e.target.checked, deadline: form.deadline })}
+                    disabled={disabled}
+                    label="Backlog entry"
+                    description="Records already-late work; excluded from compliance metrics. Allows a deadline in the past."
+                  />
+                  <FieldError message={errors.is_backlog} />
+                </div>
+              )}
+            </div>
+          </Panel>
+      ),
+    },
+    {
+      title: 'Documents',
+      icon: <Paperclip />,
+      description: recurring ? undefined : `PDF, Word, Excel, JPG or PNG · up to ${MAX_FILE_MB} MB each, ${MAX_FILES} files.`,
+      node: (
+          <Panel className="p-4 sm:p-5 space-y-3 overflow-visible">
+            <Title icon={<Paperclip className="h-4 w-4" />} title="Supporting documents" description={recurring ? undefined : `PDF, Word, Excel, JPG or PNG · up to ${MAX_FILE_MB} MB each, ${MAX_FILES} files.`} />
+            {recurring ? (
+              <p className="text-xs text-[#4A5568]">Files are attached to individual tasks. Once the series is created, open a generated task to attach documents to it.</p>
+            ) : (
+              <div
+                id="tf-files"
+                className={`rounded-[14px] border border-dashed p-3 sm:p-4 space-y-3 ${drag ? 'border-[#0F5E63] bg-[#E3EFEE]/40' : 'border-[#C9C4B8] bg-[#FBFAF7]'}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDrag(true);
+                }}
+                onDragLeave={() => setDrag(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDrag(false);
+                  if (!disabled) addFiles(e.dataTransfer.files);
+                }}
+              >
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  accept={FILE_ACCEPT}
+                  className="hidden"
+                  aria-label="Choose supporting documents"
+                  onChange={(e) => {
+                    addFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <input
+                  ref={cameraRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  aria-label="Take a photo"
+                  onChange={(e) => {
+                    addFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" size="sm" variant="secondary" leftIcon={<Upload className="h-4 w-4" />} onClick={() => fileRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
+                    Attach files
+                  </Button>
+                  <Button type="button" size="sm" variant="secondary" className="sm:hidden" leftIcon={<Camera className="h-4 w-4" />} onClick={() => cameraRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
+                    Take photo
+                  </Button>
+                  <span className="hidden sm:inline text-[11px] text-[#8A8578]">or drop files here</span>
+                  {files.length > 0 && <span className="ml-auto text-[11px] font-mono text-[#4A5568]">{files.length}/{MAX_FILES}</span>}
+                </div>
+                {files.length > 0 && (
+                  <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#ECE9E2] bg-white">
+                    {files.map((f, i) => (
+                      <li key={`${f.name}-${i}`} className="flex items-center gap-2 px-3 py-2">
+                        <Paperclip className="h-3.5 w-3.5 shrink-0 text-[#4A5568]" />
+                        <span className="min-w-0 flex-1 truncate text-xs text-[#14213D]">{f.name}</span>
+                        <span className="text-[11px] font-mono text-[#8A8578]">{fileSize(f.size)}</span>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${f.name}`}
+                          disabled={disabled}
+                          onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                          className="p-1 text-[#8A8578] hover:text-[#881337]"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {count > 1 && files.length > 0 && <p className="text-[11px] text-[#4A5568]">The same files are attached to each of the {count} tasks.</p>}
+                {fileProblems && <FieldError message={fileProblems} />}
+                <FieldError message={errors.files} />
+              </div>
+            )}
+          </Panel>
+      ),
+    },
+  ];
+
+  const submitButton = (
+    <Button type="submit" isLoading={submitting} disabled={disabled} leftIcon={recurring ? <Repeat className="h-4 w-4" /> : <Send className="h-4 w-4" />}>
+      {submitLabel}
+    </Button>
+  );
+  const createdCallout = (
+    <>
       {created && created.failures.length > 0 && (
         <div id="tf-created">
           <InfoCallout variant="warning" title={`${created.message} Some files were not attached.`}>
@@ -821,556 +1440,10 @@ export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) =
           </InfoCallout>
         </div>
       )}
-
-      {/* ---------------------------------------------------------------- what */}
-      <Card className="p-4 sm:p-5 space-y-4 overflow-visible">
-        <SectionTitle icon={<ListChecks className="h-4 w-4" />} title="What needs to be done" />
-        <div id="tf-title">
-          <Input
-            id="tf-title-input"
-            label="Title *"
-            value={form.title}
-            maxLength={TASK_TEXT_LIMITS.title}
-            placeholder="e.g. Submit pre-bid queries for the CRPF tender"
-            onChange={(e) => update({ title: e.target.value })}
-            error={errors.title}
-            helperText={`${form.title.length}/${TASK_TEXT_LIMITS.title}`}
-            disabled={disabled}
-          />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <div id="tf-category_id">
-            <Select
-              id="tf-category-select"
-              label="Category *"
-              value={form.category_id}
-              onChange={(e) => setCategory(e.target.value)}
-              disabled={disabled || categoriesLoading}
-              options={[{ value: '', label: categoriesLoading ? 'Loading categories…' : 'Choose a category…' }, ...categories.map((c) => ({ value: c.id, label: c.name }))]}
-              error={errors.category_id}
-              helperText={category ? (category.requires_link_type ? CATEGORY_HINT[category.requires_link_type] : 'No link required.') + (category.default_evidence_required ? ' Evidence is required by default.' : '') : undefined}
-            />
-          </div>
-          <div id="tf-priority">
-            <Select
-              id="tf-priority-select"
-              label="Priority"
-              value={form.priority}
-              onChange={(e) => update({ priority: e.target.value as TaskPriority })}
-              disabled={disabled}
-              searchable={false}
-              options={TASK_PRIORITIES.map((p) => ({ value: p, label: TASK_PRIORITY_LABELS[p] }))}
-              error={errors.priority}
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <div id="tf-description">
-            <Textarea
-              id="tf-description-input"
-              label="Description"
-              rows={4}
-              value={form.description}
-              maxLength={TASK_TEXT_LIMITS.description}
-              placeholder="Context, instructions, people to contact…"
-              onChange={(e) => update({ description: e.target.value })}
-              error={errors.description}
-              disabled={disabled}
-            />
-          </div>
-          <div id="tf-expected_outcome">
-            <Textarea
-              id="tf-expected-outcome-input"
-              label="Expected outcome"
-              rows={4}
-              value={form.expected_outcome}
-              maxLength={TASK_TEXT_LIMITS.expected_outcome}
-              placeholder="What does “done” look like? e.g. Queries uploaded on GeM and acknowledgement saved."
-              onChange={(e) => update({ expected_outcome: e.target.value })}
-              error={errors.expected_outcome}
-              helperText="Used by the approver to judge completion."
-              disabled={disabled}
-            />
-          </div>
-        </div>
-      </Card>
-
-      {/* ---------------------------------------------------------------- linked work */}
-      <Card className="p-4 sm:p-5 space-y-4 overflow-visible">
-        <SectionTitle
-          icon={<Link2 className="h-4 w-4" />}
-          title="Linked work"
-          description={requiredTypes.length ? `${category?.name} tasks must be linked. Linked work can also be requested from colleagues outside your team.` : 'Optional. Linking lets you request work from colleagues outside your team.'}
-        />
-        {requiredTypes.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">{requiredTypes.map((t) => linkPicker(t, true, false))}</div>}
-        {optionalTypes.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">{optionalTypes.map((t) => linkPicker(t, false, true))}</div>}
-        {addableTypes.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold text-[#4A5568]">{requiredTypes.length ? 'Also link to' : 'Link to'}</span>
-            {addableTypes.map((t) => (
-              <Button key={t} type="button" size="xs" variant="secondary" leftIcon={<Plus className="h-3 w-3" />} onClick={() => setExtraLinks((x) => [...x, t])} disabled={disabled}>
-                {LINK_NAME[t]}
-              </Button>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      {/* ---------------------------------------------------------------- who */}
-      <Card className="p-4 sm:p-5 space-y-4 overflow-visible">
-        <SectionTitle
-          icon={<Users className="h-4 w-4" />}
-          title="Assign to"
-          right={assigneesLoading ? <Spinner size="sm" /> : undefined}
-        />
-        <div id="tf-assignee_ids">
-          <AssigneePicker value={form.assignee_ids} onChange={(v) => update({ assignee_ids: v })} options={assigneeOptions} allowPeers={linked} error={errors.assignee_ids} />
-          {!linked && <p className="text-[11px] text-[#4A5568] mt-1">Colleagues outside your team can be chosen once the task is linked to a customer, tender, demo or service ticket.</p>}
-        </div>
-
-        {count > 1 && (
-          <InfoCallout variant="info" title={recurring ? `Creates ${count} separate recurring series` : `Creates ${count} separate tasks`}>
-            {recurring ? 'One series per person, each generating its own tasks.' : 'Creates one separate task per person, tracked independently.'}
-          </InfoCallout>
-        )}
-
-        {selectedAssignees.length === 1 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input id="tf-manager" label="Reporting manager" value={selectedAssignees[0].manager_name || 'No manager set'} readOnly disabled helperText="Filled in from the employee record." />
-            <Input id="tf-department" label="Department" value={selectedAssignees[0].department_name || 'Not set'} readOnly disabled />
-          </div>
-        )}
-
-        {selectedAssignees.some((s) => s.on_leave) && (
-          <InfoCallout variant="warning" title="Approved leave">
-            <ul className="space-y-1 text-xs">
-              {selectedAssignees
-                .filter((s) => s.on_leave)
-                .map((s) => (
-                  <li key={s.id}>
-                    <span className="font-semibold">{s.full_name}</span> is on approved {s.on_leave!.leave_type.replace(/_/g, ' ')} leave {formatTaskDate(s.on_leave!.from_date)} → {formatTaskDate(s.on_leave!.to_date)}
-                    {recurring ? ' (on the series start date). Occurrences during leave follow the leave policy below.' : ', covering the deadline.'}
-                  </li>
-                ))}
-            </ul>
-          </InfoCallout>
-        )}
-
-        {scopeProblems.length > 0 && (
-          <InfoCallout variant="danger" title="Cannot assign to everyone selected">
-            <ul className="space-y-1 text-xs">
-              {scopeProblems.map((p) => (
-                <li key={p.assignee_id}>
-                  <span className="font-semibold">{nameOf(p.assignee_id)}:</span> {p.reason}
-                </li>
-              ))}
-            </ul>
-          </InfoCallout>
-        )}
-      </Card>
-
-      {/* ---------------------------------------------------------------- when */}
-      <Card className="p-4 sm:p-5 space-y-4 overflow-visible">
-        <SectionTitle icon={<CalendarClock className="h-4 w-4" />} title="Schedule" description="Dates and times are IST." />
-
-        <fieldset id="tf-recurrence_type">
-          <legend className="block text-xs font-semibold text-[#14213D] mb-1.5">Frequency</legend>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-            {TASK_RECURRENCE_TYPES.map((t, i) => (
-              <label
-                key={t}
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
-                  form.frequency === t ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D] hover:border-[#0F5E63]'
-                } ${i === TASK_RECURRENCE_TYPES.length - 1 ? 'col-span-2 sm:col-span-1' : ''}`}
-              >
-                <input type="radio" name="frequency" value={t} checked={form.frequency === t} onChange={() => setFrequency(t)} disabled={disabled} className="accent-[#0F5E63]" />
-                {t !== 'one_time' && <Repeat className="h-3.5 w-3.5 shrink-0" aria-hidden />}
-                <span className="truncate">{TASK_RECURRENCE_LABELS[t]}</span>
-              </label>
-            ))}
-          </div>
-          <FieldError message={errors.recurrence_type} />
-        </fieldset>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <div id="tf-start_date">
-            <Input
-              id="tf-start-date-input"
-              type="date"
-              label={recurring ? 'Series starts on *' : 'Start date'}
-              value={form.start_date}
-              min={recurring ? today : undefined}
-              onChange={(e) => update({ start_date: e.target.value })}
-              error={fe('start_date')}
-              disabled={disabled}
-            />
-            {!recurring && form.start_date && form.start_date < today && <WarnLine>Start date is in the past.</WarnLine>}
-          </div>
-          {!recurring && (
-            <div id="tf-deadline">
-              <DeadlineInput
-                label="Deadline"
-                required
-                value={form.deadline}
-                min={form.start_date || undefined}
-                onChange={(v) => update({ deadline: v })}
-                error={errors.deadline}
-                helperText={(() => {
-                  const inst = deadlineInstant(form.deadline);
-                  if (inst && inst.getTime() < Date.now() && !form.is_backlog)
-                    return canBacklog ? 'This deadline has already passed — tick “Backlog entry” below to record already-late work.' : 'This deadline has already passed.';
-                  return undefined;
-                })()}
-              />
-            </div>
-          )}
-        </div>
-
-        {recurring && (
-          <div id="tf-recurrence" className="rounded-[14px] border border-[#DCD8CE] bg-[#FBFAF7] p-3 sm:p-4 space-y-4">
-            {form.frequency === 'custom' && (
-              <div className="grid grid-cols-2 gap-3 items-start">
-                <Input
-                  id="tf-interval"
-                  label="Repeat every *"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={rec.unit === 'daily' ? 365 : rec.unit === 'weekly' ? 52 : 12}
-                  value={rec.interval}
-                  onChange={(e) => updateRec({ interval: e.target.value.replace(/[^\d]/g, '') })}
-                  error={fe('recurrence_rule.interval')}
-                  disabled={disabled}
-                />
-                <Select
-                  id="tf-unit"
-                  label="Unit"
-                  value={rec.unit}
-                  searchable={false}
-                  onChange={(e) => updateRec({ unit: e.target.value as Unit })}
-                  disabled={disabled}
-                  options={[
-                    { value: 'daily', label: Number(rec.interval) === 1 ? 'Day' : 'Days' },
-                    { value: 'weekly', label: Number(rec.interval) === 1 ? 'Week' : 'Weeks' },
-                    { value: 'monthly', label: Number(rec.interval) === 1 ? 'Month' : 'Months' },
-                  ]}
-                />
-              </div>
-            )}
-
-            {unit === 'daily' && (
-              <WeekdayChips
-                label="On these days"
-                value={rec.dailyWeekdays}
-                onChange={(v) => updateRec({ dailyWeekdays: v })}
-                error={fe('recurrence_rule.weekdays')}
-                hint={rec.dailyWeekdays.length === 0 || rec.dailyWeekdays.length === 7 ? 'Every day of the week.' : 'Only on the highlighted days. Clear all to repeat every day.'}
-              />
-            )}
-            {unit === 'weekly' && (
-              <WeekdayChips label="On *" value={rec.weeklyWeekdays} onChange={(v) => updateRec({ weeklyWeekdays: v })} error={fe('recurrence_rule.weekdays')} hint="Pick one or more weekdays." />
-            )}
-            {unit === 'monthly' && (
-              <div>
-                <span className="block text-xs font-semibold text-[#14213D] mb-1.5">On day(s) of the month *</span>
-                <div role="group" aria-label="Days of the month" className="grid grid-cols-7 gap-1.5">
-                  {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                    <Chip key={d} on={rec.monthDays.includes(d)} onClick={() => updateRec({ monthDays: toggle(rec.monthDays, d) })} className="h-8 font-mono" ariaLabel={`Day ${d}`} disabled={disabled}>
-                      {d}
-                    </Chip>
-                  ))}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Chip on={rec.monthLast === 'last_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_day' ? 'none' : 'last_day' })} className="h-8 px-3" disabled={disabled}>
-                    Last day
-                  </Chip>
-                  <Chip on={rec.monthLast === 'last_working_day'} onClick={() => updateRec({ monthLast: rec.monthLast === 'last_working_day' ? 'none' : 'last_working_day' })} className="h-8 px-3" disabled={disabled}>
-                    Last working day
-                  </Chip>
-                </div>
-                {fe('recurrence_rule.month_days') ? (
-                  <FieldError message={fe('recurrence_rule.month_days')} />
-                ) : (
-                  <p className="text-[11px] text-[#4A5568] mt-1">Days 29–31 fall back to the last day of shorter months. “Last working day” skips weekly offs and holidays.</p>
-                )}
-              </div>
-            )}
-
-            {ruleCheck.rule && <p className="text-xs font-semibold text-[#0F5E63]">{describeRecurrence(form.frequency, ruleCheck.rule)}</p>}
-            {ruleErrorList.length > 0 && (
-              <ul className="space-y-0.5">
-                {ruleErrorList.map(([k, v]) => (
-                  <li key={k} className="text-xs text-[#881337] font-medium">
-                    {v}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <fieldset id="tf-end_date" className="space-y-2">
-              <legend className="block text-xs font-semibold text-[#14213D] mb-1.5">Ends</legend>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                {(
-                  [
-                    ['never', 'Never'],
-                    ['on_date', 'On a date'],
-                    ['after', 'After N occurrences'],
-                  ] as [EndMode, string][]
-                ).map(([m, label]) => (
-                  <label
-                    key={m}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${rec.endMode === m ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D]'}`}
-                  >
-                    <input type="radio" name="end_mode" value={m} checked={rec.endMode === m} onChange={() => updateRec({ endMode: m }, ['end_date', 'max_occurrences'])} disabled={disabled} className="accent-[#0F5E63]" />
-                    {label}
-                  </label>
-                ))}
-              </div>
-              {rec.endMode === 'on_date' && (
-                <Input
-                  id="tf-end-date-input"
-                  type="date"
-                  label="Last date *"
-                  min={form.start_date || today}
-                  value={rec.endDate}
-                  onChange={(e) => updateRec({ endDate: e.target.value }, ['end_date'])}
-                  error={fe('end_date')}
-                  disabled={disabled}
-                />
-              )}
-              {rec.endMode !== 'on_date' && fe('end_date') && <FieldError message={fe('end_date')} />}
-              {rec.endMode === 'after' && (
-                <div id="tf-max_occurrences">
-                  <Input
-                    id="tf-max-occurrences-input"
-                    type="number"
-                    inputMode="numeric"
-                    label="Number of occurrences *"
-                    min={1}
-                    max={1000}
-                    value={rec.maxOccurrences}
-                    onChange={(e) => updateRec({ maxOccurrences: e.target.value.replace(/[^\d]/g, '') }, ['max_occurrences'])}
-                    error={fe('max_occurrences')}
-                    helperText="Skipped occurrences (holidays, leave) count towards this number."
-                    disabled={disabled}
-                  />
-                </div>
-              )}
-              {rec.endMode !== 'after' && fe('max_occurrences') && <FieldError message={fe('max_occurrences')} />}
-            </fieldset>
-
-            <div className="grid grid-cols-2 gap-3 items-start">
-              <div id="tf-due_offset_days">
-                <Input
-                  id="tf-due-offset-input"
-                  type="number"
-                  inputMode="numeric"
-                  label="Due after (days)"
-                  min={0}
-                  max={60}
-                  value={rec.dueOffset}
-                  onChange={(e) => updateRec({ dueOffset: e.target.value.replace(/[^\d]/g, '') }, ['due_offset_days'])}
-                  error={fe('due_offset_days')}
-                  helperText={Number(rec.dueOffset) > 0 ? `${rec.dueOffset} day(s) after each occurrence` : 'Same day'}
-                  disabled={disabled}
-                />
-              </div>
-              <div id="tf-due_time">
-                <Input
-                  id="tf-due-time-input"
-                  type="time"
-                  label="Due time (IST)"
-                  value={rec.dueTime}
-                  onChange={(e) => updateRec({ dueTime: e.target.value }, ['due_time'])}
-                  error={fe('due_time')}
-                  disabled={disabled}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
-              <div id="tf-holiday_policy">
-                <Select
-                  id="tf-holiday-policy"
-                  label="If it falls on a holiday / weekly off"
-                  value={holidayPolicy}
-                  searchable={false}
-                  onChange={(e) => updateRec({ holidayPolicy: e.target.value as TaskHolidayPolicy }, ['holiday_policy'])}
-                  options={TASK_HOLIDAY_POLICIES.map((p) => ({ value: p, label: TASK_HOLIDAY_POLICY_LABELS[p] }))}
-                  error={errors.holiday_policy}
-                  helperText={rec.holidayPolicy ? undefined : `Default for ${unit === 'daily' ? 'daily' : 'weekly / monthly'} work.`}
-                  disabled={disabled}
-                />
-              </div>
-              <div id="tf-leave_policy">
-                <Select
-                  id="tf-leave-policy"
-                  label="If the assignee is on approved leave"
-                  value={rec.leavePolicy}
-                  searchable={false}
-                  onChange={(e) => updateRec({ leavePolicy: e.target.value as TaskLeavePolicy }, ['leave_policy'])}
-                  options={(['skip', 'keep'] as TaskLeavePolicy[]).map((p) => ({ value: p, label: TASK_LEAVE_POLICY_LABELS[p] }))}
-                  error={errors.leave_policy}
-                  helperText="Skipped occurrences are recorded and never counted as missed."
-                  disabled={disabled}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-[#14213D]">Next 10 occurrences{form.assignee_ids.length ? ` for ${nameOf(form.assignee_ids[0])}` : ''}</span>
-                {previewLoading && <Spinner size="sm" />}
-              </div>
-              {!previewBody ? (
-                <p className="text-xs text-[#8A8578]">Fix the schedule above to see the upcoming dates.</p>
-              ) : Object.keys(previewError).length ? (
-                <ul className="space-y-0.5">
-                  {Object.entries(previewError).map(([k, v]) => (
-                    <li key={k} className="text-xs text-[#881337] font-medium">
-                      {v}
-                    </li>
-                  ))}
-                </ul>
-              ) : preview ? (
-                <div className={previewLoading ? 'opacity-60 transition-opacity' : ''}>
-                  <OccurrenceList rows={preview} />
-                </div>
-              ) : (
-                <p className="text-xs text-[#8A8578]">Calculating…</p>
-              )}
-              {count > 1 && <p className="text-[11px] text-[#4A5568]">Holidays and leave can differ per person — each series follows its own assignee’s calendar.</p>}
-            </div>
-          </div>
-        )}
-      </Card>
-
-      {/* ---------------------------------------------------------------- controls */}
-      <Card className="p-4 sm:p-5 space-y-4 overflow-visible">
-        <SectionTitle icon={<ShieldCheck className="h-4 w-4" />} title="Completion rules" />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <div id="tf-evidence_required">
-            <Checkbox
-              id="tf-evidence-checkbox"
-              checked={form.evidence_required}
-              onChange={(e) => {
-                setEvidenceTouched(true);
-                update({ evidence_required: e.target.checked });
-              }}
-              disabled={disabled}
-              label="Evidence required"
-              description="To complete, the assignee must attach proof (photo, signed document…) and write remarks."
-            />
-            <FieldError message={errors.evidence_required} />
-          </div>
-          <div id="tf-approval_required">
-            <Checkbox
-              id="tf-approval-checkbox"
-              checked={form.approval_required}
-              onChange={(e) => update({ approval_required: e.target.checked })}
-              disabled={disabled}
-              label="Approval required"
-              description="Completion goes to the assignee’s manager to approve before it counts as done."
-            />
-            <FieldError message={errors.approval_required} />
-          </div>
-          {canBacklog && !recurring && (
-            <div id="tf-is_backlog" className="md:col-span-2">
-              <Checkbox
-                id="tf-backlog-checkbox"
-                checked={form.is_backlog}
-                onChange={(e) => update({ is_backlog: e.target.checked, deadline: form.deadline })}
-                disabled={disabled}
-                label="Backlog entry"
-                description="Records already-late work; excluded from compliance metrics. Allows a deadline in the past."
-              />
-              <FieldError message={errors.is_backlog} />
-            </div>
-          )}
-        </div>
-      </Card>
-
-      {/* ---------------------------------------------------------------- supporting documents */}
-      <Card className="p-4 sm:p-5 space-y-3 overflow-visible">
-        <SectionTitle icon={<Paperclip className="h-4 w-4" />} title="Supporting documents" description={recurring ? undefined : `PDF, Word, Excel, JPG or PNG · up to ${MAX_FILE_MB} MB each, ${MAX_FILES} files.`} />
-        {recurring ? (
-          <p className="text-xs text-[#4A5568]">Files are attached to individual tasks. Once the series is created, open a generated task to attach documents to it.</p>
-        ) : (
-          <div
-            id="tf-files"
-            className={`rounded-[14px] border border-dashed p-3 sm:p-4 space-y-3 ${drag ? 'border-[#0F5E63] bg-[#E3EFEE]/40' : 'border-[#C9C4B8] bg-[#FBFAF7]'}`}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDrag(true);
-            }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDrag(false);
-              if (!disabled) addFiles(e.dataTransfer.files);
-            }}
-          >
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              accept={FILE_ACCEPT}
-              className="hidden"
-              aria-label="Choose supporting documents"
-              onChange={(e) => {
-                addFiles(e.target.files);
-                e.target.value = '';
-              }}
-            />
-            <input
-              ref={cameraRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              aria-label="Take a photo"
-              onChange={(e) => {
-                addFiles(e.target.files);
-                e.target.value = '';
-              }}
-            />
-            <div className="flex flex-wrap items-center gap-2">
-              <Button type="button" size="sm" variant="secondary" leftIcon={<Upload className="h-4 w-4" />} onClick={() => fileRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
-                Attach files
-              </Button>
-              <Button type="button" size="sm" variant="secondary" className="sm:hidden" leftIcon={<Camera className="h-4 w-4" />} onClick={() => cameraRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
-                Take photo
-              </Button>
-              <span className="hidden sm:inline text-[11px] text-[#8A8578]">or drop files here</span>
-              {files.length > 0 && <span className="ml-auto text-[11px] font-mono text-[#4A5568]">{files.length}/{MAX_FILES}</span>}
-            </div>
-            {files.length > 0 && (
-              <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#ECE9E2] bg-white">
-                {files.map((f, i) => (
-                  <li key={`${f.name}-${i}`} className="flex items-center gap-2 px-3 py-2">
-                    <Paperclip className="h-3.5 w-3.5 shrink-0 text-[#4A5568]" />
-                    <span className="min-w-0 flex-1 truncate text-xs text-[#14213D]">{f.name}</span>
-                    <span className="text-[11px] font-mono text-[#8A8578]">{fileSize(f.size)}</span>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${f.name}`}
-                      disabled={disabled}
-                      onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                      className="p-1 text-[#8A8578] hover:text-[#881337]"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {count > 1 && files.length > 0 && <p className="text-[11px] text-[#4A5568]">The same files are attached to each of the {count} tasks.</p>}
-            {fileProblems && <FieldError message={fileProblems} />}
-            <FieldError message={errors.files} />
-          </div>
-        )}
-      </Card>
-
+    </>
+  );
+  const messages = (
+    <>
       {/* ---------------------------------------------------------------- pre-flight warnings */}
       {checkWarnings.length > 0 && (
         <InfoCallout variant="warning" title="Before you assign">
@@ -1396,6 +1469,50 @@ export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) =
           </InfoCallout>
         </div>
       )}
+    </>
+  );
+
+  if (modal) {
+    const hasBanner = Boolean((created && created.failures.length > 0) || checkWarnings.length > 0 || formMessage || otherErrors.length > 0 || phase);
+    return (
+      <form onSubmit={submit} noValidate aria-busy={submitting}>
+        <FormSteps
+          steps={sections.map((sec) => ({ title: sec.title, icon: sec.icon, description: sec.description, content: sec.node }))}
+          banner={
+            hasBanner ? (
+              <>
+                {createdCallout}
+                {messages}
+                {phase && <p className="text-xs text-[#4A5568]" aria-live="polite">{phase}</p>}
+              </>
+            ) : undefined
+          }
+          maxSteps={1}
+          onCancel={() => leave('/tasks')}
+          busy={submitting}
+          submit={submitButton}
+        />
+        <Toaster />
+      </form>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} noValidate className="space-y-5" aria-busy={submitting}>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button type="button" variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => leave('/tasks')}>
+          Back
+        </Button>
+        <h2 className="font-serif text-xl text-[#14213D]">{recurring ? 'New recurring task' : 'New task'}</h2>
+      </div>
+
+      {createdCallout}
+
+      {sections.map((s) => (
+        <React.Fragment key={s.title}>{s.node}</React.Fragment>
+      ))}
+
+      {messages}
 
       {/* ---------------------------------------------------------------- actions (sticky on phones) */}
       <div className="sticky md:static bottom-0 z-30 -mx-4 sm:-mx-6 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur md:backdrop-blur-none pl-4 sm:pl-6 pr-20 py-3 md:p-0 flex items-center gap-2 justify-end">
@@ -1405,9 +1522,7 @@ export const TaskForm: React.FC<{ prefill?: TaskFormPrefill }> = ({ prefill }) =
         <Button type="button" variant="ghost" onClick={() => leave('/tasks')} disabled={submitting}>
           Cancel
         </Button>
-        <Button type="submit" isLoading={submitting} disabled={disabled} leftIcon={recurring ? <Repeat className="h-4 w-4" /> : <Send className="h-4 w-4" />}>
-          {submitLabel}
-        </Button>
+        {submitButton}
       </div>
       <Toaster />
     </form>

@@ -37,7 +37,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { Badge, Button, Card, Checkbox, InfoCallout, Modal, PageLoader } from '@/components/ui';
+import { Badge, Button, Card, Checkbox, InfoCallout, Modal, PageLoader, ScrollStrip } from '@/components/ui';
 import { api } from '@/lib/api';
 import {
   CATEGORY_DETAIL_KIND,
@@ -114,7 +114,26 @@ const emptyItem = (defaults: Partial<ItemDraft> = {}): ItemDraft => ({
 const label = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
 
-export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | null; initialTripId?: string | null }> = ({ claimId, initialVisitId, initialTripId }) => {
+export interface ClaimFormProps {
+  claimId?: string;
+  initialVisitId?: string | null;
+  initialTripId?: string | null;
+  /**
+   * 'modal': rendered inside a popup — no hero or side panel; saving the trip details keeps the
+   * draft open in the same popup, and submit / delete / cancel close it (onDone gets the message)
+   * instead of navigating. 'page' (default): the full page.
+   */
+  variant?: 'page' | 'modal';
+  onClose?: () => void;
+  onDone?: (message: string) => void;
+  /** Lets the popup ask before an outside click / Esc throws away unsaved input. */
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, initialVisitId, initialTripId, variant = 'page', onClose, onDone, onDirtyChange }) => {
+  const modal = variant === 'modal';
+  // In the popup a new draft keeps its id here instead of moving to /expenses/:id/edit.
+  const [claimId, setClaimId] = useState(claimIdProp);
   const router = useRouter();
   const { push, Toaster } = useToaster();
   const { categories } = useCategories();
@@ -188,9 +207,14 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
     return () => window.removeEventListener('beforeunload', handler);
   }, [dirty]);
 
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
   const leave = (href: string) => {
     if (dirty && !window.confirm('You have unsaved changes. Leave without saving?')) return;
-    router.push(href);
+    if (modal && onClose) onClose();
+    else router.push(href);
   };
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
@@ -219,7 +243,12 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
       notifyExpensesChanged();
       if (isNew) {
         push('success', `Draft ${saved.claim_number} created. Now add your expense lines.`);
-        router.replace(`/expenses/${saved.id}/edit`);
+        if (modal) {
+          setHeaderDirty(false);
+          setEditingHeader(false);
+          setLoading(true);
+          setClaimId(saved.id);
+        } else router.replace(`/expenses/${saved.id}/edit`);
         return saved;
       }
       setClaim(saved);
@@ -384,8 +413,13 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
       await api.post(`/expense-claims/${claim.id}/submit`, { version: claim.version });
       notifyExpensesChanged();
       setConfirmSubmit(false);
-      push('success', `${claim.claim_number} submitted for approval.`);
-      router.push(`/expenses/${claim.id}`);
+      if (modal) {
+        onDone?.(`${claim.claim_number} submitted for approval.`);
+        onClose?.();
+      } else {
+        push('success', `${claim.claim_number} submitted for approval.`);
+        router.push(`/expenses/${claim.id}`);
+      }
     } catch (e: any) {
       setConfirmSubmit(false);
       if (isConflict(e)) setConflict(true);
@@ -407,7 +441,10 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
     try {
       await api.delete(`/expense-claims/${claim.id}`);
       notifyExpensesChanged();
-      router.push('/expenses');
+      if (modal) {
+        onDone?.(`${claim.claim_number} deleted.`);
+        onClose?.();
+      } else router.push('/expenses');
     } catch (e) {
       push('error', errorMessage(e));
     }
@@ -486,8 +523,24 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
   ];
 
   return (
-    <div className="space-y-5 pb-4 lg:pb-12">
+    <div className={modal ? 'space-y-5' : 'space-y-5'}>
+      {modal && claim && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-semibold text-[#0F5E63]">{claim.claim_number}</span>
+            <StatusBadge status={claim.status} />
+          </div>
+          <div className="text-right">
+            <span className="mr-2 text-xs text-[#4A5568]">
+              {items.length} expense{items.length === 1 ? '' : 's'}
+            </span>
+            <Money value={runningTotal} className="text-lg font-semibold text-[#14213D]" />
+          </div>
+        </div>
+      )}
+
       {/* Hero: who / what / where, plus progress through the three steps */}
+      {!modal && (
       <section className="relative overflow-hidden rounded-[14px] bg-[#14213D] text-white">
         <div aria-hidden className="pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-[#0F5E63]/50 blur-3xl" />
         <div className="relative space-y-5 p-4 sm:p-6">
@@ -538,6 +591,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
           </div>
         </div>
       </section>
+      )}
 
       {conflict && <ConflictCallout onRefresh={load} />}
 
@@ -548,7 +602,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
         </InfoCallout>
       )}
 
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className={`grid grid-cols-1 items-start gap-5 ${modal ? '' : 'lg:grid-cols-[minmax(0,1fr)_340px]'}`}>
         <div className="min-w-0 space-y-5">
           {/* Step 1 — trip details */}
           <StepCard
@@ -621,10 +675,10 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
               <div className="space-y-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <FieldTile label="Trip" icon={<Route />} readOnly>
-                    <div className="mt-0.5 truncate text-[15px] font-semibold text-[#14213D]">{tripText}</div>
+                    <div className="mt-0.5 h-7 truncate text-[15px] leading-7 font-semibold text-[#14213D]">{tripText}</div>
                   </FieldTile>
                   <FieldTile label="Customer visit" icon={<MapPin />} readOnly>
-                    <div className="mt-0.5 truncate text-[15px] font-semibold text-[#14213D]">{visitText}</div>
+                    <div className="mt-0.5 h-7 truncate text-[15px] leading-7 font-semibold text-[#14213D]">{visitText}</div>
                   </FieldTile>
                 </div>
                 {header.remarks && (
@@ -704,7 +758,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
         </div>
 
         {/* Summary panel (fare-summary style) */}
-        <aside className="space-y-4 lg:sticky lg:top-20">
+        <aside className={modal ? 'space-y-4' : 'space-y-4 lg:sticky lg:top-20'}>
           <Card className="overflow-hidden">
             <div className="border-b border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3">
               <h3 className="font-serif text-base text-[#14213D]">Claim summary</h3>
@@ -747,7 +801,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
                 ))}
               </ul>
               {claim && (
-                <div className="hidden space-y-2 lg:block">
+                <div className={modal ? 'space-y-2' : 'hidden space-y-2 lg:block'}>
                   <Button fullWidth size="lg" leftIcon={<Send className="h-4 w-4" />} disabled={!canSubmit} title={submitBlocker} onClick={() => setConfirmSubmit(true)}>
                     {submitLabel}
                   </Button>
@@ -761,7 +815,7 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
               )}
             </div>
           </Card>
-          <div className="space-y-2 rounded-[14px] border border-[#DCD8CE] bg-[#FBFAF7] p-4 text-xs text-[#4A5568]">
+          <div className={`space-y-2 rounded-[14px] border border-[#DCD8CE] bg-[#FBFAF7] p-4 text-xs text-[#4A5568] ${modal ? 'hidden' : ''}`}>
             <div className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[#14213D]">
               <Info className="h-3.5 w-3.5 text-[#0F5E63]" /> Good to know
             </div>
@@ -773,8 +827,8 @@ export const ClaimForm: React.FC<{ claimId?: string; initialVisitId?: string | n
       </div>
 
       {/* Sticky action bar (thumb-reachable on phones and tablets) */}
-      {claim && (
-        <div className="sticky bottom-0 z-30 -mx-4 flex items-center gap-2 border-t border-[#DCD8CE] bg-white/95 py-3 pl-4 pr-20 backdrop-blur lg:hidden">
+      {claim && !modal && (
+        <div className="sticky bottom-0 z-30 -mx-4 flex items-center gap-2 border-t border-[#DCD8CE] bg-white/95 py-3 pl-[4.5rem] pr-20 backdrop-blur lg:hidden">
           <div className="mr-auto min-w-0 text-xs text-[#4A5568]">
             {items.length} expense{items.length === 1 ? '' : 's'} · <Money value={runningTotal} className="font-semibold text-[#14213D]" />
           </div>
@@ -972,30 +1026,27 @@ const ItemEditor: React.FC<{
     <div className="rounded-[14px] border-2 border-[#0F5E63]/50 bg-white shadow-sm">
       {/* Expense type tabs */}
       <div className="flex items-stretch gap-1 rounded-t-[12px] border-b border-[#ECE9E2] bg-[#FBFAF7] pr-2">
-        <div className="relative min-w-0 flex-1">
-          <div role="tablist" aria-label="Expense type" className="flex overflow-x-auto pr-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {categories.map((c) => {
-              const active = c.id === draft.category_id;
-              return (
-                <button
-                  key={c.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => !active && onChange({ ...draft, category_id: c.id, details: detailsFor(c) })}
-                  className={`relative flex min-w-[76px] shrink-0 flex-col items-center gap-1 px-3 pb-2.5 pt-3 text-[11.5px] font-semibold transition-colors focus:outline-none focus-visible:bg-[#E3EFEE] ${
-                    active ? 'text-[#0F5E63]' : 'text-[#4A5568] hover:text-[#14213D]'
-                  }`}
-                >
-                  {categoryIcon(c.code)}
-                  <span className="whitespace-nowrap">{c.name}</span>
-                  {active && <span className="absolute inset-x-2 bottom-0 h-[3px] rounded-t-full bg-[#0F5E63]" />}
-                </button>
-              );
-            })}
-          </div>
-          <span aria-hidden className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[#FBFAF7] to-transparent" />
-        </div>
+        <ScrollStrip role="tablist" aria-label="Expense type" activeKey={draft.category_id} wrapperClassName="min-w-0 flex-1">
+          {categories.map((c) => {
+            const active = c.id === draft.category_id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => !active && onChange({ ...draft, category_id: c.id, details: detailsFor(c) })}
+                className={`relative flex min-w-[76px] shrink-0 flex-col items-center gap-1 px-3 pb-2.5 pt-3 text-[11.5px] font-semibold transition-colors focus:outline-none focus-visible:bg-[#E3EFEE] ${
+                  active ? 'text-[#0F5E63]' : 'text-[#4A5568] hover:text-[#14213D]'
+                }`}
+              >
+                {categoryIcon(c.code)}
+                <span className="whitespace-nowrap">{c.name}</span>
+                {active && <span className="absolute inset-x-2 bottom-0 h-[3px] rounded-t-full bg-[#0F5E63]" />}
+              </button>
+            );
+          })}
+        </ScrollStrip>
         <button type="button" aria-label="Close" onClick={onCancel} className="my-2 inline-flex w-8 shrink-0 items-center justify-center rounded-lg text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#14213D]">
           <X className="h-4 w-4" />
         </button>
@@ -1034,7 +1085,7 @@ const ItemEditor: React.FC<{
                   <TileInput id="hotel-out" type="date" min={draft.details.check_in || undefined} max={today} value={draft.details.check_out || ''} onChange={(e) => setDetail('check_out', e.target.value)} />
                 </FieldTile>
                 <FieldTile label="Nights" readOnly className="col-span-2 sm:col-span-1">
-                  <div className="mt-0.5 font-mono text-[15px] font-semibold text-[#14213D]">{nights !== null && nights > 0 ? nights : '—'}</div>
+                  <div className="mt-0.5 h-7 font-mono text-[15px] leading-7 font-semibold text-[#14213D]">{nights !== null && nights > 0 ? nights : '—'}</div>
                 </FieldTile>
               </div>
             </>
@@ -1284,7 +1335,7 @@ const ItemCard: React.FC<{
           {item.remarks && <div className="text-xs italic text-[#4A5568]">“{item.remarks}”</div>}
         </div>
         <div className="shrink-0 text-right">
-          <Money value={item.amount} className="text-lg font-semibold text-[#14213D]" />
+          <Money value={item.amount} className="text-base font-semibold text-[#14213D] sm:text-lg" />
           <div className="mt-1 flex justify-end gap-1">
             <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Edit expense" onClick={onEdit} disabled={disabled}><Pencil className="h-4 w-4" /></Button>
             <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Remove expense" onClick={onDelete} disabled={disabled}><Trash2 className="h-4 w-4" /></Button>

@@ -16,7 +16,11 @@ import {
   TableRow,
   TableCell,
   InfoCallout,
-  EmptyState, Spinner } from '@/components/ui';
+  EmptyState,
+  Spinner,
+  FormSection,
+  ScrollStrip,
+} from '@/components/ui';
 import {
   FileText,
   Calendar,
@@ -786,13 +790,14 @@ export function TenderDossierModal({
 
           {/* Dossier Header Strip */}
           <div className="p-4 rounded-xl bg-gradient-to-r from-[#14213D] to-[#1F2E52] text-white flex flex-wrap items-center justify-between gap-4 shadow-sm">
-            <div className="space-y-1">
-              <div className="flex items-center space-x-2">
-                <span className="font-mono text-sm font-bold text-[#F2B872]">
+            <div className="min-w-0 space-y-1">
+              {/* wraps on phones instead of squeezing the ref onto three lines and pushing chips off the card */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="whitespace-nowrap font-mono text-sm font-bold text-[#F2B872]">
                   {tender.internal_ref || 'TND-2026-00000'}
                 </span>
                 <span className="text-white/40">•</span>
-                <span className="font-semibold text-white/90">{tender.tender_number || tender.tender_no}</span>
+                <span className="break-all font-semibold text-white/90">{tender.tender_number || tender.tender_no}</span>
                 <Badge
                   variant={
                     tender.category === 'pq' ? 'cyber' : tender.category === 'mha' ? 'warning' : 'default'
@@ -813,7 +818,7 @@ export function TenderDossierModal({
               <p className="text-xs text-white/70 line-clamp-1">{tender.tender_title || tender.requirement_text || 'Standard Tender Supply Specification'}</p>
             </div>
 
-            <div className="flex items-center space-x-3">
+            <div className="flex flex-wrap items-center gap-3">
               {tender.tender_url && (
                 <a
                   href={tender.tender_url}
@@ -826,7 +831,7 @@ export function TenderDossierModal({
                   <span>Drive Workspace ↗</span>
                 </a>
               )}
-              <div className="text-right">
+              <div className="sm:text-right">
                 <span className="text-[10px] text-white/60 block uppercase font-bold tracking-wider">Current Stage</span>
                 <Badge
                   variant={
@@ -858,7 +863,7 @@ export function TenderDossierModal({
           </div>
 
           {/* 11 Dossier Tabs Strip */}
-          <div className="flex border-b border-[#DCD8CE] overflow-x-auto gap-1 pb-1 scrollbar-none select-none">
+          <ScrollStrip role="tablist" aria-label="Dossier sections" activeKey={activeTab} wrapperClassName="border-b border-[#DCD8CE]" className="gap-1 pb-1 select-none">
             {[
               { id: 'overview', label: 'Overview', icon: <FileText className="h-3.5 w-3.5" /> },
               {
@@ -909,6 +914,8 @@ export function TenderDossierModal({
               <button
                 key={tab.id}
                 type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`flex items-center space-x-1.5 px-3 py-2 text-xs font-semibold rounded-t-lg transition-all border-b-2 whitespace-nowrap cursor-pointer ${
                   activeTab === tab.id
@@ -920,7 +927,7 @@ export function TenderDossierModal({
                 <span>{tab.label}</span>
               </button>
             ))}
-          </div>
+          </ScrollStrip>
 
           {/* TAB 1: OVERVIEW */}
           {activeTab === 'overview' && (
@@ -1568,13 +1575,13 @@ export function TenderDossierModal({
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1.5 w-full md:w-auto">
+                    <div className="flex flex-wrap items-center gap-1.5 w-full md:w-auto">
                       <input
                         type="url"
                         placeholder="https://drive.google.com/drive/folders/..."
                         value={driveFolderUrl}
                         onChange={(e) => setDriveFolderUrl(e.target.value)}
-                        className="text-xs px-2.5 py-1.5 rounded-lg border border-[#C9C4B8] focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]/20 bg-white min-w-[240px] outline-none"
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-[#C9C4B8] focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]/20 bg-white min-w-0 flex-1 sm:min-w-[240px] outline-none"
                       />
                       <Button
                         variant="primary"
@@ -1714,7 +1721,7 @@ export function TenderDossierModal({
                           </TableCell>
                           <TableCell>
                             {attachingDocId === doc.id ? (
-                              <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#0F5E63] space-y-2 min-w-[260px] shadow-sm animate-in fade-in duration-150">
+                              <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#0F5E63] space-y-2 w-full sm:min-w-[260px] shadow-sm animate-in fade-in duration-150">
                                 <div className="flex items-center justify-between text-[11px] font-bold text-[#0F5E63]">
                                   <span>Link Google Drive / File</span>
                                   <button
@@ -2287,42 +2294,46 @@ export function TenderDossierModal({
         title="Add Product Line Item"
         maxWidth="lg"
       >
-        <div className="space-y-3 text-xs">
-          <Input
-            label="Product Description / Name"
-            value={newLineItem.product_description}
-            onChange={(e) => setNewLineItem({ ...newLineItem, product_description: e.target.value })}
-            placeholder="e.g. Thermal Night Vision Sensor Model T-40"
-            required
-          />
-          <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-5 text-xs">
+          <FormSection title="Product" icon={<ShoppingBag />} description="What is being quoted and its key specifications.">
             <Input
-              label="Quantity"
-              type="number"
-              value={newLineItem.quantity}
-              onChange={(e) => setNewLineItem({ ...newLineItem, quantity: Number(e.target.value) })}
+              label="Product Description / Name"
+              value={newLineItem.product_description}
+              onChange={(e) => setNewLineItem({ ...newLineItem, product_description: e.target.value })}
+              placeholder="e.g. Thermal Night Vision Sensor Model T-40"
               required
             />
-            <Input
-              label="Unit"
-              value={newLineItem.unit}
-              onChange={(e) => setNewLineItem({ ...newLineItem, unit: e.target.value })}
-              placeholder="Units, Nos, Sets"
+            <Textarea
+              label="Technical Specifications Summary"
+              value={newLineItem.specification_summary}
+              onChange={(e) => setNewLineItem({ ...newLineItem, specification_summary: e.target.value })}
+              placeholder="Key technical capabilities and MIL-STD compliance..."
             />
-          </div>
-          <Input
-            label="Quoted Unit Price (INR)"
-            type="number"
-            value={newLineItem.quoted_unit_price}
-            onChange={(e) => setNewLineItem({ ...newLineItem, quoted_unit_price: e.target.value })}
-            placeholder="e.g. 150000"
-          />
-          <Textarea
-            label="Technical Specifications Summary"
-            value={newLineItem.specification_summary}
-            onChange={(e) => setNewLineItem({ ...newLineItem, specification_summary: e.target.value })}
-            placeholder="Key technical capabilities and MIL-STD compliance..."
-          />
+          </FormSection>
+          <FormSection title="Quantity & Price" icon={<DollarSign />}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                label="Quantity"
+                type="number"
+                value={newLineItem.quantity}
+                onChange={(e) => setNewLineItem({ ...newLineItem, quantity: Number(e.target.value) })}
+                required
+              />
+              <Input
+                label="Unit"
+                value={newLineItem.unit}
+                onChange={(e) => setNewLineItem({ ...newLineItem, unit: e.target.value })}
+                placeholder="Units, Nos, Sets"
+              />
+            </div>
+            <Input
+              label="Quoted Unit Price (INR)"
+              type="number"
+              value={newLineItem.quoted_unit_price}
+              onChange={(e) => setNewLineItem({ ...newLineItem, quoted_unit_price: e.target.value })}
+              placeholder="e.g. 150000"
+            />
+          </FormSection>
           <div className="flex justify-end space-x-2 pt-2">
             <Button variant="outline" size="sm" onClick={() => setIsAddLineItemOpen(false)}>Cancel</Button>
             <Button variant="primary" size="sm" onClick={handleAddLineItem} isLoading={actionLoading}>Save Line Item</Button>
@@ -2398,7 +2409,7 @@ export function TenderDossierModal({
             placeholder="e.g. 500000"
             required
           />
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Select
               label="Mode"
               value={newInstrument.mode}

@@ -43,14 +43,18 @@ import {
   Timeline,
   useToaster,
 } from './expense-ui';
+import { ClaimFormModal } from './ClaimFormModal';
 
 type Decision = { status: 'approved' | 'partially_approved' | 'rejected'; amount: string; comment: string };
 type CommentAction = 'manager-reject' | 'accounts-reject' | 'request-clarification';
 
-export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
+/** `inModal`: shown in a dialog (Quick view) — the action bar pins to the dialog bottom, no room kept for page FABs. */
+export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ claimId, inModal = false }) => {
   const router = useRouter();
   const { user } = useAuth();
   const { push, Toaster } = useToaster();
+  // Edit / respond / copied draft open in a popup over this page instead of /expenses/:id/edit.
+  const [editId, setEditId] = useState<string | null>(null);
   const [claim, setClaim] = useState<ExpenseClaim | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -188,7 +192,7 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
   };
 
   return (
-    <div className="space-y-5 pb-4 md:pb-12">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => router.back()}>
           Back
@@ -314,9 +318,15 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
 
       {/* Actions */}
       {actions.length > 0 && (
-        <div className="sticky md:static bottom-0 z-30 -mx-4 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur pl-4 pr-20 py-3 md:p-0 flex flex-wrap items-center gap-2 justify-end">
+        <div
+          className={
+            inModal
+              ? 'sticky -bottom-4 z-10 -mx-4 -mb-4 flex flex-wrap items-center justify-end gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5'
+              : 'sticky md:static bottom-0 z-30 -mx-4 md:mx-0 border-t md:border-0 border-[#DCD8CE] bg-white/95 md:bg-transparent backdrop-blur pl-4 pr-20 py-3 md:p-0 flex flex-wrap items-center gap-2 justify-end'
+          }
+        >
           {actions.includes('edit') && (
-            <Link href={`/expenses/${claim.id}/edit`}><Button variant="secondary" leftIcon={<Pencil className="h-4 w-4" />}>{claim.status === 'clarification_required' ? 'Respond & resubmit' : 'Edit draft'}</Button></Link>
+            <Button variant="secondary" leftIcon={<Pencil className="h-4 w-4" />} onClick={() => setEditId(claim.id)}>{claim.status === 'clarification_required' ? 'Respond & resubmit' : 'Edit draft'}</Button>
           )}
           {actions.includes('withdraw') && (
             <Button variant="ghost" leftIcon={<Undo2 className="h-4 w-4" />} onClick={() => setWithdrawOpen(true)} disabled={Boolean(busy)}>Withdraw</Button>
@@ -331,7 +341,7 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
                 try {
                   const copy = await api.post<ExpenseClaim>(`/expense-claims/${claim.id}/copy`);
                   notifyExpensesChanged();
-                  router.push(`/expenses/${copy.id}/edit`);
+                  setEditId(copy.id);
                 } catch (e) {
                   push('error', errorMessage(e));
                 } finally {
@@ -429,6 +439,17 @@ export const ClaimDetail: React.FC<{ claimId: string }> = ({ claimId }) => {
       </Modal>
 
       <ReceiptViewer attachment={preview} onClose={() => setPreview(null)} />
+      {editId && (
+        <ClaimFormModal
+          isOpen
+          claimId={editId}
+          onClose={() => {
+            setEditId(null);
+            load();
+          }}
+          onDone={(m) => push('success', m)}
+        />
+      )}
       <Toaster />
     </div>
   );

@@ -18,9 +18,7 @@ import {
   UserCheck,
   FileText,
   Package,
-  History,
   Phone,
-  MapPin,
   Flame,
   Users,
   Repeat,
@@ -33,6 +31,7 @@ import {
   Ban,
   Search,
   Layers,
+  type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -48,6 +47,7 @@ import {
   Select,
   Textarea,
   PageContainer,
+  FormSteps,
   PageHeader,
   EmptyState,
   StatCard,
@@ -55,8 +55,11 @@ import {
   InfoCallout,
   PageLoader,
   FilterMenu,
+  RecordViews,
+  toneFor,
+  type RecordItem,
+  ScrollStrip,
 } from '@/components/ui';
-import { RowMenu, type RowMenuItem } from '@/components/ui/RowMenu';
 import type { ServicePriority, WarrantyStatus, ComplaintSource } from '@arihant/shared';
 import { allowedNextServiceStatuses, normalizeServiceStatus, type ServiceStatus } from '@arihant/shared';
 import {
@@ -66,11 +69,12 @@ import {
   isFinished,
   isPortalTicket,
   isUnverified,
+  isSlaPaused,
   STATUS_ROLES,
   MANAGER_ROLES,
   LINK_ROLES,
 } from '@/components/service/serviceHelpers';
-import { SlaPanel, TicketSlaInline, SlaPausedPill } from '@/components/service/ServiceSla';
+import { SlaPanel, SlaPausedPill } from '@/components/service/ServiceSla';
 import { UnverifiedBanner } from '@/components/service/UnverifiedBanner';
 import { StatusActionModal, type Engineer } from '@/components/service/StatusActionModal';
 import { CloseTicketModal } from '@/components/service/CloseTicketModal';
@@ -119,6 +123,22 @@ const ACTION_ICON: Record<string, React.ReactNode> = {
   reopened: <Repeat className="h-3.5 w-3.5 mr-1" />,
   report: <FileCheck className="h-3.5 w-3.5 mr-1" />,
   closed: <CheckCircle2 className="h-3.5 w-3.5 mr-1" />,
+};
+/** Bare glyphs for the record cards' icon buttons (the Quick button sizes them). */
+const ACTION_GLYPH: Record<string, LucideIcon> = {
+  assigned: UserCheck,
+  visit_scheduled: Calendar,
+  in_progress: Play,
+  resolved: CheckCircle2,
+  awaiting_part: Package,
+  awaiting_customer: Clock,
+  on_hold: PauseCircle,
+  escalated: ShieldAlert,
+  revisit_required: RotateCcw,
+  cancelled: Ban,
+  reopened: Repeat,
+  report: FileCheck,
+  closed: CheckCircle2,
 };
 const actionKey = (a: TicketAction) => (a.kind === 'status' ? a.target : a.kind === 'report' ? 'report' : 'closed');
 const actionRank = (a: TicketAction) => {
@@ -517,6 +537,59 @@ export default function ServicePage() {
 
   const activeRing = (on: boolean) => `cursor-pointer transition-shadow hover:shadow-md ${on ? 'ring-2 ring-[#0F5E63]' : ''}`;
 
+  /* --------------------------- record views mapping --------------------------- */
+  const lanes = STAGES.filter((s) => s.id !== 'all').map((s) => ({ key: s.id, label: s.label, tone: toneFor(s.label) }));
+  const stageOf = (status: string) => lanes.find((l) => matchesTab(l.key, status))?.key ?? 'open';
+  const laneByKey = new Map<string, string>(displayedTickets.map((t) => [String(t.id), stageOf(t.status)]));
+  const laneOf = (item: RecordItem) => laneByKey.get(item.key) ?? 'open';
+  /** Same rule as the dossier: open, clock running, resolution deadline passed. */
+  const slaBreached = (t: any) => !isFinished(t.status) && !isSlaPaused(t) && !!t.sla_resolution_due_at && new Date(t.sla_resolution_due_at).getTime() < Date.now();
+  const breachedCount = displayedTickets.filter(slaBreached).length;
+  const fmtDay = (v: unknown) => (v ? new Date(v as string).toLocaleDateString('en-IN') : '—');
+
+  const recordItems: RecordItem[] = displayedTickets.map((t) => {
+    const done = isFinished(t.status);
+    const unverified = isUnverified(t);
+    const actions = getActions(t);
+    const [next, ...more] = actions.filter((a) => a.kind !== 'status' || a.tone !== 'exception');
+    const badges: NonNullable<RecordItem['badges']> = [];
+    if (t.priority === 'critical') badges.push({ label: 'Critical · LD risk', tone: 'danger' });
+    else if (t.priority === 'high') badges.push({ label: 'High', tone: 'warning' });
+    if (slaBreached(t)) badges.push({ label: 'SLA breached', tone: 'danger' });
+    else if (!done && isSlaPaused(t)) badges.push({ label: 'SLA paused', tone: 'neutral' });
+    if (isPortalTicket(t)) badges.push({ label: 'Portal', tone: 'info' });
+    if (unverified) badges.push({ label: 'Unverified', tone: 'warning' });
+    if (t.is_repeat_complaint) badges.push({ label: 'Repeat', tone: 'warning' });
+    if (t.reopened_count > 0) badges.push({ label: `Reopened ×${t.reopened_count}`, tone: 'warning' });
+
+    const quick: NonNullable<RecordItem['quick']> = more.slice(0, 2).map((a) => {
+      const Glyph = ACTION_GLYPH[actionKey(a)];
+      return { label: a.label, icon: Glyph ? <Glyph /> : undefined, onClick: () => runAction(t, a) };
+    });
+    if (unverified && canLinkRole) quick.push({ label: 'Link to customer', icon: <Link2 />, onClick: () => openLink(t) });
+
+    const customer = unverified ? t.claimed_organisation_name : t.organisation_name || 'Client Agency / Command Station';
+    return {
+      key: String(t.id),
+      code: t.ticket_no,
+      title: t.complaint || 'No complaint text',
+      subtitle: [customer, t.location || t.city].filter(Boolean).join(' · '),
+      status: { label: statusLabel(t.status), tone: toneFor(statusLabel(t.status)) },
+      badges,
+      due: { date: t.sla_resolution_due_at, label: 'SLA due', done },
+      owner: t.assignee_name || 'Unassigned',
+      facts: [
+        { label: 'Warranty', value: t.warranty_status === 'in_warranty' ? 'In Warranty' : t.warranty_status === 'amc' ? 'Under AMC' : 'Billable / Out of Warranty' },
+        { label: 'Machine S/N', value: t.equipment_serial || '—' },
+        { label: 'Received', value: fmtDay(t.received_date || t.created_at) },
+        { label: 'Source', value: t.complaint_source || 'Phone' },
+      ],
+      primary: next ? { label: next.label, onClick: () => runAction(t, next) } : undefined,
+      quick: quick.slice(0, 3),
+      onOpen: () => handleOpenDetail(t),
+    };
+  });
+
   return (
     <PageContainer>
       {/* Page Header */}
@@ -525,10 +598,6 @@ export default function ServicePage() {
         icon={<Wrench className="h-5 w-5 text-[#0F5E63]" />}
         actions={
           <div className="flex flex-wrap items-center gap-2.5">
-            <Button onClick={() => fetchData()} variant="outline" size="sm" className="border-[#DCD8CE] text-[#14213D] shadow-xs">
-              <RefreshCw className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-              <span>Refresh</span>
-            </Button>
             <Button onClick={() => setIsWorkloadModalOpen(true)} variant="outline" size="sm" className="border-[#DCD8CE] text-[#14213D] shadow-xs">
               <Users className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
               <span>Engineer Workload ({workload.length || serviceEngineers.length})</span>
@@ -671,18 +740,13 @@ export default function ServicePage() {
         </div>
       </Card>
 
-      {anyFilter && (
-        <p className="text-xs text-[#4A5568]">
-          Showing {displayedTickets.length} of {tickets.length} loaded tickets with filters applied.
-        </p>
-      )}
       {(loadError || cardError) && (
         <div role="alert" className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
           {loadError || cardError}
         </div>
       )}
 
-      {/* Incidents table */}
+      {/* Service ticket register: priority cards or a stage board */}
       {isLoading ? (
         <PageLoader label="Loading service queue" />
       ) : displayedTickets.length === 0 ? (
@@ -692,115 +756,21 @@ export default function ServicePage() {
           description={anyFilter ? 'No tickets match the current filters.' : 'All client equipment and defense units in this filter are currently operating normally.'}
         />
       ) : (
-        <div className="space-y-3">
-          {displayedTickets.map((t) => {
-            const isCritical = t.priority === 'critical';
-            const done = isFinished(t.status);
-            const unverified = isUnverified(t);
-            const actions = getActions(t);
-            return (
-              <Card
-                key={t.id}
-                padding="md"
-                className={`transition-all hover:border-[#0F5E63] ${
-                  unverified ? 'border-l-4 border-l-[#F2B872]' : isCritical && !done ? 'border-l-4 border-l-[#9A3412]' : ''
-                }`}
-              >
-                <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-                  <div className="space-y-2 flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenDetail(t)}
-                        className="font-mono text-xs font-bold text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded hover:underline"
-                        title="Open ticket dossier"
-                      >
-                        {t.ticket_no}
-                      </button>
-                      {isPortalTicket(t) ? (
-                        <span className="svc-flag svc-flag--teal"><Globe2 className="h-2.5 w-2.5" />Portal</span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-[11px] text-[#4A5568]">
-                          {t.complaint_source === 'Demo Team' ? <Flame className="h-2.5 w-2.5" /> : t.complaint_source === 'Official Letter' ? <FileText className="h-2.5 w-2.5" /> : t.complaint_source === 'Phone' || !t.complaint_source ? <Phone className="h-2.5 w-2.5" /> : <Building className="h-2.5 w-2.5" />}
-                          {t.complaint_source || 'Phone'}
-                        </span>
-                      )}
-                      <Badge
-                        variant={t.priority === 'critical' ? 'urgent' : t.priority === 'high' ? 'danger' : t.priority === 'medium' ? 'warning' : 'default'}
-                        size="sm"
-                        className="font-bold uppercase tracking-wider"
-                      >
-                        {t.priority === 'critical' ? 'CRITICAL • LD RISK' : t.priority}
-                      </Badge>
-                      <Badge variant="outline" size="sm" className="font-mono text-[10px] uppercase">
-                        {t.warranty_status === 'in_warranty' ? 'In Warranty' : t.warranty_status === 'amc' ? 'Under AMC' : 'Billable / Out of Warranty'}
-                      </Badge>
-                      <Badge variant={statusBadgeVariant(t.status)} size="sm">
-                        {statusLabel(t.status).toUpperCase()}
-                      </Badge>
-                      <span className="font-mono text-xs"><TicketSlaInline ticket={t} /></span>
-                      {unverified && <span className="svc-flag svc-flag--warn"><ShieldQuestion className="h-2.5 w-2.5" />Unverified</span>}
-                      {t.is_repeat_complaint && <span className="svc-flag svc-flag--amber"><Repeat className="h-2.5 w-2.5" />Repeat</span>}
-                      {t.reopened_count > 0 && <span className="svc-flag svc-flag--warn"><RotateCcw className="h-2.5 w-2.5" />Reopened x{t.reopened_count}</span>}
-                    </div>
-
-                    <div>
-                      <h3 className="font-serif text-base font-bold text-[#14213D]">
-                        {unverified ? t.claimed_organisation_name : t.organisation_name || 'Client Agency / Command Station'}
-                      </h3>
-                      <p className="text-xs text-[#14213D] mt-0.5 leading-relaxed font-medium">{t.complaint}</p>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-[#4A5568] pt-1">
-                      {t.equipment_serial && (
-                        <span className="font-mono bg-[#FBFAF7] px-1.5 py-0.5 rounded border border-[#DCD8CE]">
-                          S/N: <strong className="text-[#14213D]">{t.equipment_serial}</strong>
-                        </span>
-                      )}
-                      {(t.city || t.location) && (
-                        <span className="flex items-center gap-1">
-                          <MapPin className="h-3 w-3 text-[#0F5E63]" />
-                          <span>{t.location || t.city}</span>
-                        </span>
-                      )}
-                      <span className="flex items-center gap-1">
-                        <User className="h-3 w-3 text-[#0F5E63]" />
-                        <span>
-                          Assigned: <strong className={t.assignee_name ? 'text-[#14213D]' : 'text-[#9A3412]'}>{t.assignee_name || 'Unassigned (Dispatch Pending)'}</strong>
-                        </span>
-                      </span>
-                      {t.planned_visit_date && (
-                        <span className="flex items-center gap-1">
-                          <Calendar className="h-3 w-3 text-[#0F5E63]" />
-                          <span>Visit: <strong className="text-[#14213D]">{new Date(t.planned_visit_date).toLocaleDateString('en-IN')}</strong></span>
-                        </span>
-                      )}
-                      <span>Logged: {new Date(t.created_at || t.received_date).toLocaleDateString('en-IN')}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap sm:flex-col items-end gap-2 shrink-0">
-                    <RowMenu
-                      buttonLabel="Actions"
-                      label="Ticket actions"
-                      items={[
-                        { key: 'dossier', label: 'Ticket Dossier', icon: <History />, onSelect: () => handleOpenDetail(t) },
-                        ...actions.map((a) => ({
-                          key: actionKey(a),
-                          label: a.label,
-                          icon: ACTION_ICON[actionKey(a)],
-                          danger: a.tone === 'exception',
-                          onSelect: () => runAction(t, a),
-                        })),
-                        { key: 'link', label: 'Link to customer', icon: <Link2 />, hidden: !(unverified && canLinkRole), onSelect: () => openLink(t) },
-                      ]}
-                    />
-                  </div>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+        <RecordViews
+          items={recordItems}
+          lanes={lanes}
+          laneOf={laneOf}
+          storageKey="service"
+          defaultView="board"
+          hideEmptyLanes={activeTab !== 'all'}
+          empty="No tickets match the current filters."
+          summary={
+            <>
+              {anyFilter ? `${displayedTickets.length} of ${tickets.length} tickets` : `${displayedTickets.length} ticket${displayedTickets.length === 1 ? '' : 's'}`}
+              {breachedCount > 0 && <span className="font-semibold text-[#881337]"> · {breachedCount} SLA breached</span>}
+            </>
+          }
+        />
       )}
 
       {/* 1. Log Breakdown Ticket Modal */}
@@ -811,189 +781,220 @@ export default function ServicePage() {
         description="Register a defense/PSU customer maintenance incident under warranty or AMC contract."
         maxWidth="lg"
       >
-        <form onSubmit={handleLogTicket} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
+        <form onSubmit={handleLogTicket}>
+          <FormSteps
+            onCancel={() => setIsLogTicketOpen(false)}
+            banner={
+              actionError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {actionError}
+                </div>
+              )
+            }
+            submit={
+              <Button type="submit" size="sm" isLoading={isSubmitting}>
+                Register Incident & Dispatch
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Intake',
+                icon: <FileText />,
+                description: 'When and how the complaint reached us, and how urgent it is.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Ticket Ref"
+                        placeholder="Auto: TCK-YYYY-NNNNNN"
+                        helperText="Leave blank to use the next number"
+                        value={newTicket.ticket_no}
+                        onChange={(e) => setNewTicket({ ...newTicket, ticket_no: e.target.value })}
+                      />
+                      <Input
+                        label="Date Received"
+                        type="date"
+                        required
+                        value={newTicket.received_date}
+                        onChange={(e) => setNewTicket({ ...newTicket, received_date: e.target.value })}
+                      />
+                      <Select
+                        label="Complaint Origin / Source"
+                        value={newTicket.complaint_source}
+                        onChange={(e) => setNewTicket({ ...newTicket, complaint_source: e.target.value as ComplaintSource })}
+                        options={[
+                          { value: 'Phone', label: 'Direct Client Call / Phone Helpline' },
+                          { value: 'Email', label: 'Official Client Email / Notice' },
+                          { value: 'Official Letter', label: 'Government Written Dispatch / Letter' },
+                          { value: 'Customer Portal', label: 'Client Direct / Web Portal' },
+                          { value: 'Demo Team', label: 'Demo Team (Trial Incident / Client Discovery)' },
+                          { value: 'Sales Rep', label: 'Sales Rep (Field Visit / On-site Contact)' },
+                          { value: 'Field Visit', label: 'Routine Inspection / Field Visit' },
+                          { value: 'Walk-in', label: 'Client Walk-in / Depot Visit' },
+                          { value: 'WhatsApp', label: 'WhatsApp Helpline' },
+                        ]}
+                      />
+                      <Select
+                        label="SLA Priority Level"
+                        value={newTicket.priority}
+                        onChange={(e) => setNewTicket({ ...newTicket, priority: e.target.value as ServicePriority })}
+                        options={[
+                          { value: 'critical', label: 'CRITICAL — Liquidated Damages (LD) Risk' },
+                          { value: 'high', label: 'HIGH — Station Interruption' },
+                          { value: 'medium', label: 'MEDIUM — Partial Functionality' },
+                          { value: 'low', label: 'LOW — Routine Preventative' },
+                        ]}
+                      />
+                    </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Input
-              label="Ticket Ref"
-              placeholder="Auto: TCK-YYYY-NNNNNN"
-              helperText="Leave blank to use the next number"
-              value={newTicket.ticket_no}
-              onChange={(e) => setNewTicket({ ...newTicket, ticket_no: e.target.value })}
-            />
-            <Input
-              label="Date Received"
-              type="date"
-              required
-              value={newTicket.received_date}
-              onChange={(e) => setNewTicket({ ...newTicket, received_date: e.target.value })}
-            />
-            <Select
-              label="Complaint Origin / Source"
-              value={newTicket.complaint_source}
-              onChange={(e) => setNewTicket({ ...newTicket, complaint_source: e.target.value as ComplaintSource })}
-              options={[
-                { value: 'Phone', label: 'Direct Client Call / Phone Helpline' },
-                { value: 'Email', label: 'Official Client Email / Notice' },
-                { value: 'Official Letter', label: 'Government Written Dispatch / Letter' },
-                { value: 'Customer Portal', label: 'Client Direct / Web Portal' },
-                { value: 'Demo Team', label: 'Demo Team (Trial Incident / Client Discovery)' },
-                { value: 'Sales Rep', label: 'Sales Rep (Field Visit / On-site Contact)' },
-                { value: 'Field Visit', label: 'Routine Inspection / Field Visit' },
-                { value: 'Walk-in', label: 'Client Walk-in / Depot Visit' },
-                { value: 'WhatsApp', label: 'WhatsApp Helpline' },
-              ]}
-            />
-            <Select
-              label="SLA Priority Level"
-              value={newTicket.priority}
-              onChange={(e) => setNewTicket({ ...newTicket, priority: e.target.value as ServicePriority })}
-              options={[
-                { value: 'critical', label: 'CRITICAL — Liquidated Damages (LD) Risk' },
-                { value: 'high', label: 'HIGH — Station Interruption' },
-                { value: 'medium', label: 'MEDIUM — Partial Functionality' },
-                { value: 'low', label: 'LOW — Routine Preventative' },
-              ]}
-            />
-          </div>
+                    {/* Dynamic Source Origin Guidance Note */}
+                    {newTicket.complaint_source === 'Demo Team' && (
+                      <div className="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
+                        <Flame className="h-4 w-4 shrink-0 text-purple-600" />
+                        <span>
+                          <strong>Demo Team Field Intake:</strong> Tagged for demo trials. Use this if demo equipment broke down during a client demonstration trial, or if an on-site customer requested servicing for an existing machine during your demo visit.
+                        </span>
+                      </div>
+                    )}
+                    {newTicket.complaint_source === 'Official Letter' && (
+                      <div className="p-2.5 rounded-lg bg-[#FBEBDD] border border-[#9A3412]/30 text-xs text-[#7C2D12] flex items-center gap-2">
+                        <FileText className="h-4 w-4 shrink-0 text-[#9A3412]" />
+                        <span>
+                          <strong>Formal B2G Government Notice:</strong> Registered under official client letter dispatch. Ensure the letter dispatch number and contract terms are noted in the complaint field.
+                        </span>
+                      </div>
+                    )}
+                    {newTicket.complaint_source === 'Customer Portal' && (
+                      <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-xs text-[#0F5E63] flex items-center gap-2">
+                        <Building className="h-4 w-4 shrink-0 text-[#0F5E63]" />
+                        <span>
+                          <strong>Direct Client Web Intake:</strong> Incident logged directly by client authority or nodal checkpoint officer.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ),
+              },
+              {
+                title: 'Customer',
+                icon: <Building />,
+                description: 'Which client agency raised it and where the machine is deployed.',
+                content: (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Client Agency / Organisation <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        list="org-list"
+                        value={newTicket.organisation_name}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const match = organisations.find((o) => o.name === val);
+                          setNewTicket({
+                            ...newTicket,
+                            organisation_name: val,
+                            organisation_id: match ? match.id : '',
+                            city: match?.city || newTicket.city,
+                          });
+                        }}
+                        placeholder="e.g. Delhi Police Traffic HQ / BSF Sector"
+                        className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                        required
+                      />
+                      <datalist id="org-list">
+                        {organisations.map((org) => (
+                          <option key={org.id} value={org.name}>
+                            {org.city ? `${org.name} (${org.city})` : org.name}
+                          </option>
+                        ))}
+                      </datalist>
+                    </div>
 
-          {/* Dynamic Source Origin Guidance Note */}
-          {newTicket.complaint_source === 'Demo Team' && (
-            <div className="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
-              <Flame className="h-4 w-4 shrink-0 text-purple-600" />
-              <span>
-                <strong>Demo Team Field Intake:</strong> Tagged for demo trials. Use this if demo equipment broke down during a client demonstration trial, or if an on-site customer requested servicing for an existing machine during your demo visit.
-              </span>
-            </div>
-          )}
-          {newTicket.complaint_source === 'Official Letter' && (
-            <div className="p-2.5 rounded-lg bg-[#FBEBDD] border border-[#9A3412]/30 text-xs text-[#7C2D12] flex items-center gap-2">
-              <FileText className="h-4 w-4 shrink-0 text-[#9A3412]" />
-              <span>
-                <strong>Formal B2G Government Notice:</strong> Registered under official client letter dispatch. Ensure the letter dispatch number and contract terms are noted in the complaint field.
-              </span>
-            </div>
-          )}
-          {newTicket.complaint_source === 'Customer Portal' && (
-            <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-xs text-[#0F5E63] flex items-center gap-2">
-              <Building className="h-4 w-4 shrink-0 text-[#0F5E63]" />
-              <span>
-                <strong>Direct Client Web Intake:</strong> Incident logged directly by client authority or nodal checkpoint officer.
-              </span>
-            </div>
-          )}
+                    <Input
+                      label="Deployment Station / City"
+                      value={newTicket.city}
+                      onChange={(e) => setNewTicket({ ...newTicket, city: e.target.value })}
+                      placeholder="e.g. New Delhi / Patna / Kolkata"
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Equipment',
+                icon: <Wrench />,
+                description: 'The machine that broke down, its coverage and what went wrong.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Equipment Category"
+                        value={newTicket.equipment_type}
+                        onChange={(e) => setNewTicket({ ...newTicket, equipment_type: e.target.value })}
+                        options={[
+                          { value: 'XBIS (X-Ray Baggage Inspection System)', label: 'XBIS (Dual Energy X-Ray)' },
+                          { value: 'DFMD (Door Frame Metal Detector)', label: 'DFMD (Multi-Zone Walk-through)' },
+                          { value: 'HHMD (Hand Held Metal Detector)', label: 'HHMD (MHA QR Compliant)' },
+                          { value: 'UVSS (Under Vehicle Surveillance System)', label: 'UVSS Embedded Array' },
+                          { value: 'Thermal Imaging Monocular', label: 'Thermal / Night Vision' },
+                          { value: 'Other Homeland Security Device', label: 'Other Security Hardware' },
+                        ]}
+                      />
+                      <Input
+                        label="Machine Serial Number"
+                        value={newTicket.serial_no}
+                        onChange={(e) => setNewTicket({ ...newTicket, serial_no: e.target.value })}
+                        placeholder="e.g. SN-XBIS-2025-081"
+                      />
+                      <Select
+                        label="Warranty / AMC Status"
+                        value={newTicket.warranty_status}
+                        onChange={(e) => setNewTicket({ ...newTicket, warranty_status: e.target.value as WarrantyStatus })}
+                        options={[
+                          { value: 'in_warranty', label: 'Under OEM Warranty' },
+                          { value: 'amc', label: 'Comprehensive AMC Active' },
+                          { value: 'out_of_warranty', label: 'Out of Warranty (Billable)' },
+                        ]}
+                      />
+                    </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Client Agency / Organisation <span className="text-red-500">*</span>
-              </label>
-              <input
-                list="org-list"
-                value={newTicket.organisation_name}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  const match = organisations.find((o) => o.name === val);
-                  setNewTicket({
-                    ...newTicket,
-                    organisation_name: val,
-                    organisation_id: match ? match.id : '',
-                    city: match?.city || newTicket.city,
-                  });
-                }}
-                placeholder="e.g. Delhi Police Traffic HQ / BSF Sector"
-                className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-                required
-              />
-              <datalist id="org-list">
-                {organisations.map((org) => (
-                  <option key={org.id} value={org.name}>
-                    {org.city ? `${org.name} (${org.city})` : org.name}
-                  </option>
-                ))}
-              </datalist>
-            </div>
-
-            <Input
-              label="Deployment Station / City"
-              value={newTicket.city}
-              onChange={(e) => setNewTicket({ ...newTicket, city: e.target.value })}
-              placeholder="e.g. New Delhi / Patna / Kolkata"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Select
-              label="Equipment Category"
-              value={newTicket.equipment_type}
-              onChange={(e) => setNewTicket({ ...newTicket, equipment_type: e.target.value })}
-              options={[
-                { value: 'XBIS (X-Ray Baggage Inspection System)', label: 'XBIS (Dual Energy X-Ray)' },
-                { value: 'DFMD (Door Frame Metal Detector)', label: 'DFMD (Multi-Zone Walk-through)' },
-                { value: 'HHMD (Hand Held Metal Detector)', label: 'HHMD (MHA QR Compliant)' },
-                { value: 'UVSS (Under Vehicle Surveillance System)', label: 'UVSS Embedded Array' },
-                { value: 'Thermal Imaging Monocular', label: 'Thermal / Night Vision' },
-                { value: 'Other Homeland Security Device', label: 'Other Security Hardware' },
-              ]}
-            />
-            <Input
-              label="Machine Serial Number"
-              value={newTicket.serial_no}
-              onChange={(e) => setNewTicket({ ...newTicket, serial_no: e.target.value })}
-              placeholder="e.g. SN-XBIS-2025-081"
-            />
-            <Select
-              label="Warranty / AMC Status"
-              value={newTicket.warranty_status}
-              onChange={(e) => setNewTicket({ ...newTicket, warranty_status: e.target.value as WarrantyStatus })}
-              options={[
-                { value: 'in_warranty', label: 'Under OEM Warranty' },
-                { value: 'amc', label: 'Comprehensive AMC Active' },
-                { value: 'out_of_warranty', label: 'Out of Warranty (Billable)' },
-              ]}
-            />
-          </div>
-
-          <Textarea
-            label="Breakdown Complaint / Symptom"
-            required
-            rows={3}
-            value={newTicket.complaint}
-            onChange={(e) => setNewTicket({ ...newTicket, complaint: e.target.value })}
-            placeholder="Describe the failure, error codes on display, or physical damage observed..."
+                    <Textarea
+                      label="Breakdown Complaint / Symptom"
+                      required
+                      rows={3}
+                      value={newTicket.complaint}
+                      onChange={(e) => setNewTicket({ ...newTicket, complaint: e.target.value })}
+                      placeholder="Describe the failure, error codes on display, or physical damage observed..."
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Dispatch',
+                icon: <UserCheck />,
+                description: 'Optionally send an engineer now and plan the first visit.',
+                content: (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Select
+                      label="Initial Field Engineer Dispatch (Optional)"
+                      value={newTicket.assigned_to}
+                      onChange={(e) => setNewTicket({ ...newTicket, assigned_to: e.target.value })}
+                      options={[
+                        { value: '', label: '-- Unassigned (Assign Later) --' },
+                        ...engineers.map((eng) => ({ value: eng.id, label: eng.name })),
+                      ]}
+                    />
+                    <Input
+                      label="Planned Visit Date"
+                      type="date"
+                      value={newTicket.planned_visit_date}
+                      onChange={(e) => setNewTicket({ ...newTicket, planned_visit_date: e.target.value })}
+                    />
+                  </div>
+                ),
+              },
+            ]}
           />
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-            <Select
-              label="Initial Field Engineer Dispatch (Optional)"
-              value={newTicket.assigned_to}
-              onChange={(e) => setNewTicket({ ...newTicket, assigned_to: e.target.value })}
-              options={[
-                { value: '', label: '-- Unassigned (Assign Later) --' },
-                ...engineers.map((eng) => ({ value: eng.id, label: eng.name })),
-              ]}
-            />
-            <Input
-              label="Planned Visit Date"
-              type="date"
-              value={newTicket.planned_visit_date}
-              onChange={(e) => setNewTicket({ ...newTicket, planned_visit_date: e.target.value })}
-            />
-          </div>
-
-          <div className="pt-3 flex justify-end gap-2 border-t border-[#ECE9E2]">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsLogTicketOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Register Incident & Dispatch
-            </Button>
-          </div>
         </form>
       </Modal>
 
@@ -1131,11 +1132,13 @@ export default function ServicePage() {
               <SlaPanel ticket={st} />
 
               {/* Dossier Tabs */}
-              <div className="flex border-b border-[#DCD8CE] gap-1 overflow-x-auto text-xs font-semibold">
+              <ScrollStrip role="tablist" aria-label="Ticket sections" activeKey={detailTab} wrapperClassName="border-b border-[#DCD8CE]" className="gap-1 text-xs font-semibold">
                 {tabs.map((tb) => (
                   <button
                     key={tb.id}
                     type="button"
+                    role="tab"
+                    aria-selected={detailTab === tb.id}
                     onClick={() => setDetailTab(tb.id)}
                     className={`py-2 px-3 border-b-2 transition-all whitespace-nowrap ${
                       detailTab === tb.id ? 'border-[#0F5E63] text-[#0F5E63] bg-[#E3EFEE]/40 rounded-t-lg' : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
@@ -1144,7 +1147,7 @@ export default function ServicePage() {
                     {tb.label}
                   </button>
                 ))}
-              </div>
+              </ScrollStrip>
 
               {/* Tab 1: Overview & legal next steps */}
               {detailTab === 'overview' && (

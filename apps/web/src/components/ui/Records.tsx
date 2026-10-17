@@ -1,0 +1,690 @@
+'use client';
+
+/**
+ * Field-friendly record layouts that replace wide tables on list pages.
+ *
+ *  - RecordCards   priority cards: deadline chip + one big next-step button, most urgent first
+ *  - StageBoard    columns per stage; on phones one stage at a time behind big stage buttons
+ *  - RecordViews   both, behind a Cards | Board toggle remembered per page, in one card that
+ *                  scrolls on its own and loads the next page near the end (infinite scroll)
+ *
+ * Cards show the first two `facts`; the board shows title, owner and value only.
+ *
+ * Every page maps its rows to one RecordItem shape. Touch targets are 44px, and 56px on phones
+ * ("glove mode", see `.rec` in theme.css). Status is always text + colour, never colour alone.
+ */
+import React, { useMemo, useState } from 'react';
+import { twMerge } from 'tailwind-merge';
+import { ArrowRight, Columns3, LayoutGrid } from 'lucide-react';
+import { istDateOf, istToday } from '@/lib/ist-date';
+import { formatINR, formatLakh } from '@arihant/shared';
+import { Card } from './Card';
+import { Modal } from './Modal';
+import { Spinner } from './Spinner';
+
+export type RecordTone = 'danger' | 'warning' | 'success' | 'info' | 'neutral';
+
+export interface RecordAction {
+  label: string;
+  icon?: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+}
+
+export interface RecordItem {
+  key: string;
+  /** Mono reference, e.g. a bid or ticket number. */
+  code?: string;
+  title: string;
+  subtitle?: string;
+  status?: { label: string; tone: RecordTone };
+  /** Extra small chips (priority, flags). */
+  badges?: { label: string; tone: RecordTone }[];
+  /** The date that drives urgency. `done` shows it plain (no overdue colouring). */
+  due?: { date: string | Date | null | undefined; label?: string; done?: boolean };
+  /** Pre-formatted amount, e.g. formatLakh(...). */
+  value?: string;
+  owner?: string;
+  /** Shown in expanded rows, split detail and (first two) on cards. */
+  facts?: { label: string; value: React.ReactNode }[];
+  primary?: RecordAction;
+  /** Icon buttons (call, map, note…) — keep to 1–3. */
+  quick?: RecordAction[];
+  /**
+   * Tapping the record body opens the page's own detail modal. Without it, cards inside RecordViews
+   * open the built-in details pop-up (every fact + `details` + the actions).
+   */
+  onOpen?: () => void;
+  /** Free slot under the subtitle (progress bar, stage bar…). */
+  extra?: React.ReactNode;
+  /** Every field of the record, listed under "All details" in the pop-up — see rowDetails(). */
+  details?: { label: string; value: React.ReactNode }[];
+}
+
+// ------------------------------------------------------------------ helpers
+const TONE: Record<RecordTone, string> = {
+  danger: 'bg-[#FCE8EC] text-[#881337] border-[#881337]/25',
+  warning: 'bg-[#FFF4E0] text-[#A15C07] border-[#A15C07]/25',
+  success: 'bg-[#E3F3EA] text-[#1F7A55] border-[#1F7A55]/25',
+  info: 'bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/25',
+  neutral: 'bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE]',
+};
+const DOT: Record<RecordTone, string> = {
+  danger: 'bg-[#881337]',
+  warning: 'bg-[#A15C07]',
+  success: 'bg-[#1F7A55]',
+  info: 'bg-[#0F5E63]',
+  neutral: 'bg-[#8A8578]',
+};
+
+/** Maps a free-text status to a tone: closed/won → success, lost/breached → danger, waiting → warning… */
+export function toneFor(status: string | null | undefined): RecordTone {
+  const s = String(status || '').toLowerCase();
+  if (/(won|convert|closed|resolved|handover|complet|approved|deliver|install|done|paid|on track)/.test(s)) return 'success';
+  if (/(lost|cancel|reject|escalat|breach|critical|overdue|fail|needs attention)/.test(s)) return 'danger';
+  if (/(await|pending|follow|revisit|reopen|negotiat|quot|report|watch|hold|high|eval|clarif)/.test(s)) return 'warning';
+  if (/(new|identif|received|request|schedul|prepar|assign|contact|reserv|pq|draft|open|progress|dispatch|transit)/.test(s)) return 'info';
+  return 'neutral';
+}
+
+/** Whole days from today (IST) to a date; negative = past. Null when there is no date. */
+export function daysFromToday(date: string | Date | null | undefined): number | null {
+  if (!date) return null;
+  const d = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : istDateOf(date);
+  if (!d) return null;
+  return Math.round((Date.parse(`${d}T00:00:00Z`) - Date.parse(`${istToday()}T00:00:00Z`)) / 86400000);
+}
+
+const asDate = (date: string | Date) => (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00+05:30`) : new Date(date));
+
+const shortDate = (date: string | Date | null | undefined) => {
+  if (!date) return '—';
+  const d = asDate(date);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
+};
+
+const fullDate = (date: string | Date | null | undefined) => {
+  if (!date) return '—';
+  const d = asDate(date);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+};
+
+function dueChip(due: RecordItem['due']): { text: string; tone: RecordTone } | null {
+  if (!due?.date) return null;
+  const n = daysFromToday(due.date);
+  if (n === null) return null;
+  if (due.done) return { text: shortDate(due.date), tone: 'neutral' };
+  if (n < 0) return { text: `${-n}d overdue`, tone: 'danger' };
+  if (n === 0) return { text: 'Today', tone: 'danger' };
+  if (n === 1) return { text: 'Tomorrow', tone: 'warning' };
+  if (n <= 3) return { text: `In ${n} days`, tone: 'warning' };
+  return { text: shortDate(due.date), tone: 'neutral' };
+}
+
+const Chip: React.FC<{ tone: RecordTone; children: React.ReactNode; className?: string }> = ({ tone, children, className }) => (
+  <span className={twMerge('inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11.5px] font-semibold', TONE[tone], className)}>{children}</span>
+);
+
+const DueChip: React.FC<{ item: RecordItem }> = ({ item }) => {
+  const c = dueChip(item.due);
+  return c ? <Chip tone={c.tone}>{c.text}</Chip> : null;
+};
+
+const Quick: React.FC<{ actions?: RecordAction[] }> = ({ actions }) =>
+  actions?.length ? (
+    <>
+      {actions.map((a) => (
+        <button
+          key={a.label}
+          type="button"
+          aria-label={a.label}
+          title={a.label}
+          disabled={a.disabled}
+          onClick={(e) => {
+            e.stopPropagation();
+            a.onClick?.();
+          }}
+          className="rec-tap inline-flex shrink-0 items-center justify-center rounded-[10px] border border-[#C9C4B8] bg-white text-[#14213D] hover:border-[#0F5E63] disabled:opacity-40 [&>svg]:h-[18px] [&>svg]:w-[18px]"
+        >
+          {a.icon ?? <span className="px-2 text-xs font-semibold">{a.label}</span>}
+        </button>
+      ))}
+    </>
+  ) : null;
+
+const Primary: React.FC<{ action?: RecordAction; className?: string }> = ({ action, className }) =>
+  action ? (
+    <button
+      type="button"
+      disabled={action.disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        action.onClick?.();
+      }}
+      className={twMerge(
+        'rec-tap inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-[10px] bg-[#0F5E63] px-3 text-[13px] font-semibold text-white hover:bg-[#0B4A4E] disabled:opacity-50',
+        className,
+      )}
+    >
+      <span className="truncate">{action.label}</span>
+      <ArrowRight className="h-4 w-4 shrink-0" />
+    </button>
+  ) : null;
+
+const Facts: React.FC<{ facts?: RecordItem['facts']; className?: string; full?: boolean }> = ({ facts, className, full }) =>
+  facts?.length ? (
+    <dl className={twMerge('grid grid-cols-2 gap-2 sm:grid-cols-3', className)}>
+      {facts.map((f) => (
+        <div key={f.label} className="min-w-0 rounded-[10px] border border-[#ECE9E2] bg-[#FBFAF7] px-2.5 py-2">
+          <dt className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-[#4A5568]">{f.label}</dt>
+          <dd className={twMerge('mt-0.5 text-[13px] font-semibold text-[#14213D]', full ? 'break-words' : 'truncate')}>{f.value ?? '—'}</dd>
+        </div>
+      ))}
+    </dl>
+  ) : null;
+
+// ------------------------------------------------------------------ record details (raw row → lines)
+const ACRONYM: Record<string, string> = { emd: 'EMD', sla: 'SLA', gem: 'GeM', pq: 'PQ', lr: 'LR', gst: 'GST', oem: 'OEM', po: 'PO', id: 'ID', url: 'URL', mha: 'MHA', mod: 'MoD' };
+/** snake_case → "Sentence case" with known acronyms; a trailing "_no" reads "No." (tender_no → Tender No.). */
+const humanize = (s: string) =>
+  s
+    .split('_')
+    .filter(Boolean)
+    .map((w, i, all) =>
+      w === 'no' && i > 0 && i === all.length - 1 ? 'No.' : ACRONYM[w.toLowerCase()] ?? (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w),
+    )
+    .join(' ');
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MONEY = /(amount|fee|cost|price|^value$|_value$)/;
+const NUMERIC = /^-?\d+(\.\d+)?$/;
+
+function detailValue(key: string, v: string | number | boolean): string {
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+  const s = String(v);
+  if (NUMERIC.test(s)) {
+    const n = Number(s);
+    if (key.endsWith('_lakh')) return formatLakh(n);
+    if (MONEY.test(key)) return formatINR(n);
+    return typeof v === 'number' ? n.toLocaleString('en-IN') : s;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return fullDate(s);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    const time = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+    return /^12:00\s?am$/i.test(time) ? fullDate(d) : `${fullDate(d)}, ${time}`; // midnight IST = a plain date
+  }
+  if (/^[a-z][a-z0-9]*(_[a-z0-9]+)*$/.test(s)) return humanize(s); // enum values: in_transit → In transit
+  return s;
+}
+
+/**
+ * Turns an API row into labelled lines for the details pop-up ("show everything about this record").
+ * Skips ids, empty values and nested objects; formats dates (IST), money, lakh values and yes/no.
+ */
+export function rowDetails(
+  row: Record<string, unknown> | null | undefined,
+  { omit = [], labels = {} }: { omit?: string[]; labels?: Record<string, string> } = {},
+): NonNullable<RecordItem['details']> {
+  if (!row) return [];
+  const out: NonNullable<RecordItem['details']> = [];
+  for (const [key, v] of Object.entries(row)) {
+    if (omit.includes(key) || key === 'id' || key === 'version' || /_ids?$/.test(key)) continue;
+    if (v == null || v === '' || (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean')) continue;
+    if (typeof v === 'string' && UUID.test(v)) continue;
+    out.push({ label: labels[key] ?? humanize(key), value: detailValue(key, v) });
+  }
+  return out;
+}
+
+const Empty: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+  <div className="rounded-[14px] border border-dashed border-[#C9C4B8] bg-[#FBFAF7] p-8 text-center text-sm text-[#4A5568]">{children ?? 'Nothing to show.'}</div>
+);
+
+/** Sort: open before done, nearest date first, no date last. */
+export function byUrgency(a: RecordItem, b: RecordItem): number {
+  const ad = a.due?.done ? 1 : 0;
+  const bd = b.due?.done ? 1 : 0;
+  if (ad !== bd) return ad - bd;
+  const an = daysFromToday(a.due?.date ?? null);
+  const bn = daysFromToday(b.due?.date ?? null);
+  if (an === null && bn === null) return 0;
+  if (an === null) return 1;
+  if (bn === null) return -1;
+  return an - bn;
+}
+
+// ------------------------------------------------------------------ 1. priority cards
+/** Inside RecordViews: opens the built-in details pop-up for records without their own onOpen. */
+const PeekContext = React.createContext<((item: RecordItem) => void) | null>(null);
+const useOpen = (item: RecordItem) => {
+  const peek = React.useContext(PeekContext);
+  return item.onOpen ?? (peek ? () => peek(item) : undefined);
+};
+
+export const RecordCard: React.FC<{ item: RecordItem }> = ({ item }) => {
+  const open = useOpen(item);
+  return (
+    <article
+      className={twMerge('rec ui-card flex flex-col gap-2.5 p-3.5 sm:p-4', open && 'cursor-pointer hover:border-[#0F5E63]/50')}
+      onClick={open}
+      role={open ? 'button' : undefined}
+      tabIndex={open ? 0 : undefined}
+      aria-haspopup={open ? 'dialog' : undefined}
+      onKeyDown={(e) => {
+        if (open && (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+          e.preventDefault();
+          open();
+        }
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        {item.code && item.code !== item.title ? <span className="min-w-0 break-all font-mono text-xs font-semibold text-[#0F5E63]">{item.code}</span> : <span />}
+        <DueChip item={item} />
+      </div>
+      <div>
+        <h3 className="line-clamp-2 text-[15px] font-semibold leading-snug text-[#14213D]">{item.title}</h3>
+        {item.subtitle && <p className="mt-0.5 line-clamp-2 text-[13px] text-[#4A5568]">{item.subtitle}</p>}
+      </div>
+      {item.extra}
+      {item.facts?.length ? <Facts facts={item.facts.slice(0, 2)} className="grid-cols-2 sm:grid-cols-2" /> : null}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {item.status && <Chip tone={item.status.tone}>{item.status.label}</Chip>}
+        {item.badges?.map((b) => (
+          <Chip key={b.label} tone={b.tone}>
+            {b.label}
+          </Chip>
+        ))}
+        {item.value && <span className="ml-auto font-mono text-[14px] font-semibold text-[#14213D]">{item.value}</span>}
+      </div>
+      {(item.owner || item.due?.label) && (
+        <p className="text-[12px] text-[#4A5568]">
+          {item.due?.date && item.due.label ? `${item.due.label} ${shortDate(item.due.date)}` : ''}
+          {item.due?.date && item.due.label && item.owner ? ' · ' : ''}
+          {item.owner}
+        </p>
+      )}
+      {(item.primary || item.quick?.length) && (
+        <div className="mt-auto flex items-center gap-2 pt-1">
+          <Quick actions={item.quick} />
+          <Primary action={item.primary} />
+        </div>
+      )}
+    </article>
+  );
+};
+
+export const RecordCards: React.FC<{ items: RecordItem[]; empty?: React.ReactNode; className?: string; sort?: boolean }> = ({ items, empty, className, sort = true }) => {
+  const list = useMemo(() => (sort ? [...items].sort(byUrgency) : items), [items, sort]);
+  if (!list.length) return <Empty>{empty}</Empty>;
+  return (
+    <div className={twMerge('grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3', className)}>
+      {list.map((i) => (
+        <RecordCard key={i.key} item={i} />
+      ))}
+    </div>
+  );
+};
+
+// ------------------------------------------------------------------ 2. stage board
+export interface BoardLane {
+  key: string;
+  label: string;
+  tone?: RecordTone;
+}
+
+const MiniCard: React.FC<{ item: RecordItem }> = ({ item }) => {
+  const open = useOpen(item);
+  return (
+    <article
+      className={twMerge('rec ui-card flex flex-col gap-1.5 p-3', open && 'cursor-pointer hover:border-[#0F5E63]/50')}
+      onClick={open}
+      role={open ? 'button' : undefined}
+      tabIndex={open ? 0 : undefined}
+      aria-haspopup={open ? 'dialog' : undefined}
+      onKeyDown={(e) => {
+        if (open && (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+          e.preventDefault();
+          open();
+        }
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        {item.code && item.code !== item.title ? <span className="min-w-0 truncate font-mono text-[11.5px] font-semibold text-[#0F5E63]">{item.code}</span> : <span />}
+        <DueChip item={item} />
+      </div>
+      <h4 className="line-clamp-2 text-[14px] font-semibold leading-snug text-[#14213D]">{item.title}</h4>
+      {item.subtitle && <p className="line-clamp-1 text-[12px] text-[#4A5568]">{item.subtitle}</p>}
+      {(item.badges?.length || item.value || item.owner) && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-[#4A5568]">
+          {item.badges?.map((b) => (
+            <Chip key={b.label} tone={b.tone}>
+              {b.label}
+            </Chip>
+          ))}
+          {item.value && <span className="font-mono font-semibold text-[#14213D]">{item.value}</span>}
+          {item.owner && <span className="ml-auto truncate">{item.owner}</span>}
+        </div>
+      )}
+      {(item.primary || item.quick?.length) && (
+        <div className="flex items-center gap-2 pt-1">
+          <Quick actions={item.quick} />
+          <Primary action={item.primary} />
+        </div>
+      )}
+    </article>
+  );
+};
+
+export const StageBoard: React.FC<{
+  items: RecordItem[];
+  lanes: BoardLane[];
+  laneOf: (item: RecordItem) => string;
+  empty?: React.ReactNode;
+  /** Hide lanes with no records (still shown on phones as disabled stage buttons). */
+  hideEmptyLanes?: boolean;
+}> = ({ items, lanes, laneOf, empty, hideEmptyLanes = false }) => {
+  const grouped = useMemo(() => {
+    const m = new Map<string, RecordItem[]>(lanes.map((l) => [l.key, []]));
+    for (const i of items) {
+      const k = laneOf(i);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(i);
+    }
+    m.forEach((v) => v.sort(byUrgency));
+    return m;
+  }, [items, lanes, laneOf]);
+  const visible = lanes.filter((l) => !hideEmptyLanes || (grouped.get(l.key)?.length ?? 0) > 0);
+  const firstWithItems = visible.find((l) => (grouped.get(l.key)?.length ?? 0) > 0)?.key ?? visible[0]?.key;
+  const [lane, setLane] = useState<string | undefined>(undefined);
+  const active = lane && visible.some((l) => l.key === lane) ? lane : firstWithItems;
+  if (!items.length) return <Empty>{empty}</Empty>;
+
+  return (
+    <div className="rec">
+      {/* Phones: big stage buttons, one stage's cards below — no sideways swiping */}
+      <div className="md:hidden">
+        <div className="grid grid-cols-2 gap-2" role="tablist" aria-label="Stages">
+          {visible.map((l) => {
+            const n = grouped.get(l.key)?.length ?? 0;
+            const on = l.key === active;
+            return (
+              <button
+                key={l.key}
+                type="button"
+                role="tab"
+                aria-selected={on}
+                onClick={() => setLane(l.key)}
+                className={twMerge(
+                  'rec-tap flex items-center justify-between gap-2 rounded-[10px] border px-3 text-left text-[13px] font-semibold',
+                  on ? 'border-[#0F5E63] bg-[#0F5E63] text-white' : 'border-[#C9C4B8] bg-white text-[#14213D]',
+                  !n && !on && 'opacity-60',
+                )}
+              >
+                <span className="truncate">{l.label}</span>
+                <span className="font-mono text-xs">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-3 space-y-2.5">
+          {(grouped.get(active ?? '') ?? []).map((i) => (
+            <MiniCard key={i.key} item={i} />
+          ))}
+          {!(grouped.get(active ?? '') ?? []).length && <Empty>Nothing in this stage.</Empty>}
+        </div>
+      </div>
+
+      {/* Tablet / desktop: every stage as a column. The surrounding RecordViews card scrolls the
+          whole board both ways; column headers stay pinned while their cards scroll under them. */}
+      <div className="hidden gap-3 md:grid" style={{ gridAutoFlow: 'column', gridAutoColumns: 'minmax(260px, 1fr)' }}>
+        {visible.map((l) => {
+          const list = grouped.get(l.key) ?? [];
+          return (
+            <section key={l.key} className="flex min-w-0 flex-col gap-2.5 rounded-[14px] border border-[#ECE9E2] bg-white/70 p-2.5 pt-0" aria-label={l.label}>
+              {/* pinned flush to the card edge: the offset cancels the RecordViews body padding (p-3 / sm:p-4) */}
+              <header className="sticky -top-3 z-[1] -mx-2.5 sm:-top-4 flex items-center justify-between gap-2 rounded-t-[14px] border-b border-[#ECE9E2] bg-[#F6F5F1] px-3.5 py-2.5">
+                <span className="flex items-center gap-2 text-[11.5px] font-semibold uppercase tracking-[0.06em] text-[#4A5568]">
+                  <span className={twMerge('h-2 w-2 rounded-full', DOT[l.tone ?? 'neutral'])} />
+                  {l.label}
+                </span>
+                <span className="font-mono text-xs font-semibold text-[#14213D]">{list.length}</span>
+              </header>
+              {list.map((i) => (
+                <MiniCard key={i.key} item={i} />
+              ))}
+              {!list.length && <p className="px-1 pb-2 text-xs italic text-[#8A8578]">Empty</p>}
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ------------------------------------------------------------------ details pop-up
+/** Visible text of a fact value (string, number or e.g. a <Link> around text) — to size its tile. */
+const textOf = (node: React.ReactNode): string => {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) return textOf(node.props.children);
+  return '';
+};
+
+/**
+ * Everything about one record: status chips, the key numbers, every fact, `details` (all fields)
+ * and the same actions as the card. An action closes the pop-up first so its own form is on top.
+ */
+export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => void }> = ({ item, onClose }) => {
+  const closeThen = (a: RecordAction): RecordAction => ({ ...a, onClick: () => (onClose(), a.onClick?.()) });
+  const summary = item
+    ? ([
+        item.value && { label: 'Value', value: <span className="font-mono">{item.value}</span> },
+        item.owner && { label: 'Owner', value: item.owner },
+        item.due?.date && { label: item.due.label || 'Due', value: fullDate(item.due.date) },
+        ...(item.facts ?? []),
+      ].filter(Boolean) as NonNullable<RecordItem['facts']>)
+    : [];
+
+  return (
+    <Modal isOpen={!!item} onClose={onClose} title={item?.title ?? ''} description={item?.subtitle} maxWidth="2xl">
+      {item && (
+        <div className="rec space-y-4">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {item.code && item.code !== item.title && <span className="mr-1 break-all font-mono text-xs font-semibold text-[#0F5E63]">{item.code}</span>}
+            {item.status && <Chip tone={item.status.tone}>{item.status.label}</Chip>}
+            {item.badges?.map((b) => (
+              <Chip key={b.label} tone={b.tone}>
+                {b.label}
+              </Chip>
+            ))}
+            <DueChip item={item} />
+          </div>
+          {item.extra}
+          {summary.length > 0 && (
+            <dl className="grid grid-flow-row-dense grid-cols-2 gap-2 sm:grid-cols-3">
+              {summary.map((f) => (
+                <div
+                  key={f.label}
+                  // a long code or sentence gets the full row instead of breaking mid-word in half a phone
+                  className={twMerge(
+                    'min-w-0 rounded-[10px] border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2',
+                    textOf(f.value).length > 18 && 'col-span-2',
+                  )}
+                >
+                  <dt className="text-[10.5px] font-semibold uppercase leading-4 tracking-[0.06em] text-[#4A5568]">{f.label}</dt>
+                  <dd className="mt-0.5 break-words text-[13px] font-semibold leading-5 text-[#14213D]">{f.value ?? '—'}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {item.details?.length ? (
+            <section aria-label="All details">
+              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#4A5568]">All details</h3>
+              {/* phones: label over value, left-aligned; wider screens: two columns of label · value rows */}
+              <dl className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+                {item.details.map((d) => (
+                  <div key={d.label} className="min-w-0 border-b border-[#ECE9E2] py-[7px] sm:flex sm:items-baseline sm:justify-between sm:gap-3">
+                    <dt className="text-[11.5px] leading-[16px] text-[#4A5568] sm:shrink-0 sm:text-[12px]">{d.label}</dt>
+                    <dd className="mt-[2px] min-w-0 break-words text-[13.5px] font-semibold leading-[20px] text-[#14213D] sm:mt-0 sm:text-right sm:text-[13px]">{d.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ) : null}
+          {(item.primary || item.quick?.length) && (
+            // pinned to the bottom of the dialog so the actions never sit below a long details list
+            <div className="sticky -bottom-4 z-[1] -mx-4 -mb-4 flex items-center gap-2 border-t border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5">
+              <Quick actions={item.quick?.map(closeThen)} />
+              <Primary action={item.primary && closeThen(item.primary)} />
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+};
+
+// ------------------------------------------------------------------ view switcher
+export type RecordView = 'cards' | 'board';
+
+const readView = (key: string, fallback: RecordView): RecordView => {
+  try {
+    const v = localStorage.getItem(`records-view:${key}`);
+    return v === 'cards' || v === 'board' ? v : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+/**
+ * Bottom-of-list marker for infinite scroll: asks for the next page once it scrolls into view, and
+ * keeps asking while it stays in view (a short page does not fill the card). The button is the
+ * fallback for keyboards and browsers without IntersectionObserver.
+ */
+const LoadMore: React.FC<{
+  scroller: React.RefObject<HTMLDivElement>;
+  onLoadMore?: () => void;
+  hasMore?: boolean;
+  loading?: boolean;
+  count: number;
+}> = ({ scroller, onLoadMore, hasMore, loading, count }) => {
+  const marker = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const el = marker.current;
+    if (!el || !onLoadMore || !hasMore || loading || typeof IntersectionObserver === 'undefined') return;
+    // On tablet/desktop the card body is the scroller; on phones it grows and the page scrolls instead.
+    const box = scroller.current;
+    const root = box && getComputedStyle(box).maxHeight !== 'none' ? box : null;
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && onLoadMore(), {
+      root,
+      rootMargin: '0px 0px 320px 0px',
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [scroller, onLoadMore, hasMore, loading, count]);
+
+  if (!onLoadMore || !count) return null;
+  return (
+    <div ref={marker} className="flex min-h-[52px] items-center justify-center pt-3 text-xs text-[#4A5568]" aria-live="polite">
+      {loading ? (
+        <span className="inline-flex items-center gap-2">
+          <Spinner size="sm" /> Loading more…
+        </span>
+      ) : hasMore ? (
+        <button type="button" onClick={onLoadMore} className="rec-tap rounded-[10px] border border-[#C9C4B8] bg-white px-4 font-semibold text-[#14213D] hover:border-[#0F5E63]">
+          Load more
+        </button>
+      ) : (
+        <span className="font-mono">All {count} loaded</span>
+      )}
+    </div>
+  );
+};
+
+/**
+ * One register, two ways to look at it: priority cards (most urgent first) or a stage board, in one
+ * card that scrolls on its own (both ways for the board) and pulls the next page as the reader nears
+ * the end (`onLoadMore` + `hasMore`, see useInfiniteList). The choice of view is remembered per page
+ * (`storageKey`) in this browser.
+ */
+export const RecordViews: React.FC<{
+  items: RecordItem[];
+  lanes: BoardLane[];
+  laneOf: (item: RecordItem) => string;
+  storageKey: string;
+  defaultView?: RecordView;
+  empty?: React.ReactNode;
+  hideEmptyLanes?: boolean;
+  /** Card heading, e.g. "Proposal register". */
+  title?: React.ReactNode;
+  /** Shown next to the toggle, e.g. "24 of 952 bids". */
+  summary?: React.ReactNode;
+  /** Infinite scroll: fetch the next page. Omit when every record is already loaded. */
+  onLoadMore?: () => void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+}> = ({ items, lanes, laneOf, storageKey, defaultView = 'cards', empty, hideEmptyLanes, title, summary, onLoadMore, hasMore, loadingMore }) => {
+  const [view, setView] = useState<RecordView>(defaultView);
+  const [peek, setPeek] = useState<RecordItem | null>(null);
+  const scroller = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => setView(readView(storageKey, defaultView)), [storageKey, defaultView]);
+  const choose = (v: RecordView) => {
+    setView(v);
+    scroller.current?.scrollTo({ top: 0, left: 0 });
+    try {
+      localStorage.setItem(`records-view:${storageKey}`, v);
+    } catch {
+      /* private mode: keep it for this visit only */
+    }
+  };
+  const opts: { key: RecordView; label: string; icon: React.ReactNode }[] = [
+    { key: 'cards', label: 'Cards', icon: <LayoutGrid className="h-3.5 w-3.5" /> },
+    { key: 'board', label: 'Board', icon: <Columns3 className="h-3.5 w-3.5" /> },
+  ];
+
+  return (
+    <PeekContext.Provider value={setPeek}>
+      <Card padding="none" className="rec flex flex-col rounded-[14px]">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#ECE9E2] px-3 py-1.5 sm:px-4">
+          <div className="min-w-0 space-y-0.5">
+            {title && <h2 className="font-serif text-sm font-bold text-[#14213D]">{title}</h2>}
+            {summary && <div className="text-[13px] text-[#4A5568]">{summary}</div>}
+          </div>
+          <div role="radiogroup" aria-label="View" className="inline-flex rounded-[10px] border border-[#C9C4B8] bg-white p-0.5">
+            {opts.map((o) => {
+              const on = view === o.key;
+              return (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => choose(o.key)}
+                  className={twMerge(
+                    'inline-flex h-9 items-center gap-1.5 rounded-[8px] px-3 text-[12.5px] font-semibold transition-colors sm:h-8',
+                    on ? 'bg-[#0F5E63] text-white' : 'text-[#4A5568] hover:text-[#14213D]',
+                  )}
+                >
+                  {o.icon}
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {/* 7.25rem ≈ top bar (4rem) + this card's compact header: scrolled to the end of the page, the card runs
+            down to the bottom edge of the screen (pages have no bottom padding) */}
+        <div ref={scroller} className="custom-scrollbar bg-[#FBFAF7] p-3 sm:p-4 md:max-h-[max(420px,calc(100dvh-7.25rem))] md:overflow-auto">
+          {view === 'cards' ? (
+            <RecordCards items={items} empty={empty} />
+          ) : (
+            <StageBoard items={items} lanes={lanes} laneOf={laneOf} empty={empty} hideEmptyLanes={hideEmptyLanes} />
+          )}
+          <LoadMore scroller={scroller} onLoadMore={onLoadMore} hasMore={hasMore} loading={loadingMore} count={items.length} />
+        </div>
+      </Card>
+      <RecordDetails item={peek} onClose={() => setPeek(null)} />
+    </PeekContext.Provider>
+  );
+};

@@ -34,6 +34,7 @@ import {
 import { errorMessage } from '../_lib/task-lib';
 import { DueText, FlagChip, PriorityBadge, TaskViewMenu, useUrlFilters } from '../_lib/task-ui';
 import { TemplateStatusBadge, describeDue } from '../_lib/TaskForm';
+import { NewTaskButton } from '../_lib/NewTaskModal';
 
 interface TemplateListRow {
   id: string;
@@ -176,11 +177,9 @@ function RecurringTasks() {
         title="Recurring Tasks"
         icon={<Repeat className="h-5 w-5" />}
         actions={
-          <Link href="/tasks/new?frequency=weekly">
-            <Button size="sm" leftIcon={<Plus className="h-4 w-4" />}>
-              New recurring task
-            </Button>
-          </Link>
+          <NewTaskButton size="sm" prefill={{ frequency: 'weekly' }} leftIcon={<Plus className="h-4 w-4" />}>
+            New recurring task
+          </NewTaskButton>
         }
       />
 
@@ -307,9 +306,7 @@ function RecurringTasks() {
                 Clear filters
               </Button>
             ) : (
-              <Link href="/tasks/new?frequency=weekly">
-                <Button leftIcon={<Plus className="h-4 w-4" />}>New recurring task</Button>
-              </Link>
+              <NewTaskButton prefill={{ frequency: 'weekly' }} leftIcon={<Plus className="h-4 w-4" />}>New recurring task</NewTaskButton>
             )
           }
         />

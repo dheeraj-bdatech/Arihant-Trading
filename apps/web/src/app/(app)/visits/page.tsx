@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Calendar,
@@ -64,9 +63,11 @@ import {
   EmptyState,
   InfoCallout,
   Checkbox, CountUp, PageLoader, Spinner, FilterMenu,
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu } from '@/components/ui';
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu,
+  FormSteps, FormSection } from '@/components/ui';
 import type { RowMenuItem } from '@/components/ui/RowMenu';
 import type { FilterMenuOption } from '@/components/ui/FilterMenu';
+import { NewClaimButton } from '../expenses/_lib/ClaimFormModal';
 
 // Specific Demo Kit standard accessories mapping
 const getStandardKitAccessories = (productName?: string, category?: string) => {
@@ -1705,12 +1706,10 @@ export default function VisitsPage() {
 
                     {/* Claim Expense for this visit — only the visit's own people can claim against it, and never a cancelled one */}
                     {v.status !== 'cancelled' && !!user?.id && [v.assigned_to, v.planned_by, v.service_engineer_id].includes(user.id) && (
-                      <Link href={`/expenses/new?visit_id=${v.id}`}>
-                        <Button size="sm" variant="ghost" className="text-[#0F5E63]">
-                          <Receipt className="h-3.5 w-3.5 mr-1 text-[#4A5568]" />
-                          <span>Claim Expense</span>
-                        </Button>
-                      </Link>
+                      <NewClaimButton size="sm" variant="ghost" className="text-[#0F5E63]" visitId={v.id}>
+                        <Receipt className="h-3.5 w-3.5 mr-1 text-[#4A5568]" />
+                        <span>Claim Expense</span>
+                      </NewClaimButton>
                     )}
 
                     {/* Audit History */}
@@ -2153,928 +2152,924 @@ export default function VisitsPage() {
         description="Schedule upcoming procurement meetings and product demonstrations."
         maxWidth="4xl"
       >
-        <form onSubmit={handleScheduleVisit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
-              {actionError}
-            </div>
-          )}
-
-          <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900 flex items-center gap-2">
-            <Info className="h-4 w-4 shrink-0 text-blue-600" />
-            <span>Standard operating procedure: Plan field visits approximately 1 week in advance.</span>
-          </div>
-
-          {/* Section 1: Customer Agency & Assigned Visiting Officer */}
-          <div className="space-y-3 p-3.5 bg-gray-50/70 rounded-xl border border-[#DCD8CE]">
-            <span className="text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider block">
-              1. Visiting Officer & Target Agency
-            </span>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Select
-                label="Visiting Officer (Who is going)"
-                required
-                value={newVisit.assigned_to || ''}
-                onChange={(e) => setNewVisit({ ...newVisit, assigned_to: e.target.value })}
-                options={[
-                  { value: '', label: '-- Select Officer Who is Going --' },
-                  ...usersList.map((u) => ({
-                    value: u.id,
-                    label: `${u.full_name} (${u.role ? u.role.replace('_', ' ') : 'Officer'})`,
-                  })),
-                ]}
-              />
-
-              <Select
-                label="Organisation (Choose Agency)"
-                required
-                value={newVisit.organisation_id}
-                onChange={(e) => {
-                  const orgId = e.target.value;
-                  const org = organisations.find((o) => o.id === orgId);
-                  setNewVisit({
-                    ...newVisit,
-                    organisation_id: orgId,
-                    location: org?.city || newVisit.location,
-                  });
-                }}
-                options={[
-                  { value: '', label: '-- Choose Customer Agency --' },
-                  ...organisations.map((o) => ({ value: o.id, label: `${o.name} (${o.city || 'State'})` })),
-                ]}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
-              <Input
-                label="Location / Station"
-                required
-                value={newVisit.location}
-                onChange={(e) => setNewVisit({ ...newVisit, location: e.target.value })}
-                placeholder="e.g. Jalandhar Cantonment / New Delhi"
-              />
-
-              <Input
-                label="Customer Contact Person"
-                value={newVisit.contact_person}
-                onChange={(e) => setNewVisit({ ...newVisit, contact_person: e.target.value })}
-                placeholder="e.g. Commandant Signals / DIG Procurement"
-              />
-            </div>
-          </div>
-
-          {/* Section 2: Date & Purpose */}
-          <div className="space-y-3 p-3.5 bg-gray-50/70 rounded-xl border border-[#DCD8CE]">
-            <span className="text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider block">
-              2. Date, Time & Meeting Purpose
-            </span>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-              <div className="w-full flex flex-col justify-end text-left">
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-[#14213D]">
-                    Planned Date <span className="text-red-500">*</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewVisit({ ...newVisit, planned_date: addIsoDays(istToday(), 7) });
-                    }}
-                    className="text-[10px] text-[#0F5E63] hover:underline font-bold"
-                  >
-                    +7 Days
-                  </button>
+        <form onSubmit={handleScheduleVisit}>
+          <FormSteps
+            onCancel={() => setIsScheduleOpen(false)}
+            banner={
+              actionError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
+                  {actionError}
                 </div>
-                <input
-                  type="date"
-                  required
-                  value={newVisit.planned_date}
-                  onChange={(e) => setNewVisit({ ...newVisit, planned_date: e.target.value })}
-                  className="flex h-10 w-full rounded-[8px] border border-[#C9C4B8] bg-white px-3.5 py-2 text-xs text-[#14213D] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
-                />
-              </div>
+              )
+            }
+            submit={
+              <Button type="submit" size="sm" isLoading={isSubmitting}>
+                Schedule Visit
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Agency',
+                icon: <Building />,
+                description: 'Who is going, and which customer agency they will visit.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Visiting Officer (Who is going)"
+                        required
+                        value={newVisit.assigned_to || ''}
+                        onChange={(e) => setNewVisit({ ...newVisit, assigned_to: e.target.value })}
+                        options={[
+                          { value: '', label: '-- Select Officer Who is Going --' },
+                          ...usersList.map((u) => ({
+                            value: u.id,
+                            label: `${u.full_name} (${u.role ? u.role.replace('_', ' ') : 'Officer'})`,
+                          })),
+                        ]}
+                      />
 
-              <Input
-                label="Start Time"
-                type="time"
-                value={newVisit.start_time}
-                onChange={(e) => setNewVisit({ ...newVisit, start_time: e.target.value })}
-              />
-
-              <Input
-                label="End Time"
-                type="time"
-                value={newVisit.end_time}
-                onChange={(e) => setNewVisit({ ...newVisit, end_time: e.target.value })}
-              />
-            </div>
-
-            <Input
-              label="Primary Purpose of Visit"
-              required
-              value={newVisit.purpose}
-              onChange={(e) => setNewVisit({ ...newVisit, purpose: e.target.value })}
-              placeholder="e.g. Technical demonstration of DFMD / HHMD for upcoming GeM procurement"
-            />
-          </div>
-
-          {/* Section 3: Product Focus & Expected Outcome */}
-          <div className="space-y-3 p-3.5 bg-gray-50/70 rounded-xl border border-[#DCD8CE]">
-            <span className="text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider block">
-              3. Product Focus & Strategic Outcome
-            </span>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Select
-                label="Primary Product Focus"
-                value={newVisit.product_id}
-                onChange={(e) => setNewVisit({ ...newVisit, product_id: e.target.value })}
-                options={[
-                  { value: '', label: '-- General / Portfolio Meeting --' },
-                  ...products.map((p) => ({ value: p.id, label: `${p.name} (${p.category || 'Security'})` })),
-                ]}
-              />
-
-              <Input
-                label="Expected Strategic Outcome"
-                value={newVisit.expected_outcome}
-                onChange={(e) => setNewVisit({ ...newVisit, expected_outcome: e.target.value })}
-                placeholder="e.g. Secure trial evaluation certificate and quote RFP"
-              />
-            </div>
-          </div>
-
-          {/* Section 4: Travel, Demo Requirements & Remarks */}
-          <div className="space-y-3.5 p-3.5 bg-gray-50/70 rounded-xl border border-[#DCD8CE]">
-            <span className="text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider block">
-              4. Field Requisition & Special Requirements
-            </span>
-
-            {/* Clean Requirement Checkboxes */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <label
-                className={twMerge(
-                  "flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors bg-white",
-                  newVisit.demo_required ? "border-[#0F5E63] bg-[#E3EFEE]/40 text-[#0F5E63] ring-1 ring-[#0F5E63]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={newVisit.demo_required}
-                  onChange={(e) => setNewVisit({ ...newVisit, demo_required: e.target.checked })}
-                  className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#14213D]">
-                      A. Live Demonstration Setup Details
-                    </span>
-                    <span className="text-[10px] text-[#0F5E63] font-semibold">
-                      {newVisit.demo_required ? 'Configuring ▼' : 'Click to Setup ▶'}
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-[#4A5568] block mt-0.5">
-                    Equipment Fleet Availability & Specific Demo Kit Selection
-                  </span>
-                </div>
-              </label>
-
-              <label
-                className={twMerge(
-                  "flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors bg-white",
-                  newVisit.travel_required ? "border-[#0F5E63] bg-[#FBFAF7]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={newVisit.travel_required}
-                  onChange={(e) => setNewVisit({ ...newVisit, travel_required: e.target.checked })}
-                  className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
-                />
-                <span className="text-xs font-semibold text-[#14213D]">
-                  Travel Requirement (Outstation Tour)
-                </span>
-              </label>
-            </div>
-
-            {/* A. Live Demonstration Setup Details */}
-            {newVisit.demo_required && (
-              <div className="p-3.5 bg-white rounded-xl border border-[#DCD8CE] space-y-3 animate-in fade-in duration-150">
-                <div className="pb-1.5 border-b border-[#ECE9E2] flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-[#14213D]">
-                      A. Live Demonstration Setup Details
-                    </span>
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
-                      Live Fleet Sync
-                    </span>
-                  </div>
-                  <span className="text-[10px] text-[#4A5568]">
-                    Depot Inventory & Calibration Status
-                  </span>
-                </div>
-
-                {/* 1. Demo Form Context Bar (Customer, Location, Requested Date, Salesperson, Purpose) */}
-                <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] space-y-2 text-xs">
-                  <div className="flex items-center justify-between pb-1.5 border-b border-[#ECE9E2]">
-                    <span className="font-bold text-[#14213D] uppercase tracking-wider text-[10px]">
-                      Live Demonstration Trial Specification
-                    </span>
-                    <span className="text-[10px] text-[#0F5E63] font-medium">
-                      ✓ Auto-synced with Visit & Tour Program
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                    <div>
-                      <span className="text-[#4A5568] block text-[10px]">Customer / Client:</span>
-                      <span className="font-semibold text-[#14213D] truncate block">
-                        {organisations.find((o) => o.id === newVisit.organisation_id)?.name || 'Select Customer in Form'}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[#4A5568] block text-[10px]">Trial Location:</span>
-                      <span className="font-semibold text-[#14213D] truncate block">
-                        📍 {effectiveDemoLocation}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[#4A5568] block text-[10px]">Requested Date:</span>
-                      <span className="font-semibold text-[#14213D] block font-mono">
-                        📅 {new Date(newVisit.planned_date).toLocaleDateString()}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[#4A5568] block text-[10px]">Lead Salesperson:</span>
-                      <span className="font-semibold text-[#14213D] truncate block">
-                        👤 {usersList.find((u) => u.id === newVisit.assigned_to)?.full_name || user?.full_name || 'Assigned Officer'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 2. Demo Team Specialist Allocation & Live Availability */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-semibold text-[#14213D]">
-                      Assigned Demo Team Specialist *
-                    </label>
-                    {isLoadingTeamAvailability ? (
-                      <span className="text-[10px] text-[#0F5E63] flex items-center gap-1">
-                        <Spinner size="xs" /> Checking Team Availability...
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-[#4A5568]">
-                        Availability for {new Date(newVisit.planned_date).toLocaleDateString()}
-                      </span>
-                    )}
-                  </div>
-
-                  <Select
-                    value={demoDetails.demo_assigned_to}
-                    onChange={(e) => setDemoDetails({ ...demoDetails, demo_assigned_to: e.target.value })}
-                    options={[
-                      { value: '', label: '-- Select Demo Team Member / Specialist --' },
-                      ...demoTeamOptions,
-                    ]}
-                  />
-
-                  {/* Pre-selection Demo Team Member Roster (when none selected yet) */}
-                  {!selectedDemoMember && (
-                    <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                          Demo Team Availability on {new Date(newVisit.planned_date).toLocaleDateString()}:
-                        </span>
-                        <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {(demoTeamAvailability.length > 0 ? demoTeamAvailability : usersList.filter((u) => u.role === 'demo_team')).map((m) => {
-                          const isAvail = m.is_available ?? true;
-                          return (
-                            <button
-                              key={m.id}
-                              type="button"
-                              onClick={() => setDemoDetails((prev) => ({ ...prev, demo_assigned_to: m.id }))}
-                              className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
-                            >
-                              <div className="space-y-0.5 truncate pr-1">
-                                <span className="font-semibold text-[#14213D] text-[11px] block truncate group-hover:text-[#0F5E63]">
-                                  {m.full_name}
-                                </span>
-                                <span className="text-[10px] text-[#4A5568] block truncate">
-                                  {m.role === 'demo_team' ? 'Demo Specialist' : m.role.replace(/_/g, ' ')} {m.phone ? `• ${m.phone}` : ''}
-                                </span>
-                              </div>
-                              <span
-                                className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
-                                  isAvail ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                                }`}
-                              >
-                                {isAvail ? '🟢 Available' : '🟡 Booked'}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Selected Demo Team Member Live Availability & Notification Card */}
-                  {selectedDemoMember && (
-                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
-                      <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#ECE9E2]">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-xs text-[#14213D]">{selectedDemoMember.full_name}</span>
-                          <Badge variant="cyber" className="text-[10px] py-0">
-                            {selectedDemoMember.role === 'demo_team' ? 'DEMO SPECIALIST' : selectedDemoMember.role.replace(/_/g, ' ').toUpperCase()}
-                          </Badge>
-                          {selectedDemoMember.phone && (
-                            <span className="text-[10px] text-[#4A5568]">📞 {selectedDemoMember.phone}</span>
-                          )}
-                        </div>
-                        <div>
-                          {selectedDemoMember.is_available ?? true ? (
-                            <Badge variant="success">● AVAILABLE ON {new Date(newVisit.planned_date).toLocaleDateString()}</Badge>
-                          ) : (
-                            <Badge variant="warning">
-                              ▲ BUSY ON {selectedDemoMember.active_demo?.demo_no || 'ANOTHER TRIAL'}
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="text-[11px] text-[#4A5568]">
-                        {selectedDemoMember.is_available ?? true ? (
-                          <div className="flex items-center gap-1.5 text-emerald-800">
-                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                            <span>Specialist has zero trial schedule conflicts on this date and is cleared for field demonstration.</span>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5 text-amber-800">
-                            <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                            <span>Specialist has active trial booking for <strong>{selectedDemoMember.active_demo?.organisation_name || 'Client'}</strong>. Booking will flag a schedule overlap notice.</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Auto-Notification Callout */}
-                      <div className="p-2 rounded-lg bg-[#E3EFEE]/70 border border-[#0F5E63]/20 text-[#0F5E63] text-[11px] flex items-center gap-2">
-                        <Bell className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
-                        <span>
-                          <strong>Auto-Notification & Calendar Sync:</strong> Submitting this visit will instantly alert <strong>{selectedDemoMember.full_name}</strong> and list this trial under their <strong>"My Demos"</strong> dashboard.
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* 3. Equipment & Specific Kit Selection (Row 1: Two Selects, Below: Full-width Details) */}
-                <div className="space-y-3">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
-                    <Select
-                      label="Equipment / Product Required for Demo *"
-                      value={demoDetails.product_id || newVisit.product_id}
-                      onChange={(e) => {
-                        const pId = e.target.value;
-                        setDemoDetails({ ...demoDetails, product_id: pId });
-                        if (pId && !newVisit.product_id) {
-                          setNewVisit((prev) => ({ ...prev, product_id: pId }));
-                        }
-                      }}
-                      options={[
-                        { value: '', label: '-- Select Equipment Category / Product --' },
-                        ...products.map((p) => {
-                          const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
-                          const avail = pUnits.filter((e) => e.availability_status === 'available');
-                          let statusTag = '';
-                          if (avail.length > 0) {
-                            const locs = Array.from(new Set(avail.map((u) => u.current_location).filter(Boolean)));
-                            statusTag = `[AVAILABLE: ${avail.length} of ${pUnits.length} in ${locs.join(', ')}]`;
-                          } else if (pUnits.length > 0) {
-                            statusTag = `[RESERVED / IN USE: ${pUnits.length} Units]`;
-                          } else {
-                            statusTag = `[NO DEMO FLEET UNIT]`;
-                          }
-                          return {
-                            value: p.id,
-                            label: `${statusTag} ${p.name} (${p.category || 'Security'})`,
-                          };
-                        }),
-                      ]}
-                    />
-
-                    <Select
-                      label="Specific Demo Kit / Serial / Accessories Needed"
-                      value={
-                        registeredEquipmentOptions.some((o) => o.value === demoDetails.equipment_required)
-                          ? demoDetails.equipment_required
-                          : demoDetails.equipment_required
-                          ? 'custom'
-                          : ''
-                      }
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === 'custom') {
-                          setDemoDetails({ ...demoDetails, equipment_required: 'custom' });
-                        } else {
-                          const matchedEquip = (demoEquipmentList || []).find(
-                            (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === val
-                              || item.serial_no === val
-                              || item.id === val
-                          );
-                          setDemoDetails({
-                            ...demoDetails,
-                            equipment_required: val,
-                            product_id: matchedEquip?.product_id || demoDetails.product_id,
+                      <Select
+                        label="Organisation (Choose Agency)"
+                        required
+                        value={newVisit.organisation_id}
+                        onChange={(e) => {
+                          const orgId = e.target.value;
+                          const org = organisations.find((o) => o.id === orgId);
+                          setNewVisit({
+                            ...newVisit,
+                            organisation_id: orgId,
+                            location: org?.city || newVisit.location,
                           });
-                          if (matchedEquip?.product_id && !newVisit.product_id) {
-                            setNewVisit((prev) => ({ ...prev, product_id: matchedEquip.product_id }));
-                          }
-                        }
-                      }}
-                      options={registeredEquipmentOptions}
+                        }}
+                        options={[
+                          { value: '', label: '-- Choose Customer Agency --' },
+                          ...organisations.map((o) => ({ value: o.id, label: `${o.name} (${o.city || 'State'})` })),
+                        ]}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                      <Input
+                        label="Location / Station"
+                        required
+                        value={newVisit.location}
+                        onChange={(e) => setNewVisit({ ...newVisit, location: e.target.value })}
+                        placeholder="e.g. Jalandhar Cantonment / New Delhi"
+                      />
+
+                      <Input
+                        label="Customer Contact Person"
+                        value={newVisit.contact_person}
+                        onChange={(e) => setNewVisit({ ...newVisit, contact_person: e.target.value })}
+                        placeholder="e.g. Commandant Signals / DIG Procurement"
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Schedule',
+                icon: <Calendar />,
+                description: 'When the visit happens and its main purpose.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900 flex items-center gap-2">
+                      <Info className="h-4 w-4 shrink-0 text-blue-600" />
+                      <span>Standard operating procedure: Plan field visits approximately 1 week in advance.</span>
+                    </div>
+
+                    <div className="w-full flex flex-col justify-end text-left">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-xs font-semibold text-[#14213D]">
+                          Planned Date <span className="text-red-500">*</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewVisit({ ...newVisit, planned_date: addIsoDays(istToday(), 7) });
+                          }}
+                          className="text-[10px] text-[#0F5E63] hover:underline font-bold"
+                        >
+                          +7 Days
+                        </button>
+                      </div>
+                      <input
+                        type="date"
+                        required
+                        value={newVisit.planned_date}
+                        onChange={(e) => setNewVisit({ ...newVisit, planned_date: e.target.value })}
+                        className="flex h-10 w-full rounded-[8px] border border-[#C9C4B8] bg-white px-3.5 py-2 text-xs text-[#14213D] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Start Time"
+                        type="time"
+                        value={newVisit.start_time}
+                        onChange={(e) => setNewVisit({ ...newVisit, start_time: e.target.value })}
+                      />
+
+                      <Input
+                        label="End Time"
+                        type="time"
+                        value={newVisit.end_time}
+                        onChange={(e) => setNewVisit({ ...newVisit, end_time: e.target.value })}
+                      />
+                    </div>
+
+                    <Input
+                      label="Primary Purpose of Visit"
+                      required
+                      value={newVisit.purpose}
+                      onChange={(e) => setNewVisit({ ...newVisit, purpose: e.target.value })}
+                      placeholder="e.g. Technical demonstration of DFMD / HHMD for upcoming GeM procurement"
                     />
                   </div>
+                ),
+              },
+              {
+                title: 'Requirements',
+                icon: <Layers />,
+                description: 'Product focus, expected outcome, and whether a demo or travel is needed.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Primary Product Focus"
+                        value={newVisit.product_id}
+                        onChange={(e) => setNewVisit({ ...newVisit, product_id: e.target.value })}
+                        options={[
+                          { value: '', label: '-- General / Portfolio Meeting --' },
+                          ...products.map((p) => ({ value: p.id, label: `${p.name} (${p.category || 'Security'})` })),
+                        ]}
+                      />
 
-                  {/* Fleet Availability Overview by Product (when no product is selected yet) - Full Width */}
-                  {!activeProductFleet && (
-                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                          Demo Equipment Fleet Availability & Status:
-                        </span>
-                        <span className="text-[10px] text-[#0F5E63] font-medium">Click to select equipment</span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                        {products.slice(0, 9).map((p) => {
-                          const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
-                          const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
-                          const total = pUnits.length;
-                          return (
-                            <button
-                              key={p.id}
-                              type="button"
-                              onClick={() => {
-                                setDemoDetails((prev) => ({ ...prev, product_id: p.id }));
-                                if (!newVisit.product_id) setNewVisit((prev) => ({ ...prev, product_id: p.id }));
-                              }}
-                              className="flex items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
-                            >
-                              <span className="font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
-                                {p.name}
-                              </span>
-                              <span
-                                className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
-                                  availCount > 0
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : total > 0
-                                    ? 'bg-amber-100 text-amber-800'
-                                    : 'bg-gray-100 text-gray-600'
-                                }`}
-                              >
-                                {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      <Input
+                        label="Expected Strategic Outcome"
+                        value={newVisit.expected_outcome}
+                        onChange={(e) => setNewVisit({ ...newVisit, expected_outcome: e.target.value })}
+                        placeholder="e.g. Secure trial evaluation certificate and quote RFP"
+                      />
                     </div>
-                  )}
 
-                  {/* Live Product Fleet Availability & Status HUD - Full Width */}
-                  {activeProductFleet && (
-                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
-                      <div className="flex flex-wrap items-center justify-between gap-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                            Live Product Fleet Availability:
-                          </span>
-                          <span className="font-bold text-xs text-[#14213D]">
-                            {products.find((p) => p.id === (demoDetails.product_id || newVisit.product_id))?.name || 'Selected Equipment'}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <label
+                        className={twMerge(
+                          "flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors bg-white",
+                          newVisit.demo_required ? "border-[#0F5E63] bg-[#E3EFEE]/40 text-[#0F5E63] ring-1 ring-[#0F5E63]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={newVisit.demo_required}
+                          onChange={(e) => setNewVisit({ ...newVisit, demo_required: e.target.checked })}
+                          className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-[#14213D]">
+                              Live Demonstration Setup
+                            </span>
+                            <span className="text-[10px] text-[#0F5E63] font-semibold">
+                              {newVisit.demo_required ? 'Added as next step' : 'Click to Setup'}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-[#4A5568] block mt-0.5">
+                            Equipment Fleet Availability & Specific Demo Kit Selection
                           </span>
                         </div>
-                        {activeProductFleet.availableCount > 0 ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
-                            AVAILABLE ({activeProductFleet.availableCount} Ready)
+                      </label>
+
+                      <label
+                        className={twMerge(
+                          "flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors bg-white",
+                          newVisit.travel_required ? "border-[#0F5E63] bg-[#FBFAF7]" : "border-[#DCD8CE] hover:bg-[#FBFAF7]"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={newVisit.travel_required}
+                          onChange={(e) => setNewVisit({ ...newVisit, travel_required: e.target.checked })}
+                          className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                        />
+                        <span className="text-xs font-semibold text-[#14213D]">
+                          Travel Requirement (Outstation Tour)
+                        </span>
+                      </label>
+                    </div>
+
+                    {trips.length > 0 && !newVisit.travel_required && (
+                      <Select
+                        label="Attach to Existing Tour Program (Optional)"
+                        value={newVisit.trip_id}
+                        onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
+                        options={[
+                          { value: '', label: '-- Standalone Field Visit --' },
+                          ...trips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${new Date(t.trip_date).toLocaleDateString('en-IN')})` })),
+                        ]}
+                      />
+                    )}
+
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1.5">
+                        Remarks & Operational Notes
+                      </label>
+                      <textarea
+                        value={newVisit.remarks}
+                        onChange={(e) => setNewVisit({ ...newVisit, remarks: e.target.value })}
+                        placeholder="e.g. Officer requested technical compliance sheets; gate pass required for vehicle."
+                        rows={2}
+                        className="flex w-full rounded-lg border border-[#DCD8CE] bg-white px-3.5 py-2 text-xs font-normal text-[#14213D] placeholder:text-gray-400 transition-colors focus:border-[#3770E3] focus:outline-none focus:ring-2 focus:ring-[#3770E3]/15"
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Demo kit',
+                icon: <FlaskConical />,
+                description: 'Book a demo specialist and choose the equipment to take.',
+                hidden: !newVisit.demo_required,
+                content: (
+                  <div className="space-y-3">
+                    {/* 1. Demo Form Context Bar (Customer, Location, Requested Date, Salesperson, Purpose) */}
+                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] space-y-2 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pb-1.5 border-b border-[#ECE9E2]">
+                        <span className="font-bold text-[#14213D] uppercase tracking-wider text-[10px]">
+                          Live Demonstration Trial Specification
+                        </span>
+                        <span className="text-[10px] text-[#0F5E63] font-medium">
+                          ✓ Auto-synced with Visit & Tour Program
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                        <div>
+                          <span className="text-[#4A5568] block text-[10px]">Customer / Client:</span>
+                          <span className="font-semibold text-[#14213D] truncate block">
+                            {organisations.find((o) => o.id === newVisit.organisation_id)?.name || 'Select Customer in Form'}
                           </span>
-                        ) : activeProductFleet.total > 0 ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
-                            RESERVED ({activeProductFleet.total} in Fleet)
+                        </div>
+                        <div>
+                          <span className="text-[#4A5568] block text-[10px]">Trial Location:</span>
+                          <span className="font-semibold text-[#14213D] truncate block">
+                            📍 {effectiveDemoLocation}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[#4A5568] block text-[10px]">Requested Date:</span>
+                          <span className="font-semibold text-[#14213D] block font-mono">
+                            📅 {new Date(newVisit.planned_date).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[#4A5568] block text-[10px]">Lead Salesperson:</span>
+                          <span className="font-semibold text-[#14213D] truncate block">
+                            👤 {usersList.find((u) => u.id === newVisit.assigned_to)?.full_name || user?.full_name || 'Assigned Officer'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 2. Demo Team Specialist Allocation & Live Availability */}
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                        <label className="text-xs font-semibold text-[#14213D]">
+                          Assigned Demo Team Specialist *
+                        </label>
+                        {isLoadingTeamAvailability ? (
+                          <span className="text-[10px] text-[#0F5E63] flex items-center gap-1">
+                            <Spinner size="xs" /> Checking Team Availability...
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-300">
-                            No Fleet Unit
+                          <span className="text-[10px] text-[#4A5568]">
+                            Availability for {new Date(newVisit.planned_date).toLocaleDateString()}
                           </span>
                         )}
                       </div>
 
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-[#ECE9E2]">
-                        <span className="text-[#4A5568]">
-                          {activeProductFleet.availableCount > 0
-                            ? `Stationed at: ${activeProductFleet.locations.join(', ')} Depot`
-                            : activeProductFleet.total > 0
-                            ? `All units currently deployed or reserved.`
-                            : `Custom requisition required.`}
-                        </span>
-                        <div className="flex items-center gap-2 font-mono text-[10px]">
-                          <span>Fleet: <b>{activeProductFleet.total}</b></span>
-                          <span className="text-emerald-700">Ready: <b>{activeProductFleet.availableCount}</b></span>
-                          <span className="text-amber-700">In-Trial: <b>{activeProductFleet.reservedCount}</b></span>
-                          {activeProductFleet.maintenanceCount > 0 && (
-                            <span className="text-red-700">Maint: <b>{activeProductFleet.maintenanceCount}</b></span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                      <Select
+                        value={demoDetails.demo_assigned_to}
+                        onChange={(e) => setDemoDetails({ ...demoDetails, demo_assigned_to: e.target.value })}
+                        options={[
+                          { value: '', label: '-- Select Demo Team Member / Specialist --' },
+                          ...demoTeamOptions,
+                        ]}
+                      />
 
-                  {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) - Full Width */}
-                  {!selectedEquipUnit && activeProductFleet && activeProductFleet.units.length > 0 && (
-                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                          Available Demo Kits in Fleet ({activeProductFleet.units.length}):
-                        </span>
-                        <span className="text-[10px] text-[#0F5E63] font-medium">Click any kit below to assign</span>
-                      </div>
-                      <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                        {activeProductFleet.units.map((u) => {
-                          const isReady = u.availability_status === 'available';
-                          const isReserved = u.availability_status === 'reserved' || u.availability_status === 'in_use';
-                          return (
-                            <div
-                              key={u.id}
-                              onClick={() => {
-                                const val = `${u.model} | S/N: ${u.serial_no} (${u.current_location} Depot)`;
-                                setDemoDetails((prev) => ({
-                                  ...prev,
-                                  equipment_required: val,
-                                  product_id: u.product_id || prev.product_id,
-                                }));
-                              }}
-                              className="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-all hover:shadow-xs group gap-2"
-                            >
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-bold text-[#14213D] text-[11px] group-hover:text-[#0F5E63]">{u.model}</span>
-                                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
-                                    S/N: {u.serial_no}
+                      {/* Pre-selection Demo Team Member Roster (when none selected yet) */}
+                      {!selectedDemoMember && (
+                        <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                              Demo Team Availability on {new Date(newVisit.planned_date).toLocaleDateString()}:
+                            </span>
+                            <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            {(demoTeamAvailability.length > 0 ? demoTeamAvailability : usersList.filter((u) => u.role === 'demo_team')).map((m) => {
+                              const isAvail = m.is_available ?? true;
+                              return (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onClick={() => setDemoDetails((prev) => ({ ...prev, demo_assigned_to: m.id }))}
+                                  className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                                >
+                                  <div className="space-y-0.5 truncate pr-1">
+                                    <span className="font-semibold text-[#14213D] text-[11px] block truncate group-hover:text-[#0F5E63]">
+                                      {m.full_name}
+                                    </span>
+                                    <span className="text-[10px] text-[#4A5568] block truncate">
+                                      {m.role === 'demo_team' ? 'Demo Specialist' : m.role.replace(/_/g, ' ')} {m.phone ? `• ${m.phone}` : ''}
+                                    </span>
+                                  </div>
+                                  <span
+                                    className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
+                                      isAvail ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                    }`}
+                                  >
+                                    {isAvail ? '🟢 Available' : '🟡 Booked'}
                                   </span>
-                                  <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
-                                  {isReady ? (
-                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                      🟢 Ready
-                                    </span>
-                                  ) : isReserved ? (
-                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                                      🟡 Reserved
-                                    </span>
-                                  ) : (
-                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
-                                      🔴 Maint
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[10px] text-[#4A5568]">
-                                  📦 Kit includes: Flight case, dual Li-ion batteries, charger & calibration block
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <span className="text-xs text-[#0F5E63] font-bold group-hover:underline">Select Kit →</span>
-                              </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Selected Demo Team Member Live Availability & Notification Card */}
+                      {selectedDemoMember && (
+                        <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
+                          <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#ECE9E2]">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-xs text-[#14213D]">{selectedDemoMember.full_name}</span>
+                              <Badge variant="cyber" className="text-[10px] py-0">
+                                {selectedDemoMember.role === 'demo_team' ? 'DEMO SPECIALIST' : selectedDemoMember.role.replace(/_/g, ' ').toUpperCase()}
+                              </Badge>
+                              {selectedDemoMember.phone && (
+                                <span className="text-[10px] text-[#4A5568]">📞 {selectedDemoMember.phone}</span>
+                              )}
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Specific Demo Kit / Serial / Accessories Detail Card - FULL WIDTH, NOT SPLIT IN HALF */}
-                  {selectedEquipUnit && (
-                    <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
-                      <div className="flex flex-wrap items-center justify-between gap-1 pb-2 border-b border-[#ECE9E2]">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-bold text-sm text-[#14213D]">{selectedEquipUnit.model}</span>
-                          <span className="font-mono text-xs px-2 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#14213D] font-bold">
-                            S/N: {selectedEquipUnit.serial_no}
-                          </span>
-                          <span className="text-xs text-[#4A5568]">📍 {selectedEquipUnit.current_location} Depot</span>
-                        </div>
-                        <div>
-                          {selectedEquipUnit.availability_status === 'available' ? (
-                            <Badge variant="success">● READY & AVAILABLE</Badge>
-                          ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
-                            <Badge variant="warning">
-                              ○ RESERVED {selectedEquipUnit.reserved_until ? `UNTIL ${new Date(selectedEquipUnit.reserved_until).toLocaleDateString()}` : ''}
-                            </Badge>
-                          ) : (
-                            <Badge variant="danger">▲ MAINTENANCE: {selectedEquipUnit.condition || 'Service Needed'}</Badge>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* 4-Column Metadata Grid */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                        <div>
-                          <span className="text-[10px] text-[#4A5568] block">Operational Condition:</span>
-                          <span className="font-semibold text-[#14213D]">{selectedEquipUnit.condition || 'Operational'}</span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-[#4A5568] block">Fleet Custodian:</span>
-                          <span className="font-semibold text-[#14213D]">{selectedEquipUnit.responsible_person_name || 'Demo Team Coordinator'}</span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-[#4A5568] block">Depot Base:</span>
-                          <span className="font-semibold text-[#14213D]">{selectedEquipUnit.current_location} Depot</span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-[#4A5568] block">Unit Serial:</span>
-                          <span className="font-mono font-bold text-[#14213D]">{selectedEquipUnit.serial_no}</span>
-                        </div>
-                      </div>
-
-                      {/* Included Standard Demo Kit Accessories - Full Width Grid */}
-                      <div className="pt-2 border-t border-[#ECE9E2]">
-                        <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block mb-1.5">
-                          📦 Specific Demo Kit / Included Accessories & Calibration Items:
-                        </span>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
-                          {getStandardKitAccessories(selectedEquipUnit.product_name, selectedEquipUnit.product_category).map((item, idx) => (
-                            <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
-                              <CheckCircle className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                              <span className="truncate text-[11px]">{item}</span>
+                            <div>
+                              {selectedDemoMember.is_available ?? true ? (
+                                <Badge variant="success">● AVAILABLE ON {new Date(newVisit.planned_date).toLocaleDateString()}</Badge>
+                              ) : (
+                                <Badge variant="warning">
+                                  ▲ BUSY ON {selectedDemoMember.active_demo?.demo_no || 'ANOTHER TRIAL'}
+                                </Badge>
+                              )}
                             </div>
-                          ))}
-                        </div>
-                      </div>
+                          </div>
 
-                      {/* Status Note Callout */}
-                      {selectedEquipUnit.availability_status === 'available' ? (
-                        <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
-                          <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
-                          <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedEquipUnit.current_location} Depot.</span>
-                        </div>
-                      ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
-                        <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-center gap-2">
-                          <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
-                          <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
-                        </div>
-                      ) : (
-                        <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-center gap-2">
-                          <AlertCircle className="h-4 w-4 text-red-700 shrink-0" />
-                          <span>Unit marked under maintenance ({selectedEquipUnit.condition}). You may select another serial or custom kit.</span>
+                          <div className="text-[11px] text-[#4A5568]">
+                            {selectedDemoMember.is_available ?? true ? (
+                              <div className="flex items-center gap-1.5 text-emerald-800">
+                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                <span>Specialist has zero trial schedule conflicts on this date and is cleared for field demonstration.</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 text-amber-800">
+                                <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                                <span>Specialist has active trial booking for <strong>{selectedDemoMember.active_demo?.organisation_name || 'Client'}</strong>. Booking will flag a schedule overlap notice.</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Auto-Notification Callout */}
+                          <div className="p-2 rounded-lg bg-[#E3EFEE]/70 border border-[#0F5E63]/20 text-[#0F5E63] text-[11px] flex items-center gap-2">
+                            <Bell className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
+                            <span>
+                              <strong>Auto-Notification & Calendar Sync:</strong> Submitting this visit will instantly alert <strong>{selectedDemoMember.full_name}</strong> and list this trial under their <strong>"My Demos"</strong> dashboard.
+                            </span>
+                          </div>
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Input
-                    label="Additional Accessories / Test Samples Needed (Optional)"
-                    value={demoDetails.custom_accessories}
-                    onChange={(e) =>
-                      setDemoDetails({ ...demoDetails, custom_accessories: e.target.value })
-                    }
-                    placeholder={
-                      demoDetails.equipment_required === 'custom'
-                        ? "Enter custom model name, serial number and accessories..."
-                        : "e.g. Test calibration pieces, knife sample, spare batteries, vehicle gate pass"
-                    }
-                  />
+                    {/* 3. Equipment & Specific Kit Selection (Row 1: Two Selects, Below: Full-width Details) */}
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                        <Select
+                          label="Equipment / Product Required for Demo *"
+                          value={demoDetails.product_id || newVisit.product_id}
+                          onChange={(e) => {
+                            const pId = e.target.value;
+                            setDemoDetails({ ...demoDetails, product_id: pId });
+                            if (pId && !newVisit.product_id) {
+                              setNewVisit((prev) => ({ ...prev, product_id: pId }));
+                            }
+                          }}
+                          options={[
+                            { value: '', label: '-- Select Equipment Category / Product --' },
+                            ...products.map((p) => {
+                              const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
+                              const avail = pUnits.filter((e) => e.availability_status === 'available');
+                              let statusTag = '';
+                              if (avail.length > 0) {
+                                const locs = Array.from(new Set(avail.map((u) => u.current_location).filter(Boolean)));
+                                statusTag = `[AVAILABLE: ${avail.length} of ${pUnits.length} in ${locs.join(', ')}]`;
+                              } else if (pUnits.length > 0) {
+                                statusTag = `[RESERVED / IN USE: ${pUnits.length} Units]`;
+                              } else {
+                                statusTag = `[NO DEMO FLEET UNIT]`;
+                              }
+                              return {
+                                value: p.id,
+                                label: `${statusTag} ${p.name} (${p.category || 'Security'})`,
+                              };
+                            }),
+                          ]}
+                        />
 
-                  <Input
-                    label="Expected Audience / Evaluation Committee"
-                    value={demoDetails.expected_audience}
-                    onChange={(e) => setDemoDetails({ ...demoDetails, expected_audience: e.target.value })}
-                    placeholder="e.g. DIG Store, Commandant & 4 Technical Officers"
-                  />
-                </div>
+                        <Select
+                          label="Specific Demo Kit / Serial / Accessories Needed"
+                          value={
+                            registeredEquipmentOptions.some((o) => o.value === demoDetails.equipment_required)
+                              ? demoDetails.equipment_required
+                              : demoDetails.equipment_required
+                              ? 'custom'
+                              : ''
+                          }
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === 'custom') {
+                              setDemoDetails({ ...demoDetails, equipment_required: 'custom' });
+                            } else {
+                              const matchedEquip = (demoEquipmentList || []).find(
+                                (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === val
+                                  || item.serial_no === val
+                                  || item.id === val
+                              );
+                              setDemoDetails({
+                                ...demoDetails,
+                                equipment_required: val,
+                                product_id: matchedEquip?.product_id || demoDetails.product_id,
+                              });
+                              if (matchedEquip?.product_id && !newVisit.product_id) {
+                                setNewVisit((prev) => ({ ...prev, product_id: matchedEquip.product_id }));
+                              }
+                            }
+                          }}
+                          options={registeredEquipmentOptions}
+                        />
+                      </div>
 
-                <Input
-                  label="Trial Specifics / Demonstration Objective"
-                  value={demoDetails.special_requirements}
-                  onChange={(e) => setDemoDetails({ ...demoDetails, special_requirements: e.target.value })}
-                  placeholder="e.g. Range testing at 50m / walkthrough sensitivity tests"
-                />
+                      {/* Fleet Availability Overview by Product (when no product is selected yet) - Full Width */}
+                      {!activeProductFleet && (
+                        <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                              Demo Equipment Fleet Availability & Status:
+                            </span>
+                            <span className="text-[10px] text-[#0F5E63] font-medium">Click to select equipment</span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                            {products.slice(0, 9).map((p) => {
+                              const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
+                              const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
+                              const total = pUnits.length;
+                              return (
+                                <button
+                                  key={p.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setDemoDetails((prev) => ({ ...prev, product_id: p.id }));
+                                    if (!newVisit.product_id) setNewVisit((prev) => ({ ...prev, product_id: p.id }));
+                                  }}
+                                  className="flex items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
+                                >
+                                  <span className="font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
+                                    {p.name}
+                                  </span>
+                                  <span
+                                    className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
+                                      availCount > 0
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : total > 0
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : 'bg-gray-100 text-gray-600'
+                                    }`}
+                                  >
+                                    {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
 
-                {/* Facility & Site Prerequisites */}
-                <div>
-                  <label className="block text-xs font-semibold text-[#14213D] mb-1.5">
-                    Site & Facility Readiness Checklist
-                  </label>
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-[#4A5568]">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={demoDetails.power_required}
-                        onChange={(e) => setDemoDetails({ ...demoDetails, power_required: e.target.checked })}
-                        className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
-                      />
-                      <span>230V AC Power Socket Needed</span>
-                    </label>
+                      {/* Live Product Fleet Availability & Status HUD - Full Width */}
+                      {activeProductFleet && (
+                        <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                                Live Product Fleet Availability:
+                              </span>
+                              <span className="font-bold text-xs text-[#14213D]">
+                                {products.find((p) => p.id === (demoDetails.product_id || newVisit.product_id))?.name || 'Selected Equipment'}
+                              </span>
+                            </div>
+                            {activeProductFleet.availableCount > 0 ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                                AVAILABLE ({activeProductFleet.availableCount} Ready)
+                              </span>
+                            ) : activeProductFleet.total > 0 ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
+                                RESERVED ({activeProductFleet.total} in Fleet)
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                                No Fleet Unit
+                              </span>
+                            )}
+                          </div>
 
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={demoDetails.night_trial}
-                        onChange={(e) => setDemoDetails({ ...demoDetails, night_trial: e.target.checked })}
-                        className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
-                      />
-                      <span>Indoor Dark Room / Night Vision Setup</span>
-                    </label>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-[#ECE9E2]">
+                            <span className="text-[#4A5568]">
+                              {activeProductFleet.availableCount > 0
+                                ? `Stationed at: ${activeProductFleet.locations.join(', ')} Depot`
+                                : activeProductFleet.total > 0
+                                ? `All units currently deployed or reserved.`
+                                : `Custom requisition required.`}
+                            </span>
+                            <div className="flex items-center gap-2 font-mono text-[10px]">
+                              <span>Fleet: <b>{activeProductFleet.total}</b></span>
+                              <span className="text-emerald-700">Ready: <b>{activeProductFleet.availableCount}</b></span>
+                              <span className="text-amber-700">In-Trial: <b>{activeProductFleet.reservedCount}</b></span>
+                              {activeProductFleet.maintenanceCount > 0 && (
+                                <span className="text-red-700">Maint: <b>{activeProductFleet.maintenanceCount}</b></span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={demoDetails.gate_pass_required}
-                        onChange={(e) => setDemoDetails({ ...demoDetails, gate_pass_required: e.target.checked })}
-                        className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
-                      />
-                      <span>Vehicle Entry Gate Pass Required</span>
-                    </label>
+                      {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) - Full Width */}
+                      {!selectedEquipUnit && activeProductFleet && activeProductFleet.units.length > 0 && (
+                        <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
+                          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
+                              Available Demo Kits in Fleet ({activeProductFleet.units.length}):
+                            </span>
+                            <span className="text-[10px] text-[#0F5E63] font-medium">Click any kit below to assign</span>
+                          </div>
+                          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                            {activeProductFleet.units.map((u) => {
+                              const isReady = u.availability_status === 'available';
+                              const isReserved = u.availability_status === 'reserved' || u.availability_status === 'in_use';
+                              return (
+                                <div
+                                  key={u.id}
+                                  onClick={() => {
+                                    const val = `${u.model} | S/N: ${u.serial_no} (${u.current_location} Depot)`;
+                                    setDemoDetails((prev) => ({
+                                      ...prev,
+                                      equipment_required: val,
+                                      product_id: u.product_id || prev.product_id,
+                                    }));
+                                  }}
+                                  className="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-all hover:shadow-xs group gap-2"
+                                >
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="font-bold text-[#14213D] text-[11px] group-hover:text-[#0F5E63]">{u.model}</span>
+                                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
+                                        S/N: {u.serial_no}
+                                      </span>
+                                      <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
+                                      {isReady ? (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                          🟢 Ready
+                                        </span>
+                                      ) : isReserved ? (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                          🟡 Reserved
+                                        </span>
+                                      ) : (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                          🔴 Maint
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-[#4A5568]">
+                                      📦 Kit includes: Flight case, dual Li-ion batteries, charger & calibration block
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className="text-xs text-[#0F5E63] font-bold group-hover:underline">Select Kit →</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Specific Demo Kit / Serial / Accessories Detail Card - FULL WIDTH, NOT SPLIT IN HALF */}
+                      {selectedEquipUnit && (
+                        <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
+                          <div className="flex flex-wrap items-center justify-between gap-1 pb-2 border-b border-[#ECE9E2]">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-sm text-[#14213D]">{selectedEquipUnit.model}</span>
+                              <span className="font-mono text-xs px-2 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#14213D] font-bold">
+                                S/N: {selectedEquipUnit.serial_no}
+                              </span>
+                              <span className="text-xs text-[#4A5568]">📍 {selectedEquipUnit.current_location} Depot</span>
+                            </div>
+                            <div>
+                              {selectedEquipUnit.availability_status === 'available' ? (
+                                <Badge variant="success">● READY & AVAILABLE</Badge>
+                              ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
+                                <Badge variant="warning">
+                                  ○ RESERVED {selectedEquipUnit.reserved_until ? `UNTIL ${new Date(selectedEquipUnit.reserved_until).toLocaleDateString()}` : ''}
+                                </Badge>
+                              ) : (
+                                <Badge variant="danger">▲ MAINTENANCE: {selectedEquipUnit.condition || 'Service Needed'}</Badge>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* 4-Column Metadata Grid */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                            <div>
+                              <span className="text-[10px] text-[#4A5568] block">Operational Condition:</span>
+                              <span className="font-semibold text-[#14213D]">{selectedEquipUnit.condition || 'Operational'}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-[#4A5568] block">Fleet Custodian:</span>
+                              <span className="font-semibold text-[#14213D]">{selectedEquipUnit.responsible_person_name || 'Demo Team Coordinator'}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-[#4A5568] block">Depot Base:</span>
+                              <span className="font-semibold text-[#14213D]">{selectedEquipUnit.current_location} Depot</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-[#4A5568] block">Unit Serial:</span>
+                              <span className="font-mono font-bold text-[#14213D]">{selectedEquipUnit.serial_no}</span>
+                            </div>
+                          </div>
+
+                          {/* Included Standard Demo Kit Accessories - Full Width Grid */}
+                          <div className="pt-2 border-t border-[#ECE9E2]">
+                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block mb-1.5">
+                              📦 Specific Demo Kit / Included Accessories & Calibration Items:
+                            </span>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
+                              {getStandardKitAccessories(selectedEquipUnit.product_name, selectedEquipUnit.product_category).map((item, idx) => (
+                                <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
+                                  <CheckCircle className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                  <span className="truncate text-[11px]">{item}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Status Note Callout */}
+                          {selectedEquipUnit.availability_status === 'available' ? (
+                            <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
+                              <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                              <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedEquipUnit.current_location} Depot.</span>
+                            </div>
+                          ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
+                            <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-center gap-2">
+                              <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                              <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
+                            </div>
+                          ) : (
+                            <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-center gap-2">
+                              <AlertCircle className="h-4 w-4 text-red-700 shrink-0" />
+                              <span>Unit marked under maintenance ({selectedEquipUnit.condition}). You may select another serial or custom kit.</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-
-                {/* Service Team Escort for Live Trial Support */}
-                <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={demoDetails.service_escort_required || false}
+                ),
+              },
+              {
+                title: 'Demo site',
+                icon: <Wrench />,
+                description: 'Audience, trial objective, and what the site needs ready.',
+                hidden: !newVisit.demo_required,
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Additional Accessories / Test Samples Needed (Optional)"
+                        value={demoDetails.custom_accessories}
                         onChange={(e) =>
-                          setDemoDetails({
-                            ...demoDetails,
-                            service_escort_required: e.target.checked,
-                            service_engineer_id: e.target.checked ? demoDetails.service_engineer_id : '',
-                          })
+                          setDemoDetails({ ...demoDetails, custom_accessories: e.target.value })
                         }
-                        className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                        placeholder={
+                          demoDetails.equipment_required === 'custom'
+                            ? "Enter custom model name, serial number and accessories..."
+                            : "e.g. Test calibration pieces, knife sample, spare batteries, vehicle gate pass"
+                        }
                       />
-                      <div>
-                        <span className="text-xs font-bold text-[#14213D] block">
-                          Request Service Team Escort for Live Demo (Optional)
-                        </span>
-                        <span className="text-[11px] text-[#4A5568] block mt-0.5">
-                          Service Engineers do not plan separate tours. Attach a Service Engineer to this sales tour to assist during the live demonstration in case of technical issues or calibration needs.
+
+                      <Input
+                        label="Expected Audience / Evaluation Committee"
+                        value={demoDetails.expected_audience}
+                        onChange={(e) => setDemoDetails({ ...demoDetails, expected_audience: e.target.value })}
+                        placeholder="e.g. DIG Store, Commandant & 4 Technical Officers"
+                      />
+                    </div>
+
+                    <Input
+                      label="Trial Specifics / Demonstration Objective"
+                      value={demoDetails.special_requirements}
+                      onChange={(e) => setDemoDetails({ ...demoDetails, special_requirements: e.target.value })}
+                      placeholder="e.g. Range testing at 50m / walkthrough sensitivity tests"
+                    />
+
+                    {/* Facility & Site Prerequisites */}
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1.5">
+                        Site & Facility Readiness Checklist
+                      </label>
+                      <div className="flex flex-wrap items-center gap-4 text-xs text-[#4A5568]">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={demoDetails.power_required}
+                            onChange={(e) => setDemoDetails({ ...demoDetails, power_required: e.target.checked })}
+                            className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                          />
+                          <span>230V AC Power Socket Needed</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={demoDetails.night_trial}
+                            onChange={(e) => setDemoDetails({ ...demoDetails, night_trial: e.target.checked })}
+                            className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                          />
+                          <span>Indoor Dark Room / Night Vision Setup</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={demoDetails.gate_pass_required}
+                            onChange={(e) => setDemoDetails({ ...demoDetails, gate_pass_required: e.target.checked })}
+                            className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                          />
+                          <span>Vehicle Entry Gate Pass Required</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Service Team Escort for Live Trial Support */}
+                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={demoDetails.service_escort_required || false}
+                            onChange={(e) =>
+                              setDemoDetails({
+                                ...demoDetails,
+                                service_escort_required: e.target.checked,
+                                service_engineer_id: e.target.checked ? demoDetails.service_engineer_id : '',
+                              })
+                            }
+                            className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                          />
+                          <div>
+                            <span className="text-xs font-bold text-[#14213D] block">
+                              Request Service Team Escort for Live Demo (Optional)
+                            </span>
+                            <span className="text-[11px] text-[#4A5568] block mt-0.5">
+                              Service Engineers do not plan separate tours. Attach a Service Engineer to this sales tour to assist during the live demonstration in case of technical issues or calibration needs.
+                            </span>
+                          </div>
+                        </label>
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 shrink-0">
+                          <Wrench className="w-3 h-3 text-[#0F5E63]" />
+                          Joint Tour
                         </span>
                       </div>
-                    </label>
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 shrink-0">
-                      <Wrench className="w-3 h-3 text-[#0F5E63]" />
-                      Joint Tour
-                    </span>
-                  </div>
 
-                  {demoDetails.service_escort_required && (
-                    <div className="pt-2 border-t border-[#ECE9E2] space-y-2">
+                      {demoDetails.service_escort_required && (
+                        <div className="pt-2 border-t border-[#ECE9E2] space-y-2">
+                          <Select
+                            label="Select Available Service Engineer *"
+                            value={demoDetails.service_engineer_id || ''}
+                            onChange={(e) => setDemoDetails({ ...demoDetails, service_engineer_id: e.target.value })}
+                            options={[
+                              { value: '', label: '-- Select Service Engineer to Escort Tour --' },
+                              ...serviceEngineers.map((se) => ({
+                                value: se.id,
+                                label: `🔧 ${se.full_name} (${se.email})`,
+                              })),
+                            ]}
+                            required
+                          />
+                          <div className="p-2 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 text-[11px] flex items-center gap-2">
+                            <Info className="h-3.5 w-3.5 text-teal-700 shrink-0" />
+                            <span>
+                              Attaching a Service Engineer will automatically link them to this tour program and notify Management, Demo Team, Service Team, Salesperson, and the Regional Manager.
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Travel',
+                icon: <Plane />,
+                description: 'Outstation travel, transit mode and overnight stay.',
+                hidden: !newVisit.travel_required,
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Departure Station / Origin City"
+                        value={travelDetails.travel_from}
+                        onChange={(e) => setTravelDetails({ ...travelDetails, travel_from: e.target.value })}
+                        placeholder="e.g. Delhi NCR (HQ Depot)"
+                      />
+
+                      <Input
+                        label="Destination Station / Tour Base"
+                        value={travelDetails.travel_to || newVisit.location}
+                        onChange={(e) => setTravelDetails({ ...travelDetails, travel_to: e.target.value })}
+                        placeholder="e.g. Lucknow / Jalandhar / Chandigarh"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Select
-                        label="Select Available Service Engineer *"
-                        value={demoDetails.service_engineer_id || ''}
-                        onChange={(e) => setDemoDetails({ ...demoDetails, service_engineer_id: e.target.value })}
+                        label="Preferred Transit Mode"
+                        value={travelDetails.travel_mode}
+                        onChange={(e) => setTravelDetails({ ...travelDetails, travel_mode: e.target.value })}
                         options={[
-                          { value: '', label: '-- Select Service Engineer to Escort Tour --' },
-                          ...serviceEngineers.map((se) => ({
-                            value: se.id,
-                            label: `🔧 ${se.full_name} (${se.email})`,
+                          { value: 'Express Train (Shatabdi/Rajdhani/Vande Bharat)', label: 'Express Train (Shatabdi / Rajdhani / Vande Bharat)' },
+                          { value: 'Commercial Flight', label: 'Commercial Flight' },
+                          { value: 'Intercity Road / Official Taxi', label: 'Intercity Road / Official Taxi' },
+                          { value: 'Company Utility Vehicle / Service Van', label: 'Company Utility Vehicle / Service Van' },
+                        ]}
+                      />
+
+                      <Select
+                        label="Attach to Existing Tour Program (Trip)"
+                        value={newVisit.trip_id}
+                        onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
+                        options={[
+                          { value: '', label: '-- Auto-Generate New Tour Program --' },
+                          ...trips.map((t) => ({
+                            value: t.id,
+                            label: `${t.base_location} Tour (${new Date(t.trip_date).toLocaleDateString('en-IN')})`,
                           })),
                         ]}
-                        required
                       />
-                      <div className="p-2 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 text-[11px] flex items-center gap-2">
-                        <Info className="h-3.5 w-3.5 text-teal-700 shrink-0" />
-                        <span>
-                          Attaching a Service Engineer will automatically link them to this tour program and notify Management, Demo Team, Service Team, Salesperson, and the Regional Manager.
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 pt-1 text-xs text-[#4A5568]">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={travelDetails.lodging_required}
+                          onChange={(e) => setTravelDetails({ ...travelDetails, lodging_required: e.target.checked })}
+                          className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
+                        />
+                        <span className="text-xs font-medium text-[#14213D]">
+                          Overnight Lodging / Hotel Stay Required
                         </span>
-                      </div>
+                      </label>
+
+                      {travelDetails.lodging_required && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-[#4A5568]">Nights:</span>
+                          <select
+                            value={travelDetails.stay_nights}
+                            onChange={(e) => setTravelDetails({ ...travelDetails, stay_nights: e.target.value })}
+                            className="text-xs p-1 rounded border border-[#C9C4B8] bg-white font-mono"
+                          >
+                            <option value="1">1 Night</option>
+                            <option value="2">2 Nights</option>
+                            <option value="3">3 Nights</option>
+                            <option value="4+">4+ Nights</option>
+                          </select>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* 4B. Outstation Travel Details */}
-            {newVisit.travel_required && (
-              <div className="p-3.5 bg-white rounded-xl border border-[#DCD8CE] space-y-3 animate-in fade-in duration-150">
-                <div className="pb-1.5 border-b border-[#ECE9E2]">
-                  <span className="text-xs font-bold text-[#14213D]">
-                    4B. Outstation Travel & Tour Details
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Input
-                    label="Departure Station / Origin City"
-                    value={travelDetails.travel_from}
-                    onChange={(e) => setTravelDetails({ ...travelDetails, travel_from: e.target.value })}
-                    placeholder="e.g. Delhi NCR (HQ Depot)"
-                  />
-
-                  <Input
-                    label="Destination Station / Tour Base"
-                    value={travelDetails.travel_to || newVisit.location}
-                    onChange={(e) => setTravelDetails({ ...travelDetails, travel_to: e.target.value })}
-                    placeholder="e.g. Lucknow / Jalandhar / Chandigarh"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Select
-                    label="Preferred Transit Mode"
-                    value={travelDetails.travel_mode}
-                    onChange={(e) => setTravelDetails({ ...travelDetails, travel_mode: e.target.value })}
-                    options={[
-                      { value: 'Express Train (Shatabdi/Rajdhani/Vande Bharat)', label: 'Express Train (Shatabdi / Rajdhani / Vande Bharat)' },
-                      { value: 'Commercial Flight', label: 'Commercial Flight' },
-                      { value: 'Intercity Road / Official Taxi', label: 'Intercity Road / Official Taxi' },
-                      { value: 'Company Utility Vehicle / Service Van', label: 'Company Utility Vehicle / Service Van' },
-                    ]}
-                  />
-
-                  <Select
-                    label="Attach to Existing Tour Program (Trip)"
-                    value={newVisit.trip_id}
-                    onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
-                    options={[
-                      { value: '', label: '-- Auto-Generate New Tour Program --' },
-                      ...trips.map((t) => ({
-                        value: t.id,
-                        label: `${t.base_location} Tour (${new Date(t.trip_date).toLocaleDateString('en-IN')})`,
-                      })),
-                    ]}
-                  />
-                </div>
-
-                <div className="flex items-center gap-6 pt-1 text-xs text-[#4A5568]">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={travelDetails.lodging_required}
-                      onChange={(e) => setTravelDetails({ ...travelDetails, lodging_required: e.target.checked })}
-                      className="rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
-                    />
-                    <span className="text-xs font-medium text-[#14213D]">
-                      Overnight Lodging / Hotel Stay Required
-                    </span>
-                  </label>
-
-                  {travelDetails.lodging_required && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-[#4A5568]">Nights:</span>
-                      <select
-                        value={travelDetails.stay_nights}
-                        onChange={(e) => setTravelDetails({ ...travelDetails, stay_nights: e.target.value })}
-                        className="text-xs p-1 rounded border border-[#C9C4B8] bg-white font-mono"
-                      >
-                        <option value="1">1 Night</option>
-                        <option value="2">2 Nights</option>
-                        <option value="3">3 Nights</option>
-                        <option value="4+">4+ Nights</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Remarks & Operational Notes */}
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1.5">
-                Remarks & Operational Notes
-              </label>
-              <textarea
-                value={newVisit.remarks}
-                onChange={(e) => setNewVisit({ ...newVisit, remarks: e.target.value })}
-                placeholder="e.g. Officer requested technical compliance sheets; gate pass required for vehicle."
-                rows={2}
-                className="flex w-full rounded-lg border border-[#DCD8CE] bg-white px-3.5 py-2 text-xs font-normal text-[#14213D] placeholder:text-gray-400 transition-colors focus:border-[#3770E3] focus:outline-none focus:ring-2 focus:ring-[#3770E3]/15"
-              />
-            </div>
-
-            {trips.length > 0 && !newVisit.travel_required && (
-              <Select
-                label="Attach to Existing Tour Program (Optional)"
-                value={newVisit.trip_id}
-                onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
-                options={[
-                  { value: '', label: '-- Standalone Field Visit --' },
-                  ...trips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${new Date(t.trip_date).toLocaleDateString('en-IN')})` })),
-                ]}
-              />
-            )}
-          </div>
-
-          <div className="pt-3 flex justify-end gap-2 border-t border-gray-100">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsScheduleOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Schedule Visit
-            </Button>
-          </div>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -3107,7 +3102,7 @@ export default function VisitsPage() {
             />
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input
               label="Base Destination / City"
               required
@@ -3165,25 +3160,25 @@ export default function VisitsPage() {
             <span>Visits in this tour program should be reasonably close to avoid travel schedule conflict.</span>
           </div>
 
-          <Select
-            label="Select Additional Client Agency"
-            required
-            value={tripVisit.organisation_id}
-            onChange={(e) => {
-              const org = organisations.find((o) => o.id === e.target.value);
-              setTripVisit({
-                ...tripVisit,
-                organisation_id: e.target.value,
-                location: org?.city || tripVisit.location,
-              });
-            }}
-            options={[
-              { value: '', label: '-- Choose Agency in Same Area --' },
-              ...organisations.map((o) => ({ value: o.id, label: `${o.name} (${o.city || 'State'})` })),
-            ]}
-          />
+          <FormSection title="Agency & time" icon={<Building />}>
+            <Select
+              label="Select Additional Client Agency"
+              required
+              value={tripVisit.organisation_id}
+              onChange={(e) => {
+                const org = organisations.find((o) => o.id === e.target.value);
+                setTripVisit({
+                  ...tripVisit,
+                  organisation_id: e.target.value,
+                  location: org?.city || tripVisit.location,
+                });
+              }}
+              options={[
+                { value: '', label: '-- Choose Agency in Same Area --' },
+                ...organisations.map((o) => ({ value: o.id, label: `${o.name} (${o.city || 'State'})` })),
+              ]}
+            />
 
-          <div className="grid grid-cols-2 gap-3">
             <Input
               label="Station / Address"
               value={tripVisit.location}
@@ -3191,7 +3186,7 @@ export default function VisitsPage() {
               placeholder="e.g. Chandigarh Sector 17"
             />
 
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
                 label="Start"
                 type="time"
@@ -3205,22 +3200,24 @@ export default function VisitsPage() {
                 onChange={(e) => setTripVisit({ ...tripVisit, end_time: e.target.value })}
               />
             </div>
-          </div>
+          </FormSection>
 
-          <Input
-            label="Purpose of This Meeting"
-            value={tripVisit.purpose}
-            onChange={(e) => setTripVisit({ ...tripVisit, purpose: e.target.value })}
-            placeholder="e.g. Introduce Vehicle Surveillance System"
-          />
+          <FormSection title="Brief" icon={<FileText />} description="Why the officer should meet this agency.">
+            <Input
+              label="Purpose of This Meeting"
+              value={tripVisit.purpose}
+              onChange={(e) => setTripVisit({ ...tripVisit, purpose: e.target.value })}
+              placeholder="e.g. Introduce Vehicle Surveillance System"
+            />
 
-          <Input
-            label="Manager Directive / Instructions for Officer"
-            required
-            value={tripVisit.instructions}
-            onChange={(e) => setTripVisit({ ...tripVisit, instructions: e.target.value })}
-            placeholder="e.g. Also meet DIG Logistics to follow up on the upcoming GeM bid."
-          />
+            <Input
+              label="Manager Directive / Instructions for Officer"
+              required
+              value={tripVisit.instructions}
+              onChange={(e) => setTripVisit({ ...tripVisit, instructions: e.target.value })}
+              placeholder="e.g. Also meet DIG Logistics to follow up on the upcoming GeM bid."
+            />
+          </FormSection>
 
           <div className="pt-2 flex justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" onClick={() => setIsAddTripVisitOpen(false)}>
@@ -3243,177 +3240,190 @@ export default function VisitsPage() {
         description="Attach executive instructions and specify additional officers or stakeholders to meet during this visit."
         maxWidth="lg"
       >
-        <form onSubmit={handleAlsoMeetSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
-
-          {/* Current Target Context: Organisation is already selected by the salesperson */}
-          {selectedVisit && (
-            <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs space-y-2">
-              <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-[#14213D] text-sm">
-                    {selectedVisit.organisation_name}
-                  </span>
-                  <Badge variant="outline" size="sm" className="bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/30">
-                    Target Agency Selected
-                  </Badge>
+        <form onSubmit={handleAlsoMeetSubmit}>
+          <FormSteps
+            onCancel={() => setIsAlsoMeetOpen(false)}
+            banner={
+              actionError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {actionError}
                 </div>
-                <span className="font-mono text-gray-500 text-[11px]">Visit #{selectedVisit.id.slice(0, 8)}</span>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-[#4A5568]">
-                <div>
-                  <span className="text-gray-400 block">Visiting Officer:</span>
-                  <strong className="text-[#14213D]">{selectedVisit.assignee_name || selectedVisit.assigned_to_name || 'Assigned Officer'}</strong>
-                </div>
-                <div>
-                  <span className="text-gray-400 block">Station / City:</span>
-                  <strong className="text-[#14213D]">{selectedVisit.location || 'N/A'}</strong>
-                </div>
-                <div>
-                  <span className="text-gray-400 block">Planned Date:</span>
-                  <strong className="text-[#14213D]">{selectedVisit.planned_date ? new Date(selectedVisit.planned_date).toLocaleDateString('en-IN') : 'N/A'}</strong>
-                </div>
-                <div>
-                  <span className="text-gray-400 block">Customer Contact:</span>
-                  <strong className="text-[#14213D]">{selectedVisit.contact_person || selectedVisit.contact_name || 'General Office'}</strong>
-                </div>
-              </div>
-            </div>
-          )}
+              )
+            }
+            submit={
+              <Button type="submit" size="sm" isLoading={isSubmitting}>
+                {alsoMeetData.assign_additional ? 'Add 2nd Visit & Save Directive' : 'Save Directive'}
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Directive',
+                icon: <Sparkles />,
+                description: `Instructions for the officer visiting ${selectedVisit?.organisation_name || 'the customer agency'}.`,
+                content: (
+                  <div className="space-y-3">
+                    {/* Current Target Context: Organisation is already selected by the salesperson */}
+                    {selectedVisit && (
+                      <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#ECE9E2]">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-[#14213D] text-sm">
+                              {selectedVisit.organisation_name}
+                            </span>
+                            <Badge variant="outline" size="sm" className="bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/30">
+                              Target Agency Selected
+                            </Badge>
+                          </div>
+                          <span className="font-mono text-gray-500 text-[11px]">Visit #{selectedVisit.id.slice(0, 8)}</span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-[#4A5568]">
+                          <div>
+                            <span className="text-gray-400 block">Visiting Officer:</span>
+                            <strong className="text-[#14213D]">{selectedVisit.assignee_name || selectedVisit.assigned_to_name || 'Assigned Officer'}</strong>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 block">Station / City:</span>
+                            <strong className="text-[#14213D]">{selectedVisit.location || 'N/A'}</strong>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 block">Planned Date:</span>
+                            <strong className="text-[#14213D]">{selectedVisit.planned_date ? new Date(selectedVisit.planned_date).toLocaleDateString('en-IN') : 'N/A'}</strong>
+                          </div>
+                          <div>
+                            <span className="text-gray-400 block">Customer Contact:</span>
+                            <strong className="text-[#14213D]">{selectedVisit.contact_person || selectedVisit.contact_name || 'General Office'}</strong>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
-          {/* Manager Directive Instructions for Current Visit */}
-          <div className="space-y-3 p-3.5 bg-amber-50/50 rounded-xl border border-amber-200">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-amber-700" />
-              <span className="text-xs font-bold text-amber-900 uppercase tracking-wider">
-                Manager Directive for {selectedVisit?.organisation_name || 'Customer Agency'}
-              </span>
-            </div>
+                    <div>
+                      <label className="block text-xs font-bold text-[#14213D] mb-1">
+                        Manager Directive Instructions <span className="text-red-500">*</span>
+                      </label>
+                      <textarea
+                        required
+                        rows={3}
+                        value={alsoMeetData.instructions}
+                        onChange={(e) => setAlsoMeetData({ ...alsoMeetData, instructions: e.target.value })}
+                        placeholder="e.g. While visiting Delhi Police HQ, also meet SP Provisioning in same complex regarding pending GeM tender and clarify demonstration schedule."
+                        className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] bg-white text-[#14213D] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Also meet',
+                icon: <UserPlus />,
+                description: 'Optionally name another officer to meet here, or add a second agency to the trip.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Specific Officer to Also Meet (Optional)"
+                        value={alsoMeetData.contact_person}
+                        onChange={(e) => setAlsoMeetData({ ...alsoMeetData, contact_person: e.target.value })}
+                        placeholder="e.g. SP Provisioning / Col. Bhatia / DIG Store"
+                        helperText="Authority or stakeholder to meet at this organisation"
+                      />
 
-            <div>
-              <label className="block text-xs font-bold text-[#14213D] mb-1">
-                Manager Directive Instructions <span className="text-red-500">*</span>
-              </label>
-              <textarea
-                required
-                rows={3}
-                value={alsoMeetData.instructions}
-                onChange={(e) => setAlsoMeetData({ ...alsoMeetData, instructions: e.target.value })}
-                placeholder="e.g. While visiting Delhi Police HQ, also meet SP Provisioning in same complex regarding pending GeM tender and clarify demonstration schedule."
-                className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] bg-white text-[#14213D] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
-              />
-            </div>
+                      <Input
+                        label="Strategic Agenda / Meeting Purpose (Optional)"
+                        value={alsoMeetData.purpose}
+                        onChange={(e) => setAlsoMeetData({ ...alsoMeetData, purpose: e.target.value })}
+                        placeholder="e.g. Review upcoming GeM custom bid & verify demo compliance"
+                      />
+                    </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                label="Specific Officer to Also Meet (Optional)"
-                value={alsoMeetData.contact_person}
-                onChange={(e) => setAlsoMeetData({ ...alsoMeetData, contact_person: e.target.value })}
-                placeholder="e.g. SP Provisioning / Col. Bhatia / DIG Store"
-                helperText="Authority or stakeholder to meet at this organisation"
-              />
+                    <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Route className="h-4 w-4 text-[#0F5E63]" />
+                          <div>
+                            <span className="text-xs font-bold text-[#14213D] block">
+                              Add a Second Organisation to this Trip (Multi-Stop Itinerary)
+                            </span>
+                            <span className="text-[11px] text-gray-500">
+                              Optional: Check only if you want the officer to visit a DIFFERENT client agency in the same city.
+                            </span>
+                          </div>
+                        </div>
+                        <Checkbox
+                          checked={alsoMeetData.assign_additional}
+                          onChange={(e) => setAlsoMeetData({ ...alsoMeetData, assign_additional: e.target.checked })}
+                          label="Add 2nd Org"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Second stop',
+                icon: <Route />,
+                description: 'The other agency the officer should visit in the same city.',
+                hidden: !alsoMeetData.assign_additional,
+                content: (
+                  <div className="space-y-3">
+                    <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-200 text-[11px] text-blue-900">
+                      This will schedule an additional separate field visit for <strong>{selectedVisit?.assignee_name || 'the officer'}</strong> and group both meetings into a unified tour program.
+                    </div>
 
-              <Input
-                label="Strategic Agenda / Meeting Purpose (Optional)"
-                value={alsoMeetData.purpose}
-                onChange={(e) => setAlsoMeetData({ ...alsoMeetData, purpose: e.target.value })}
-                placeholder="e.g. Review upcoming GeM custom bid & verify demo compliance"
-              />
-            </div>
-          </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Select Secondary Organisation to Meet"
+                        required={alsoMeetData.assign_additional}
+                        value={alsoMeetData.organisation_id}
+                        onChange={(e) => {
+                          const orgId = e.target.value;
+                          const org = organisations.find((o) => o.id === orgId);
+                          setAlsoMeetData({
+                            ...alsoMeetData,
+                            organisation_id: orgId,
+                            location: org?.city || selectedVisit?.location || alsoMeetData.location,
+                          });
+                        }}
+                        options={[
+                          { value: '', label: '-- Select Adjacent Organisation --' },
+                          ...organisations
+                            .filter((o) => o.id !== selectedVisit?.organisation_id)
+                            .map((o) => ({
+                              value: o.id,
+                              label: `${o.name} (${o.city || 'Office'})`,
+                            })),
+                        ]}
+                      />
 
-          {/* Optional: Add Secondary Adjacent Organisation to Itinerary */}
-          <div className="p-3.5 bg-gray-50/80 rounded-xl border border-[#DCD8CE] space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Route className="h-4 w-4 text-[#0F5E63]" />
-                <div>
-                  <span className="text-xs font-bold text-[#14213D] block">
-                    Add a Second Organisation to this Trip (Multi-Stop Itinerary)
-                  </span>
-                  <span className="text-[11px] text-gray-500">
-                    Optional: Check only if you want the officer to visit a DIFFERENT client agency in the same city.
-                  </span>
-                </div>
-              </div>
-              <Checkbox
-                checked={alsoMeetData.assign_additional}
-                onChange={(e) => setAlsoMeetData({ ...alsoMeetData, assign_additional: e.target.checked })}
-                label="Add 2nd Org"
-              />
-            </div>
+                      <Input
+                        label="Second Location / Office Detail"
+                        required={alsoMeetData.assign_additional}
+                        value={alsoMeetData.location}
+                        onChange={(e) => setAlsoMeetData({ ...alsoMeetData, location: e.target.value })}
+                        placeholder="e.g. ITBP Camp, Tigri / CGO Complex"
+                      />
+                    </div>
 
-            {alsoMeetData.assign_additional && (
-              <div className="space-y-3 pt-3 border-t border-[#ECE9E2]">
-                <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-200 text-[11px] text-blue-900">
-                  This will schedule an additional separate field visit for <strong>{selectedVisit?.assignee_name || 'the officer'}</strong> and group both meetings into a unified tour program.
-                </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <Input
+                        label="Start Time for 2nd Visit"
+                        type="time"
+                        value={alsoMeetData.start_time}
+                        onChange={(e) => setAlsoMeetData({ ...alsoMeetData, start_time: e.target.value })}
+                      />
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <Select
-                    label="Select Secondary Organisation to Meet"
-                    required={alsoMeetData.assign_additional}
-                    value={alsoMeetData.organisation_id}
-                    onChange={(e) => {
-                      const orgId = e.target.value;
-                      const org = organisations.find((o) => o.id === orgId);
-                      setAlsoMeetData({
-                        ...alsoMeetData,
-                        organisation_id: orgId,
-                        location: org?.city || selectedVisit?.location || alsoMeetData.location,
-                      });
-                    }}
-                    options={[
-                      { value: '', label: '-- Select Adjacent Organisation --' },
-                      ...organisations
-                        .filter((o) => o.id !== selectedVisit?.organisation_id)
-                        .map((o) => ({
-                          value: o.id,
-                          label: `${o.name} (${o.city || 'Office'})`,
-                        })),
-                    ]}
-                  />
-
-                  <Input
-                    label="Second Location / Office Detail"
-                    required={alsoMeetData.assign_additional}
-                    value={alsoMeetData.location}
-                    onChange={(e) => setAlsoMeetData({ ...alsoMeetData, location: e.target.value })}
-                    placeholder="e.g. ITBP Camp, Tigri / CGO Complex"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <Input
-                    label="Start Time for 2nd Visit"
-                    type="time"
-                    value={alsoMeetData.start_time}
-                    onChange={(e) => setAlsoMeetData({ ...alsoMeetData, start_time: e.target.value })}
-                  />
-
-                  <Input
-                    label="End Time for 2nd Visit"
-                    type="time"
-                    value={alsoMeetData.end_time}
-                    onChange={(e) => setAlsoMeetData({ ...alsoMeetData, end_time: e.target.value })}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="pt-2 flex justify-end gap-2 border-t border-gray-100">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsAlsoMeetOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              {alsoMeetData.assign_additional ? 'Add 2nd Visit & Save Directive' : 'Save Directive'}
-            </Button>
-          </div>
+                      <Input
+                        label="End Time for 2nd Visit"
+                        type="time"
+                        value={alsoMeetData.end_time}
+                        onChange={(e) => setAlsoMeetData({ ...alsoMeetData, end_time: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -3434,7 +3444,7 @@ export default function VisitsPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input
               label="New Planned Date"
               type="date"
@@ -3586,159 +3596,194 @@ export default function VisitsPage() {
         description="Record intelligence, officer feedback, and follow-up milestones."
         maxWidth="lg"
       >
-        <form onSubmit={handleReportSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
-              {actionError}
-            </div>
-          )}
-
-          {/* Meeting Status Toggle */}
-          <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-1.5">
-            <label className="block text-xs font-bold text-gray-700">Did the meeting take place?</label>
-            <div className="flex items-center gap-6 text-xs">
-              <label className="flex items-center gap-2 cursor-pointer font-semibold text-emerald-800">
-                <input
-                  type="radio"
-                  name="met_completed"
-                  checked={reportData.met_completed === true}
-                  onChange={() => setReportData({ ...reportData, met_completed: true })}
-                />
-                <span>Yes — Meeting Completed</span>
-              </label>
-
-              <label className="flex items-center gap-2 cursor-pointer font-semibold text-red-800">
-                <input
-                  type="radio"
-                  name="met_completed"
-                  checked={reportData.met_completed === false}
-                  onChange={() => setReportData({ ...reportData, met_completed: false })}
-                />
-                <span>No — Not Completed / Customer Unavailable</span>
-              </label>
-            </div>
-          </div>
-
-          {reportData.met_completed ? (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Input
-                  label="Person Met (Name & Rank / Designation)"
-                  required
-                  value={reportData.person_met}
-                  onChange={(e) => setReportData({ ...reportData, person_met: e.target.value })}
-                  placeholder="e.g. Dr. A.K. Sharma, DIG Procurement"
-                />
-
-                <Input
-                  label="Product Discussed"
-                  value={reportData.product_discussed}
-                  onChange={(e) => setReportData({ ...reportData, product_discussed: e.target.value })}
-                  placeholder="e.g. HHMD MHA QR Specification"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">
-                  Discussion Summary & Technical Notes <span className="text-red-500">*</span>
-                </label>
-                <textarea
-                  required
-                  rows={3}
-                  value={reportData.discussion}
-                  onChange={(e) => setReportData({ ...reportData, discussion: e.target.value })}
-                  placeholder="Points discussed, customer reactions, technical clarifications requested..."
-                  className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Input
-                  label="Meeting Outcome"
-                  required
-                  value={reportData.outcome}
-                  onChange={(e) => setReportData({ ...reportData, outcome: e.target.value })}
-                  placeholder="e.g. Trial requested / Positive technical feedback"
-                />
-
-                <Input
-                  label="Opportunity Identified"
-                  value={reportData.opportunity}
-                  onChange={(e) => setReportData({ ...reportData, opportunity: e.target.value })}
-                  placeholder="e.g. Estimated 100 units tender in Q3"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Input
-                  label="Next Action Commitment"
-                  value={reportData.next_action}
-                  onChange={(e) => setReportData({ ...reportData, next_action: e.target.value })}
-                  placeholder="e.g. Dispatch demo unit from Delhi Depot"
-                />
-
-                <Input
-                  label="Follow-Up Milestone Date"
-                  type="date"
-                  value={reportData.followup_date}
-                  onChange={(e) => setReportData({ ...reportData, followup_date: e.target.value })}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-center">
-                <Input
-                  label="Tender / GeM Bid Opportunity"
-                  value={reportData.tender_opportunity}
-                  onChange={(e) => setReportData({ ...reportData, tender_opportunity: e.target.value })}
-                  placeholder="e.g. GeM custom bid GEM/2026/B/88219 for 250 units"
-                />
-
-                <div className="pt-4">
-                  <Checkbox
-                    checked={reportData.demo_required}
-                    onChange={(e) => setReportData({ ...reportData, demo_required: e.target.checked })}
-                    label="Demo / Field Trial Required as Next Step"
-                  />
+        <form onSubmit={handleReportSubmit}>
+          <FormSteps
+            onCancel={() => setIsReportOpen(false)}
+            banner={
+              actionError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
+                  {actionError}
                 </div>
-              </div>
+              )
+            }
+            submit={
+              <Button type="submit" size="sm" isLoading={isSubmitting}>
+                Submit Intelligence
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Meeting',
+                icon: <CheckCircle2 />,
+                description: 'Did the meeting take place? If not, record why.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-gray-700">Did the meeting take place?</label>
+                      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+                        <label className="flex items-center gap-2 cursor-pointer font-semibold text-emerald-800">
+                          <input
+                            type="radio"
+                            name="met_completed"
+                            checked={reportData.met_completed === true}
+                            onChange={() => setReportData({ ...reportData, met_completed: true })}
+                          />
+                          <span>Yes — Meeting Completed</span>
+                        </label>
 
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">
-                  General Remarks & Field Intelligence Notes
-                </label>
-                <textarea
-                  rows={2}
-                  value={reportData.remarks}
-                  onChange={(e) => setReportData({ ...reportData, remarks: e.target.value })}
-                  placeholder="Additional field intelligence, competitive products observed, technical feedback..."
-                  className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
-                />
-              </div>
-            </>
-          ) : (
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">
-                Reason Why Meeting Did Not Take Place <span className="text-red-500">*</span>
-              </label>
-              <textarea
-                required
-                rows={3}
-                value={reportData.remarks}
-                onChange={(e) => setReportData({ ...reportData, remarks: e.target.value })}
-                placeholder="e.g. Officer was summoned urgently for VIP convoy movement."
-                className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
-              />
-            </div>
-          )}
+                        <label className="flex items-center gap-2 cursor-pointer font-semibold text-red-800">
+                          <input
+                            type="radio"
+                            name="met_completed"
+                            checked={reportData.met_completed === false}
+                            onChange={() => setReportData({ ...reportData, met_completed: false })}
+                          />
+                          <span>No — Not Completed / Customer Unavailable</span>
+                        </label>
+                      </div>
+                    </div>
 
-          <div className="pt-2 flex justify-end gap-2 border-t border-gray-100">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setIsReportOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Submit Intelligence
-            </Button>
-          </div>
+                    {!reportData.met_completed && (
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 mb-1">
+                          Reason Why Meeting Did Not Take Place <span className="text-red-500">*</span>
+                        </label>
+                        <textarea
+                          required
+                          rows={3}
+                          value={reportData.remarks}
+                          onChange={(e) => setReportData({ ...reportData, remarks: e.target.value })}
+                          placeholder="e.g. Officer was summoned urgently for VIP convoy movement."
+                          className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ),
+              },
+              {
+                title: 'Discussion',
+                icon: <Users />,
+                description: 'Who you met and what was discussed.',
+                hidden: !reportData.met_completed,
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Person Met (Name & Rank / Designation)"
+                        required
+                        value={reportData.person_met}
+                        onChange={(e) => setReportData({ ...reportData, person_met: e.target.value })}
+                        placeholder="e.g. Dr. A.K. Sharma, DIG Procurement"
+                      />
+
+                      <Input
+                        label="Product Discussed"
+                        value={reportData.product_discussed}
+                        onChange={(e) => setReportData({ ...reportData, product_discussed: e.target.value })}
+                        placeholder="e.g. HHMD MHA QR Specification"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1">
+                        Discussion Summary & Technical Notes <span className="text-red-500">*</span>
+                      </label>
+                      <textarea
+                        required
+                        rows={3}
+                        value={reportData.discussion}
+                        onChange={(e) => setReportData({ ...reportData, discussion: e.target.value })}
+                        placeholder="Points discussed, customer reactions, technical clarifications requested..."
+                        className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Outcome',
+                icon: <Sparkles />,
+                description: 'What came out of the meeting and any opportunity spotted.',
+                hidden: !reportData.met_completed,
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Meeting Outcome"
+                        required
+                        value={reportData.outcome}
+                        onChange={(e) => setReportData({ ...reportData, outcome: e.target.value })}
+                        placeholder="e.g. Trial requested / Positive technical feedback"
+                      />
+
+                      <Input
+                        label="Opportunity Identified"
+                        value={reportData.opportunity}
+                        onChange={(e) => setReportData({ ...reportData, opportunity: e.target.value })}
+                        placeholder="e.g. Estimated 100 units tender in Q3"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                      <Input
+                        label="Tender / GeM Bid Opportunity"
+                        value={reportData.tender_opportunity}
+                        onChange={(e) => setReportData({ ...reportData, tender_opportunity: e.target.value })}
+                        placeholder="e.g. GeM custom bid GEM/2026/B/88219 for 250 units"
+                      />
+
+                      <div className="pt-4">
+                        <Checkbox
+                          checked={reportData.demo_required}
+                          onChange={(e) => setReportData({ ...reportData, demo_required: e.target.checked })}
+                          label="Demo / Field Trial Required as Next Step"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Follow-up',
+                icon: <CalendarDays />,
+                description: 'The next action, when to follow up, and any field notes.',
+                hidden: !reportData.met_completed,
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Next Action Commitment"
+                        value={reportData.next_action}
+                        onChange={(e) => setReportData({ ...reportData, next_action: e.target.value })}
+                        placeholder="e.g. Dispatch demo unit from Delhi Depot"
+                      />
+
+                      <Input
+                        label="Follow-Up Milestone Date"
+                        type="date"
+                        value={reportData.followup_date}
+                        onChange={(e) => setReportData({ ...reportData, followup_date: e.target.value })}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1">
+                        General Remarks & Field Intelligence Notes
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={reportData.remarks}
+                        onChange={(e) => setReportData({ ...reportData, remarks: e.target.value })}
+                        placeholder="Additional field intelligence, competitive products observed, technical feedback..."
+                        className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 

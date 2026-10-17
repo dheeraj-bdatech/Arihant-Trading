@@ -12,7 +12,7 @@ import {
   Truck,
   ExternalLink
 } from 'lucide-react';
-import { Badge } from '@/components/ui';
+import { Badge, ScrollStrip } from '@/components/ui';
 
 interface DeploymentRow {
   id: string;
@@ -132,8 +132,11 @@ export function DeploymentsTable({ className = '' }: { className?: string }) {
         </div>
 
         {/* Status Filter Tabs (Matching Pending 70 | Responded 85 | Assigned 53 | Completed 56) */}
-        <div className="flex items-center gap-1 bg-[#FBFAF7] border border-[#ECE9E2] p-1 rounded-xl text-xs font-medium overflow-x-auto no-scrollbar">
+        <ScrollStrip role="tablist" aria-label="Deployment status" activeKey={activeTab} wrapperClassName="min-w-0" className="items-center gap-1 bg-[#FBFAF7] border border-[#ECE9E2] p-1 rounded-xl text-xs font-medium">
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'pending'}
             onClick={() => setActiveTab('pending')}
             className={`px-3 py-1 rounded-lg transition-all shrink-0 ${
               activeTab === 'pending'
@@ -144,6 +147,9 @@ export function DeploymentsTable({ className = '' }: { className?: string }) {
             Pending <span className="font-mono text-[11px] opacity-75">70</span>
           </button>
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'responded'}
             onClick={() => setActiveTab('responded')}
             className={`px-3 py-1 rounded-lg transition-all shrink-0 ${
               activeTab === 'responded'
@@ -154,6 +160,9 @@ export function DeploymentsTable({ className = '' }: { className?: string }) {
             Responded <span className="font-mono text-[11px] opacity-75">85</span>
           </button>
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'assigned'}
             onClick={() => setActiveTab('assigned')}
             className={`px-3 py-1 rounded-lg transition-all shrink-0 ${
               activeTab === 'assigned'
@@ -164,6 +173,9 @@ export function DeploymentsTable({ className = '' }: { className?: string }) {
             Assigned <span className="font-mono text-[11px] opacity-75">53</span>
           </button>
           <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'completed'}
             onClick={() => setActiveTab('completed')}
             className={`px-3 py-1 rounded-lg transition-all shrink-0 ${
               activeTab === 'completed'
@@ -173,7 +185,7 @@ export function DeploymentsTable({ className = '' }: { className?: string }) {
           >
             Completed <span className="font-mono text-[11px] opacity-75">56</span>
           </button>
-        </div>
+        </ScrollStrip>
 
         {/* Quick Toolbar */}
         <div className="flex items-center gap-1.5 shrink-0">

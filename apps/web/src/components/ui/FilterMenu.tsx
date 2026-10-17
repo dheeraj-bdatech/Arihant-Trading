@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
+import { useActionDock } from './ToolbarBox';
 
 export interface FilterMenuOption {
   key: string;
@@ -32,6 +33,8 @@ export const FilterMenu: React.FC<{
 }> = ({ label, icon, options, neutralKeys = ['all'], align = 'left', className }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Page actions (New, Import…) dock at the end of this filter row — the "View" menu's row first.
+  useActionDock(ref, label === 'View' ? 3 : 2);
 
   useEffect(() => {
     if (!open) return;

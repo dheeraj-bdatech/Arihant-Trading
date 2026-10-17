@@ -43,8 +43,8 @@ export function EquipmentSelectorStrip({
 
   return (
     <div className={`space-y-2.5 ${className}`}>
-      {/* Category Pills & Scroll Controls */}
-      <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 no-scrollbar">
+      {/* Category Pills & Scroll Controls (overflowX inline: theme.css resets `.overflow-x-auto` below 1180px) */}
+      <div className="flex items-center justify-between gap-2 pb-1 no-scrollbar" style={{ overflowX: 'auto' }}>
         <div className="flex items-center gap-1.5 shrink-0">
           {BROCHURE_CATEGORIES.map((cat) => (
             <button
@@ -82,7 +82,8 @@ export function EquipmentSelectorStrip({
       {/* Horizontal Hardware Strip (Matching user reference image) */}
       <div
         ref={scrollRef}
-        className="flex items-stretch gap-3 overflow-x-auto pb-2 pt-1 scroll-smooth no-scrollbar"
+        className="flex items-stretch gap-3 pb-2 pt-1 scroll-smooth no-scrollbar"
+        style={{ overflowX: 'auto' }}
       >
         {filteredProducts.map((p) => {
           const isSelected = selectedProduct.id === p.id;

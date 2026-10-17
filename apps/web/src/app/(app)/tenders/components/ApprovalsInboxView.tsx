@@ -252,15 +252,6 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
               Out-of-Office Delegate
             </Button>
           )}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={loadApprovals}
-            isLoading={loading}
-            leftIcon={<RefreshCw className="w-4 h-4" />}
-          >
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -531,7 +522,7 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
             onChange={(e) => setDelegationForm({ ...delegationForm, delegatee_id: e.target.value })}
             required
           />
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input
               label="Start date *"
               type="date"

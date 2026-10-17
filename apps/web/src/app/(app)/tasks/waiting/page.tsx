@@ -66,11 +66,6 @@ export default function WaitingOnMePage() {
       <PageHeader
         title="Waiting on Me"
         icon={<Hourglass className="h-5 w-5" />}
-        actions={
-          <Button size="sm" variant="secondary" isLoading={loading} disabled={loading} leftIcon={<RefreshCw className="h-4 w-4" />} onClick={load}>
-            Refresh
-          </Button>
-        }
       />
       <TasksNav />
 

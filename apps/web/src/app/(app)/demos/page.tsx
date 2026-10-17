@@ -62,8 +62,9 @@ import {
   FilterMenu,
   EmptyState,
   InfoCallout,
-  Checkbox, Spinner, PageLoader,
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu } from '@/components/ui';
+  Checkbox, Spinner, PageLoader, FormSteps, FormSection,
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu,
+  RecordViews, toneFor, type RecordItem } from '@/components/ui';
 
 // =========================================================================
 // STRUCTURED FAILURE TAXONOMY METADATA (§17 & §18)
@@ -144,7 +145,21 @@ const FAILURE_REASON_METADATA: Record<
   },
 };
 
-const getStandardKitAccessories = (productName?: string, category?: string) => {
+// Demo lifecycle in workflow order — drives the status filter and the stage board lanes.
+const DEMO_STATUSES: { key: string; label: string }[] = [
+  { key: 'requested', label: 'Requested' },
+  { key: 'under_planning', label: 'Under planning' },
+  { key: 'team_assigned', label: 'Team assigned' },
+  { key: 'equipment_reserved', label: 'Equipment reserved' },
+  { key: 'confirmed', label: 'Confirmed' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'rescheduled', label: 'Rescheduled' },
+  { key: 'cancelled', label: 'Cancelled' },
+];
+const demoStatusLabel = (status?: string) =>
+  DEMO_STATUSES.find((s) => s.key === status)?.label || String(status || 'Unknown').replace(/_/g, ' ');
+
+const getStandardKitAccessories =(productName?: string, category?: string) => {
   const name = (productName || '').toLowerCase();
   const cat = (category || '').toLowerCase();
 
@@ -1865,6 +1880,75 @@ function DemosPageContent() {
     </Card>
   );
 
+  // Pipeline register as priority cards / stage board. The full demo card (reservations, outcome,
+  // custodian approvals, every action) opens in the existing demo dialog.
+  const toDemoRecord = (demo: any): RecordItem => {
+    const open = demo.status !== 'completed' && demo.status !== 'cancelled';
+    const canAssign = open && hasRole(['demo_team', 'management', 'regional_manager', 'admin']);
+    const place = demo.location || demo.city;
+    const reservations: any[] = demo.reservations || [];
+    const facts: RecordItem['facts'] = [
+      {
+        label: 'Kit',
+        value: reservations.length
+          ? `${reservations.length} unit${reservations.length === 1 ? '' : 's'} reserved`
+          : demo.product_name || demo.equipment_required || 'No reservation',
+      },
+      demo.expected_audience && { label: 'Audience', value: demo.expected_audience },
+      demo.tender_id && { label: 'Tender', value: demo.tender_no || 'Linked' },
+      demo.purpose && { label: 'Purpose', value: demo.purpose },
+    ].filter(Boolean) as NonNullable<RecordItem['facts']>;
+    const badges: NonNullable<RecordItem['badges']> = [];
+    if (demo.travel_required) badges.push({ label: 'Travel', tone: 'info' });
+    if (demo.service_escort_required) badges.push({ label: 'Service escort', tone: 'info' });
+    if (reservations.some((r) => r.status === 'requested')) badges.push({ label: 'Kit approval pending', tone: 'warning' });
+
+    let primary: RecordItem['primary'];
+    if (open) {
+      if (!demo.assigned_to && canAssign && ['requested', 'under_planning'].includes(demo.status)) {
+        primary = { label: 'Assign team', onClick: () => handleOpenAssignTeam(demo) };
+      } else if (demo.status === 'confirmed') {
+        primary = { label: 'Record outcome', onClick: () => handleOpenOutcome(demo) };
+      } else {
+        primary = { label: 'Confirm date', onClick: () => openConfirmDate(demo) };
+      }
+    }
+    const quick: RecordItem['quick'] = [];
+    if (open) {
+      quick.push({ label: 'Reschedule', icon: <Clock />, onClick: () => openRescheduleDemo(demo) });
+      quick.push({ label: reservations.length ? 'Manage kit & serials' : 'Reserve unit', icon: <Package />, onClick: () => handleOpenReserve(demo) });
+    } else {
+      quick.push({ label: 'Audit trail', icon: <History />, onClick: () => handleOpenAudit(demo) });
+    }
+    if (place) {
+      quick.push({
+        label: 'Open in maps',
+        icon: <MapPin />,
+        onClick: () => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place)}`, '_blank', 'noopener'),
+      });
+    }
+
+    return {
+      key: String(demo.id),
+      code: demo.demo_no,
+      title: demo.organisation_name || 'Client Organisation',
+      subtitle: [demo.product_name || demo.equipment_required, place].filter(Boolean).join(' · ') || undefined,
+      status: { label: demoStatusLabel(demo.status), tone: toneFor(demoStatusLabel(demo.status)) },
+      badges,
+      due: {
+        date: demo.confirmed_date || demo.requested_date,
+        label: 'Demo date',
+        done: ['completed', 'cancelled', 'failed', 'closed'].includes(demo.status),
+      },
+      value: demo.deal_value ? formatINR(Number(demo.deal_value)) : undefined,
+      owner: demo.assignee_name || (demo.requested_by_name ? `By ${demo.requested_by_name}` : undefined),
+      facts,
+      primary,
+      quick,
+      onOpen: () => setLinkedDemo(demo),
+    };
+  };
+
   if (isLoading && demos.length === 0) {
     return (
       <PageContainer>
@@ -1893,16 +1977,6 @@ function DemosPageContent() {
         title="Field Demonstrations & Trials Management"
         actions={
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={fetchDemosData}
-              isLoading={isLoading}
-              className="flex items-center gap-1.5 border-[#DCD8CE] text-[#0F5E63] hover:bg-[#E3EFEE]"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Sync
-            </Button>
 
             {hasRole(['sales', 'regional_manager', 'demo_team', 'management', 'admin']) && (
               <Button
@@ -2012,14 +2086,7 @@ function DemosPageContent() {
                   icon={<Layers />}
                   options={[
                     { key: '', label: 'All statuses' },
-                    { key: 'requested', label: 'Requested' },
-                    { key: 'under_planning', label: 'Under planning' },
-                    { key: 'team_assigned', label: 'Team assigned' },
-                    { key: 'equipment_reserved', label: 'Equipment reserved' },
-                    { key: 'confirmed', label: 'Confirmed' },
-                    { key: 'completed', label: 'Completed' },
-                    { key: 'rescheduled', label: 'Rescheduled' },
-                    { key: 'cancelled', label: 'Cancelled' },
+                    ...DEMO_STATUSES,
                   ].map((o) => ({
                     ...o,
                     count: o.key ? demos.filter((d) => d.status === o.key).length : demos.length,
@@ -2244,11 +2311,28 @@ function DemosPageContent() {
               }
             />
           ) : (
-            (
-            <div className="grid grid-cols-1 gap-4">
-              {filteredDemos.map((demo) => renderDemoCard(demo))}
-            </div>
-          )
+            (() => {
+              const statusById = new Map(filteredDemos.map((d) => [String(d.id), d.status as string]));
+              const extraLanes = Array.from(new Set(filteredDemos.map((d) => d.status as string)))
+                .filter((s) => s && !DEMO_STATUSES.some((l) => l.key === s))
+                .map((s) => ({ key: s, label: demoStatusLabel(s) }));
+              return (
+                <RecordViews
+                  storageKey="demos"
+                  defaultView="cards"
+                  items={filteredDemos.map(toDemoRecord)}
+                  lanes={[...DEMO_STATUSES, ...extraLanes].map((l) => ({ ...l, tone: toneFor(l.label) }))}
+                  laneOf={(i) => statusById.get(i.key) || ''}
+                  summary={
+                    <>
+                      <span className="font-mono font-semibold text-[#14213D]">{filteredDemos.length}</span> of {demos.length} demos
+                      {pendingPlanningCount ? ` · ${pendingPlanningCount} awaiting planning` : ''}
+                    </>
+                  }
+                  empty="No demonstrations match the selected filters."
+                />
+              );
+            })()
           )}
         </div>
       )}
@@ -3080,7 +3164,21 @@ function DemosPageContent() {
         onClose={() => setIsCreateOpen(false)}
         title="Create New Demo Trial Request"
       >
-        <form onSubmit={handleCreateDemo} className="space-y-4 text-sm">
+        <form onSubmit={handleCreateDemo} className="text-sm">
+          <FormSteps
+            onCancel={() => setIsCreateOpen(false)}
+            submit={
+              <Button variant="primary" type="submit" isLoading={isSubmitting}>
+                Submit Demo Request
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Customer',
+                icon: <Building />,
+                description: 'Who is the demo for? Link a tender or deal value so higher-value demos get priority on shared units.',
+                content: (
+          <div className="space-y-3">
           <Select
             label="Client Organisation *"
             value={newDemo.organisation_id}
@@ -3128,17 +3226,14 @@ function DemosPageContent() {
               onChange={(e) => setNewDemo({ ...newDemo, deal_value: e.target.value })}
             />
           </div>
-
-          {/* A. Live Demonstration Setup Details */}
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-              <span className="text-sm font-bold text-[#14213D]">Demonstration setup</span>
-              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
-                Live fleet status
-              </span>
-            </div>
-
+          </div>
+                ),
+              },
+              {
+                title: 'Equipment',
+                icon: <Package />,
+                description: 'Which product should be demonstrated? Fleet availability below is live; pick a specific kit if needed.',
+                content: (
             <div className="grid grid-cols-1 gap-4 items-start">
               <div className="space-y-2">
                 <Select
@@ -3423,9 +3518,15 @@ function DemosPageContent() {
                 )}
               </div>
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                ),
+              },
+              {
+                title: 'Schedule',
+                icon: <CalendarDays />,
+                description: 'When and where should the demo happen, who will attend, and who is the account owner?',
+                content: (
+          <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="Requested Trial Date *"
               type="date"
@@ -3443,7 +3544,7 @@ function DemosPageContent() {
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="Expected Audience / Board Members"
               placeholder="e.g. DIG Technical & Procurement Board"
@@ -3464,7 +3565,15 @@ function DemosPageContent() {
               ]}
             />
           </div>
-
+          </div>
+                ),
+              },
+              {
+                title: 'Purpose',
+                icon: <FileText />,
+                description: 'What should the demo prove, and what extra items or site arrangements are needed?',
+                content: (
+          <div className="space-y-3">
           <Input
             label="Purpose of Demonstration *"
             placeholder="e.g. Live detection rate verification for GeM tender bid"
@@ -3486,9 +3595,17 @@ function DemosPageContent() {
             value={newDemo.special_requirements}
             onChange={(e) => setNewDemo({ ...newDemo, special_requirements: e.target.value })}
           />
-
+          </div>
+                ),
+              },
+              {
+                title: 'Logistics',
+                icon: <Plane />,
+                description: 'Does the demo team need to travel, or should a service engineer go along?',
+                content: (
+          <div className="space-y-4">
           {/* Travel Requirement Toggle (§12) */}
-          <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+          <div className="space-y-3">
             <Checkbox
               checked={newDemo.travel_required}
               onChange={(e) => setNewDemo({ ...newDemo, travel_required: e.target.checked })}
@@ -3496,7 +3613,7 @@ function DemosPageContent() {
             />
 
             {newDemo.travel_required && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-2 border-t border-[#DCD8CE]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Input
                   label="From Depot"
                   value={newDemo.travel_from}
@@ -3519,7 +3636,7 @@ function DemosPageContent() {
           </div>
 
           {/* Service Team Escort for Live Trial Support */}
-          <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+          <div className="pt-4 border-t border-[#ECE9E2] space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <Checkbox
@@ -3568,15 +3685,11 @@ function DemosPageContent() {
               </div>
             )}
           </div>
-
-          <div className="flex justify-end gap-3 pt-4 border-t border-[#DCD8CE]">
-            <Button variant="outline" type="button" onClick={() => setIsCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" type="submit" isLoading={isSubmitting}>
-              Submit Demo Request
-            </Button>
           </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -3586,7 +3699,12 @@ function DemosPageContent() {
         onClose={() => setIsAssignTeamOpen(false)}
         title={`Assign Demo Team Member — ${selectedDemo?.demo_no}`}
       >
-        <form onSubmit={handleAssignTeamSubmit} className="space-y-4 text-sm">
+        <form onSubmit={handleAssignTeamSubmit} className="space-y-5 text-sm">
+          <FormSection
+            title="Specialist"
+            icon={<Users />}
+            description="Pick who will run this demo. Busy specialists are flagged."
+          >
           <div className="p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D]">
             <p>
               <strong>Client:</strong> {selectedDemo?.organisation_name}
@@ -3650,8 +3768,14 @@ function DemosPageContent() {
               ))}
             </div>
           </div>
+          </FormSection>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <FormSection
+            title="Schedule & travel"
+            icon={<CalendarDays />}
+            description="Confirm the date and note any travel the specialist needs."
+          >
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="Confirm Trial Date"
               type="date"
@@ -3671,7 +3795,7 @@ function DemosPageContent() {
           </div>
 
           {/* Travel Requirement Options */}
-          <div className="p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2">
+          <div className="space-y-3">
             <Checkbox
               checked={teamForm.travel_required}
               onChange={(e) => setTeamForm({ ...teamForm, travel_required: e.target.checked })}
@@ -3679,7 +3803,7 @@ function DemosPageContent() {
             />
 
             {teamForm.travel_required && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-2 border-t border-[#DCD8CE]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Input
                   label="From"
                   value={teamForm.travel_from}
@@ -3699,6 +3823,7 @@ function DemosPageContent() {
               </div>
             )}
           </div>
+          </FormSection>
 
           <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
             <Button variant="outline" type="button" onClick={() => setIsAssignTeamOpen(false)}>
@@ -3722,7 +3847,7 @@ function DemosPageContent() {
         onClose={() => setIsReserveEquipOpen(false)}
         title={`Reserve Equipment Unit — ${selectedDemo?.demo_no}`}
       >
-        <form onSubmit={handleReserveSubmit} className="space-y-4 text-sm">
+        <form onSubmit={handleReserveSubmit} className="space-y-5 text-sm">
           {reserveModalError && (
             <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 flex items-start gap-2.5">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
@@ -3774,6 +3899,11 @@ function DemosPageContent() {
             );
           })()}
 
+          <FormSection
+            title="Dates"
+            icon={<CalendarDays />}
+            description="How long should the unit be held for this demo?"
+          >
           <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D] grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <span className="text-[10px] text-[#4A5568] uppercase font-bold block">Demo Destination</span>
@@ -3789,7 +3919,7 @@ function DemosPageContent() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="Reservation Start Date *"
               type="date"
@@ -3805,20 +3935,22 @@ function DemosPageContent() {
               required
             />
           </div>
+          </FormSection>
 
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                Select Fleet Equipment Unit (Serial Number & Depot) *
-              </label>
-              {isLoadingModalEquipment && (
+          <FormSection
+            title="Equipment unit *"
+            icon={<Package />}
+            description="Select a fleet unit (serial number & depot). Units already booked for these dates are greyed out."
+            action={
+              isLoadingModalEquipment && (
                 <div className="flex items-center gap-1.5 text-[11px] text-[#0F5E63]">
                   <Spinner size="xs" />
                   <span>Checking live date calendar...</span>
                 </div>
-              )}
-            </div>
-
+              )
+            }
+          >
+          <div>
             <div className="space-y-2 max-h-64 overflow-y-auto border border-[#DCD8CE] rounded-xl p-2 bg-[#FBFAF7]">
               {(() => {
                 const roster = modalEquipmentUnits.length > 0 ? modalEquipmentUnits : equipmentList;
@@ -3930,7 +4062,7 @@ function DemosPageContent() {
                           : 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#F0F5FF]'
                       }`}
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="flex items-center gap-2">
                           <input
                             type="radio"
@@ -3950,7 +4082,7 @@ function DemosPageContent() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
                           {isProductMatch && (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
                               MATCHES DEMO PRODUCT
@@ -3973,13 +4105,16 @@ function DemosPageContent() {
               })()}
             </div>
           </div>
+          </FormSection>
 
+          <FormSection title="Logistics" icon={<Plane />}>
           <Input
             label="Reservation / Logistics Remarks"
             placeholder="e.g. Courier dispatch arranged via BlueDart secure air-cargo"
             value={reserveForm.remarks}
             onChange={(e) => setReserveForm({ ...reserveForm, remarks: e.target.value })}
           />
+          </FormSection>
 
           <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
             <Button variant="outline" type="button" onClick={() => setIsReserveEquipOpen(false)}>
@@ -4128,7 +4263,7 @@ function DemosPageContent() {
             onChange={(e) => setCancelForm({ ...cancelForm, remarks: e.target.value })}
           />
 
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
+          <div className="flex flex-wrap justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
             <Button variant="outline" type="button" onClick={() => setIsCancelOpen(false)}>
               Close
             </Button>
@@ -4147,13 +4282,21 @@ function DemosPageContent() {
         description="Capture complete trial execution data, customer feedback, technical performance, and structured failure root cause analysis."
         maxWidth="lg"
       >
-        <form onSubmit={handleOutcomeSubmit} className="space-y-4 text-sm">
-          {/* Section 1: Demonstration Execution & Result */}
-          <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
-            <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider block">
-              1. Demonstration Execution & Outcome
-            </span>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+        <form onSubmit={handleOutcomeSubmit} className="text-sm">
+          <FormSteps
+            onCancel={() => setIsOutcomeOpen(false)}
+            submit={
+              <Button variant="primary" type="submit" isLoading={isSubmitting}>
+                Complete Demo & Update Customer History
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Result',
+                icon: <CheckCircle2 />,
+                description: 'How did the demo go, and was it completed with the decision-maker present?',
+                content: (
+            <div className="space-y-3">
               <Select
                 label="Overall Demo Result *"
                 value={outcomeForm.result}
@@ -4166,6 +4309,7 @@ function DemosPageContent() {
                 required
               />
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="pt-2">
                 <Checkbox
                   checked={outcomeForm.completed}
@@ -4186,20 +4330,17 @@ function DemosPageContent() {
                 />
               </div>
             </div>
-          </div>
-
-          {/* Section 2: Structured Failure Reason (§18) - STRICTLY REQUIRED IF RESULT IS FAIL */}
-          {outcomeForm.result === 'fail' && (
-            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-rose-800 flex items-center gap-1.5 uppercase tracking-wider">
-                  <AlertTriangle className="h-4 w-4 text-rose-600" />
-                  <span>2. Primary Failure Reason Taxonomy *</span>
-                </span>
-                <span className="text-[10px] font-semibold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-full border border-rose-200">
-                  Required for Failure Analysis
-                </span>
-              </div>
+            </div>
+                ),
+              },
+              {
+                title: 'Failure reason',
+                icon: <AlertTriangle />,
+                description: 'Primary failure reason (required for failure analysis): pick the category that best explains why the trial failed.',
+                hidden: outcomeForm.result !== 'fail',
+                content: (
+          outcomeForm.result === 'fail' && (
+            <div className="space-y-2.5">
               <Select
                 value={outcomeForm.failure_reason}
                 onChange={(e) => setOutcomeForm({ ...outcomeForm, failure_reason: e.target.value })}
@@ -4223,14 +4364,16 @@ function DemosPageContent() {
                 </div>
               )}
             </div>
-          )}
-
-          {/* Section 3: Field Assessment & Technical Evaluation */}
-          <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
-            <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider block">
-              3. Field Assessment & Technical Evaluation
-            </span>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          )
+                ),
+              },
+              {
+                title: 'Assessment',
+                icon: <BarChart3 />,
+                description: 'How did the customer react, and how did the product perform in the field?',
+                content: (
+            <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
                 label="Customer Response *"
                 placeholder="e.g. Positive response; requested formal quote"
@@ -4248,7 +4391,7 @@ function DemosPageContent() {
               />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
                 label="Product Suitability"
                 placeholder="e.g. Fully compliant with MHA guidelines"
@@ -4262,14 +4405,16 @@ function DemosPageContent() {
                 onChange={(e) => setOutcomeForm({ ...outcomeForm, competitor_involved: e.target.value })}
               />
             </div>
-          </div>
-
-          {/* Section 4: Commercial Progression & Follow-Up */}
-          <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
-            <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider block">
-              4. Commercial Progression & Follow-Up
-            </span>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            </div>
+                ),
+              },
+              {
+                title: 'Follow-up',
+                icon: <TrendingUp />,
+                description: 'Where does the opportunity stand now, and what happens next?',
+                content: (
+            <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Select
                 label="Opportunity Stage"
                 value={outcomeForm.opportunity_stage}
@@ -4297,16 +4442,11 @@ function DemosPageContent() {
               value={outcomeForm.remarks}
               onChange={(e) => setOutcomeForm({ ...outcomeForm, remarks: e.target.value })}
             />
-          </div>
-
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
-            <Button variant="outline" type="button" onClick={() => setIsOutcomeOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" type="submit" isLoading={isSubmitting}>
-              Complete Demo & Update Customer History
-            </Button>
-          </div>
+            </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -4379,7 +4519,21 @@ function DemosPageContent() {
         onClose={() => setIsEquipmentModalOpen(false)}
         title={equipmentForm.id ? 'Edit Depot Equipment Unit' : 'Add New Depot Equipment Unit'}
       >
-        <form onSubmit={handleSaveEquipment} className="space-y-4 text-sm">
+        <form onSubmit={handleSaveEquipment} className="text-sm">
+          <FormSteps
+            onCancel={() => setIsEquipmentModalOpen(false)}
+            submit={
+              <Button variant="primary" type="submit" isLoading={isSubmitting}>
+                Save Equipment Unit
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Unit',
+                icon: <Package />,
+                description: 'Which product is this, and how is the unit identified?',
+                content: (
+          <div className="space-y-3">
           <Select
             label="Product Line *"
             value={equipmentForm.product_id}
@@ -4391,7 +4545,7 @@ function DemosPageContent() {
             required
           />
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="Model Code *"
               placeholder="e.g. DFMD-MULTI-9"
@@ -4407,8 +4561,15 @@ function DemosPageContent() {
               required
             />
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          </div>
+                ),
+              },
+              {
+                title: 'Location',
+                icon: <MapPin />,
+                description: 'Where is the unit kept, and who is responsible for it?',
+                content: (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Select
               label="Depot Location *"
               value={equipmentForm.current_location}
@@ -4424,20 +4585,6 @@ function DemosPageContent() {
             />
 
             <Select
-              label="Operational Condition"
-              value={equipmentForm.condition}
-              onChange={(e) => setEquipmentForm({ ...equipmentForm, condition: e.target.value })}
-              options={[
-                { label: 'Operational (Ready for Field Trial)', value: 'Operational' },
-                { label: 'Good (Minor Cosmetic Wear)', value: 'Good' },
-                { label: 'Requires Calibration', value: 'Requires Calibration' },
-                { label: 'Maintenance Underway', value: 'Maintenance' },
-              ]}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Select
               label="Responsible Custodian / Specialist"
               value={equipmentForm.responsible_person}
               onChange={(e) =>
@@ -4449,6 +4596,27 @@ function DemosPageContent() {
                   label: `${m.full_name} (${m.role.replace(/_/g, ' ')})`,
                   value: m.id,
                 })),
+              ]}
+            />
+          </div>
+                ),
+              },
+              {
+                title: 'Status',
+                icon: <Wrench />,
+                description: 'What condition is the unit in, and can it go out on demos?',
+                content: (
+          <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Select
+              label="Operational Condition"
+              value={equipmentForm.condition}
+              onChange={(e) => setEquipmentForm({ ...equipmentForm, condition: e.target.value })}
+              options={[
+                { label: 'Operational (Ready for Field Trial)', value: 'Operational' },
+                { label: 'Good (Minor Cosmetic Wear)', value: 'Good' },
+                { label: 'Requires Calibration', value: 'Requires Calibration' },
+                { label: 'Maintenance Underway', value: 'Maintenance' },
               ]}
             />
 
@@ -4473,15 +4641,11 @@ function DemosPageContent() {
             value={equipmentForm.remarks}
             onChange={(e) => setEquipmentForm({ ...equipmentForm, remarks: e.target.value })}
           />
-
-          <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
-            <Button variant="outline" type="button" onClick={() => setIsEquipmentModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" type="submit" isLoading={isSubmitting}>
-              Save Equipment Unit
-            </Button>
           </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -4551,16 +4715,18 @@ function DemosPageContent() {
         onClose={() => setIsAllocateOpen(false)}
         title="Allocate Alternative Equipment Unit"
       >
-        <form onSubmit={handleAllocateAnotherSubmit} className="space-y-4 text-sm">
+        <form onSubmit={handleAllocateAnotherSubmit} className="space-y-5 text-sm">
           <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900">
             Reallocating equipment for Demo <strong>{selectedDemo?.demo_no}</strong> (Site:{' '}
             {selectedDemo?.location}). Currently requested: <strong>{selectedReservation?.model}</strong>.
           </div>
 
+          <FormSection
+            title="Alternative unit *"
+            icon={<Package />}
+            description="Select the alternative fleet unit to send instead."
+          >
           <div>
-            <label className="block text-xs font-medium text-[#14213D] mb-1.5">
-              Select Alternative Fleet Unit *
-            </label>
             <div className="space-y-2 max-h-52 overflow-y-auto border border-[#DCD8CE] rounded-lg p-2 bg-[#FBFAF7]">
               {equipmentList
                 .filter((unit) => unit.id !== selectedReservation?.equipment_id)
@@ -4603,7 +4769,13 @@ function DemosPageContent() {
                 ))}
             </div>
           </div>
+          </FormSection>
 
+          <FormSection
+            title="Details"
+            icon={<FileText />}
+            description="Why the unit is changing, the dates to hold it, and dispatch notes."
+          >
           <Input
             label="Reason for Reallocation *"
             placeholder="e.g. Primary unit reserved; allocating alternate calibrated unit from Delhi depot"
@@ -4612,7 +4784,7 @@ function DemosPageContent() {
             required
           />
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
               label="Reservation From"
               type="date"
@@ -4633,6 +4805,7 @@ function DemosPageContent() {
             value={allocateForm.remarks}
             onChange={(e) => setAllocateForm({ ...allocateForm, remarks: e.target.value })}
           />
+          </FormSection>
 
           <div className="flex justify-end gap-3 pt-3 border-t border-[#DCD8CE]">
             <Button variant="outline" type="button" onClick={() => setIsAllocateOpen(false)}>
@@ -4843,7 +5016,7 @@ function DemosPageContent() {
             {/* Module 6 Ticket Callout */}
             {(selectedFailureDetail.service_ticket_id ||
               selectedFailureDetail.outcome?.service_ticket_id) && (
-              <div className="p-3 rounded-xl bg-[#FFF8F6] border border-[#FCA5A5] flex items-center justify-between gap-2">
+              <div className="p-3 rounded-xl bg-[#FFF8F6] border border-[#FCA5A5] flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2">
                   <Wrench className="h-4 w-4 text-[#9A3412]" />
                   <div>

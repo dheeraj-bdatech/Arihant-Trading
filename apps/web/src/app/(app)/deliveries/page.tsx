@@ -4,21 +4,19 @@ import Link from 'next/link';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
 import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Truck,
   Plus,
   CheckCircle2,
   Clock,
   Building,
-  User,
   Calendar,
   Package,
   Wrench,
   Search,
   CheckSquare,
   FileCheck,
-  ChevronRight,
-  Shield,
   MapPin,
   Layers,
 } from 'lucide-react';
@@ -29,7 +27,6 @@ import { canRead } from '@/lib/module-access';
 import { canOpen } from '@/lib/route-access';
 import {
   Button,
-  Badge,
   Card,
   Modal,
   Input,
@@ -37,10 +34,29 @@ import {
   FilterMenu,
   PageContainer,
   PageHeader,
-  EmptyState, PageLoader, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, StatGrid, StatCard, RowMenu } from '@/components/ui';
+  FormSteps,
+  FormSection,
+  EmptyState, PageLoader, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, StatGrid, StatCard, RowMenu,
+  RecordViews, rowDetails, toneFor, type RecordItem } from '@/components/ui';
+
+// Consignment lifecycle in workflow order — drives the stage board lanes and the next-step button.
+const DELIVERY_STATUSES: { key: string; label: string }[] = [
+  { key: 'scheduled', label: 'Scheduled' },
+  { key: 'dispatched', label: 'Dispatched' },
+  { key: 'in_transit', label: 'In transit' },
+  { key: 'delivered', label: 'Delivered' },
+  { key: 'installed', label: 'Installed' },
+  { key: 'handover_completed', label: 'Handover complete' },
+  { key: 'cancelled', label: 'Cancelled' },
+];
+const DELIVERY_FLOW = DELIVERY_STATUSES.filter((s) => s.key !== 'cancelled').map((s) => s.key);
+const deliveryStatusLabel = (status?: string) =>
+  DELIVERY_STATUSES.find((s) => s.key === status)?.label || String(status || 'Unknown').replace(/_/g, ' ');
+
 
 export default function DeliveriesPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const [organisations, setOrganisations] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -203,25 +219,71 @@ export default function DeliveriesPage() {
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'scheduled':
-        return <Badge variant="warning">Scheduled</Badge>;
-      case 'dispatched':
-        return <Badge variant="info">Dispatched</Badge>;
-      case 'in_transit':
-        return <Badge variant="cyber">In Transit</Badge>;
-      case 'delivered':
-        return <Badge variant="success">Delivered</Badge>;
-      case 'installed':
-        return <Badge variant="success">Installed</Badge>;
-      case 'handover_completed':
-        return <Badge variant="default">Handover Complete</Badge>;
-      case 'cancelled':
-        return <Badge variant="danger">Cancelled</Badge>;
-      default:
-        return <Badge variant="default">{status}</Badge>;
+  // Opens the existing milestone dialog; `next` pre-selects the following stage (the user still confirms it).
+  const openStatusUpdate = (delivery: any, next?: string) => {
+    setSelectedDelivery(delivery);
+    setUpdateForm({
+      status: next || delivery.status,
+      received_by: delivery.received_by || '',
+      installation_date: calendarDay(delivery.installation_date),
+      installation_notes: delivery.installation_notes || '',
+      remarks: delivery.remarks || '',
+    });
+    setActionError(null);
+    setIsUpdateStatusOpen(true);
+  };
+
+  // Register as priority cards / stage board.
+  const toDeliveryRecord = (delivery: any): RecordItem => {
+    const remarks = String(delivery.remarks || '');
+    // Carrier / LR are stored in the remarks at creation ("Carrier: … · LR/Tracking: …").
+    const carrier = remarks.match(/Carrier:\s*([^·\n]+)/)?.[1]?.trim();
+    const tracking = remarks.match(/LR\/Tracking:\s*([^·\n]+)/)?.[1]?.trim();
+    const idx = DELIVERY_FLOW.indexOf(delivery.status);
+    const next = idx >= 0 && idx < DELIVERY_FLOW.length - 1 ? DELIVERY_FLOW[idx + 1] : undefined;
+    const done = ['delivered', 'installed', 'handover_completed', 'cancelled'].includes(delivery.status);
+    const facts = [
+      { label: 'Order ref', value: delivery.order_reference || '—' },
+      { label: 'Serial', value: delivery.equipment_serial || delivery.model || '—' },
+      (carrier || tracking) && { label: 'Carrier / LR', value: [carrier, tracking].filter(Boolean).join(' · ') },
+      delivery.tender_id && {
+        label: 'Tender',
+        value: canOpen(user?.role, '/tenders') ? (
+          <Link href={`/tenders?highlight=${delivery.tender_id}`} onClick={(e) => e.stopPropagation()} className="text-[#0F5E63] hover:underline">
+            {delivery.tender_no || 'Linked'}
+          </Link>
+        ) : (
+          delivery.tender_no || 'Linked'
+        ),
+      },
+    ].filter(Boolean) as NonNullable<RecordItem['facts']>;
+    const quick: NonNullable<RecordItem['quick']> = [];
+    if (delivery.organisation_id && canOpen(user?.role, '/leads')) {
+      quick.push({ label: 'Customer 360', icon: <Building />, onClick: () => router.push(`/leads?customer=${delivery.organisation_id}`) });
     }
+    if (delivery.delivery_location) {
+      quick.push({
+        label: 'Open in maps',
+        icon: <MapPin />,
+        onClick: () => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(delivery.delivery_location)}`, '_blank', 'noopener'),
+      });
+    }
+
+    return {
+      key: String(delivery.id),
+      code: delivery.delivery_no,
+      title: delivery.product_name || delivery.order_reference || 'Security Scanning Equipment',
+      subtitle: [delivery.organisation_name || 'Defence / Security Buyer', delivery.delivery_location].filter(Boolean).join(' · '),
+      status: { label: deliveryStatusLabel(delivery.status), tone: toneFor(deliveryStatusLabel(delivery.status)) },
+      due: { date: delivery.delivery_date, label: 'Delivery', done },
+      owner: delivery.assigned_name || undefined,
+      facts,
+      primary: next
+        ? { label: `Mark ${deliveryStatusLabel(next).toLowerCase()}`, onClick: () => openStatusUpdate(delivery, next) }
+        : { label: 'Update milestone', onClick: () => openStatusUpdate(delivery) },
+      quick,
+      details: rowDetails(delivery),
+    };
   };
 
   const counts = {
@@ -341,124 +403,27 @@ export default function DeliveriesPage() {
           }
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {deliveries.map((delivery) => (
-            <Card key={delivery.id} className="p-5 flex flex-col justify-between hover:shadow-md transition-all">
-              <div className="space-y-4">
-                {/* Header: Delivery No & Status */}
-                <div className="flex items-start justify-between gap-2 border-b border-[#ECE9E2] pb-3">
-                  <div>
-                    <span className="font-mono text-xs font-bold text-[#0F5E63]">
-                      {delivery.delivery_no}
-                    </span>
-                    <h3 className="font-serif text-base font-bold text-[#14213D] line-clamp-1 mt-0.5">
-                      {canOpen(user?.role, '/leads') ? (
-                        <Link href={`/leads?customer=${delivery.organisation_id}`} className="hover:underline hover:text-[#0F5E63]" title="Open Customer 360">
-                          {delivery.organisation_name || 'Defence / Security Buyer'}
-                        </Link>
-                      ) : (
-                        delivery.organisation_name || 'Defence / Security Buyer'
-                      )}
-                    </h3>
-                    {delivery.tender_id && (
-                      canOpen(user?.role, '/tenders') ? (
-                        <Link href={`/tenders?highlight=${delivery.tender_id}`} className="text-[11px] font-semibold text-[#0F5E63] hover:underline">
-                          Tender {delivery.tender_no}
-                        </Link>
-                      ) : (
-                        <span className="text-[11px] text-[#4A5568]">Tender {delivery.tender_no}</span>
-                      )
-                    )}
-                  </div>
-                  <div>{getStatusBadge(delivery.status)}</div>
-                </div>
-
-                {/* Details List */}
-                <div className="space-y-2 text-xs text-[#4A5568]">
-                  <div className="flex items-center gap-2">
-                    <Package className="h-4 w-4 text-[#0F5E63] shrink-0" />
-                    <span className="font-semibold text-[#14213D]">Product:</span>
-                    <span className="truncate">{delivery.product_name || 'Security Scanning Equipment'}</span>
-                  </div>
-
-                  {delivery.model && (
-                    <div className="flex items-center gap-2">
-                      <Shield className="h-4 w-4 text-[#4A5568] shrink-0" />
-                      <span>Model:</span>
-                      <span className="font-mono text-[#14213D]">{delivery.model}</span>
-                    </div>
-                  )}
-
-                  {delivery.equipment_serial && (
-                    <div className="flex items-center gap-2">
-                      <Shield className="h-4 w-4 text-[#4A5568] shrink-0" />
-                      <span>Serial:</span>
-                      <span className="font-mono text-[#14213D] truncate">{delivery.equipment_serial}</span>
-                    </div>
-                  )}
-
-                  {delivery.delivery_location && (
-                    <div className="flex items-center gap-2">
-                      <MapPin className="h-4 w-4 text-[#9A3412] shrink-0" />
-                      <span className="truncate">{delivery.delivery_location}</span>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <Calendar className="h-4 w-4 text-[#4A5568] shrink-0" />
-                    <span>Target Date:</span>
-                    <span className="font-mono text-[#14213D]">
-                      {delivery.delivery_date ? new Date(delivery.delivery_date).toLocaleDateString('en-IN') : 'TBD'}
-                    </span>
-                  </div>
-
-
-                  {delivery.assigned_name && (
-                    <div className="flex items-center gap-2">
-                      <User className="h-4 w-4 text-[#4A5568] shrink-0" />
-                      <span>In-charge:</span>
-                      <span className="font-medium text-[#14213D]">{delivery.assigned_name}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Remarks / Notes */}
-                {delivery.remarks && (
-                  <div className="p-2.5 rounded-[8px] bg-[#FBFAF7] border border-[#ECE9E2] text-[11px] text-[#4A5568]">
-                    {delivery.remarks}
-                  </div>
-                )}
-              </div>
-
-              {/* Action Footer */}
-              <div className="pt-4 border-t border-[#ECE9E2] mt-4 flex items-center justify-between">
-                <span className="text-[10px] text-[#4A5568] font-mono">
-                  {delivery.order_reference || 'Consignment'}
-                </span>
-
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onClick={() => {
-                    setSelectedDelivery(delivery);
-                    setUpdateForm({
-                      status: delivery.status,
-                      received_by: delivery.received_by || '',
-                      installation_date: calendarDay(delivery.installation_date),
-                      installation_notes: delivery.installation_notes || '',
-                      remarks: delivery.remarks || '',
-                    });
-                    setActionError(null);
-                    setIsUpdateStatusOpen(true);
-                  }}
-                >
-                  <span>Update Milestone</span>
-                  <ChevronRight className="h-3 w-3 ml-1" />
-                </Button>
-              </div>
-            </Card>
-          ))}
-        </div>
+        (() => {
+          const statusById = new Map(deliveries.map((d) => [String(d.id), d.status as string]));
+          const extraLanes = Array.from(new Set(deliveries.map((d) => d.status as string)))
+            .filter((s) => s && !DELIVERY_STATUSES.some((l) => l.key === s))
+            .map((s) => ({ key: s, label: deliveryStatusLabel(s) }));
+          return (
+            <RecordViews
+              storageKey="deliveries"
+              defaultView="cards"
+              items={deliveries.map(toDeliveryRecord)}
+              lanes={[...DELIVERY_STATUSES, ...extraLanes].map((l) => ({ ...l, tone: toneFor(l.label) }))}
+              laneOf={(i) => statusById.get(i.key) || ''}
+              summary={
+                <>
+                  <span className="font-mono font-semibold text-[#14213D]">{counts.all}</span> consignments · {counts.scheduled} scheduled · {counts.in_transit} in transit
+                </>
+              }
+              empty="No delivery consignments match your criteria."
+            />
+          );
+        })()
       )}
 
       {/* Modal: Create Dispatch Order */}
@@ -468,192 +433,225 @@ export default function DeliveriesPage() {
         title="Schedule Dispatch / Delivery Order"
         description="Initiate a new equipment delivery consignment against an order or tender contract."
       >
-        <form onSubmit={handleCreate} className="space-y-4">
-          {actionError && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
+        <form onSubmit={handleCreate}>
+          <FormSteps
+            onCancel={() => setIsCreateOpen(false)}
+            banner={
+              actionError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                  {actionError}
+                </div>
+              )
+            }
+            submit={
+              <Button variant="primary" type="submit" isLoading={isSubmitting}>
+                Schedule Dispatch
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Customer',
+                icon: <Building />,
+                description: 'Who is receiving this consignment, and is it against a won tender?',
+                content: (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Client / Organization *
+                      </label>
+                      <select
+                        value={newDelivery.organisation_id}
+                        onChange={(e) => setNewDelivery({ ...newDelivery, organisation_id: e.target.value, tender_id: '' })}
+                        className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
+                        required
+                      >
+                        <option value="">Select Government Organization...</option>
+                        {organisations.map((org) => (
+                          <option key={org.id} value={org.id}>
+                            {org.name} {org.city ? `(${org.city})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-[#14213D] mb-1">
-              Client / Organization *
-            </label>
-            <select
-              value={newDelivery.organisation_id}
-              onChange={(e) => setNewDelivery({ ...newDelivery, organisation_id: e.target.value, tender_id: '' })}
-              className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
-              required
-            >
-              <option value="">Select Government Organization...</option>
-              {organisations.map((org) => (
-                <option key={org.id} value={org.id}>
-                  {org.name} {org.city ? `(${org.city})` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
+                    {canRead(user?.role, 'tenders') && newDelivery.organisation_id && (
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">Against won tender (optional)</label>
+                        <select
+                          value={newDelivery.tender_id}
+                          onChange={(e) => setNewDelivery({ ...newDelivery, tender_id: e.target.value })}
+                          className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
+                          disabled={!orgTenders.length}
+                        >
+                          <option value="">{orgTenders.length ? 'Not linked to a tender' : 'No won tenders for this customer'}</option>
+                          {orgTenders.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.tender_number || t.tender_no}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
 
-          {canRead(user?.role, 'tenders') && newDelivery.organisation_id && (
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">Against won tender (optional)</label>
-              <select
-                value={newDelivery.tender_id}
-                onChange={(e) => setNewDelivery({ ...newDelivery, tender_id: e.target.value })}
-                className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
-                disabled={!orgTenders.length}
-              >
-                <option value="">{orgTenders.length ? 'Not linked to a tender' : 'No won tenders for this customer'}</option>
-                {orgTenders.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.tender_number || t.tender_no}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Tender / Order Reference
+                      </label>
+                      <Input
+                        placeholder="e.g. GeM-GEM/2026/B/8821"
+                        value={newDelivery.order_reference}
+                        onChange={(e) => setNewDelivery({ ...newDelivery, order_reference: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Equipment',
+                icon: <Package />,
+                description: 'What is being shipped, and which units by serial number.',
+                content: (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                          Equipment Product
+                        </label>
+                        <select
+                          value={newDelivery.product_id}
+                          onChange={(e) => setNewDelivery({ ...newDelivery, product_id: e.target.value })}
+                          className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
+                        >
+                          <option value="">Select Equipment...</option>
+                          {products.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Equipment Product
-              </label>
-              <select
-                value={newDelivery.product_id}
-                onChange={(e) => setNewDelivery({ ...newDelivery, product_id: e.target.value })}
-                className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
-              >
-                <option value="">Select Equipment...</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                          Model / Variant
+                        </label>
+                        <Input
+                          placeholder="e.g. Dual-View 6040 HD"
+                          value={newDelivery.product_model}
+                          onChange={(e) => setNewDelivery({ ...newDelivery, product_model: e.target.value })}
+                        />
+                      </div>
+                    </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Model / Variant
-              </label>
-              <Input
-                placeholder="e.g. Dual-View 6040 HD"
-                value={newDelivery.product_model}
-                onChange={(e) => setNewDelivery({ ...newDelivery, product_model: e.target.value })}
-              />
-            </div>
-          </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Serial Numbers (comma separated)
+                      </label>
+                      <Input
+                        placeholder="e.g. SN-2026-X10, SN-2026-X11"
+                        value={newDelivery.serial_numbers}
+                        onChange={(e) => setNewDelivery({ ...newDelivery, serial_numbers: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Schedule',
+                icon: <Calendar />,
+                description: 'When and where it should arrive, and who on our side owns it.',
+                content: (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                          Target Delivery Date *
+                        </label>
+                        <Input
+                          type="date"
+                          value={newDelivery.delivery_date}
+                          onChange={(e) => setNewDelivery({ ...newDelivery, delivery_date: e.target.value })}
+                          required
+                        />
+                      </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Target Delivery Date *
-              </label>
-              <Input
-                type="date"
-                value={newDelivery.delivery_date}
-                onChange={(e) => setNewDelivery({ ...newDelivery, delivery_date: e.target.value })}
-                required
-              />
-            </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                          Responsible Employee
+                        </label>
+                        <select
+                          value={newDelivery.assigned_to}
+                          onChange={(e) => setNewDelivery({ ...newDelivery, assigned_to: e.target.value })}
+                          className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
+                        >
+                          <option value="">Select Staff...</option>
+                          {users.map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.full_name} ({u.role})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Responsible Employee
-              </label>
-              <select
-                value={newDelivery.assigned_to}
-                onChange={(e) => setNewDelivery({ ...newDelivery, assigned_to: e.target.value })}
-                className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
-              >
-                <option value="">Select Staff...</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.full_name} ({u.role})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Delivery Location / Site Address
+                      </label>
+                      <Input
+                        placeholder="e.g. Terminal 3 Gate 4, IGI Airport, New Delhi"
+                        value={newDelivery.delivery_location}
+                        onChange={(e) => setNewDelivery({ ...newDelivery, delivery_location: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Shipping',
+                icon: <Truck />,
+                description: 'Transporter details and any handling instructions for the dispatch team.',
+                content: (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                          Carrier / Transporter
+                        </label>
+                        <Input
+                          placeholder="e.g. BlueDart Express"
+                          value={newDelivery.carrier_name}
+                          onChange={(e) => setNewDelivery({ ...newDelivery, carrier_name: e.target.value })}
+                        />
+                      </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-[#14213D] mb-1">
-              Delivery Location / Site Address
-            </label>
-            <Input
-              placeholder="e.g. Terminal 3 Gate 4, IGI Airport, New Delhi"
-              value={newDelivery.delivery_location}
-              onChange={(e) => setNewDelivery({ ...newDelivery, delivery_location: e.target.value })}
-            />
-          </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                          LR / Tracking Number
+                        </label>
+                        <Input
+                          placeholder="e.g. TRK-882319"
+                          value={newDelivery.tracking_number}
+                          onChange={(e) => setNewDelivery({ ...newDelivery, tracking_number: e.target.value })}
+                        />
+                      </div>
+                    </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Carrier / Transporter
-              </label>
-              <Input
-                placeholder="e.g. BlueDart Express"
-                value={newDelivery.carrier_name}
-                onChange={(e) => setNewDelivery({ ...newDelivery, carrier_name: e.target.value })}
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                LR / Tracking Number
-              </label>
-              <Input
-                placeholder="e.g. TRK-882319"
-                value={newDelivery.tracking_number}
-                onChange={(e) => setNewDelivery({ ...newDelivery, tracking_number: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Tender / Order Reference
-              </label>
-              <Input
-                placeholder="e.g. GeM-GEM/2026/B/8821"
-                value={newDelivery.order_reference}
-                onChange={(e) => setNewDelivery({ ...newDelivery, order_reference: e.target.value })}
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Serial Numbers (comma separated)
-              </label>
-              <Input
-                placeholder="e.g. SN-2026-X10, SN-2026-X11"
-                value={newDelivery.serial_numbers}
-                onChange={(e) => setNewDelivery({ ...newDelivery, serial_numbers: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-[#14213D] mb-1">
-              Dispatch Instructions / Remarks
-            </label>
-            <Input
-              placeholder="e.g. Handle with care, fragile optical detectors inside."
-              value={newDelivery.remarks}
-              onChange={(e) => setNewDelivery({ ...newDelivery, remarks: e.target.value })}
-            />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-3 border-t border-[#ECE9E2]">
-            <Button variant="outline" type="button" onClick={() => setIsCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" type="submit" isLoading={isSubmitting}>
-              Schedule Dispatch
-            </Button>
-          </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Dispatch Instructions / Remarks
+                      </label>
+                      <Input
+                        placeholder="e.g. Handle with care, fragile optical detectors inside."
+                        value={newDelivery.remarks}
+                        onChange={(e) => setNewDelivery({ ...newDelivery, remarks: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </form>
       </Modal>
 
@@ -664,82 +662,90 @@ export default function DeliveriesPage() {
         title={`Update Status: ${selectedDelivery?.delivery_no || ''}`}
         description="Record transit milestones, on-site arrival, technician installation, and final handover."
       >
-        <form onSubmit={handleUpdateStatus} className="space-y-4">
+        <form onSubmit={handleUpdateStatus} className="space-y-5">
           {actionError && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
               {actionError}
             </div>
           )}
 
-          <div>
-            <label className="block text-xs font-semibold text-[#14213D] mb-1">
-              Consignment Status *
-            </label>
-            <select
-              value={updateForm.status}
-              onChange={(e) => setUpdateForm({ ...updateForm, status: e.target.value })}
-              className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
-              required
-            >
-              <option value="scheduled">Scheduled (In Depot)</option>
-              <option value="dispatched">Dispatched (Left Facility)</option>
-              <option value="in_transit">In Transit (With Transporter)</option>
-              <option value="delivered">Delivered (Received at Site)</option>
-              <option value="installed">Installed & Commissioned</option>
-              <option value="handover_completed">Handover Completed (Client Signoff)</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </div>
-
-          {['delivered', 'installed', 'handover_completed'].includes(updateForm.status) && (
-            <div>
-              <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                Received / Accepted By (Client Officer)
-              </label>
-              <Input
-                placeholder="e.g. Major R. K. Sharma (Store Officer)"
-                value={updateForm.received_by}
-                onChange={(e) => setUpdateForm({ ...updateForm, received_by: e.target.value })}
-              />
-            </div>
-          )}
-
-          {['installed', 'handover_completed'].includes(updateForm.status) && (
+          <FormSection title="Milestone" icon={<Truck />} description="Where the consignment stands now.">
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                  Commissioning Date
+                  Consignment Status *
                 </label>
-                <Input
-                  type="date"
-                  value={updateForm.installation_date}
-                  onChange={(e) => setUpdateForm({ ...updateForm, installation_date: e.target.value })}
-                />
+                <select
+                  value={updateForm.status}
+                  onChange={(e) => setUpdateForm({ ...updateForm, status: e.target.value })}
+                  className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
+                  required
+                >
+                  <option value="scheduled">Scheduled (In Depot)</option>
+                  <option value="dispatched">Dispatched (Left Facility)</option>
+                  <option value="in_transit">In Transit (With Transporter)</option>
+                  <option value="delivered">Delivered (Received at Site)</option>
+                  <option value="installed">Installed & Commissioned</option>
+                  <option value="handover_completed">Handover Completed (Client Signoff)</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                  Installation / Commissioning Notes
+                  Transition Remarks
                 </label>
                 <Input
-                  placeholder="e.g. Calibration passed, operators trained on console."
-                  value={updateForm.installation_notes}
-                  onChange={(e) => setUpdateForm({ ...updateForm, installation_notes: e.target.value })}
+                  placeholder="e.g. Reached regional cargo hub on schedule."
+                  value={updateForm.remarks}
+                  onChange={(e) => setUpdateForm({ ...updateForm, remarks: e.target.value })}
                 />
               </div>
             </div>
-          )}
+          </FormSection>
 
-          <div>
-            <label className="block text-xs font-semibold text-[#14213D] mb-1">
-              Transition Remarks
-            </label>
-            <Input
-              placeholder="e.g. Reached regional cargo hub on schedule."
-              value={updateForm.remarks}
-              onChange={(e) => setUpdateForm({ ...updateForm, remarks: e.target.value })}
-            />
-          </div>
+          {['delivered', 'installed', 'handover_completed'].includes(updateForm.status) && (
+            <FormSection title="Site Handover" icon={<CheckSquare />} description="Who accepted it at site and, once installed, the commissioning details.">
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                    Received / Accepted By (Client Officer)
+                  </label>
+                  <Input
+                    placeholder="e.g. Major R. K. Sharma (Store Officer)"
+                    value={updateForm.received_by}
+                    onChange={(e) => setUpdateForm({ ...updateForm, received_by: e.target.value })}
+                  />
+                </div>
+
+                {['installed', 'handover_completed'].includes(updateForm.status) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Commissioning Date
+                      </label>
+                      <Input
+                        type="date"
+                        value={updateForm.installation_date}
+                        onChange={(e) => setUpdateForm({ ...updateForm, installation_date: e.target.value })}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                        Installation / Commissioning Notes
+                      </label>
+                      <Input
+                        placeholder="e.g. Calibration passed, operators trained on console."
+                        value={updateForm.installation_notes}
+                        onChange={(e) => setUpdateForm({ ...updateForm, installation_notes: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </FormSection>
+          )}
 
           <div className="flex justify-end gap-2 pt-3 border-t border-[#ECE9E2]">
             <Button variant="outline" type="button" onClick={() => setIsUpdateStatusOpen(false)}>

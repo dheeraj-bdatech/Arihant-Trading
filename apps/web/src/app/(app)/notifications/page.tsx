@@ -250,15 +250,6 @@ export default function NotificationsPage() {
         actions={
           <div className="flex items-center gap-2">
             <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fetchNotifications(true)}
-              isLoading={isRefreshing}
-              leftIcon={<RotateCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />}
-            >
-              <span>Refresh</span>
-            </Button>
-            <Button
               variant="secondary"
               size="sm"
               onClick={handleMarkAllRead}

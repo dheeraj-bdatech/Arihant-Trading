@@ -9,8 +9,8 @@ import { twMerge } from 'tailwind-merge';
  * Tiny module-level store so a page's PageHeader (actions) and filter strips can find the
  * ToolbarBox they belong to, regardless of where they sit in the React tree.
  */
-type Slots = { actions: HTMLElement | null; filters: HTMLElement | null; filterCount: number };
-let slots: Slots = { actions: null, filters: null, filterCount: 0 };
+type Slots = { actions: HTMLElement | null; filters: HTMLElement | null; filterCount: number; dock: HTMLElement | null; dockPriority: number };
+let slots: Slots = { actions: null, filters: null, filterCount: 0, dock: null, dockPriority: 0 };
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 const subscribe = (l: () => void) => {
@@ -77,10 +77,56 @@ export const ToolbarSlot: React.FC<{ children: React.ReactNode }> = ({ children 
   return createPortal(<div className="toolbar-slotted">{children}</div>, filters);
 };
 
-/** Renders page actions into the ToolbarBox action area; falls back to a floating pill without one. */
+/** The page's filter row: the nearest horizontal flex row around a control (at most two levels up). */
+function rowOf(el: HTMLElement): HTMLElement | null {
+  let node = el.parentElement;
+  for (let i = 0; node && i < 2; i++, node = node.parentElement) {
+    if (/(^|\s)(\w+:)?flex-row(\s|$)/.test(node.className)) return node;
+  }
+  return el.parentElement;
+}
+
+/**
+ * Marks the row a control sits in (the page's filter / tabs row) as the place page actions dock.
+ * Higher priority wins (View menu 3 > other filter menus 2 > tabs 1), then the first one mounted;
+ * rows inside dialogs are ignored.
+ */
+export function useActionDock(ref: React.RefObject<HTMLElement | null>, priority = 1) {
+  useEffect(() => {
+    const el = ref.current;
+    const row = el && rowOf(el);
+    if (!priority || !row || row.closest('[role="dialog"]') || (slots.dock && slots.dockPriority >= priority)) return;
+    patch({ dock: row, dockPriority: priority });
+    return () => {
+      if (slots.dock === row) patch({ dock: null, dockPriority: 0 });
+    };
+  }, [ref, priority]);
+}
+
+/**
+ * Renders page actions into the ToolbarBox action area, else at the right end of the page's
+ * filter / tabs row (see useActionDock); falls back to a floating pill when the page has neither.
+ */
 export const ToolbarActions: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => {
-  const { actions } = useSlots();
+  const { actions, dock } = useSlots();
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (actions || !dock) return;
+    const el = document.createElement('div');
+    el.className = 'toolbar-dock';
+    // A row that is not a flex row yet (e.g. a lone tab strip) becomes one, so actions sit beside it.
+    const madeRow = getComputedStyle(dock).display !== 'flex';
+    if (madeRow) dock.classList.add('toolbar-dock-row');
+    dock.appendChild(el);
+    setHost(el);
+    return () => {
+      el.remove();
+      if (madeRow) dock.classList.remove('toolbar-dock-row');
+      setHost(null);
+    };
+  }, [actions, dock]);
   if (actions) return createPortal(<>{children}</>, actions);
+  if (host) return createPortal(<>{children}</>, host);
   return (
     <div className={twMerge('ml-auto flex w-fit max-w-full flex-wrap items-center justify-end gap-2.5 rounded-[14px] border border-[#DCD8CE] bg-white/80 px-3 py-2 shadow-2xs backdrop-blur', className)}>
       {children}

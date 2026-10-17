@@ -28,6 +28,8 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { canRead, type ReadableModule } from '@/lib/module-access';
 import { canOpen } from '@/lib/route-access';
+import { NewTaskButton } from '@/app/(app)/tasks/_lib/NewTaskModal';
+import type { TaskFormPrefill } from '@/app/(app)/tasks/_lib/TaskForm';
 
 /** The record the panel is attached to. organisationId is its customer, used for customer-wide sections. */
 export type RelatedTo =
@@ -302,15 +304,12 @@ function ticketRow(t: any): Row {
   };
 }
 
-/** /tasks/new prefill: the server derives the customer from a tender / demo / ticket link. */
-function taskHref(to: RelatedTo, title?: string) {
-  const q = new URLSearchParams();
-  if (to.kind === 'tender') q.set('tender_id', to.id);
-  else if (to.kind === 'demo') q.set('demo_id', to.id);
-  else if (to.kind === 'ticket') q.set('service_ticket_id', to.id);
-  else if (customerOf(to)) q.set('customer_id', customerOf(to)!);
-  if (title) q.set('title', title);
-  return `/tasks/new?${q.toString()}`;
+/** New-task prefill: the server derives the customer from a tender / demo / ticket link. */
+function taskPrefill(to: RelatedTo, title?: string): TaskFormPrefill {
+  if (to.kind === 'tender') return { tender_id: to.id, title };
+  if (to.kind === 'demo') return { demo_id: to.id, title };
+  if (to.kind === 'ticket') return { service_ticket_id: to.id, title };
+  return { customer_id: customerOf(to) || null, title };
 }
 
 export interface RelatedRecordsProps {
@@ -364,11 +363,9 @@ export function RelatedRecords({ to, sections, title = 'Linked records', descrip
           {description && <p className="text-[11px] text-[#4A5568]">{description}</p>}
         </div>
         {addTask && canOpen(role, '/tasks/new') && (
-          <Link href={taskHref(to, typeof addTask === 'object' ? addTask.title : undefined)}>
-            <Button size="sm" variant="secondary" leftIcon={<Plus className="h-3.5 w-3.5" />}>
-              Add task
-            </Button>
-          </Link>
+          <NewTaskButton size="sm" variant="secondary" prefill={taskPrefill(to, typeof addTask === 'object' ? addTask.title : undefined)} leftIcon={<Plus className="h-3.5 w-3.5" />}>
+            Add task
+          </NewTaskButton>
         )}
       </div>
 

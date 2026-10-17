@@ -10,8 +10,9 @@ export const PageContainer = React.forwardRef<HTMLDivElement, PageContainerProps
     return (
       <div
         ref={ref}
+        // No bottom padding: pages run to the bottom edge of the screen.
         className={twMerge(
-          'page-stagger relative space-y-5 pb-12 max-w-full',
+          'page-stagger relative space-y-5 max-w-full',
           className,
         )}
         {...props}

@@ -29,6 +29,7 @@ import { EXPENSE_CLAIM_STATUSES, EXPENSE_STATUS_LABELS } from '@arihant/shared';
 import { errorMessage, fieldErrors, notifyExpensesChanged, saveBlob, type ExpenseClaim, type Paged } from './_lib/expense-lib';
 import { DateText, ExpenseViewMenu, Money, PaymentInfo, StatusBadge, useToaster } from './_lib/expense-ui';
 import { useUrlFilters } from './_lib/use-url-filters';
+import { ClaimFormModal } from './_lib/ClaimFormModal';
 
 const FILTER_KEYS = ['statuses', 'date_from', 'date_to', 'trip_id', 'search', 'page'] as const;
 const DATE_INPUT = 'h-8 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none';
@@ -44,11 +45,16 @@ function MyExpenses() {
   const [importOpen, setImportOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
   const { push, Toaster } = useToaster();
+  // New / edit claim popup (instead of /expenses/new and /expenses/:id/edit).
+  const [claimModal, setClaimModal] = useState<{ claimId?: string; visitId?: string } | null>(null);
 
   // Legacy deep link from the visit planner: /expenses?visit_id=… → start a claim for that visit.
   useEffect(() => {
     const visitId = params.get('visit_id');
-    if (visitId) router.replace(`/expenses/new?visit_id=${visitId}`);
+    if (visitId) {
+      setClaimModal({ visitId });
+      router.replace('/expenses');
+    }
   }, [params, router]);
 
   const load = useCallback(async () => {
@@ -84,11 +90,9 @@ function MyExpenses() {
             <Button variant="secondary" size="sm" leftIcon={<Upload className="h-4 w-4" />} onClick={() => setImportOpen(true)}>
               <span className="hidden sm:inline">Import Excel</span>
             </Button>
-            <Link href="/expenses/new">
-              <Button size="sm" leftIcon={<Plus className="h-4 w-4" />}>
-                New Expense Claim
-              </Button>
-            </Link>
+            <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setClaimModal({})}>
+              New Expense Claim
+            </Button>
           </div>
         }
       />
@@ -195,7 +199,7 @@ function MyExpenses() {
             activeCount ? (
               <Button variant="secondary" onClick={clear}>Clear filters</Button>
             ) : (
-              <Link href="/expenses/new"><Button leftIcon={<Plus className="h-4 w-4" />}>New Expense Claim</Button></Link>
+              <Button leftIcon={<Plus className="h-4 w-4" />} onClick={() => setClaimModal({})}>New Expense Claim</Button>
             )
           }
         />
@@ -236,7 +240,7 @@ function MyExpenses() {
                       <TableCell className="text-xs"><DateText value={c.updated_at} /></TableCell>
                       <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                         {c.allowed_actions.includes('edit') ? (
-                          <Link href={`/expenses/${c.id}/edit`}><Button size="xs" variant="secondary">{c.status === 'clarification_required' ? 'Respond' : 'Edit'}</Button></Link>
+                          <Button size="xs" variant="secondary" onClick={() => setClaimModal({ claimId: c.id })}>{c.status === 'clarification_required' ? 'Respond' : 'Edit'}</Button>
                         ) : (
                           <Link href={`/expenses/${c.id}`}><Button size="xs" variant="ghost">View</Button></Link>
                         )}
@@ -250,7 +254,16 @@ function MyExpenses() {
             {/* Mobile cards */}
             <div className="md:hidden space-y-3">
               {result.data.map((c) => (
-                <Link key={c.id} href={c.allowed_actions.includes('edit') ? `/expenses/${c.id}/edit` : `/expenses/${c.id}`} className="block">
+                <Link
+                  key={c.id}
+                  href={`/expenses/${c.id}`}
+                  onClick={(e) => {
+                    if (!c.allowed_actions.includes('edit')) return;
+                    e.preventDefault();
+                    setClaimModal({ claimId: c.id });
+                  }}
+                  className="block"
+                >
                   <Card className="p-4 space-y-2 active:scale-[0.99] transition-transform">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -292,9 +305,18 @@ function MyExpenses() {
           setImportOpen(false);
           notifyExpensesChanged();
           push('success', 'Imported as a draft. Attach receipts and submit when ready.');
-          router.push(`/expenses/${id}/edit`);
+          setClaimModal({ claimId: id });
         }}
       />
+      {claimModal && (
+        <ClaimFormModal
+          isOpen
+          claimId={claimModal.claimId}
+          initialVisitId={claimModal.visitId}
+          onClose={() => setClaimModal(null)}
+          onDone={(m) => push('success', m)}
+        />
+      )}
       <Toaster />
     </PageContainer>
   );

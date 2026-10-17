@@ -304,11 +304,6 @@ export default function AdminPage() {
       <PageHeader
         title="Enterprise Administration & System Masters"
         icon={<Settings className="h-5 w-5 text-[#0F5E63]" />}
-        actions={
-          <Button variant="outline" size="sm" onClick={fetchAdminData} isLoading={isLoading} leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
-            Reload
-          </Button>
-        }
       />
 
       <StatGrid cols={4} className="gap-3">

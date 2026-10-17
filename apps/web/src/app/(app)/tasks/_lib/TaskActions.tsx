@@ -7,8 +7,8 @@
  * The server re-checks permission, status and version for every call; a 409 offers a refresh.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Camera, Paperclip, X } from 'lucide-react';
-import { Button, Checkbox, InfoCallout, Input, Modal, Select, Textarea } from '@/components/ui';
+import { AlertOctagon, CalendarClock, Camera, Paperclip, X } from 'lucide-react';
+import { Button, Checkbox, FormSection, InfoCallout, Input, Modal, Select, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -327,47 +327,51 @@ export const TaskActionDialog: React.FC<{
 
         {action === 'raise_blocker' && (
           <>
-            <Select
-              label="What is blocking you? *"
-              value={v.blocker_type || ''}
-              onChange={(e) => set('blocker_type', e.target.value)}
-              error={errors.blocker_type}
-              options={[{ value: '', label: 'Choose a blocker type…' }, ...TASK_BLOCKER_TYPES.map((t) => ({ value: t, label: TASK_BLOCKER_TYPE_LABELS[t] }))]}
-            />
-            {req && <p className="text-[11px] text-[#4A5568] -mt-2">{req.hint}</p>}
-            {req?.field === 'dependency_user_id' && <UserSelect label="Waiting on *" value={v.dependency_user_id || ''} onChange={(x) => set('dependency_user_id', x)} users={users} error={errors.dependency_user_id} />}
-            {req?.field === 'dependency_customer_id' && (
-              <LinkPicker type="customer" value={v.dependency_customer_id || task.customer_id || ''} onChange={(id) => set('dependency_customer_id', id)} required error={errors.dependency_customer_id} />
-            )}
-            {req?.field === 'vendor_name' && <Input label="Vendor / reference *" value={v.vendor_name || ''} onChange={(e) => set('vendor_name', e.target.value)} maxLength={200} error={errors.vendor_name} />}
-            {req?.field === 'portal_name' && <Input label="Portal *" value={v.portal_name || ''} onChange={(e) => set('portal_name', e.target.value)} maxLength={200} placeholder="e.g. GeM" error={errors.portal_name} />}
-            {req?.field === 'approval_pending_from' && <Input label="Approval pending from *" value={v.approval_pending_from || ''} onChange={(e) => set('approval_pending_from', e.target.value)} maxLength={200} error={errors.approval_pending_from} />}
-            {req?.field === 'leave_id' && (
+            <FormSection title="The blocker" icon={<AlertOctagon />} description="What is holding the task up, and who or what it depends on.">
               <Select
-                label="Approved leave"
-                value={v.leave_id || ''}
-                onChange={(e) => set('leave_id', e.target.value)}
-                error={errors.leave_id}
-                helperText={leaves.length ? 'Leave recorded by your manager.' : 'No approved leave is recorded for you yet — ask your manager to record it.'}
-                options={[{ value: '', label: leaves.length ? 'Pick the matching leave (or leave blank to auto-match)' : 'No approved leave found' }, ...leaves.map((l) => ({ value: l.id, label: `${l.from_date} → ${l.to_date} (${l.leave_type.replace('_', ' ')})` }))]}
+                label="What is blocking you? *"
+                value={v.blocker_type || ''}
+                onChange={(e) => set('blocker_type', e.target.value)}
+                error={errors.blocker_type}
+                options={[{ value: '', label: 'Choose a blocker type…' }, ...TASK_BLOCKER_TYPES.map((t) => ({ value: t, label: TASK_BLOCKER_TYPE_LABELS[t] }))]}
               />
-            )}
-            <Textarea
-              label="Describe the blocker *"
-              value={v.description || ''}
-              onChange={(e) => set('description', e.target.value)}
-              rows={3}
-              maxLength={2000}
-              placeholder="What exactly are you waiting for, from whom, since when?"
-              error={errors.description}
-              helperText={`${(v.description || '').trim().length}/${TASK_MIN_BLOCKER_DESCRIPTION} characters minimum`}
-            />
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Input label="Expected resolution" type="date" min={istToday()} value={v.expected_resolution_date || ''} onChange={(e) => set('expected_resolution_date', e.target.value)} error={errors.expected_resolution_date} />
-              <Input label="Request a new deadline" type="date" min={istToday()} value={v.requested_new_deadline || ''} onChange={(e) => set('requested_new_deadline', e.target.value)} error={errors.requested_new_deadline} />
-            </div>
-            <FilePick files={files} onChange={setFiles} label={v.blocker_type === 'external_portal_issue' ? 'Screenshot (recommended)' : 'Supporting file (optional)'} />
-            {late && <InfoCallout variant="warning">The deadline has already passed — this blocker will be flagged as raised after the deadline.</InfoCallout>}
+              {req && <p className="text-[11px] text-[#4A5568] -mt-2">{req.hint}</p>}
+              {req?.field === 'dependency_user_id' && <UserSelect label="Waiting on *" value={v.dependency_user_id || ''} onChange={(x) => set('dependency_user_id', x)} users={users} error={errors.dependency_user_id} />}
+              {req?.field === 'dependency_customer_id' && (
+                <LinkPicker type="customer" value={v.dependency_customer_id || task.customer_id || ''} onChange={(id) => set('dependency_customer_id', id)} required error={errors.dependency_customer_id} />
+              )}
+              {req?.field === 'vendor_name' && <Input label="Vendor / reference *" value={v.vendor_name || ''} onChange={(e) => set('vendor_name', e.target.value)} maxLength={200} error={errors.vendor_name} />}
+              {req?.field === 'portal_name' && <Input label="Portal *" value={v.portal_name || ''} onChange={(e) => set('portal_name', e.target.value)} maxLength={200} placeholder="e.g. GeM" error={errors.portal_name} />}
+              {req?.field === 'approval_pending_from' && <Input label="Approval pending from *" value={v.approval_pending_from || ''} onChange={(e) => set('approval_pending_from', e.target.value)} maxLength={200} error={errors.approval_pending_from} />}
+              {req?.field === 'leave_id' && (
+                <Select
+                  label="Approved leave"
+                  value={v.leave_id || ''}
+                  onChange={(e) => set('leave_id', e.target.value)}
+                  error={errors.leave_id}
+                  helperText={leaves.length ? 'Leave recorded by your manager.' : 'No approved leave is recorded for you yet — ask your manager to record it.'}
+                  options={[{ value: '', label: leaves.length ? 'Pick the matching leave (or leave blank to auto-match)' : 'No approved leave found' }, ...leaves.map((l) => ({ value: l.id, label: `${l.from_date} → ${l.to_date} (${l.leave_type.replace('_', ' ')})` }))]}
+                />
+              )}
+              <Textarea
+                label="Describe the blocker *"
+                value={v.description || ''}
+                onChange={(e) => set('description', e.target.value)}
+                rows={3}
+                maxLength={2000}
+                placeholder="What exactly are you waiting for, from whom, since when?"
+                error={errors.description}
+                helperText={`${(v.description || '').trim().length}/${TASK_MIN_BLOCKER_DESCRIPTION} characters minimum`}
+              />
+            </FormSection>
+            <FormSection title="Timing & proof" icon={<CalendarClock />} description="When you expect it to clear, and anything that backs it up.">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Input label="Expected resolution" type="date" min={istToday()} value={v.expected_resolution_date || ''} onChange={(e) => set('expected_resolution_date', e.target.value)} error={errors.expected_resolution_date} />
+                <Input label="Request a new deadline" type="date" min={istToday()} value={v.requested_new_deadline || ''} onChange={(e) => set('requested_new_deadline', e.target.value)} error={errors.requested_new_deadline} />
+              </div>
+              <FilePick files={files} onChange={setFiles} label={v.blocker_type === 'external_portal_issue' ? 'Screenshot (recommended)' : 'Supporting file (optional)'} />
+              {late && <InfoCallout variant="warning">The deadline has already passed — this blocker will be flagged as raised after the deadline.</InfoCallout>}
+            </FormSection>
           </>
         )}
 

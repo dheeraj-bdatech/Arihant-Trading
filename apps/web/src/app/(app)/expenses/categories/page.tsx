@@ -7,7 +7,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { FolderKanban, Layers, Pencil, Plus, Search, Settings2, Tag, UserX } from 'lucide-react';
+import { FolderKanban, Layers, Pencil, Plus, Receipt, Search, Settings2, Tag, UserX } from 'lucide-react';
 import {
   Badge,
   Button,
@@ -15,6 +15,7 @@ import {
   Checkbox,
   EmptyState,
   FilterMenu,
+  FormSteps,
   InfoCallout,
   Input,
   Modal,
@@ -228,34 +229,64 @@ export default function ExpenseCategoriesPage() {
 
       <Modal isOpen={Boolean(form)} onClose={() => setForm(null)} title={form?.id ? `Edit ${form.code}` : 'New category'} description="Inactive categories cannot be chosen on new lines but stay on historic claims." maxWidth="lg">
         {form && (
-          <form onSubmit={(e) => { e.preventDefault(); save(); }} className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
-              <Input label="Code *" value={form.code} disabled={Boolean(form.id)} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} helperText={form.id ? 'Codes are fixed — they feed the Tally mapping.' : 'e.g. TOLL_PARKING'} error={errors.code} />
-              <Input label="Name *" value={form.name} maxLength={120} onChange={(e) => setForm({ ...form, name: e.target.value })} error={errors.name} />
-            </div>
-            <div>
-              <span className="block text-xs font-semibold text-[#14213D] mb-1.5">Receipt required</span>
-              <Tabs variant="segmented" size="sm" activeTab={form.receipt_mode} onChange={(id) => setForm({ ...form, receipt_mode: id as CatForm['receipt_mode'] })} tabs={[{ id: 'always', label: 'Always' }, { id: 'above', label: 'At or above an amount' }, { id: 'never', label: 'Never' }]} />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
-              {form.receipt_mode === 'above' && (
-                <Input label="Receipt threshold (₹)" inputMode="decimal" value={form.receipt_required_above} onChange={(e) => setForm({ ...form, receipt_required_above: e.target.value })} error={errors.receipt_required_above} />
-              )}
-              <Input label="Display order" inputMode="numeric" value={form.display_order} onChange={(e) => setForm({ ...form, display_order: e.target.value.replace(/\D/g, '') })} error={errors.display_order} />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
-              <Input label="Cap per item (₹)" inputMode="decimal" placeholder="No cap" value={form.max_amount_per_item} onChange={(e) => setForm({ ...form, max_amount_per_item: e.target.value })} error={errors.max_amount_per_item} />
-              <Checkbox label="Hard cap" description="Block amounts above the cap (otherwise warn and require a remark)" checked={form.cap_is_hard} onChange={(e) => setForm({ ...form, cap_is_hard: e.target.checked })} />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Checkbox label="Needs customer or project" checked={form.requires_customer_or_project} onChange={(e) => setForm({ ...form, requires_customer_or_project: e.target.checked })} />
-              <Checkbox label="Needs remarks" checked={form.requires_remark} onChange={(e) => setForm({ ...form, requires_remark: e.target.checked })} />
-              <Checkbox label="Active" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={() => setForm(null)} disabled={saving}>Cancel</Button>
-              <Button type="submit" isLoading={saving}>Save</Button>
-            </div>
+          <form onSubmit={(e) => { e.preventDefault(); save(); }}>
+            <FormSteps
+              onCancel={() => setForm(null)}
+              busy={saving}
+              submit={<Button type="submit" isLoading={saving}>Save</Button>}
+              steps={[
+                {
+                  title: 'Basics',
+                  icon: <Tag />,
+                  description: 'The code and name staff see when picking this category.',
+                  content: (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                        <Input label="Code *" value={form.code} disabled={Boolean(form.id)} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} helperText={form.id ? 'Codes are fixed — they feed the Tally mapping.' : 'e.g. TOLL_PARKING'} error={errors.code} />
+                        <Input label="Name *" value={form.name} maxLength={120} onChange={(e) => setForm({ ...form, name: e.target.value })} error={errors.name} />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                        <Input label="Display order" inputMode="numeric" value={form.display_order} onChange={(e) => setForm({ ...form, display_order: e.target.value.replace(/\D/g, '') })} error={errors.display_order} />
+                      </div>
+                      <Checkbox label="Active" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />
+                    </div>
+                  ),
+                },
+                {
+                  title: 'Receipts',
+                  icon: <Receipt />,
+                  description: 'When a bill or receipt must be attached to a line.',
+                  content: (
+                    <div className="space-y-3">
+                      <div>
+                        <span className="block text-xs font-semibold text-[#14213D] mb-1.5">Receipt required</span>
+                        <Tabs variant="segmented" size="sm" activeTab={form.receipt_mode} onChange={(id) => setForm({ ...form, receipt_mode: id as CatForm['receipt_mode'] })} tabs={[{ id: 'always', label: 'Always' }, { id: 'above', label: 'At or above an amount' }, { id: 'never', label: 'Never' }]} />
+                      </div>
+                      {form.receipt_mode === 'above' && (
+                        <Input label="Receipt threshold (₹)" inputMode="decimal" value={form.receipt_required_above} onChange={(e) => setForm({ ...form, receipt_required_above: e.target.value })} error={errors.receipt_required_above} />
+                      )}
+                    </div>
+                  ),
+                },
+                {
+                  title: 'Limits',
+                  icon: <Settings2 />,
+                  description: 'Spending caps and what each line must include.',
+                  content: (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                        <Input label="Cap per item (₹)" inputMode="decimal" placeholder="No cap" value={form.max_amount_per_item} onChange={(e) => setForm({ ...form, max_amount_per_item: e.target.value })} error={errors.max_amount_per_item} />
+                        <Checkbox label="Hard cap" description="Block amounts above the cap (otherwise warn and require a remark)" checked={form.cap_is_hard} onChange={(e) => setForm({ ...form, cap_is_hard: e.target.checked })} />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <Checkbox label="Needs customer or project" checked={form.requires_customer_or_project} onChange={(e) => setForm({ ...form, requires_customer_or_project: e.target.checked })} />
+                        <Checkbox label="Needs remarks" checked={form.requires_remark} onChange={(e) => setForm({ ...form, requires_remark: e.target.checked })} />
+                      </div>
+                    </div>
+                  ),
+                },
+              ]}
+            />
           </form>
         )}
       </Modal>

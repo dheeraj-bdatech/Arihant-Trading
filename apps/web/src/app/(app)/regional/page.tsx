@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Compass,
   Target,
@@ -13,10 +14,8 @@ import {
   AlertTriangle,
   ArrowUpRight,
   TrendingUp,
-  MapPin,
   Building,
   UserCheck,
-  ChevronRight,
   Shield,
   ShieldAlert,
   Search,
@@ -41,17 +40,18 @@ import {
   Modal,
   Input,
   Select,
-  Table,
-  TableHeader,
-  TableRow,
-  TableHead,
-  TableBody,
-  TableCell,
   PageContainer,
   PageHeader,
   StatCard,
-  StatGrid, PageLoader } from '@/components/ui';
-import { formatLakh, formatINR } from '@arihant/shared';
+  StatGrid, PageLoader,
+  RecordViews,
+  rowDetails,
+  toneFor,
+  type BoardLane,
+  type RecordItem,
+  type RecordTone } from '@/components/ui';
+import { formatLakh, formatINR, TENDER_STATUSES } from '@arihant/shared';
+import { NewTaskButton } from '../tasks/_lib/NewTaskModal';
 
 const formatLeadCategory = (category?: string) => {
   if (!category) return 'New Lead';
@@ -63,16 +63,63 @@ const formatLeadCategory = (category?: string) => {
   return category.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
 };
 
-const getCategoryBadgeVariant = (category?: string): 'info' | 'success' | 'warning' | 'default' => {
+/** Lead category → lane key (the funnel buckets this view already shows). */
+const leadCategoryKey = (category?: string): string => {
   const c = category?.toLowerCase().trim();
-  if (c === 'new_lead' || c === 'new') return 'info';
+  if (!c || c === 'new_lead' || c === 'new') return 'new_lead';
+  if (c === 'follow_up' || c === 'follow-up') return 'follow_up';
+  return c;
+};
+
+const getCategoryTone = (category?: string): RecordTone => {
+  const c = leadCategoryKey(category);
+  if (c === 'new_lead') return 'info';
   if (c === 'active') return 'success';
   if (c === 'expected') return 'warning';
-  return 'default';
+  return 'neutral';
 };
+
+const pretty = (s?: string | null) => {
+  const t = String(s || '').replace(/_/g, ' ').trim();
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) : '—';
+};
+
+/** Maps rows to RecordItems and remembers each record's lane. */
+function register<T>(list: T[], toItem: (row: T) => RecordItem, laneKey: (row: T) => string) {
+  const lanes = new Map<string, string>();
+  const items = list.map((row) => {
+    const item = toItem(row);
+    lanes.set(item.key, laneKey(row));
+    return item;
+  });
+  return { items, laneOf: (item: RecordItem) => lanes.get(item.key) ?? 'other' };
+}
+
+const RATING_TONE: Record<string, RecordTone> = { Critical: 'danger', 'Needs Attention': 'warning', Good: 'info', Excellent: 'success' };
+const TEAM_LANES: BoardLane[] = [
+  { key: 'Critical', label: 'Critical', tone: 'danger' },
+  { key: 'Needs Attention', label: 'Needs attention', tone: 'warning' },
+  { key: 'Good', label: 'Good', tone: 'info' },
+  { key: 'Excellent', label: 'Excellent', tone: 'success' },
+];
+const LEAD_LANES: BoardLane[] = [
+  { key: 'new_lead', label: 'New Lead', tone: 'info' },
+  { key: 'follow_up', label: 'Follow-up', tone: 'neutral' },
+  { key: 'active', label: 'Active', tone: 'success' },
+  { key: 'expected', label: 'Expected', tone: 'warning' },
+  { key: 'other', label: 'Other', tone: 'neutral' },
+];
+const LEAD_CLOSED = ['converted', 'won', 'lost', 'dropped'];
+const VISIT_STATUSES = ['planned', 'modified', 'rescheduled', 'completed', 'not_completed', 'cancelled'];
+const VISIT_LANES: BoardLane[] = [...VISIT_STATUSES, 'other'].map((k) => ({ key: k, label: pretty(k), tone: toneFor(k) }));
+const VISIT_DONE = ['completed', 'not_completed', 'cancelled'];
+const TENDER_LANES: BoardLane[] = [...TENDER_STATUSES, 'other'].map((k) => ({ key: k, label: pretty(k), tone: toneFor(k) }));
+/** Bid closing date only drives urgency while the bid is still being prepared. */
+const TENDER_PRE_SUBMISSION = ['identified', 'awaiting_approval', 'under_preparation', 'on_hold'];
 
 export default function RegionalPage() {
   const { user, hasRole } = useAuth();
+  const router = useRouter();
   const [data, setData] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('team');
@@ -164,6 +211,102 @@ export default function RegionalPage() {
   );
   const zoneCode = data?.zone?.code || 'N';
 
+  const openEvidence = (emp: any) => {
+    setSelectedEmployee(emp);
+    setIsEvidenceModalOpen(true);
+  };
+
+  // Rep scorecard: worst compliance first, so the cards lead with who needs attention.
+  const teamRegister = register(
+    [...filteredTeam].sort((a, b) => TEAM_LANES.findIndex((l) => l.key === a.complianceRating) - TEAM_LANES.findIndex((l) => l.key === b.complianceRating)),
+    (emp: any): RecordItem => ({
+      key: emp.id,
+      code: emp.role.replace('_', ' ').toUpperCase(),
+      title: emp.full_name,
+      subtitle: emp.region_name,
+      status: { label: emp.complianceRating, tone: RATING_TONE[emp.complianceRating] ?? toneFor(emp.complianceRating) },
+      badges: [
+        ...(emp.tasks.overdue > 0 ? [{ label: `${emp.tasks.overdue} overdue`, tone: 'danger' as const }] : []),
+        ...(emp.activeBlockers.length > 0 ? [{ label: `${emp.activeBlockers.length} blocked`, tone: 'warning' as const }] : []),
+      ],
+      value: formatLakh(emp.leads.valueLakh || 0),
+      facts: [
+        { label: 'Milestones', value: `${emp.tasks.completed} / ${emp.tasks.total} · ${emp.tasks.completionRate}%` },
+        { label: 'Visits', value: `${emp.visits.completed} / ${emp.visits.total}` },
+        { label: 'Overdue', value: emp.tasks.overdue },
+        { label: 'Blockers', value: emp.activeBlockers.length || 'None' },
+      ],
+      primary: { label: 'Inspect', onClick: () => openEvidence(emp) },
+      onOpen: () => openEvidence(emp),
+    }),
+    (emp: any) => emp.complianceRating,
+  );
+
+  const leadRegister = register(
+    data?.sales?.recentLeads ?? [],
+    (ld: any): RecordItem => ({
+      key: ld.id,
+      title: ld.organisation_name,
+      subtitle: [ld.city || 'North Zone', ld.product_name || 'Security Scanning Hardware'].join(' · '),
+      status: { label: formatLeadCategory(ld.category), tone: getCategoryTone(ld.category) },
+      badges: ld.probability
+        ? [{ label: `${ld.probability} probability`, tone: ld.probability === 'high' ? 'success' : ld.probability === 'medium' ? 'warning' : 'neutral' }]
+        : [],
+      due: { date: ld.next_followup_date, label: 'Follow-up', done: LEAD_CLOSED.includes(String(ld.status || '').toLowerCase()) },
+      value: formatLakh(ld.value_lakh || 0),
+      owner: ld.assigned_rep_name || 'Territory Rep',
+      facts: [
+        { label: 'Product', value: ld.product_name || 'Security Scanning Hardware' },
+        { label: 'Lead status', value: pretty(ld.status) },
+      ],
+      details: rowDetails(ld),
+    }),
+    (ld: any) => {
+      const k = leadCategoryKey(ld.category);
+      return LEAD_LANES.some((l) => l.key === k) ? k : 'other';
+    },
+  );
+
+  const visitRegister = register(
+    data?.visits?.recentVisits ?? [],
+    (v: any): RecordItem => ({
+      key: v.id,
+      title: v.organisation_name,
+      subtitle: v.location || 'Client HQ',
+      status: { label: pretty(v.status), tone: toneFor(v.status) },
+      due: { date: v.planned_date, label: 'Planned', done: VISIT_DONE.includes(v.status) },
+      owner: v.assigned_rep_name || 'Territory Rep',
+      facts: [
+        { label: 'Purpose', value: v.purpose || 'Technical brief' },
+        { label: 'Manager directive', value: v.remarks || 'None attached' },
+      ],
+      primary: { label: 'Add Stop / Also Meet', onClick: () => handleOpenIntervention(v) },
+      details: rowDetails(v),
+    }),
+    (v: any) => (VISIT_STATUSES.includes(v.status) ? v.status : 'other'),
+  );
+
+  const tenderRegister = register(
+    // grows by TENDER_PAGE_SIZE as the register scrolls (infinite scroll over the loaded list)
+    (data?.tenders?.regionalTendersList ?? []).slice(0, tenderPage * TENDER_PAGE_SIZE),
+    (t: any): RecordItem => ({
+      key: t.id,
+      code: t.tender_no,
+      title: t.department || 'Government Buyer',
+      subtitle: [t.city, t.state].filter(Boolean).join(', ') || undefined,
+      status: { label: pretty(t.status), tone: toneFor(t.status) },
+      badges: t.category ? [{ label: String(t.category).replace(/_/g, ' ').toUpperCase(), tone: 'neutral' }] : [],
+      due: { date: t.bid_closing_date, label: 'Closes', done: !TENDER_PRE_SUBMISSION.includes(t.status) },
+      facts: [
+        { label: 'Requirement', value: t.requirement_text || '—' },
+        { label: 'Category', value: String(t.category || '—').replace(/_/g, ' ').toUpperCase() },
+      ],
+      primary: { label: 'Open in Tenders', onClick: () => router.push(`/tenders?highlight=${t.id}`) },
+      details: rowDetails(t),
+    }),
+    (t: any) => ((TENDER_STATUSES as string[]).includes(t.status) ? t.status : 'other'),
+  );
+
   if (isLoading && !data) {
     return (
       <PageContainer>
@@ -203,12 +346,9 @@ export default function RegionalPage() {
               </Button>
             </Link>
 
-            <Link href="/tasks">
-              <Button variant="primary" size="sm">
-                <Plus className="mr-2 h-4 w-4" />
-                <span>Assign Task</span>
-              </Button>
-            </Link>
+            <NewTaskButton variant="primary" size="sm" leftIcon={<Plus className="h-4 w-4" />}>
+              Assign Task
+            </NewTaskButton>
           </>
         }
       />
@@ -288,113 +428,22 @@ export default function RegionalPage() {
       {/* ── TAB 1: EMPLOYEE ACCOUNTABILITY & PERFORMANCE ── */}
       {activeTab === 'team' && (
         <div className="space-y-4">
-          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
-            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
-              <h2 className="flex items-center gap-2 font-serif text-sm font-bold text-[#14213D]">
-                <Users className="h-4 w-4 text-[#0F5E63]" />
-                Direct Reports &amp; Regional Staff Scorecard
-              </h2>
-              <span className="font-mono text-xs text-[#4A5568]">
+          <h2 className="flex items-center gap-2 font-serif text-sm font-bold text-[#14213D]">
+            <Users className="h-4 w-4 text-[#0F5E63]" />
+            Direct Reports &amp; Regional Staff Scorecard
+          </h2>
+          <RecordViews
+            storageKey="regional-team"
+            items={teamRegister.items}
+            lanes={TEAM_LANES}
+            laneOf={teamRegister.laneOf}
+            summary={
+              <span className="font-mono text-xs">
                 {filteredTeam.length} {filteredTeam.length === 1 ? 'rep' : 'reps'}
               </span>
-            </div>
-            <Table className="[&_td]:px-3 [&_th]:px-3">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-xs">Representative</TableHead>
-                  <TableHead className="whitespace-nowrap text-center text-xs" title="Milestones done / total">Milestones</TableHead>
-                  <TableHead className="whitespace-nowrap text-center text-xs" title="Visits done / total">Visits</TableHead>
-                  <TableHead className="whitespace-nowrap text-right text-xs">Pipeline (₹ L)</TableHead>
-                  <TableHead className="whitespace-nowrap text-center text-xs" title="Active blockers">Blockers</TableHead>
-                  <TableHead className="whitespace-nowrap text-center text-xs">Compliance</TableHead>
-                  <TableHead className="w-20 text-right text-xs">
-                    <span className="sr-only">Evidence</span>
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredTeam.map((emp: any) => (
-                    <TableRow
-                      key={emp.id}
-                      className="cursor-pointer"
-                      onClick={() => {
-                        setSelectedEmployee(emp);
-                        setIsEvidenceModalOpen(true);
-                      }}
-                    >
-                      <TableCell className="max-w-[300px]">
-                        <div className="truncate font-bold text-[#14213D]" title={emp.full_name}>{emp.full_name}</div>
-                        <div className="truncate text-[11px] text-[#4A5568]" title={`${emp.role.replace('_', ' ').toUpperCase()} · ${emp.region_name}`}>
-                          <span className="font-semibold text-[#14213D]">{emp.role.replace('_', ' ').toUpperCase()}</span> · {emp.region_name}
-                        </div>
-                        <div className="truncate font-mono text-[10px] text-[#4A5568]" title={emp.email}>
-                          {emp.email}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
-                        <span className="font-mono font-bold text-[#14213D]">
-                          {emp.tasks.completed} / {emp.tasks.total}
-                        </span>
-                        <div className="text-[11px] text-[#4A5568]">
-                          {emp.tasks.completionRate}% ·{' '}
-                          {emp.tasks.overdue > 0 ? (
-                            <span className="font-bold text-[#9A3412]">{emp.tasks.overdue} overdue</span>
-                          ) : (
-                            <span className="text-emerald-700">0 overdue</span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center font-mono font-bold text-[#14213D] whitespace-nowrap">
-                        {emp.visits.completed} / {emp.visits.total}
-                      </TableCell>
-                      <TableCell className="text-right font-mono font-bold text-[#0F5E63] whitespace-nowrap">
-                        {formatLakh(emp.leads.valueLakh || 0)}
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
-                        {emp.activeBlockers.length > 0 ? (
-                          <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-bold text-[10px]">
-                            {emp.activeBlockers.length} blocked
-                          </span>
-                        ) : (
-                          <span className="text-[11px] text-[#4A5568]">None</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
-                        <Badge
-                          variant={
-                            emp.complianceRating === 'Excellent'
-                              ? 'success'
-                              : emp.complianceRating === 'Good'
-                              ? 'default'
-                              : emp.complianceRating === 'Needs Attention'
-                              ? 'warning'
-                              : 'danger'
-                          }
-                          size="sm"
-                        >
-                          {emp.complianceRating.toUpperCase()}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right whitespace-nowrap">
-                        <Button
-                          size="xs"
-                          variant="secondary"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedEmployee(emp);
-                            setIsEvidenceModalOpen(true);
-                          }}
-                          className="shadow-xs text-xs text-[#0F5E63]"
-                        >
-                          <span>Inspect</span>
-                          <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-              </TableBody>
-            </Table>
-          </Card>
+            }
+            empty={searchEmployee ? 'No representatives match this search.' : 'No representatives in this territory yet.'}
+          />
 
           <div className="p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-[11px] text-[#4A5568] flex items-center justify-between">
             <span>
@@ -441,7 +490,7 @@ export default function RegionalPage() {
           </div>
 
           <Card>
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
+            <div className="p-4 bg-[#FBFAF7] flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-[#14213D]">
                   Active Territory Opportunities in {zoneName} Zone ({data?.sales?.total || 0})
@@ -456,63 +505,16 @@ export default function RegionalPage() {
                 </Button>
               </Link>
             </div>
-
-            <Table className="[&_td]:px-3 [&_th]:px-3">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Organisation & City</TableHead>
-                  <TableHead>Product Category</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Probability</TableHead>
-                  <TableHead className="text-right">Value (₹ Lakh)</TableHead>
-                  <TableHead>Territory Rep</TableHead>
-                  <TableHead>Follow-Up Due</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data?.sales?.recentLeads?.map((ld: any) => (
-                  <TableRow key={ld.id}>
-                    <TableCell className="max-w-[260px] font-bold text-[#14213D]">
-                      <div className="truncate" title={ld.organisation_name}>{ld.organisation_name}</div>
-                      <div className="text-[11px] text-[#4A5568] font-normal">{ld.city || 'North Zone'}</div>
-                    </TableCell>
-                    <TableCell className="max-w-[200px] truncate text-[#14213D]" title={ld.product_name || 'Security Scanning Hardware'}>{ld.product_name || 'Security Scanning Hardware'}</TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={getCategoryBadgeVariant(ld.category)}
-                        size="sm"
-                        className="font-semibold"
-                      >
-                        {formatLeadCategory(ld.category)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          ld.probability === 'high'
-                            ? 'success'
-                            : ld.probability === 'medium'
-                            ? 'warning'
-                            : 'default'
-                        }
-                        size="sm"
-                        className="uppercase font-bold"
-                      >
-                        {ld.probability}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right font-mono font-bold text-[#0F5E63]">
-                      {formatLakh(ld.value_lakh || 0)}
-                    </TableCell>
-                    <TableCell className="text-[#4A5568]">{ld.assigned_rep_name || 'Territory Rep'}</TableCell>
-                    <TableCell className="font-mono text-[#4A5568]">
-                      {ld.next_followup_date ? new Date(ld.next_followup_date).toLocaleDateString('en-IN') : '-'}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
           </Card>
+
+          <RecordViews
+            storageKey="regional-leads"
+            items={leadRegister.items}
+            lanes={LEAD_LANES}
+            laneOf={leadRegister.laneOf}
+            summary={`${leadRegister.items.length} recent ${leadRegister.items.length === 1 ? 'opportunity' : 'opportunities'}`}
+            empty="No opportunities logged in this territory yet."
+          />
         </div>
       )}
 
@@ -520,7 +522,7 @@ export default function RegionalPage() {
       {activeTab === 'visits' && (
         <div className="space-y-4">
           <Card>
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
+            <div className="p-4 bg-[#FBFAF7] flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-[#14213D]">
                   Field Visit Logs & Customer Encounters ({data?.visits?.total || 0})
@@ -535,65 +537,17 @@ export default function RegionalPage() {
                 </Button>
               </Link>
             </div>
-
-            <Table className="[&_td]:px-3 [&_th]:px-3">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Planned Date</TableHead>
-                  <TableHead>Organisation & Location</TableHead>
-                  <TableHead>Purpose</TableHead>
-                  <TableHead>Field Rep</TableHead>
-                  <TableHead>Tour Status</TableHead>
-                  <TableHead>Manager Directive</TableHead>
-                  <TableHead className="text-right">Intervention</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data?.visits?.recentVisits?.map((v: any) => (
-                  <TableRow key={v.id}>
-                    <TableCell className="font-mono font-bold text-[#14213D] whitespace-nowrap">
-                      {new Date(v.planned_date).toLocaleDateString('en-IN')}
-                    </TableCell>
-                    <TableCell className="max-w-[240px] font-bold text-[#14213D]">
-                      <div className="truncate" title={v.organisation_name}>{v.organisation_name}</div>
-                      <div className="text-[10px] text-[#4A5568] font-normal flex items-center gap-1">
-                        <MapPin className="h-3 w-3 text-[#0F5E63]" />
-                        <span className="truncate" title={v.location || 'Client HQ'}>{v.location || 'Client HQ'}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-[#14213D] max-w-[200px] truncate" title={v.purpose || 'Technical brief'}>{v.purpose || 'Technical brief'}</TableCell>
-                    <TableCell className="text-[#4A5568] whitespace-nowrap">{v.assigned_rep_name || 'Territory Rep'}</TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <Badge
-                        variant={v.status === 'completed' ? 'success' : v.status === 'planned' ? 'default' : 'warning'}
-                        size="sm"
-                        className="uppercase font-bold"
-                      >
-                        {v.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-[#4A5568] max-w-[180px] truncate" title={v.remarks || undefined}>
-                      {v.remarks ? (
-                        <span className="text-purple-800 font-medium">{v.remarks}</span>
-                      ) : (
-                        <span className="text-[#7D92B5]">None attached</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right whitespace-nowrap">
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => handleOpenIntervention(v)}
-                        className="text-xs text-[#0F5E63] hover:bg-[#E3EFEE]"
-                      >
-                        + Add Stop / Also Meet
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
           </Card>
+
+          <RecordViews
+            storageKey="regional-visits"
+            items={visitRegister.items}
+            lanes={VISIT_LANES}
+            laneOf={visitRegister.laneOf}
+            hideEmptyLanes
+            summary={`${visitRegister.items.length} recent ${visitRegister.items.length === 1 ? 'visit' : 'visits'}`}
+            empty="No field visits logged in this territory yet."
+          />
         </div>
       )}
 
@@ -601,7 +555,7 @@ export default function RegionalPage() {
       {activeTab === 'tenders' && (
         <div className="space-y-4">
           <Card>
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7] flex items-center justify-between">
+            <div className="p-4 bg-[#FBFAF7] flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-[#14213D]">
                   GeM Defense & Security Tenders in {zoneName} Zone ({data?.tenders?.total || 0})
@@ -616,97 +570,29 @@ export default function RegionalPage() {
                 </Button>
               </Link>
             </div>
+          </Card>
 
-            <Table className="[&_td]:px-3 [&_th]:px-3">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Tender Reference No.</TableHead>
-                  <TableHead>Department / Buyer</TableHead>
-                  <TableHead>Requirement Details</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Bid Closing Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Inspect</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(data?.tenders?.regionalTendersList ?? []).slice((tenderPage - 1) * TENDER_PAGE_SIZE, tenderPage * TENDER_PAGE_SIZE).map((t: any) => {
-                  const closing = t.bid_closing_date ? new Date(t.bid_closing_date) : null;
-                  const diffDays = closing
-                    ? Math.ceil((closing.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
-                    : 0;
-
-                  return (
-                    <TableRow key={t.id}>
-                      <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
-                        <span className="font-mono text-[#0F5E63]">{t.tender_no}</span>
-                      </TableCell>
-                      <TableCell className="max-w-[220px] text-[#14213D]">
-                        <div className="truncate font-semibold text-[#14213D]" title={t.department || 'Government Buyer'}>{t.department || 'Government Buyer'}</div>
-                        <div className="text-[10px] text-[#4A5568]">{t.city}, {t.state}</div>
-                      </TableCell>
-                      <TableCell className="text-[#4A5568] max-w-[240px] truncate" title={t.requirement_text}>{t.requirement_text}</TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        <Badge variant="outline" size="sm" className="uppercase font-bold">
-                          {t.category}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="font-mono whitespace-nowrap">
-                        {closing ? closing.toLocaleDateString('en-IN') : '-'}
-                        {diffDays <= 7 && diffDays >= 0 && (
-                          <div className="text-[10px] font-bold text-red-600">
-                            {diffDays === 0 ? 'CLOSING TODAY' : `${diffDays} DAYS LEFT`}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        <Badge
-                          variant={
-                            t.status === 'won'
-                              ? 'success'
-                              : t.status === 'awaiting_approval'
-                              ? 'warning'
-                              : t.status === 'under_preparation'
-                              ? 'default'
-                              : 'outline'
-                          }
-                          size="sm"
-                          className="uppercase font-bold"
-                        >
-                          {t.status.replace('_', ' ')}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right whitespace-nowrap">
-                        <Link href={`/tenders?highlight=${t.id}`}>
-                          <Button size="xs" variant="secondary" className="shadow-xs text-xs">
-                            Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                          </Button>
-                        </Link>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            {(() => {
-              const list = data?.tenders?.regionalTendersList ?? [];
-              const pages = Math.max(1, Math.ceil(list.length / TENDER_PAGE_SIZE));
-              return (
-                <div className="flex items-center justify-between gap-3 border-t border-[#ECE9E2] px-4 py-3 text-xs text-[#4A5568]">
+          {(() => {
+            const list = data?.tenders?.regionalTendersList ?? [];
+            return (
+              <RecordViews
+                storageKey="regional-tenders"
+                items={tenderRegister.items}
+                lanes={TENDER_LANES}
+                laneOf={tenderRegister.laneOf}
+                hideEmptyLanes
+                summary={
                   <span>
-                    Showing {list.length === 0 ? 0 : (tenderPage - 1) * TENDER_PAGE_SIZE + 1}–
-                    {Math.min(tenderPage * TENDER_PAGE_SIZE, list.length)} of {data?.tenders?.total ?? list.length}
+                    {tenderRegister.items.length} of {data?.tenders?.total ?? list.length}
                     {(data?.tenders?.total ?? 0) > list.length ? ` (first ${list.length} loaded)` : ''}
                   </span>
-                  <div className="flex items-center gap-2">
-                    <Button size="xs" variant="secondary" disabled={tenderPage <= 1} onClick={() => setTenderPage((p) => p - 1)}>Prev</Button>
-                    <span className="font-mono">{tenderPage} / {pages}</span>
-                    <Button size="xs" variant="secondary" disabled={tenderPage >= pages} onClick={() => setTenderPage((p) => p + 1)}>Next</Button>
-                  </div>
-                </div>
-              );
-            })()}
-          </Card>
+                }
+                empty="No GeM bids tagged to this territory."
+                onLoadMore={() => setTenderPage((p) => p + 1)}
+                hasMore={tenderRegister.items.length < list.length}
+              />
+            );
+          })()}
         </div>
       )}
 
@@ -720,10 +606,10 @@ export default function RegionalPage() {
       >
         {selectedEmployee && (
           <div className="space-y-4 text-xs">
-            <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between">
-              <div>
+            <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
                 <span className="text-sm font-bold text-[#14213D] block">{selectedEmployee.full_name}</span>
-                <span className="text-[11px] text-[#4A5568] font-mono">{selectedEmployee.email} &bull; {selectedEmployee.role}</span>
+                <span className="text-[11px] text-[#4A5568] font-mono break-all">{selectedEmployee.email} &bull; {selectedEmployee.role}</span>
               </div>
               <Badge
                 variant={

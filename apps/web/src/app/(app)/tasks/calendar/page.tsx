@@ -205,7 +205,7 @@ const LeaveModal: React.FC<{ onClose: () => void; onSaved: (skipped: number) => 
     <Modal isOpen onClose={onClose} title="Record approved leave" description="Only leave that has already been approved. Recurring instances on those days are skipped (not counted as missed)." maxWidth="md">
       <form onSubmit={save} className="space-y-3">
         <UserSelect label="Employee *" value={v.employee_id} onChange={(x) => setV({ ...v, employee_id: x })} users={people} error={errors.employee_id} />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Input label="From *" type="date" value={v.from_date} onChange={(e) => setV({ ...v, from_date: e.target.value })} error={errors.from_date} />
           <Input label="To *" type="date" min={v.from_date} value={v.to_date} onChange={(e) => setV({ ...v, to_date: e.target.value })} error={errors.to_date} />
         </div>

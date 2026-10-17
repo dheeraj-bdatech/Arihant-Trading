@@ -229,14 +229,6 @@ export function TenderCalendarView({
             </Button>
           </div>
 
-          <Button
-            variant="secondary"
-            size="xs"
-            onClick={loadEvents}
-            isLoading={loading}
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </Button>
         </div>
       </div>
 

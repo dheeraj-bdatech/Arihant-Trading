@@ -46,6 +46,7 @@ import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { canRead } from '@/lib/module-access';
 import { getSocket } from '@/lib/socket';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import {
   PageContainer,
   PageHeader,
@@ -63,9 +64,16 @@ import {
   Spinner,
   FilterMenu,
   InfoCallout,
+  FormSteps,
+  FormSection,
+  RecordViews,
+  toneFor,
+  type RecordItem,
+  type RecordAction,
+  type BoardLane,
 } from '@/components/ui';
 import { formatINR, formatTaskDate, formatTaskDateTime } from '@arihant/shared';
-import { istToday, istDateOf, isIstToday, addIsoDays, fromIstLocalInput } from '@/lib/ist-date';
+import { istToday, istDateOf, addIsoDays, fromIstLocalInput } from '@/lib/ist-date';
 
 /** Create-form default deadline: 14 IST days from today at 15:00 IST (a `datetime-local` value, IST wall clock). */
 const defaultTenderDeadline = () => `${addIsoDays(istToday(), 14)}T15:00`;
@@ -96,6 +104,9 @@ const TENDER_SORT_FIELDS = [
 
 type TenderView = 'pipeline' | 'approvals_inbox' | 'calendar' | 'finance_emd' | 'deadlines' | 'portal_issues' | 'analytics';
 
+/** Tenders fetched per request while the register scrolls. */
+const TENDERS_PAGE_SIZE = 25;
+
 export default function TendersPage() {
   const { user, hasRole } = useAuth();
   const searchParams = useSearchParams();
@@ -106,12 +117,7 @@ export default function TendersPage() {
   const [activeTab, setActiveTab] = useState<TenderView>('pipeline');
 
   // Master lists
-  const [tenders, setTenders] = useState<any[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
-  const [page, setPage] = useState(1);
-  const [limit] = useState(25);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  // (the tenders register itself is useInfiniteList below, paged as the reader scrolls)
 
   // Master Lookups
   const [categories, setCategories] = useState<any[]>([]);
@@ -345,15 +351,13 @@ export default function TendersPage() {
     }
   }, [searchParams, user]);
 
-  // 4. Fetch Tenders List (Server-side Search & Pagination)
-  const fetchTenders = useCallback(async (quiet = false) => {
-    try {
-      if (!quiet) setIsLoading(true);
-      else setIsRefreshing(true);
-
+  // 4. Tenders register (server-side search, filters and sort), one page per request, appended as
+  // the register scrolls. `fetchTenders` re-reads the pages already loaded, in place.
+  const fetchTendersPage = useCallback(
+    (page: number) => {
       const params: any = {
         page,
-        limit,
+        limit: TENDERS_PAGE_SIZE,
         sortBy,
         sortOrder,
       };
@@ -369,25 +373,22 @@ export default function TendersPage() {
         params.assigned_to = assignedFilter;
       }
 
-      const res = await api.get('/tenders', params);
-      setTenders(res.data || []);
-      setTotalCount(res.total || 0);
+      return api.get('/tenders', params);
+    },
+    [search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, assignedFilter, sortBy, sortOrder, user?.role, user?.id],
+  );
+  const tendersList = useInfiniteList<any>(fetchTendersPage);
+  const { rows: tenders, total: totalCount, loading: isLoading, refresh: fetchTenders } = tendersList;
 
-      // Auto-open highlight if specified in URL query — once, even when the tender is not on this results page.
-      if (highlightId && highlightOpened.current !== highlightId) {
-        highlightOpened.current = highlightId;
-        const found = (res.data || []).find((t: any) => t.id === highlightId) || (await api.get(`/tenders/${highlightId}`).catch(() => null));
-        if (found) {
-          openTenderDetails(found);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch tenders:', err);
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, [page, limit, search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, assignedFilter, sortBy, sortOrder, highlightId]);
+  // Auto-open highlight if specified in URL query — once, even when the tender is not in the loaded pages.
+  useEffect(() => {
+    if (!highlightId || isLoading || highlightOpened.current === highlightId) return;
+    highlightOpened.current = highlightId;
+    const loaded = tenders.find((t: any) => t.id === highlightId);
+    (loaded ? Promise.resolve(loaded) : api.get(`/tenders/${highlightId}`).catch(() => null)).then((found) => {
+      if (found) openTenderDetails(found);
+    });
+  }, [highlightId, isLoading, tenders]);
 
   // Initial load
   useEffect(() => {
@@ -396,17 +397,13 @@ export default function TendersPage() {
     fetchReports();
   }, []);
 
-  useEffect(() => {
-    fetchTenders();
-  }, [fetchTenders]);
-
   // Real-time Event-Driven Synchronization via Socket.IO
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
 
     const handleTenderRealtimeEvent = () => {
-      fetchTenders(true);
+      fetchTenders();
       fetchDashboardStats();
       fetchReports();
     };
@@ -496,7 +493,6 @@ export default function TendersPage() {
         setDeadlineFilter('');
       }
     }
-    setPage(1);
   };
 
   // Cascading Region helper based on selected Zone (§21)
@@ -663,7 +659,7 @@ export default function TendersPage() {
         type: 'success',
         text: `${tender.tender_number || tender.tender_no} submitted for review — it is now in Management's Approvals Inbox.`,
       });
-      await Promise.all([fetchTenders(true), fetchDashboardStats()]);
+      await Promise.all([fetchTenders(), fetchDashboardStats()]);
     } catch (err: any) {
       setPageNotice({
         type: 'danger',
@@ -694,7 +690,7 @@ export default function TendersPage() {
       setIsApproveOpen(false);
       setApprovalRemarks('');
       setRejectionReason('');
-      await Promise.all([fetchTenders(true), fetchDashboardStats(), fetchReports()]);
+      await Promise.all([fetchTenders(), fetchDashboardStats(), fetchReports()]);
     } catch (err: any) {
       setActionError(err.message || 'Failed to submit approval decision.');
     } finally {
@@ -719,7 +715,7 @@ export default function TendersPage() {
       setIsTransitionOpen(false);
       setTargetTransitionStatus('');
       setTransitionRemarks('');
-      await Promise.all([fetchTenders(true), fetchDashboardStats(), fetchReports()]);
+      await Promise.all([fetchTenders(), fetchDashboardStats(), fetchReports()]);
     } catch (err: any) {
       setActionError(err.message || 'Failed to transition tender stage.');
     } finally {
@@ -823,7 +819,7 @@ export default function TendersPage() {
       setOutcomeDocumentationIssue('');
       setOutcomeOtherReason('');
       setOutcomeValueLakh('');
-      await Promise.all([fetchTenders(true), fetchDashboardStats(), fetchReports()]);
+      await Promise.all([fetchTenders(), fetchDashboardStats(), fetchReports()]);
     } catch (err: any) {
       setActionError(err.message || 'Failed to record tender outcome.');
     } finally {
@@ -859,7 +855,7 @@ export default function TendersPage() {
       setNewIssueText('');
       setIssueResponsiblePerson('');
       setIssueEscalatedTo('');
-      await Promise.all([fetchTenders(true), fetchDashboardStats(), fetchReports()]);
+      await Promise.all([fetchTenders(), fetchDashboardStats(), fetchReports()]);
     } catch (err: any) {
       setActionError(err.message || 'Failed to log portal issue.');
     } finally {
@@ -937,7 +933,6 @@ export default function TendersPage() {
     setActiveHudFilter(null);
     setSortBy('created_at');
     setSortOrder('desc');
-    setPage(1);
   };
 
   const clearQuickFilters = () => {
@@ -945,7 +940,6 @@ export default function TendersPage() {
     setStatusFilter('');
     setCategoryFilter('');
     setDeadlineFilter('');
-    setPage(1);
   };
 
   // Stage counts available from the dashboard stats (shown inside the Stage dropdown)
@@ -1083,6 +1077,93 @@ export default function TendersPage() {
   // Category, Zone and Assignee live in the "More" panel (Category is also on the PQ / MHA cards).
   const moreActiveCount = [categoryFilter, zoneFilter, !isSales ? assignedFilter : ''].filter(Boolean).length;
 
+  // Pipeline register: each tender as a RecordItem (priority cards + stage board).
+  const stageById = new Map<string, string>(tenders.map((t) => [t.id, t.status]));
+  const tenderLaneOf = (item: RecordItem) => stageById.get(item.key) || 'identified';
+  const tenderLanes: BoardLane[] = [
+    ...STAGES.map((s) => ({ key: s.key as string, label: s.label as string, tone: toneFor(s.label) })),
+    ...Array.from(new Set(tenders.map((t) => t.status).filter((s) => s && !STAGES.some((st) => st.key === s)))).map((s) => ({
+      key: s as string,
+      label: String(s).replace(/_/g, ' '),
+      tone: toneFor(s),
+    })),
+  ];
+  const tenderRecords: RecordItem[] = tenders.map((tender) => {
+    const stageLabel = STAGES.find((s) => s.key === tender.status)?.label || String(tender.status || '').replace(/_/g, ' ');
+    const isPqTender = (tender.category || '').toLowerCase().includes('pq');
+    const isManagement = hasRole(['management', 'admin']);
+    const open = () => openTenderDetails(tender);
+    const openAction: RecordAction = { label: 'Open dossier', icon: <Eye />, onClick: open };
+
+    let primary: RecordAction = openAction;
+    if (tender.status === 'identified') {
+      primary = isManagement
+        ? { label: 'Review & authorise', icon: <ShieldCheck />, onClick: open }
+        : { label: 'Submit for review', icon: <Send />, onClick: () => handleQuickRequestApproval(tender) };
+    } else if (tender.status === 'awaiting_approval' && isManagement) {
+      primary = { label: 'Review decision', icon: <ShieldCheck />, onClick: open };
+    } else if (tender.status === 'under_preparation') {
+      primary = {
+        label: isPqTender ? 'Submit PQ' : 'Submit bid',
+        icon: <CheckCircle2 />,
+        onClick: () => {
+          setSelectedTender(tender);
+          setTargetTransitionStatus(isPqTender ? 'pq_submitted' : 'submitted');
+          setTransitionSubmissionDate(istToday());
+          setTransitionRemarks(isPqTender ? 'Pre-qualification dossier submitted on government portal.' : 'Technical and financial bids submitted on GeM portal.');
+          setActionError(null);
+          setIsTransitionOpen(true);
+        },
+      };
+    } else if (['submitted', 'technical_eval', 'commercial_eval'].includes(tender.status)) {
+      primary = {
+        label: 'Record outcome',
+        icon: <Award />,
+        onClick: () => {
+          setSelectedTender(tender);
+          setOutcomeResult('won');
+          setIsOutcomeOpen(true);
+        },
+      };
+    }
+
+    const badges: RecordItem['badges'] = [];
+    if (tender.category === 'pq') badges.push({ label: 'PQ', tone: 'info' });
+    else if (tender.category === 'general_mha') badges.push({ label: 'General / MHA', tone: 'neutral' });
+    if (tender.status === 'awaiting_approval' && !isManagement) badges.push({ label: 'In review', tone: 'warning' });
+    if (tender.assigned_to === user?.id || tender.assigned_person_id === user?.id) badges.push({ label: 'You', tone: 'info' });
+
+    const location = [tender.city, tender.state].filter(Boolean).join(', ');
+    return {
+      key: tender.id,
+      code: tender.tender_number || tender.tender_no,
+      title: tender.requirement_text || tender.product_name || 'Defence Procurement Item',
+      subtitle: [tender.department || tender.organisation_name || 'Government Buyer', location].filter(Boolean).join(' · '),
+      status: { label: stageLabel, tone: toneFor(stageLabel) },
+      badges,
+      due: {
+        date: tender.submission_deadline || tender.bid_closing_date,
+        label: 'Bid closes',
+        done: ['won', 'lost', 'cancelled', 'rejected_internally'].includes(tender.status),
+      },
+      value: tender.estimated_value_lakh
+        ? `₹ ${tender.estimated_value_lakh} Lakh`
+        : tender.tender_value
+          ? `₹ ${(tender.tender_value / 100000).toFixed(2)} Lakh`
+          : undefined,
+      owner: tender.tender_owner_name || tender.owner_name || 'Unassigned',
+      facts: [
+        { label: 'Portal', value: tender.portal || '—' },
+        { label: 'EMD', value: tender.emd_fee ? formatINR(tender.emd_fee) : 'Exempt' },
+        { label: 'Sales', value: tender.assigned_to_name || tender.assigned_person_name || 'Unassigned' },
+        { label: 'Qty', value: tender.quantity || 1 },
+      ],
+      primary,
+      quick: primary === openAction ? undefined : [{ label: 'Open dossier', icon: <Eye />, onClick: open }],
+      onOpen: open,
+    };
+  });
+
   return (
     <PageContainer>
       {/* 1. Page Header */}
@@ -1095,18 +1176,6 @@ export default function TendersPage() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                fetchTenders(true);
-                fetchDashboardStats();
-                if (user?.role !== 'sales') fetchReports();
-              }}
-              leftIcon={<RefreshCw className={`h-3.5 w-3.5 text-[#4A5568] ${isRefreshing ? 'animate-spin text-[#0F5E63]' : ''}`} />}
-            >
-              <span>Sync</span>
-            </Button>
             {hasRole(['management', 'tender_team', 'admin']) && (
               <>
                 <Button
@@ -1116,14 +1185,6 @@ export default function TendersPage() {
                   leftIcon={<Upload className="h-3.5 w-3.5 text-[#4A5568]" />}
                 >
                   <span>Bulk Import</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsSettingsOpen(true)}
-                  leftIcon={<Settings className="h-3.5 w-3.5 text-[#4A5568]" />}
-                >
-                  <span>SLAs & Settings</span>
                 </Button>
               </>
             )}
@@ -1221,7 +1282,6 @@ export default function TendersPage() {
                   value={search}
                   onChange={(e) => {
                     setSearch(e.target.value);
-                    setPage(1);
                   }}
                   className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                 />
@@ -1239,7 +1299,6 @@ export default function TendersPage() {
                     onSelect: () => {
                       setStatusFilter(s.key);
                       setActiveHudFilter(null);
-                      setPage(1);
                     },
                   }))}
                 />
@@ -1259,7 +1318,6 @@ export default function TendersPage() {
                     onSelect: () => {
                       setDeadlineFilter(o.key);
                       setActiveHudFilter(null);
-                      setPage(1);
                     },
                   }))}
                 />
@@ -1285,11 +1343,10 @@ export default function TendersPage() {
                       active: sortBy === f.key,
                       onSelect: () => {
                         setSortBy(f.key);
-                        setPage(1);
                       },
                     })),
-                    { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: sortOrder === 'desc', onSelect: () => { setSortOrder('desc'); setPage(1); } },
-                    { key: 'dir_asc', label: 'Ascending', icon: <ChevronUp />, active: sortOrder === 'asc', onSelect: () => { setSortOrder('asc'); setPage(1); } },
+                    { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: sortOrder === 'desc', onSelect: () => { setSortOrder('desc'); } },
+                    { key: 'dir_asc', label: 'Ascending', icon: <ChevronUp />, active: sortOrder === 'asc', onSelect: () => { setSortOrder('asc'); } },
                   ]}
                 />
                 {hasActiveFilters && (
@@ -1332,7 +1389,6 @@ export default function TendersPage() {
                 onSelect: () => {
                   setCategoryFilter(o.key);
                   setActiveHudFilter(null);
-                  setPage(1);
                 },
               }))}
             />
@@ -1345,7 +1401,6 @@ export default function TendersPage() {
                 active: zoneFilter === z,
                 onSelect: () => {
                   setZoneFilter(z);
-                  setPage(1);
                 },
               }))}
             />
@@ -1367,7 +1422,6 @@ export default function TendersPage() {
                   onSelect: () => {
                     setAssignedFilter(o.id);
                     setActiveHudFilter(null);
-                    setPage(1);
                   },
                 }))}
               />
@@ -1382,321 +1436,47 @@ export default function TendersPage() {
       {activeTab === 'pipeline' && (
         <div className="animate-in fade-in duration-150">
           {/* ========================================================================= */}
-          {/* Tenders Data Table & List View */}
+          {/* Tenders register: priority cards / stage board */}
           {/* ========================================================================= */}
-          <div className="bg-white rounded-[14px] border border-[#DCD8CE] overflow-hidden shadow-2xs">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] font-semibold">
-                    <th className="px-3 py-2.5 whitespace-nowrap">Tender / Bid No.</th>
-                    <th className="px-3 py-2.5 whitespace-nowrap">Buyer & Location</th>
-                    <th className="px-3 py-2.5 whitespace-nowrap">Requirement & Owners</th>
-                    <th className="px-3 py-2.5 whitespace-nowrap">Deadline</th>
-                    <th className="px-3 py-2.5 whitespace-nowrap">Stage & Value</th>
-                    <th className="px-3 py-2.5 text-right whitespace-nowrap">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#ECE9E2]">
-                  {isLoading ? (
-                    <tr>
-                      <td colSpan={6} className="p-12 text-center text-xs text-[#4A5568]">
-                        <Spinner size="md" className="mx-auto mb-2" />
-                        <span className="font-medium text-[#14213D]">Loading bidding opportunities...</span>
-                      </td>
-                    </tr>
-                  ) : tenders.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="p-12">
-                        <EmptyState
-                          icon={<FileText className="h-10 w-10 text-[#4A5568]" />}
-                          title="No tenders match selected criteria"
-                          description="Adjust your search filters, clear active stage criteria, or register a new tender opportunity."
-                          action={
-                            hasActiveFilters ? (
-                              <Button variant="outline" size="sm" onClick={resetAllFilters}>
-                                Reset Filters
-                              </Button>
-                            ) : undefined
-                          }
-                        />
-                      </td>
-                    </tr>
-                  ) : (
-                    tenders.map((tender) => {
-                      const stageObj = STAGES.find((s) => s.key === tender.status) || {
-                        key: tender.status,
-                        label: tender.status,
-                        color: 'default' as const,
-                      };
-
-                      const closingDate = tender.submission_deadline || tender.bid_closing_date
-                        ? new Date(tender.submission_deadline || tender.bid_closing_date)
-                        : null;
-                      const now = new Date();
-                      const diffHours = closingDate
-                        ? (closingDate.getTime() - now.getTime()) / (1000 * 60 * 60)
-                        : null;
-                      const diffDays = diffHours !== null ? Math.ceil(diffHours / 24) : null;
-                      const isUrgent = diffHours !== null && diffHours <= 48 && diffHours > 0;
-                      const isUpcoming = diffHours !== null && diffHours > 48 && diffHours <= 168;
-                      const isOverdue = diffHours !== null && diffHours < 0 && !['won', 'lost', 'cancelled'].includes(tender.status);
-
-                      return (
-                        <tr
-                          key={tender.id}
-                          className="hover:bg-[#F8FAFC] transition-colors border-b border-[#ECE9E2] group cursor-pointer"
-                          onClick={() => openTenderDetails(tender)}
-                        >
-                          {/* Tender Number & Portal */}
-                          <td className="px-3 py-2.5 whitespace-nowrap">
-                            <div className="font-mono font-bold text-[#14213D] flex items-center gap-1.5 max-w-[160px]">
-                              <span className="truncate group-hover:text-[#0F5E63] group-hover:underline" title={tender.tender_number || tender.tender_no}>
-                                {tender.tender_number || tender.tender_no}
-                              </span>
-                              {tender.portal && (
-                                <Badge variant="outline" size="sm" className="shrink-0">
-                                  {tender.portal}
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="mt-1 flex items-center gap-1.5 max-w-[160px]">
-                              <Badge
-                                variant={
-                                  tender.category?.toLowerCase() === 'pq'
-                                    ? 'cyber'
-                                    : tender.category?.toLowerCase() === 'general_mha'
-                                      ? 'info'
-                                      : 'default'
-                                }
-                                size="sm"
-                              >
-                                {tender.category === 'pq'
-                                  ? 'PQ'
-                                  : tender.category === 'general_mha'
-                                    ? 'General / MHA'
-                                    : tender.category || 'Standard'}
-                              </Badge>
-                              <span className="text-[11px] text-[#4A5568] font-mono">ID: {tender.id.slice(0, 8)}</span>
-                            </div>
-                          </td>
-
-                          {/* Buyer & Location */}
-                          <td className="px-3 py-2.5">
-                            <div className="font-semibold text-[#14213D] truncate max-w-[170px]" title={tender.department || tender.organisation_name}>
-                              {tender.department || tender.organisation_name || 'Government Buyer'}
-                            </div>
-                            <div className="text-[11px] text-[#4A5568] flex items-center gap-1 mt-0.5 max-w-[170px]" title={[tender.city, tender.state, tender.zone].filter(Boolean).join(', ')}>
-                              <MapPin className="h-3 w-3 shrink-0 text-[#0F5E63]" />
-                              <span className="truncate">
-                                {tender.city ? `${tender.city}, ` : ''}
-                                {tender.state ? `${tender.state} ` : ''}
-                                {tender.zone ? `(${tender.zone})` : ''}
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* Requirement Excerpt & Ownership */}
-                          <td className="px-3 py-2.5">
-                            <div className="truncate font-medium text-[#14213D] max-w-[190px]" title={tender.requirement_text || tender.product_name}>
-                              {tender.requirement_text || tender.product_name || 'Defence Procurement Item'}
-                            </div>
-                            <div className="mt-1 flex flex-col gap-0.5 text-[10px] max-w-[190px]">
-                              <div className="text-[#4A5568] truncate flex items-center gap-1">
-                                <span className="text-[#718096] font-semibold uppercase tracking-wider text-[9px]">Owner:</span>
-                                <span className="font-medium text-[#14213D] truncate">{tender.tender_owner_name || tender.owner_name || 'Unassigned'}</span>
-                              </div>
-                              <div className="truncate flex items-center gap-1">
-                                <span className="text-[#718096] font-semibold uppercase tracking-wider text-[9px]">Sales:</span>
-                                <span className="font-medium text-[#14213D] truncate">
-                                  {tender.assigned_to_name || tender.assigned_person_name || 'Unassigned'}
-                                </span>
-                                {(tender.assigned_to === user?.id || tender.assigned_person_id === user?.id) && (
-                                  <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/30 shrink-0">
-                                    🎯 You
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </td>
-
-                          {/* Submission Deadline */}
-                          <td className="px-3 py-2.5 whitespace-nowrap">
-                            <div className="font-mono text-[#14213D] font-semibold text-xs">
-                              {closingDate ? formatTaskDate(closingDate) : 'TBA'}
-                            </div>
-                            {isOverdue ? (
-                              <Badge variant="danger" size="sm" className="mt-1" hasDot>
-                                OVERDUE
-                              </Badge>
-                            ) : isUrgent ? (
-                              <Badge variant="urgent" size="sm" className="mt-1">
-                                {isIstToday(closingDate) ? 'CLOSING TODAY' : `${Math.ceil(diffHours)}H LEFT`}
-                              </Badge>
-                            ) : isUpcoming ? (
-                              <Badge variant="info" size="sm" className="mt-1">
-                                {diffDays} DAYS LEFT
-                              </Badge>
-                            ) : (
-                              <span className="text-[10px] text-[#4A5568] block mt-0.5">Standard</span>
-                            )}
-                          </td>
-
-                          {/* Current Stage */}
-                          <td className="px-3 py-2.5 whitespace-nowrap">
-                            <Badge variant={stageObj.color} size="sm">
-                              {stageObj.label}
-                            </Badge>
-                            <div className="mt-1 text-[11px] text-[#4A5568]">
-                              Qty {tender.quantity || 1}
-                              <span className="mx-1 text-[#C9C4B8]">·</span>
-                              <span className="font-mono font-bold text-[#0F5E63]">
-                                {tender.estimated_value_lakh
-                                  ? `₹ ${tender.estimated_value_lakh} Lakh`
-                                  : tender.tender_value
-                                    ? `₹ ${(tender.tender_value / 100000).toFixed(2)} Lakh`
-                                    : tender.emd_fee
-                                      ? `EMD: ${formatINR(tender.emd_fee)}`
-                                      : 'EMD: Exempt'}
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* Actions (§19-§26 Quick Progression) */}
-                          <td className="px-3 py-2.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center justify-end gap-1.5">
-                              {tender.status === 'identified' && (
-                                <div className="flex items-center gap-1">
-                                  {hasRole(['management', 'admin']) ? (
-                                    <Button
-                                      size="xs"
-                                      variant="primary"
-                                      onClick={() => openTenderDetails(tender)}
-                                      title="Review as Management & Authorise"
-                                    >
-                                      <ShieldCheck className="h-3 w-3 mr-1" />
-                                      <span>Review</span>
-                                    </Button>
-                                  ) : (
-                                    <Button
-                                      size="xs"
-                                      variant="primary"
-                                      onClick={() => handleQuickRequestApproval(tender)}
-                                      title="Submit for Internal Review"
-                                    >
-                                      <Send className="h-3 w-3 mr-1" />
-                                      <span>Submit</span>
-                                    </Button>
-                                  )}
-                                </div>
-                              )}
-
-                              {tender.status === 'awaiting_approval' && (
-                                hasRole(['management', 'admin']) ? (
-                                  <Button
-                                    size="xs"
-                                    variant="primary"
-                                    className="bg-amber-600 hover:bg-amber-700 text-white"
-                                    onClick={() => openTenderDetails(tender)}
-                                    title="Review Decision & Endorse as Management"
-                                  >
-                                    <ShieldCheck className="h-3 w-3 mr-1" />
-                                    <span>Review</span>
-                                  </Button>
-                                ) : (
-                                  <Badge variant="warning" size="sm">
-                                    In Review
-                                  </Badge>
-                                )
-                              )}
-
-                              {tender.status === 'under_preparation' && (() => {
-                                const isPqTender = (tender.category || '').toLowerCase().includes('pq');
-                                return (
-                                  <Button
-                                    size="xs"
-                                    variant="primary"
-                                    onClick={() => {
-                                      setSelectedTender(tender);
-                                      setTargetTransitionStatus(isPqTender ? 'pq_submitted' : 'submitted');
-                                      setTransitionSubmissionDate(istToday());
-                                      setTransitionRemarks(isPqTender ? 'Pre-qualification dossier submitted on government portal.' : 'Technical and financial bids submitted on GeM portal.');
-                                      setActionError(null);
-                                      setIsTransitionOpen(true);
-                                    }}
-                                    title={isPqTender ? 'Submit PQ dossier' : 'Submit bid'}
-                                  >
-                                    <CheckCircle2 className="h-3 w-3 mr-1" />
-                                    <span>{isPqTender ? 'Submit PQ' : 'Submit bid'}</span>
-                                  </Button>
-                                );
-                              })()}
-
-                              {['submitted', 'technical_eval', 'commercial_eval'].includes(tender.status) && (
-                                <Button
-                                  size="xs"
-                                  variant="outline"
-                                  className="text-emerald-700 border-emerald-300 hover:bg-emerald-50"
-                                  onClick={() => {
-                                    setSelectedTender(tender);
-                                    setOutcomeResult('won');
-                                    setIsOutcomeOpen(true);
-                                  }}
-                                  title="Record Won/Lost Outcome"
-                                >
-                                  <Award className="h-3 w-3 mr-1" />
-                                  <span>Outcome</span>
-                                </Button>
-                              )}
-
-                              <Button
-                                size="xs"
-                                variant="secondary"
-                                onClick={() => openTenderDetails(tender)}
-                                title="Inspect — open full 11-tab tender dossier"
-                                aria-label="Inspect tender"
-                              >
-                                <Eye className="h-3.5 w-3.5 text-[#0F5E63]" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+          {isLoading ? (
+            <div className="rounded-[14px] border border-[#DCD8CE] bg-white p-12 text-center text-xs text-[#4A5568]">
+              <Spinner size="md" className="mx-auto mb-2" />
+              <span className="font-medium text-[#14213D]">Loading bidding opportunities...</span>
             </div>
-
-            {/* Pagination Bar */}
-            <div className="p-3 bg-[#FBFAF7] border-t border-[#DCD8CE] flex flex-wrap items-center justify-between gap-3 text-xs text-[#4A5568]">
-              <div>
-                Showing <strong className="text-[#14213D]">{tenders.length}</strong> of{' '}
-                <strong className="text-[#14213D]">{totalCount}</strong> opportunities
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={page <= 1}
-                  onClick={() => setPage(page - 1)}
-                >
-                  Previous
-                </Button>
-                <span className="font-semibold text-[#14213D] px-2">
-                  Page {page} of {Math.max(1, Math.ceil(totalCount / limit))}
-                </span>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={page >= Math.ceil(totalCount / limit)}
-                  onClick={() => setPage(page + 1)}
-                >
-                  Next
-                </Button>
-              </div>
+          ) : tenders.length === 0 ? (
+            <div className="rounded-[14px] border border-[#DCD8CE] bg-white p-12">
+              <EmptyState
+                icon={<FileText className="h-10 w-10 text-[#4A5568]" />}
+                title="No tenders match selected criteria"
+                description="Adjust your search filters, clear active stage criteria, or register a new tender opportunity."
+                action={
+                  hasActiveFilters ? (
+                    <Button variant="outline" size="sm" onClick={resetAllFilters}>
+                      Reset Filters
+                    </Button>
+                  ) : undefined
+                }
+              />
             </div>
-          </div>
+          ) : (
+            <RecordViews
+              storageKey="tenders"
+              defaultView="cards"
+              items={tenderRecords}
+              lanes={tenderLanes}
+              laneOf={tenderLaneOf}
+              summary={
+                <>
+                  <strong className="text-[#14213D]">{tenders.length}</strong> of{' '}
+                  <strong className="text-[#14213D]">{totalCount}</strong> bids
+                </>
+              }
+              empty="No tenders match selected criteria."
+              onLoadMore={tendersList.loadMore}
+              hasMore={tendersList.hasMore}
+              loadingMore={tendersList.loadingMore}
+            />
+          )}
         </div>
       )}
 
@@ -1712,7 +1492,7 @@ export default function TendersPage() {
           }}
           onCountChange={handleInboxCount}
           onChanged={() => {
-            fetchTenders(true);
+            fetchTenders();
             fetchDashboardStats();
           }}
         />
@@ -2443,252 +2223,266 @@ export default function TendersPage() {
         description="Add a tender requirement to the centralized operational pipeline with transactional event publishing."
         maxWidth="2xl"
       >
-        <form onSubmit={handleCreateSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
-
-          {/* Section 1: Identification & Classification (§19, §20) */}
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <Input
-              label="Tender / GeM Bid No."
-              required
-              value={newTender.tender_no}
-              onChange={(e) => setNewTender({ ...newTender, tender_no: e.target.value })}
-              placeholder="e.g. GEM/2026/B/88219"
-            />
-            <Select
-              label="Tender Portal"
-              value={newTender.portal}
-              onChange={(e) => setNewTender({ ...newTender, portal: e.target.value })}
-              options={[
-                { value: 'GeM', label: 'Government e-Marketplace (GeM)' },
-                { value: 'CPPP', label: 'Central Public Procurement Portal (CPPP)' },
-                { value: 'State Portal', label: 'State Procurement Portal' },
-                { value: 'Direct / Manual', label: 'Direct Ministry RFP' },
-              ]}
-            />
-            <Select
-              label="Classification (§20)"
-              value={newTender.category}
-              onChange={(e) => setNewTender({ ...newTender, category: e.target.value })}
-              options={[
-                { value: 'general_mha', label: 'General / MHA Tender' },
-                { value: 'pq', label: 'Pre-Qualification (PQ)' },
-                { value: 'other', label: 'Other Configured Tender' },
-              ]}
-            />
-            <Select
-              label="Current Stage (§19)"
-              value={newTender.current_stage}
-              onChange={(e) => setNewTender({ ...newTender, current_stage: e.target.value })}
-              options={[
-                { value: 'identified', label: '1. Tender Identified' },
-                { value: 'awaiting_approval', label: '2. Submitted for Review' },
-                { value: 'under_preparation', label: '4. Tender Preparation' },
-              ]}
-            />
-          </div>
-
-          {/* Section 2: Buyer & Organisation */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Select
-              label="Mapped Organisation"
-              required
-              value={newTender.organisation_id}
-              onChange={(e) => handleOrgChange(e.target.value)}
-            >
-              <option value="">-- Select Organisation --</option>
-              {organisations.map((org) => (
-                <option key={org.id} value={org.id}>
-                  {org.name}
-                </option>
-              ))}
-            </Select>
-            <Input
-              label="Buyer Department / Ministry"
-              required
-              value={newTender.department}
-              onChange={(e) => setNewTender({ ...newTender, department: e.target.value })}
-              placeholder="e.g. Directorate General Border Security Force (BSF)"
-            />
-          </div>
-
-          {/* Section 3: Geographic Coordinates (§21 Zone & Region Structure) */}
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <Select
-              label="Territory Zone (§21)"
-              value={newTender.zone}
-              onChange={(e) => handleZoneChange(e.target.value)}
-              options={
-                zonesMaster.length > 0
-                  ? zonesMaster.map((z) => ({ value: z.name, label: `${z.name} Zone (${z.code})` }))
-                  : [
-                    { value: 'North', label: 'North Zone (N)' },
-                    { value: 'North East', label: 'North East Zone (NE)' },
-                    { value: 'South', label: 'South Zone (S)' },
-                    { value: 'East', label: 'East Zone (E)' },
-                    { value: 'West', label: 'West Zone (W)' },
-                  ]
-              }
-            />
-            <Select
-              label="Territory Region (§21)"
-              value={newTender.region}
-              onChange={(e) => handleRegionChange(e.target.value)}
-              options={
-                availableRegions.length > 0
-                  ? availableRegions.map((r) => ({ value: r.name, label: r.name }))
-                  : [
-                    { value: 'Delhi NCR', label: 'Delhi NCR' },
-                    { value: 'Punjab & Chandigarh', label: 'Punjab & Chandigarh' },
-                    { value: 'Haryana', label: 'Haryana' },
-                    { value: 'Rajasthan', label: 'Rajasthan' },
-                    { value: 'Uttar Pradesh', label: 'Uttar Pradesh' },
-                    { value: 'Jammu & Kashmir', label: 'Jammu & Kashmir' },
-                  ]
-              }
-            />
-            <Input
-              label="City"
-              required
-              value={newTender.city}
-              onChange={(e) => setNewTender({ ...newTender, city: e.target.value })}
-              placeholder="e.g. New Delhi"
-            />
-            <Input
-              label="State"
-              required
-              value={newTender.state}
-              onChange={(e) => setNewTender({ ...newTender, state: e.target.value })}
-              placeholder="e.g. Delhi"
-            />
-          </div>
-
-          {/* Section 4: Product & Requirement Details */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Select
-              label="Product / Equipment Suite"
-              value={newTender.product_id}
-              onChange={(e) => setNewTender({ ...newTender, product_id: e.target.value })}
-            >
-              <option value="">-- Select Product / System --</option>
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.category || 'Security/Defence'})
-                </option>
-              ))}
-            </Select>
-
-            <Input
-              label="Est. Value (₹ Lakh)"
-              type="number"
-              step="0.01"
-              value={newTender.estimated_value_lakh}
-              onChange={(e) => setNewTender({ ...newTender, estimated_value_lakh: e.target.value })}
-              placeholder="e.g. 150.00"
-            />
-          </div>
-
-          <Textarea
-            label="Product Requirement & Scope"
-            required
-            rows={2}
-            value={newTender.requirement_text}
-            onChange={(e) => setNewTender({ ...newTender, requirement_text: e.target.value })}
-            placeholder="e.g. Passive Night Vision Monoculars as per MHA Qualitative Requirements with Belgian Photonis Tubes"
+        <form onSubmit={handleCreateSubmit}>
+          <FormSteps
+            onCancel={() => setIsCreateOpen(false)}
+            banner={
+              actionError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {actionError}
+                </div>
+              )
+            }
+            submit={
+              <Button type="submit" isLoading={isSubmitting}>
+                Register Tender
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Tender',
+                icon: <FileText />,
+                description: 'The bid number, the portal it is published on, and how it is classified.',
+                content: (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Input
+                      label="Tender / GeM Bid No."
+                      required
+                      value={newTender.tender_no}
+                      onChange={(e) => setNewTender({ ...newTender, tender_no: e.target.value })}
+                      placeholder="e.g. GEM/2026/B/88219"
+                    />
+                    <Select
+                      label="Tender Portal"
+                      value={newTender.portal}
+                      onChange={(e) => setNewTender({ ...newTender, portal: e.target.value })}
+                      options={[
+                        { value: 'GeM', label: 'Government e-Marketplace (GeM)' },
+                        { value: 'CPPP', label: 'Central Public Procurement Portal (CPPP)' },
+                        { value: 'State Portal', label: 'State Procurement Portal' },
+                        { value: 'Direct / Manual', label: 'Direct Ministry RFP' },
+                      ]}
+                    />
+                    <Select
+                      label="Classification (§20)"
+                      value={newTender.category}
+                      onChange={(e) => setNewTender({ ...newTender, category: e.target.value })}
+                      options={[
+                        { value: 'general_mha', label: 'General / MHA Tender' },
+                        { value: 'pq', label: 'Pre-Qualification (PQ)' },
+                        { value: 'other', label: 'Other Configured Tender' },
+                      ]}
+                    />
+                    <Select
+                      label="Current Stage (§19)"
+                      value={newTender.current_stage}
+                      onChange={(e) => setNewTender({ ...newTender, current_stage: e.target.value })}
+                      options={[
+                        { value: 'identified', label: '1. Tender Identified' },
+                        { value: 'awaiting_approval', label: '2. Submitted for Review' },
+                        { value: 'under_preparation', label: '4. Tender Preparation' },
+                      ]}
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Buyer',
+                icon: <Building />,
+                description: 'Who is buying and where they are — this decides the zone and region that own the tender.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Mapped Organisation"
+                        required
+                        value={newTender.organisation_id}
+                        onChange={(e) => handleOrgChange(e.target.value)}
+                      >
+                        <option value="">-- Select Organisation --</option>
+                        {organisations.map((org) => (
+                          <option key={org.id} value={org.id}>
+                            {org.name}
+                          </option>
+                        ))}
+                      </Select>
+                      <Input
+                        label="Buyer Department / Ministry"
+                        required
+                        value={newTender.department}
+                        onChange={(e) => setNewTender({ ...newTender, department: e.target.value })}
+                        placeholder="e.g. Directorate General Border Security Force (BSF)"
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Territory Zone (§21)"
+                        value={newTender.zone}
+                        onChange={(e) => handleZoneChange(e.target.value)}
+                        options={
+                          zonesMaster.length > 0
+                            ? zonesMaster.map((z) => ({ value: z.name, label: `${z.name} Zone (${z.code})` }))
+                            : [
+                              { value: 'North', label: 'North Zone (N)' },
+                              { value: 'North East', label: 'North East Zone (NE)' },
+                              { value: 'South', label: 'South Zone (S)' },
+                              { value: 'East', label: 'East Zone (E)' },
+                              { value: 'West', label: 'West Zone (W)' },
+                            ]
+                        }
+                      />
+                      <Select
+                        label="Territory Region (§21)"
+                        value={newTender.region}
+                        onChange={(e) => handleRegionChange(e.target.value)}
+                        options={
+                          availableRegions.length > 0
+                            ? availableRegions.map((r) => ({ value: r.name, label: r.name }))
+                            : [
+                              { value: 'Delhi NCR', label: 'Delhi NCR' },
+                              { value: 'Punjab & Chandigarh', label: 'Punjab & Chandigarh' },
+                              { value: 'Haryana', label: 'Haryana' },
+                              { value: 'Rajasthan', label: 'Rajasthan' },
+                              { value: 'Uttar Pradesh', label: 'Uttar Pradesh' },
+                              { value: 'Jammu & Kashmir', label: 'Jammu & Kashmir' },
+                            ]
+                        }
+                      />
+                      <Input
+                        label="City"
+                        required
+                        value={newTender.city}
+                        onChange={(e) => setNewTender({ ...newTender, city: e.target.value })}
+                        placeholder="e.g. New Delhi"
+                      />
+                      <Input
+                        label="State"
+                        required
+                        value={newTender.state}
+                        onChange={(e) => setNewTender({ ...newTender, state: e.target.value })}
+                        placeholder="e.g. Delhi"
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Requirement',
+                icon: <Layers />,
+                description: 'What is being procured, how many, and the expected value and EMD.',
+                content: (
+                  <div className="space-y-3">
+                    <Select
+                      label="Product / Equipment Suite"
+                      value={newTender.product_id}
+                      onChange={(e) => setNewTender({ ...newTender, product_id: e.target.value })}
+                    >
+                      <option value="">-- Select Product / System --</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.category || 'Security/Defence'})
+                        </option>
+                      ))}
+                    </Select>
+                    <Textarea
+                      label="Product Requirement & Scope"
+                      required
+                      rows={2}
+                      value={newTender.requirement_text}
+                      onChange={(e) => setNewTender({ ...newTender, requirement_text: e.target.value })}
+                      placeholder="e.g. Passive Night Vision Monoculars as per MHA Qualitative Requirements with Belgian Photonis Tubes"
+                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Quantity"
+                        type="number"
+                        min="1"
+                        value={newTender.quantity}
+                        onChange={(e) => setNewTender({ ...newTender, quantity: Number(e.target.value) })}
+                      />
+                      <Input
+                        label="Est. Value (₹ Lakh)"
+                        type="number"
+                        step="0.01"
+                        value={newTender.estimated_value_lakh}
+                        onChange={(e) => setNewTender({ ...newTender, estimated_value_lakh: e.target.value })}
+                        placeholder="e.g. 150.00"
+                      />
+                      <Input
+                        label="EMD Fee (₹)"
+                        type="number"
+                        min="0"
+                        value={newTender.emd_fee}
+                        onChange={(e) => setNewTender({ ...newTender, emd_fee: Number(e.target.value) })}
+                      />
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: 'Dates & Team',
+                icon: <Calendar />,
+                description: 'Key dates, who works the tender, and any internal notes.',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Publication Date"
+                        type="date"
+                        required
+                        value={newTender.publication_date}
+                        onChange={(e) => setNewTender({ ...newTender, publication_date: e.target.value })}
+                      />
+                      <Input
+                        label="Submission Deadline (IST)"
+                        type="datetime-local"
+                        required
+                        min={newTender.publication_date ? `${newTender.publication_date}T00:00` : undefined}
+                        value={newTender.submission_deadline}
+                        onChange={(e) => setNewTender({ ...newTender, submission_deadline: e.target.value })}
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Assigned Salesperson"
+                        placeholder="-- Select Assigned Salesperson --"
+                        helperText="Ground executive managing client meetings, QRs, trials & depot demos."
+                        value={newTender.assigned_person_id}
+                        onChange={(e) => setNewTender({ ...newTender, assigned_person_id: e.target.value })}
+                      >
+                        <option value="">-- Unassigned (None) --</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                          </option>
+                        ))}
+                      </Select>
+                      <Select
+                        label="Tender Owner (Responsible Executive)"
+                        placeholder="-- Default (Same as Assigned) --"
+                        helperText="Accountable executive for bid review, approvals & GeM submission."
+                        value={newTender.tender_owner_id}
+                        onChange={(e) => setNewTender({ ...newTender, tender_owner_id: e.target.value })}
+                      >
+                        <option value="">-- Same as Assigned Person --</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <Input
+                      label="Internal Notes / Remarks"
+                      value={newTender.remarks}
+                      onChange={(e) => setNewTender({ ...newTender, remarks: e.target.value })}
+                      placeholder="e.g. Requires Belgian OEM authorization. Ensure 2% margin threshold."
+                    />
+                  </div>
+                ),
+              },
+            ]}
           />
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Quantity"
-              type="number"
-              min="1"
-              value={newTender.quantity}
-              onChange={(e) => setNewTender({ ...newTender, quantity: Number(e.target.value) })}
-            />
-            <Input
-              label="EMD Fee (₹)"
-              type="number"
-              min="0"
-              value={newTender.emd_fee}
-              onChange={(e) => setNewTender({ ...newTender, emd_fee: Number(e.target.value) })}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Publication Date"
-              type="date"
-              required
-              value={newTender.publication_date}
-              onChange={(e) => setNewTender({ ...newTender, publication_date: e.target.value })}
-            />
-            <Input
-              label="Submission Deadline (IST)"
-              type="datetime-local"
-              required
-              min={newTender.publication_date ? `${newTender.publication_date}T00:00` : undefined}
-              value={newTender.submission_deadline}
-              onChange={(e) => setNewTender({ ...newTender, submission_deadline: e.target.value })}
-            />
-          </div>
-
-          {/* Section 5: Team Ownership */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Select
-              label="Assigned Salesperson"
-              placeholder="-- Select Assigned Salesperson --"
-              helperText="Ground executive managing client meetings, QRs, trials & depot demos."
-              value={newTender.assigned_person_id}
-              onChange={(e) => setNewTender({ ...newTender, assigned_person_id: e.target.value })}
-            >
-              <option value="">-- Unassigned (None) --</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.full_name} ({u.role?.replace(/_/g, ' ')})
-                </option>
-              ))}
-            </Select>
-
-            <Select
-              label="Tender Owner (Responsible Executive)"
-              placeholder="-- Default (Same as Assigned) --"
-              helperText="Accountable executive for bid review, approvals & GeM submission."
-              value={newTender.tender_owner_id}
-              onChange={(e) => setNewTender({ ...newTender, tender_owner_id: e.target.value })}
-            >
-              <option value="">-- Same as Assigned Person --</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.full_name} ({u.role?.replace(/_/g, ' ')})
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <Input
-            label="Internal Notes / Remarks"
-            value={newTender.remarks}
-            onChange={(e) => setNewTender({ ...newTender, remarks: e.target.value })}
-            placeholder="e.g. Requires Belgian OEM authorization. Ensure 2% margin threshold."
-          />
-
-          <div className="pt-2 flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsCreateOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Register Tender
-            </Button>
-          </div>
         </form>
       </Modal>
 
@@ -2822,179 +2616,194 @@ export default function TendersPage() {
         description="Capture deep post-bid intelligence for win rate calculation and loss pattern root cause analysis."
         maxWidth="lg"
       >
-        <form onSubmit={handleOutcomeSubmit} className="space-y-4">
-          {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-              {actionError}
-            </div>
-          )}
-
-          <Select
-            label="Final Result"
-            value={outcomeResult}
-            onChange={(e) => setOutcomeResult(e.target.value as any)}
-            options={[
-              { value: 'won', label: 'WON - Order Awarded to Arihant (Ranked L1)' },
-              { value: 'lost', label: 'LOST - Awarded to Competitor or Disqualified' },
+        <form onSubmit={handleOutcomeSubmit}>
+          <FormSteps
+            onCancel={() => setIsOutcomeOpen(false)}
+            banner={
+              actionError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {actionError}
+                </div>
+              )
+            }
+            submit={
+              <Button type="submit" isLoading={isSubmitting}>
+                Save Commercial Verdict
+              </Button>
+            }
+            steps={[
+              {
+                title: 'Verdict',
+                icon: <Award />,
+                description: 'Did we win or lose, and when was the result declared?',
+                content: (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Select
+                      label="Final Result"
+                      value={outcomeResult}
+                      onChange={(e) => setOutcomeResult(e.target.value as any)}
+                      options={[
+                        { value: 'won', label: 'WON - Order Awarded to Arihant (Ranked L1)' },
+                        { value: 'lost', label: 'LOST - Awarded to Competitor or Disqualified' },
+                      ]}
+                    />
+                    <Input
+                      label="Result Declaration Date"
+                      type="date"
+                      required
+                      max={istToday()}
+                      value={outcomeResultDate}
+                      onChange={(e) => setOutcomeResultDate(e.target.value)}
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Award',
+                icon: <CheckCircle2 />,
+                description: 'What was awarded, where, to whose credit, and for how much.',
+                hidden: outcomeResult !== 'won',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Select
+                        label="Awarded Product (§26)"
+                        value={outcomeProductId}
+                        onChange={(e) => setOutcomeProductId(e.target.value)}
+                        options={[
+                          { value: '', label: 'Select or retain assigned product...' },
+                          ...products.map((p) => ({ value: p.id, label: p.name })),
+                        ]}
+                      />
+                      <Select
+                        label="Tender Category (§26)"
+                        value={outcomeCategory}
+                        onChange={(e) => setOutcomeCategory(e.target.value)}
+                        options={[
+                          { value: 'pq', label: 'PQ - Pre-Qualification' },
+                          { value: 'general_mha', label: 'General / MHA' },
+                          { value: 'other', label: 'Other Opportunity' },
+                        ]}
+                      />
+                      <Select
+                        label="Award Region (§26)"
+                        value={outcomeRegionId}
+                        onChange={(e) => setOutcomeRegionId(e.target.value)}
+                        options={[
+                          { value: '', label: 'Select region...' },
+                          ...regionsMaster.map((r) => ({ value: r.id, label: `${r.name} (${r.zone_name || 'Zone'})` })),
+                        ]}
+                      />
+                      <Select
+                        label="Responsible Executive (§26)"
+                        value={outcomeResponsiblePersonId}
+                        onChange={(e) => setOutcomeResponsiblePersonId(e.target.value)}
+                        options={[
+                          { value: '', label: 'Select responsible person...' },
+                          ...users.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
+                        ]}
+                      />
+                    </div>
+                    <Input
+                      label="Final Contract Award Value (₹ Lakh)"
+                      type="number"
+                      step="0.01"
+                      value={outcomeValueLakh}
+                      onChange={(e) => setOutcomeValueLakh(e.target.value)}
+                      placeholder="e.g. 145.50"
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Loss Reason',
+                icon: <XCircle />,
+                description: 'The main reason we lost and who won instead.',
+                hidden: outcomeResult === 'won',
+                content: (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Select
+                      label="Primary Structured Loss Reason (§26)"
+                      required
+                      value={outcomeLossReason}
+                      onChange={(e) => setOutcomeLossReason(e.target.value)}
+                      options={[
+                        { value: 'price', label: 'Price (Competitor underquoted L1)' },
+                        { value: 'competitor', label: 'Competitor advantage / preference' },
+                        { value: 'technical', label: 'Technical rejection / QR non-compliance' },
+                        { value: 'eligibility', label: 'Eligibility / Past experience shortfall' },
+                        { value: 'documentation', label: 'Documentation / Tender error / missed certificate' },
+                        { value: 'customer_decision', label: 'Customer cancellation / retender' },
+                        { value: 'other', label: 'Other reason' },
+                      ]}
+                    />
+                    <Input
+                      label="Winning Competitor Name (if known)"
+                      value={outcomeCompetitor}
+                      onChange={(e) => setOutcomeCompetitor(e.target.value)}
+                      placeholder="e.g. Falcon Security / BEL / MKU / Zicom"
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Root Causes',
+                icon: <AlertTriangle />,
+                description: 'Detailed post-mortem (§26). Fill in only the factors that applied.',
+                hidden: outcomeResult === 'won',
+                content: (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Technical Issue (if applicable)"
+                        value={outcomeTechnicalIssue}
+                        onChange={(e) => setOutcomeTechnicalIssue(e.target.value)}
+                        placeholder="e.g. Lab trial QR shortfall"
+                      />
+                      <Input
+                        label="Pricing Issue / L1 Gap (if applicable)"
+                        value={outcomePricingIssue}
+                        onChange={(e) => setOutcomePricingIssue(e.target.value)}
+                        placeholder="e.g. Quoted ₹14.2L vs L1 ₹13.8L"
+                      />
+                      <Input
+                        label="Eligibility Shortfall (if applicable)"
+                        value={outcomeEligibilityIssue}
+                        onChange={(e) => setOutcomeEligibilityIssue(e.target.value)}
+                        placeholder="e.g. 3-yr turnover criteria"
+                      />
+                      <Input
+                        label="Documentation Issue (if applicable)"
+                        value={outcomeDocumentationIssue}
+                        onChange={(e) => setOutcomeDocumentationIssue(e.target.value)}
+                        placeholder="e.g. Missing OEM authorization"
+                      />
+                    </div>
+                    <Input
+                      label="Other Reason Notes (if applicable)"
+                      value={outcomeOtherReason}
+                      onChange={(e) => setOutcomeOtherReason(e.target.value)}
+                      placeholder="e.g. Buyer canceled tender due to budget re-allocation"
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: 'Debrief',
+                icon: <FileText />,
+                description: 'What we learned from this result, for win-rate and loss-pattern analysis.',
+                content: (
+                  <Input
+                    label="Outcome Intelligence Remarks"
+                    value={outcomeRemarks}
+                    onChange={(e) => setOutcomeRemarks(e.target.value)}
+                    placeholder="e.g. Debrief completed with DIG communication officer."
+                    required
+                  />
+                ),
+              },
             ]}
           />
-
-          <Input
-            label="Result Declaration Date"
-            type="date"
-            required
-            max={istToday()}
-            value={outcomeResultDate}
-            onChange={(e) => setOutcomeResultDate(e.target.value)}
-          />
-
-          {outcomeResult === 'won' ? (
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Select
-                  label="Awarded Product (§26)"
-                  value={outcomeProductId}
-                  onChange={(e) => setOutcomeProductId(e.target.value)}
-                  options={[
-                    { value: '', label: 'Select or retain assigned product...' },
-                    ...products.map((p) => ({ value: p.id, label: p.name })),
-                  ]}
-                />
-
-                <Select
-                  label="Tender Category (§26)"
-                  value={outcomeCategory}
-                  onChange={(e) => setOutcomeCategory(e.target.value)}
-                  options={[
-                    { value: 'pq', label: 'PQ - Pre-Qualification' },
-                    { value: 'general_mha', label: 'General / MHA' },
-                    { value: 'other', label: 'Other Opportunity' },
-                  ]}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Select
-                  label="Award Region (§26)"
-                  value={outcomeRegionId}
-                  onChange={(e) => setOutcomeRegionId(e.target.value)}
-                  options={[
-                    { value: '', label: 'Select region...' },
-                    ...regionsMaster.map((r) => ({ value: r.id, label: `${r.name} (${r.zone_name || 'Zone'})` })),
-                  ]}
-                />
-
-                <Select
-                  label="Responsible Executive (§26)"
-                  value={outcomeResponsiblePersonId}
-                  onChange={(e) => setOutcomeResponsiblePersonId(e.target.value)}
-                  options={[
-                    { value: '', label: 'Select responsible person...' },
-                    ...users.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
-                  ]}
-                />
-              </div>
-
-              <Input
-                label="Final Contract Award Value (₹ Lakh)"
-                type="number"
-                step="0.01"
-                value={outcomeValueLakh}
-                onChange={(e) => setOutcomeValueLakh(e.target.value)}
-                placeholder="e.g. 145.50"
-              />
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <Select
-                label="Primary Structured Loss Reason (§26)"
-                required
-                value={outcomeLossReason}
-                onChange={(e) => setOutcomeLossReason(e.target.value)}
-                options={[
-                  { value: 'price', label: 'Price (Competitor underquoted L1)' },
-                  { value: 'competitor', label: 'Competitor advantage / preference' },
-                  { value: 'technical', label: 'Technical rejection / QR non-compliance' },
-                  { value: 'eligibility', label: 'Eligibility / Past experience shortfall' },
-                  { value: 'documentation', label: 'Documentation / Tender error / missed certificate' },
-                  { value: 'customer_decision', label: 'Customer cancellation / retender' },
-                  { value: 'other', label: 'Other reason' },
-                ]}
-              />
-
-              <Input
-                label="Winning Competitor Name (if known)"
-                value={outcomeCompetitor}
-                onChange={(e) => setOutcomeCompetitor(e.target.value)}
-                placeholder="e.g. Falcon Security / BEL / MKU / Zicom"
-              />
-
-              <div className="p-3 bg-[#FBFAF7] rounded-lg border border-[#DCD8CE] space-y-2">
-                <span className="text-[11px] font-bold text-[#0F5E63] uppercase tracking-wider block">
-                  Root Cause Factors (§26 Detailed Post-Mortem)
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <Input
-                    label="Technical Issue (if applicable)"
-                    value={outcomeTechnicalIssue}
-                    onChange={(e) => setOutcomeTechnicalIssue(e.target.value)}
-                    placeholder="e.g. Lab trial QR shortfall"
-                  />
-
-                  <Input
-                    label="Pricing Issue / L1 Gap (if applicable)"
-                    value={outcomePricingIssue}
-                    onChange={(e) => setOutcomePricingIssue(e.target.value)}
-                    placeholder="e.g. Quoted ₹14.2L vs L1 ₹13.8L"
-                  />
-
-                  <Input
-                    label="Eligibility Shortfall (if applicable)"
-                    value={outcomeEligibilityIssue}
-                    onChange={(e) => setOutcomeEligibilityIssue(e.target.value)}
-                    placeholder="e.g. 3-yr turnover criteria"
-                  />
-
-                  <Input
-                    label="Documentation Issue (if applicable)"
-                    value={outcomeDocumentationIssue}
-                    onChange={(e) => setOutcomeDocumentationIssue(e.target.value)}
-                    placeholder="e.g. Missing OEM authorization"
-                  />
-                </div>
-
-                <Input
-                  label="Other Reason Notes (if applicable)"
-                  value={outcomeOtherReason}
-                  onChange={(e) => setOutcomeOtherReason(e.target.value)}
-                  placeholder="e.g. Buyer canceled tender due to budget re-allocation"
-                />
-              </div>
-            </div>
-          )}
-
-          <Input
-            label="Outcome Intelligence Remarks"
-            value={outcomeRemarks}
-            onChange={(e) => setOutcomeRemarks(e.target.value)}
-            placeholder="e.g. Debrief completed with DIG communication officer."
-            required
-          />
-
-          <div className="pt-2 flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsOutcomeOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" isLoading={isSubmitting}>
-              Save Commercial Verdict
-            </Button>
-          </div>
         </form>
       </Modal>
 
@@ -3008,7 +2817,7 @@ export default function TendersPage() {
         description="Document an internal issue with the external tender portal for escalation and resolution tracking."
         maxWidth="md"
       >
-        <form onSubmit={handleCreateIssue} className="space-y-4">
+        <form onSubmit={handleCreateIssue} className="space-y-5">
           <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#4A5568] flex items-start gap-2">
             <AlertCircle className="h-4 w-4 shrink-0 text-[#9A3412] mt-0.5" />
             <span><strong>Notice:</strong> BOS records the issue only; portal functionality is outside BOS scope.</span>
@@ -3019,68 +2828,72 @@ export default function TendersPage() {
             </div>
           )}
 
-          {!selectedTender && (
-            <Select
-              label="Affected Tender (§25)"
+          <FormSection title="Issue" icon={<AlertOctagon />} description="Which tender, when it happened, and what went wrong.">
+            {!selectedTender && (
+              <Select
+                label="Affected Tender (§25)"
+                required
+                value={issueTenderId}
+                onChange={(e) => setIssueTenderId(e.target.value)}
+                options={tenders.map((t) => ({
+                  value: t.id,
+                  label: `${t.tender_number || t.tender_no} - ${t.department || t.organisation_name || 'Tender'}`,
+                }))}
+              />
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                label="Date of Incident / Report (§25)"
+                type="date"
+                required
+                max={istToday()}
+                value={issueReportedDate}
+                onChange={(e) => setIssueReportedDate(e.target.value)}
+              />
+
+              <Select
+                label="Initial Status (§25)"
+                value={issueResolutionStatus}
+                onChange={(e) => setIssueResolutionStatus(e.target.value)}
+                options={[
+                  { value: 'OPEN', label: 'OPEN - Under investigation' },
+                  { value: 'IN_PROGRESS', label: 'IN_PROGRESS - Workaround in flight' },
+                  { value: 'ESCALATED', label: 'ESCALATED - Raised to GeM Desk' },
+                ]}
+              />
+            </div>
+
+            <Textarea
+              label="Issue Description (§25)"
               required
-              value={issueTenderId}
-              onChange={(e) => setIssueTenderId(e.target.value)}
-              options={tenders.map((t) => ({
-                value: t.id,
-                label: `${t.tender_number || t.tender_no} - ${t.department || t.organisation_name || 'Tender'}`,
-              }))}
+              rows={3}
+              value={newIssueText}
+              onChange={(e) => setNewIssueText(e.target.value)}
+              placeholder="e.g. Required equipment category does not appear on GeM portal dropdown."
             />
-          )}
+          </FormSection>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Date of Incident / Report (§25)"
-              type="date"
-              required
-              max={istToday()}
-              value={issueReportedDate}
-              onChange={(e) => setIssueReportedDate(e.target.value)}
-            />
+          <FormSection title="Follow-up" icon={<UserCheck />} description="Who owns the fix and where it has been escalated.">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Select
+                label="Responsible Person (§25)"
+                value={issueResponsiblePerson}
+                onChange={(e) => setIssueResponsiblePerson(e.target.value)}
+                options={[
+                  { value: '', label: 'Select responsible person...' },
+                  ...users.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
+                ]}
+              />
 
-            <Select
-              label="Initial Status (§25)"
-              value={issueResolutionStatus}
-              onChange={(e) => setIssueResolutionStatus(e.target.value)}
-              options={[
-                { value: 'OPEN', label: 'OPEN - Under investigation' },
-                { value: 'IN_PROGRESS', label: 'IN_PROGRESS - Workaround in flight' },
-                { value: 'ESCALATED', label: 'ESCALATED - Raised to GeM Desk' },
-              ]}
-            />
-          </div>
-
-          <Textarea
-            label="Issue Description (§25)"
-            required
-            rows={3}
-            value={newIssueText}
-            onChange={(e) => setNewIssueText(e.target.value)}
-            placeholder="e.g. Required equipment category does not appear on GeM portal dropdown."
-          />
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Select
-              label="Responsible Person (§25)"
-              value={issueResponsiblePerson}
-              onChange={(e) => setIssueResponsiblePerson(e.target.value)}
-              options={[
-                { value: '', label: 'Select responsible person...' },
-                ...users.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
-              ]}
-            />
-
-            <Input
-              label="Escalation Target (§25)"
-              value={issueEscalatedTo}
-              onChange={(e) => setIssueEscalatedTo(e.target.value)}
-              placeholder="e.g. Executive Management & GeM Desk Ticket #88412"
-            />
-          </div>
+              <Input
+                label="Escalation Target (§25)"
+                value={issueEscalatedTo}
+                onChange={(e) => setIssueEscalatedTo(e.target.value)}
+                placeholder="e.g. Executive Management & GeM Desk Ticket #88412"
+              />
+            </div>
+          </FormSection>
 
           <div className="pt-2 flex justify-end gap-2">
             <Button
@@ -3111,7 +2924,7 @@ export default function TendersPage() {
         currentUser={user}
         users={users}
         onTenderUpdated={() => {
-          fetchTenders(true);
+          fetchTenders();
           fetchDashboardStats();
           fetchReports();
         }}
@@ -3133,7 +2946,7 @@ export default function TendersPage() {
         isOpen={isImportOpen}
         onClose={() => setIsImportOpen(false)}
         onImportComplete={() => {
-          fetchTenders(true);
+          fetchTenders();
           fetchDashboardStats();
           fetchReports();
         }}

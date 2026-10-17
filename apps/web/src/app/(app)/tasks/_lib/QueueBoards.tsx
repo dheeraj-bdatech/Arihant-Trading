@@ -288,7 +288,8 @@ const BoardFrame: React.FC<{ hint: string; error: string | null; conflict: React
     {conflict}
     {error && <p className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] px-3 py-2 text-xs font-medium text-[#881337]">{error}</p>}
     <p className="hidden text-[11px] text-[#4A5568] md:block">{hint}</p>
-    <div className="-mx-1 overflow-x-auto px-1 pb-2">
+    {/* overflowX inline: theme.css resets `.overflow-x-auto` below 1180px for stacked tables */}
+    <div className="custom-scrollbar -mx-1 px-1 pb-2" style={{ overflowX: 'auto' }}>
       <div className="flex items-stretch gap-3 snap-x snap-mandatory lg:snap-none">{children}</div>
     </div>
     {dialog}

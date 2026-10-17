@@ -1,7 +1,6 @@
 'use client';
 
 import React, { Suspense, useCallback, useMemo } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CalendarClock, CheckSquare, ClipboardCheck, Columns3, Inbox, List, Plus, ShieldCheck, Users } from 'lucide-react';
 import { Button, ButtonGroup, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader } from '@/components/ui';
@@ -12,6 +11,7 @@ import { TASK_BOARD_SCOPES, TaskViewMenu, useTaskViews, useToaster, useUrlFilter
 import { ApprovalBoard, BlockerReviewBoard } from './_lib/QueueBoards';
 import { BoardFilterMenu, BoardSortMenu, QUICK_FILTERS, TaskBoard, useBoardSort, type QuickFilter } from './_lib/TaskBoard';
 import { TaskCards, TaskPagination, TaskSearchInput, TaskTable, useTaskList } from './_lib/TaskList';
+import { NewTaskButton } from './_lib/NewTaskModal';
 
 /**
  * `scope` picks the board: my tasks (default), team, blocker reviews or approvals — each only for roles that get it
@@ -134,11 +134,9 @@ function Tasks() {
                 <span className="sr-only sm:hidden">List view</span>
               </Button>
             </ButtonGroup>
-            <Link href="/tasks/new">
-              <Button size="sm" leftIcon={<Plus className="h-4 w-4" />}>
-                New Task
-              </Button>
-            </Link>
+            <NewTaskButton size="sm" leftIcon={<Plus className="h-4 w-4" />}>
+              New Task
+            </NewTaskButton>
           </div>
         }
       />

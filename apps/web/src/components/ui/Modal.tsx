@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { createContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
@@ -14,6 +14,12 @@ export interface ModalProps {
   zIndex?: number;
   className?: string;
 }
+
+/**
+ * Lets content inside a modal (e.g. FormSteps) render into the modal chrome: the progress line
+ * sits in the header, right under the title, instead of scrolling away with the body.
+ */
+export const ModalSlotContext = createContext<{ header: HTMLElement | null }>({ header: null });
 
 // Global modal stack tracking for z-index layering, body scroll lock, and ESC key routing
 interface StackEntry {
@@ -44,6 +50,7 @@ export const Modal: React.FC<ModalProps> = ({
   className,
 }) => {
   const modalIdRef = useRef<string | null>(null);
+  const [headerSlot, setHeaderSlot] = useState<HTMLDivElement | null>(null);
 
   if (!modalIdRef.current) {
     modalIdRef.current = `modal_${++nextModalId}`;
@@ -122,35 +129,41 @@ export const Modal: React.FC<ModalProps> = ({
         aria-modal="true"
         aria-label={title}
         className={twMerge(
-          'relative w-full rounded-[14px] bg-white border border-[#DCD8CE] shadow-2xl overflow-hidden z-10 animate-in zoom-in-95 duration-150 text-[#14213D]',
+          'relative z-10 flex max-h-[calc(100dvh-1.5rem)] w-full flex-col overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white text-[#14213D] shadow-2xl animate-in zoom-in-95 duration-150 sm:max-h-[calc(100dvh-2rem)]',
           maxWidths[maxWidth],
         )}
       >
-        {/* Dialog Header */}
-        <div className="px-5 py-4 border-b border-[#ECE9E2] bg-[#FBFAF7] flex items-center justify-between shrink-0">
-          <div>
-            <h3 className="font-serif text-[16px] font-bold text-[#14213D] tracking-tight">
-              {title}
-            </h3>
-            {description && (
-              <p className="text-xs text-[#4A5568] font-normal mt-0.5 leading-relaxed">
-                {description}
-              </p>
-            )}
+        {/* Dialog Header — a <header> (not a div) so the theme's "first div is transparent" rule keeps its divider line */}
+        <header className="modal-header shrink-0 border-b border-[#DCD8CE] bg-white">
+          <div className="flex items-start justify-between gap-3 px-5 pb-3.5 pt-4">
+            <div className="min-w-0 border-l-[3px] border-[#0F5E63] pl-3">
+              <h3 className="font-serif text-[18px] font-semibold leading-snug tracking-tight text-[#14213D]">
+                {title}
+              </h3>
+              {description && (
+                <p className="mt-0.5 text-xs font-normal leading-relaxed text-[#4A5568]">
+                  {description}
+                </p>
+              )}
+            </div>
+            <IconButton
+              type="button"
+              icon={<X className="h-4 w-4" />}
+              aria-label="Close modal"
+              onClick={onClose}
+              size="sm"
+              variant="ghost"
+              className="shrink-0"
+            />
           </div>
-          <IconButton
-            type="button"
-            icon={<X className="h-4 w-4" />}
-            aria-label="Close modal"
-            onClick={onClose}
-            size="sm"
-            variant="ghost"
-          />
-        </div>
+          <div ref={setHeaderSlot} className="empty:hidden" />
+        </header>
 
-        {/* Dialog Body with custom-scrollbar */}
-        <div className="px-4 py-4 sm:px-5 max-h-[calc(100dvh-8.5rem)] overflow-y-auto custom-scrollbar">
-          {children}
+        {/* Dialog Body with custom-scrollbar. It only ever scrolls down: wide content (tab rows, tables)
+            slides inside its own box, and a long code or URL wraps, so a sideways swipe can never pan
+            the whole body off-screen and leave the dialog looking empty. */}
+        <div className="modal-body min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 [overflow-wrap:anywhere] sm:px-5 sm:py-5 custom-scrollbar">
+          <ModalSlotContext.Provider value={{ header: headerSlot }}>{children}</ModalSlotContext.Provider>
         </div>
       </div>
     </div>,
