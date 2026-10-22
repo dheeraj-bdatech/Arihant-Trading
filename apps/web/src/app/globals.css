@@ -34,9 +34,9 @@
   --danger-border:        #F2B872;
   --warning:              #A15C07;
   --warning-soft:         #FFF8EB;
-  --warning-border:       #F5DDAE;
-  --success:              #1F7A55;
-  --success-soft:         #EAF6F0;
+  --warning-border:       #E9C9B4;
+  --success:              #0F5E63;
+  --success-soft:         #E3EFEE;
 
   /* ---- Brand colours ---- */
   --color-primary:        #0F5E63;
@@ -73,8 +73,8 @@
   --color-danger-soft:    #FBEBDD;
   --color-warning:        #A15C07;
   --color-warning-soft:   #FFF8EB;
-  --color-success:        #1F7A55;
-  --color-success-soft:   #EAF6F0;
+  --color-success:        #0F5E63;
+  --color-success-soft:   #E3EFEE;
   --color-focus:          #0F5E63;
 
   /* ---- Typography ---- */

@@ -34,7 +34,7 @@ export const SlaChip: React.FC<{ deadline?: string | Date | null; prefix?: strin
   if (!info) return null;
   return (
     <span
-      title={`Due ${new Date(deadline as string).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`}
+      title={`Due ${new Date(deadline as string).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' })}`}
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-bold tabular-nums ${TONE_CLS[info.tone]} ${className ?? ''}`}
     >
       {info.tone === 'overdue' ? <AlertTriangle className="h-3 w-3" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
@@ -62,7 +62,7 @@ export const TicketSlaInline: React.FC<{ ticket: any; tickMs?: number }> = ({ ti
   return <SlaChip deadline={ticket.sla_resolution_due_at} prefix="Resolve" tickMs={tickMs} />;
 };
 
-const fmt = (v?: string | null) => (v ? new Date(v).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+const fmt = (v?: string | null) => (v ? new Date(v).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }) : '—');
 
 /** Dossier SLA block: response + resolution deadlines, pause state, breach state. */
 export const SlaPanel: React.FC<{ ticket: any }> = ({ ticket }) => {

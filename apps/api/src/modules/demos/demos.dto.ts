@@ -199,6 +199,11 @@ export class ConfirmDemoDto {
   @IsString()
   @IsOptional()
   remarks?: string;
+
+  /** When the confirmed date falls outside this demo's equipment reservation, extend the reservation to cover it. */
+  @IsBoolean()
+  @IsOptional()
+  extend_reservation?: boolean;
 }
 
 export class RescheduleDemoDto {
@@ -256,6 +261,11 @@ export class ReserveEquipmentDto {
   @IsString()
   @IsOptional()
   override_reason?: string;
+
+  /** Required to reserve a unit of a different product than the demo requested (a substitute unit). */
+  @IsString()
+  @IsOptional()
+  product_mismatch_reason?: string;
 }
 
 export class SuggestAlternativeDto {

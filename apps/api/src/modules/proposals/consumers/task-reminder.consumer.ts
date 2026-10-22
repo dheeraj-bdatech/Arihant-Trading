@@ -4,6 +4,14 @@ import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../../common/database/database.module.js';
 import { OutboxService, type DomainEventEnvelope } from '../../../common/outbox/outbox.service.js';
 import { istEndOfDay, todayInKolkata, type Database } from '@arihant/shared';
+import { proposalDisplayNo } from '../proposals.workflow.js';
+
+const OUTCOME_EVENTS = ['proposal.lost', 'proposal.closed', 'proposal.converted'];
+const OUTCOME_TEXT: Record<string, string> = {
+  'proposal.lost': 'marked Lost',
+  'proposal.closed': 'closed',
+  'proposal.converted': 'converted',
+};
 
 @Injectable()
 export class ProposalTaskReminderConsumer {
@@ -15,9 +23,82 @@ export class ProposalTaskReminderConsumer {
     private readonly outboxService: OutboxService,
   ) {}
 
+  /**
+   * DEF-104: when a proposal is converted, lost or closed its follow-up is over. Every open task linked to it
+   * (not started / in progress / blocked) is cancelled with the outcome as the reason, open blockers are withdrawn
+   * and the change is written to the task timeline. Idempotent per event.
+   */
+  private async closeFollowupTasks(envelope: DomainEventEnvelope) {
+    const { eventId, eventType, aggregateId, actorId, payload } = envelope;
+    const handler = `${this.handlerName}:outcome`;
+    if (!aggregateId || (await this.outboxService.isEventProcessed(eventId, handler))) return;
+    try {
+      const proposal = await this.db
+        .selectFrom('proposals')
+        .select(['proposal_number', 'proposal_no'])
+        .where('id', '=', aggregateId)
+        .executeTakeFirst();
+      const no = proposalDisplayNo(proposal) || payload?.proposalNo || 'the proposal';
+      const outcome = OUTCOME_TEXT[eventType] || 'concluded';
+      const reason = `Proposal ${no} was ${outcome}; follow-up no longer needed.`;
+      const now = new Date();
+      await this.db.transaction().execute(async (trx) => {
+        const open = await trx
+          .selectFrom('tasks')
+          .select(['id', 'status'])
+          .where('related_entity_type', '=', 'proposal')
+          .where('related_entity_id', '=', aggregateId)
+          .where('status', 'in', ['not_started', 'in_progress', 'blocked'])
+          .forUpdate()
+          .execute();
+        for (const t of open) {
+          await trx
+            .updateTable('task_blockers')
+            .set({ status: 'withdrawn', resolved_at: now, resolved_by: actorId || null, resolution_note: reason })
+            .where('task_id', '=', t.id)
+            .where('status', 'in', ['pending_review', 'accepted'])
+            .execute();
+          await trx
+            .updateTable('tasks')
+            .set({
+              status: 'cancelled',
+              cancelled_reason: reason,
+              cancelled_by: actorId || null,
+              cancelled_at: now,
+              version: sql`version + 1`,
+              updated_at: now,
+            })
+            .where('id', '=', t.id)
+            .execute();
+          await trx
+            .insertInto('task_updates')
+            .values({
+              task_id: t.id,
+              author_id: actorId || null,
+              kind: 'cancel',
+              status_from: t.status,
+              status_to: 'cancelled',
+              comment: reason,
+              metadata: JSON.stringify({ event_id: eventId, source: 'proposal_outcome', outcome: eventType }),
+            })
+            .execute();
+        }
+      });
+      await this.outboxService.markEventProcessed(eventId, handler);
+    } catch (err: any) {
+      this.logger.error(`[${handler}] Failed to close follow-up tasks for event ${eventId}: ${err.message}`);
+    }
+  }
+
   @OnEvent('proposal.*')
   async handleTaskReminder(envelope: DomainEventEnvelope) {
     const { eventId, eventType, aggregateId, payload, suppressNotifications } = envelope;
+
+    // DEF-104: an outcome ends the follow-up work — close the proposal's open follow-up tasks (even for silent syncs).
+    if (OUTCOME_EVENTS.includes(eventType)) {
+      await this.closeFollowupTasks(envelope);
+      return;
+    }
 
     if (suppressNotifications) return;
 
@@ -33,6 +114,15 @@ export class ProposalTaskReminderConsumer {
     if (isProcessed) return;
 
     try {
+      // DEF-105: tasks carry the number every screen shows (PROP-2026-1076), not the internal PRP- id.
+      const proposalRow = aggregateId
+        ? await this.db
+            .selectFrom('proposals')
+            .select(['proposal_number', 'proposal_no', 'customer_id', 'organisation_id'])
+            .where('id', '=', aggregateId)
+            .executeTakeFirst()
+        : undefined;
+      const proposalNo = proposalDisplayNo(proposalRow) || payload?.proposalNo || '';
       const ownerId = payload?.followUpOwnerId || payload?.ownerId;
       const dueDateStr = payload?.nextFollowUpDate || payload?.scheduledDate;
 
@@ -48,7 +138,7 @@ export class ProposalTaskReminderConsumer {
           .where('related_entity_type', '=', 'proposal')
           .where('related_entity_id', '=', aggregateId)
           .where('assigned_to', '=', ownerId)
-          .where('status', 'in', ['not_started', 'in_progress'])
+          .where('status', 'in', ['not_started', 'in_progress', 'blocked'])
           .executeTakeFirst();
 
         if (existingTask) {
@@ -70,14 +160,13 @@ export class ProposalTaskReminderConsumer {
             });
           }
         } else {
-          const org = await this.db.selectFrom('proposals').select(['customer_id', 'organisation_id']).where('id', '=', aggregateId).executeTakeFirst();
-          const customerId = org?.customer_id || org?.organisation_id || null;
+          const customerId = proposalRow?.customer_id || proposalRow?.organisation_id || null;
           const category = await this.db.selectFrom('task_categories').select('id').where('code', '=', customerId ? 'CUSTOMER' : 'GENERAL').executeTakeFirst();
           const created = await this.db
             .insertInto('tasks')
             .values({
-              title: `Proposal Follow-up: ${payload?.proposalNo || ''}`,
-              description: `Conduct scheduled customer follow-up for proposal ${payload?.proposalNo || ''}.`,
+              title: `Proposal Follow-up: ${proposalNo}`,
+              description: `Conduct scheduled customer follow-up for proposal ${proposalNo}.`,
               assigned_to: ownerId,
               priority: 'high',
               task_type: 'follow_up',

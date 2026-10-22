@@ -8,7 +8,6 @@ import {
   Clock,
   Search,
   ExternalLink,
-  RotateCw,
   FileText,
   DollarSign,
   Briefcase,
@@ -30,6 +29,7 @@ import {
   PageHeader,
   EmptyState,
   FilterMenu,
+  InfoCallout,
 } from '@/components/ui';
 
 interface NotificationItem {
@@ -74,127 +74,136 @@ function categorize(type: string | null | undefined): NotificationCategory {
   return 'system';
 }
 
+const PAGE_SIZE = 50;
+type Summary = { all: number; unread: number; read: number; byType: Partial<Record<NotificationCategory, number>> };
+const EMPTY_SUMMARY: Summary = { all: 0, unread: 0, read: 0, byType: {} };
+
+/** Tell the header bell the server's unread count (never a count of the rows loaded on this page). */
+const announceUnread = (count: number) => {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('notifications:updated', { detail: { count } }));
+};
+
 export default function NotificationsPage() {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [summary, setSummary] = useState<Summary>(EMPTY_SUMMARY);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'all' | 'unread' | 'read'>('all');
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // DEF-106: the inbox opens on unread items, so a dismissed alert leaves the list straight away; "Read (archived)"
+  // and "All alerts" still find it.
+  const [activeTab, setActiveTab] = useState<'all' | 'unread' | 'read'>('unread');
   const [typeFilter, setTypeFilter] = useState<NotificationCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  const fetchNotifications = useCallback(async (quiet = false) => {
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  const fetchSummary = useCallback(async () => {
     try {
-      if (!quiet) setIsLoading(true);
-      else setIsRefreshing(true);
+      const res = await api.get('/notifications/summary');
+      const next: Summary = { all: res?.all || 0, unread: res?.unread || 0, read: res?.read || 0, byType: res?.byType || {} };
+      setSummary(next);
+      announceUnread(next.unread);
+    } catch {
+      /* the list still loads; counts stay as they were */
+    }
+  }, []);
 
-      const res = await api.get('/notifications', { limit: 100 });
+  const fetchPage = useCallback(
+    async (pageNo: number) => {
+      const params: Record<string, string | number> = { page: pageNo, limit: PAGE_SIZE, status: activeTab };
+      if (typeFilter !== 'all') params.category = typeFilter;
+      if (debouncedSearch) params.search = debouncedSearch;
+      const res = await api.get('/notifications', params);
       const raw = Array.isArray(res) ? res : res?.data || [];
       const items: NotificationItem[] = raw.map((item: any) => ({
         ...item,
         body: item.body || item.message || '',
         message: item.message || item.body || '',
       }));
+      return { items, total: Number(res?.total ?? items.length) };
+    },
+    [activeTab, typeFilter, debouncedSearch],
+  );
 
+  const fetchNotifications = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const [{ items, total: t }] = await Promise.all([fetchPage(1), fetchSummary()]);
       setNotifications(items);
-
-      // Keep navbar unread count perfectly synchronized
-      const unreadCount = items.filter((n) => !n.is_read).length;
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('notifications:updated', {
-            detail: { count: unreadCount },
-          }),
-        );
-      }
-    } catch (err) {
-      console.error('Failed to load notifications:', err);
+      setTotal(t);
+      setPage(1);
+    } catch (err: any) {
+      setLoadError(err?.message || 'Could not load notifications');
     } finally {
       setIsLoading(false);
-      setIsRefreshing(false);
     }
-  }, []);
+  }, [fetchPage, fetchSummary]);
 
   useEffect(() => {
     fetchNotifications();
   }, [fetchNotifications]);
 
-  const handleMarkAsRead = async (id: string) => {
+  const loadMore = async () => {
+    setIsLoadingMore(true);
     try {
-      await api.patch(`/notifications/${id}/read`);
+      const { items, total: t } = await fetchPage(page + 1);
       setNotifications((prev) => {
-        const next = prev.map((n) => (n.id === id ? { ...n, is_read: true } : n));
-        const newUnreadCount = next.filter((n) => !n.is_read).length;
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(
-            new CustomEvent('notifications:updated', {
-              detail: { count: newUnreadCount },
-            }),
-          );
-        }
-        return next;
+        const seen = new Set(prev.map((n) => n.id));
+        return [...prev, ...items.filter((n) => !seen.has(n.id))];
       });
-    } catch (err) {
-      console.error('Failed to mark notification as read:', err);
+      setTotal(t);
+      setPage((p) => p + 1);
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not load more notifications');
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  const handleMarkAsRead = async (id: string) => {
+    setActionError(null);
+    try {
+      const res = await api.patch(`/notifications/${id}/read`);
+      setNotifications((prev) =>
+        activeTab === 'unread' ? prev.filter((n) => n.id !== id) : prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+      );
+      if (activeTab === 'unread') setTotal((t) => Math.max(0, t - 1));
+      const unread = typeof res?.unreadCount === 'number' ? res.unreadCount : Math.max(0, summary.unread - 1);
+      setSummary((s) => ({ ...s, unread, read: s.all - unread }));
+      announceUnread(unread);
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not dismiss the notification');
     }
   };
 
   const handleMarkAllRead = async () => {
+    setActionError(null);
     try {
       await api.patch('/notifications/read-all');
-      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('notifications:updated', { detail: { count: 0 } }),
-        );
-      }
-    } catch (err) {
-      console.error('Failed to mark all as read:', err);
+      announceUnread(0);
+      await fetchNotifications();
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not mark all notifications as read');
     }
   };
 
-  const counts = useMemo(() => {
-    const unread = notifications.filter((n) => !n.is_read).length;
-    const read = notifications.filter((n) => n.is_read).length;
-    const byType = {} as Record<NotificationCategory, number>;
-    for (const n of notifications) {
-      const c = categorize(n.type);
-      byType[c] = (byType[c] || 0) + 1;
-    }
-    return {
-      all: notifications.length,
-      unread,
-      read,
-      byType,
-    };
-  }, [notifications]);
+  const counts = useMemo(() => ({ all: summary.all, unread: summary.unread, read: summary.read, byType: summary.byType }), [summary]);
+  const filteredNotifications = notifications;
+  const hasMore = notifications.length < total;
 
-  const filteredNotifications = useMemo(() => {
-    return notifications.filter((item) => {
-      // Tab filter
-      if (activeTab === 'unread' && item.is_read) return false;
-      if (activeTab === 'read' && !item.is_read) return false;
-
-      // Type filter
-      if (typeFilter !== 'all' && categorize(item.type) !== typeFilter) return false;
-
-      // Search filter
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const titleMatch = item.title?.toLowerCase().includes(q);
-        const bodyMatch = (item.body || item.message || '').toLowerCase().includes(q);
-        const typeMatch = item.type?.toLowerCase().includes(q);
-        if (!titleMatch && !bodyMatch && !typeMatch) return false;
-      }
-
-      return true;
-    });
-  }, [notifications, activeTab, typeFilter, searchQuery]);
-
-  const hasActiveFilters = Boolean(searchQuery.trim() || activeTab !== 'all' || typeFilter !== 'all');
+  const hasActiveFilters = Boolean(searchQuery.trim() || activeTab !== 'unread' || typeFilter !== 'all');
   const clearFilters = () => {
     setSearchQuery('');
-    setActiveTab('all');
+    setActiveTab('unread');
     setTypeFilter('all');
   };
 
@@ -212,6 +221,7 @@ export default function NotificationsPage() {
       case 'follow_up':
         return { label: 'View Follow-ups', href: '/leads', icon: Briefcase };
       case 'visit':
+        return { label: 'View Visit', href: entityId ? `/visits?open=${entityId}` : '/visits', icon: Users };
       case 'trip':
         return { label: 'View Tour Planner', href: '/visits', icon: Users };
       case 'demo':
@@ -223,7 +233,7 @@ export default function NotificationsPage() {
       case 'performance_review':
         return { label: 'Open My Performance', href: '/tasks/my-performance', icon: CheckSquare };
       case 'delivery':
-        return { label: 'View Delivery Register', href: '/deliveries', icon: Truck };
+        return { label: 'View Delivery', href: entityId ? `/deliveries?open=${entityId}` : '/deliveries', icon: Truck };
       case 'expense':
       case 'expense_claim':
         return { label: 'Open Expense Claim', href: entityId ? `/expenses/${entityId}` : '/expenses', icon: DollarSign };
@@ -255,7 +265,7 @@ export default function NotificationsPage() {
               onClick={handleMarkAllRead}
               disabled={counts.unread === 0}
             >
-              <CheckCircle2 className="h-4 w-4 mr-1.5 text-emerald-600" />
+              <CheckCircle2 className="h-4 w-4 mr-1.5 text-[#0F5E63]" />
               <span>Mark All Read</span>
             </Button>
           </div>
@@ -266,14 +276,14 @@ export default function NotificationsPage() {
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
             <input
               type="search"
               aria-label="Search notifications"
               placeholder="Search title, message, type…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -281,8 +291,8 @@ export default function NotificationsPage() {
               label="Status"
               icon={<MailOpen />}
               options={[
+                { key: 'unread', label: 'Unread (inbox)', count: counts.unread, urgent: true },
                 { key: 'all', label: 'All alerts', count: counts.all },
-                { key: 'unread', label: 'Unread', count: counts.unread, urgent: true },
                 { key: 'read', label: 'Read (archived)', count: counts.read },
               ].map((o) => ({
                 ...o,
@@ -310,6 +320,19 @@ export default function NotificationsPage() {
           </div>
         </div>
       </Card>
+
+      {(loadError || actionError) && (
+        <InfoCallout
+          variant="danger"
+          title={loadError ? 'Could not load notifications' : 'Action failed'}
+          onClose={() => {
+            setLoadError(null);
+            setActionError(null);
+          }}
+        >
+          {loadError || actionError}
+        </InfoCallout>
+      )}
 
       {/* Notifications List */}
       <div className="space-y-3 pt-1">
@@ -449,6 +472,18 @@ export default function NotificationsPage() {
               </Card>
             );
           })
+        )}
+        {!isLoading && filteredNotifications.length > 0 && (
+          <div className="flex flex-col items-center gap-2 pt-2 text-[11px] text-[#4A5568]">
+            <span className="font-mono">
+              Showing {filteredNotifications.length} of {total}
+            </span>
+            {hasMore && (
+              <Button variant="secondary" size="sm" onClick={loadMore} isLoading={isLoadingMore}>
+                Load more
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </PageContainer>

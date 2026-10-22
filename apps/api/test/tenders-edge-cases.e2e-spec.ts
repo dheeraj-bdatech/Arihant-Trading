@@ -5,6 +5,16 @@ import { AppModule } from '../src/app.module';
 
 jest.setTimeout(60000);
 
+/** Today's calendar date in IST (YYYY-MM-DD) — result dates are IST calendar days and cannot be in the future. */
+const istToday = () => new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10);
+/**
+ * A bid that closes later today (23:59 IST): still open for submission now, and its result can be recorded today
+ * (a result can never be dated before the bid closing day — QA DEF-090).
+ */
+const closesTodayIST = () => `${istToday()}T23:59:00+05:30`;
+/** A deadline a month out (15:00 IST) for registration-only checks, so they never expire with the calendar. */
+const openDeadlineIST = () => `${new Date(Date.now() + 330 * 60 * 1000 + 30 * 86400000).toISOString().slice(0, 10)}T15:00:00+05:30`;
+
 describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
   let app: INestApplication;
   let mgmtToken: string;
@@ -21,6 +31,24 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
   let otherZoneId: string;
   let pqCategoryId: string;
   let generalCategoryId: string;
+
+  /**
+   * Submission gate (QA DEF-006): a bid / PQ can only be submitted once the mandatory document checklist is
+   * initialised and every mandatory document is Ready.
+   */
+  async function readyChecklist(tenderId: string) {
+    const init = await request(app.getHttpServer())
+      .post(`/api/tenders/${tenderId}/documents/init-checklist`)
+      .set('Authorization', `Bearer ${mgmtToken}`);
+    expect(init.status).toBe(201);
+    for (const doc of init.body.documents.filter((d: any) => d.is_mandatory)) {
+      const patch = await request(app.getHttpServer())
+        .patch(`/api/tenders/${tenderId}/documents/${doc.id}`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ status: 'Ready', file_name: `${doc.document_type}.pdf` });
+      expect(patch.status).toBe(200);
+    }
+  }
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -120,7 +148,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: '  Defence Research Lab  ',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-20T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -139,7 +167,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: '  defence research lab  ',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-20T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
         });
 
       expect(res.status).toBe(409);
@@ -154,7 +182,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'Ministry of Home Affairs New Delhi',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-20T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -172,7 +200,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'Ministry of Defence',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-20T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
         });
       expect(res1.status).toBe(400);
 
@@ -184,7 +212,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: '    ',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-20T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
         });
       expect(res2.status).toBe(400);
     });
@@ -606,7 +634,8 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
       expect(resChange.status).toBe(201);
       expect(resChange.body.submission_deadline).toBeTruthy();
 
-      // Now submission succeeds!
+      // Now submission succeeds (once the mandatory documents are Ready — DEF-006)!
+      await readyChecklist(expiredTenderId);
       const resSub = await request(app.getHttpServer())
         .post(`/api/tenders/${expiredTenderId}/transitions`)
         .set('Authorization', `Bearer ${mgmtToken}`)
@@ -626,7 +655,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'DRDO Standing Empanelment Committee',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-30T15:00:00+05:30',
+          submission_deadline: closesTodayIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -635,6 +664,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
       const eId = resCreate.body.id;
       await request(app.getHttpServer()).post(`/api/tenders/${eId}/approval-request`).set('Authorization', `Bearer ${salesToken}`).send({ remarks: 'Approval' });
       await request(app.getHttpServer()).post(`/api/tenders/${eId}/approve`).set('Authorization', `Bearer ${mgmtToken}`).send({ decision: 'approved', remarks: 'Ok' });
+      await readyChecklist(eId);
       await request(app.getHttpServer()).post(`/api/tenders/${eId}/transitions`).set('Authorization', `Bearer ${mgmtToken}`).send({ target_status: 'pq_submitted', remarks: 'PQ Sub' });
       await request(app.getHttpServer()).post(`/api/tenders/${eId}/transitions`).set('Authorization', `Bearer ${mgmtToken}`).send({ target_status: 'pq_qualified', remarks: 'Qualified' });
 
@@ -645,7 +675,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
         .send({
           outcome: 'won',
           value: 5000000,
-          result_date: '2026-09-24',
+          result_date: istToday(),
           notes: 'Empanelled successfully for 3 years',
         });
 
@@ -786,7 +816,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'Cabinet Secretariat',
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-30T15:00:00+05:30',
+          submission_deadline: closesTodayIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -794,7 +824,9 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
       validSubmittedTenderId = res2.body.id;
       await request(app.getHttpServer()).post(`/api/tenders/${validSubmittedTenderId}/approval-request`).set('Authorization', `Bearer ${salesToken}`).send({ remarks: 'Ok' });
       await request(app.getHttpServer()).post(`/api/tenders/${validSubmittedTenderId}/approve`).set('Authorization', `Bearer ${mgmtToken}`).send({ decision: 'approved', remarks: 'Ok' });
-      await request(app.getHttpServer()).post(`/api/tenders/${validSubmittedTenderId}/transitions`).set('Authorization', `Bearer ${mgmtToken}`).send({ target_status: 'submitted', remarks: 'Bid submitted' });
+      await readyChecklist(validSubmittedTenderId);
+      const subRes = await request(app.getHttpServer()).post(`/api/tenders/${validSubmittedTenderId}/transitions`).set('Authorization', `Bearer ${mgmtToken}`).send({ target_status: 'submitted', remarks: 'Bid submitted' });
+      expect(subRes.status).toBe(201);
     });
 
     it('Edge Case 16: recording result before tender has reached submission stage is blocked', async () => {
@@ -832,9 +864,10 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
         .send({
           outcome: 'won',
           value: 0,
-          result_date: '2026-09-24',
+          result_date: istToday(),
         });
       expect(resZero.status).toBe(400);
+      expect(resZero.body.message).toMatch(/greater than zero/i);
 
       const resNegative = await request(app.getHttpServer())
         .post(`/api/tenders/${validSubmittedTenderId}/result`)
@@ -842,9 +875,10 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
         .send({
           outcome: 'won',
           value: -50000,
-          result_date: '2026-09-24',
+          result_date: istToday(),
         });
       expect(resNegative.status).toBe(400);
+      expect(resNegative.body.message).toMatch(/greater than zero/i);
     });
 
     it('Edge Case 17: LOST without a reason, unknown reason, or OTHER without text is blocked', async () => {
@@ -854,7 +888,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           outcome: 'lost',
-          result_date: '2026-09-24',
+          result_date: istToday(),
           loss_reasons: ['NON_EXISTENT_REASON_CODE'],
         });
       expect(resUnknown.status).toBe(400);
@@ -866,7 +900,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           outcome: 'lost',
-          result_date: '2026-09-24',
+          result_date: istToday(),
           loss_reasons: ['OTHER'],
           other_reason_text: '   ',
         });

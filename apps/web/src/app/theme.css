@@ -453,7 +453,9 @@ button[aria-haspopup='listbox']:hover, button[aria-haspopup='listbox'][aria-expa
   /* not inside dialogs: there the body would pan sideways (or clip the table) instead of the table scrolling */
   .overflow-x-auto:not([role='dialog'] *) { overflow-x: visible; }
 }
-@media (max-width: 560px) { table[data-stackable] tbody tr { grid-template-columns: 1fr; } }
+/* two short fields per row on phones (Quantity | Unit price …); one column only on very narrow screens */
+@media (max-width: 340px) { table[data-stackable] tbody tr { grid-template-columns: 1fr; } }
+@media (max-width: 767px) { table[data-stackable] tbody td:last-child:has(button, a):not(:first-child) { grid-column: 1 / -1; } }
 
 .row-menu__btn.row-menu__btn--label { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; width: auto; border-radius: 8px; border: 1.5px solid var(--th-primary); background: var(--th-pop); color: var(--th-primary); font-size: 12px; font-weight: 700; box-shadow: var(--th-shadow-sm); }
 .row-menu__btn.row-menu__btn--label:hover, .row-menu__btn.row-menu__btn--label.row-menu__btn--on { background: var(--th-primary-soft); }

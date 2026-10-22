@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRightLeft,
+  CalendarX,
   Check,
   Copy,
   FileText,
@@ -23,11 +24,12 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import { Badge, Button, Card, InfoCallout, Input, Modal, PageLoader } from '@/components/ui';
+import { Badge, Button, Card, Checkbox, InfoCallout, Input, Modal, PageLoader } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { canOpen } from '@/lib/route-access';
-import { formatExpenseAmount, roundMoney } from '@arihant/shared';
+import { formatExpenseAmount, formatExpenseDate, roundMoney } from '@arihant/shared';
+import { istToday } from '@/lib/ist-date';
 import { errorMessage, fieldErrors, isConflict, notifyExpensesChanged, type ExpenseAttachment, type ExpenseClaim, type ExpenseItem } from './expense-lib';
 import {
   CommentModal,
@@ -72,6 +74,7 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassignErrors, setReassignErrors] = useState<Record<string, string>>({});
   const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [approveOpen, setApproveOpen] = useState(false);
   const [preview, setPreview] = useState<ExpenseAttachment | null>(null);
 
   const load = useCallback(async () => {
@@ -186,7 +189,14 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
   const isOwner = claim.employee_id === user?.id;
   // In the Quick view popup the dialog already pads the body, so the cards inset less on phones.
   const cardPad = inModal ? 'p-3 sm:p-5' : 'p-4 sm:p-5';
-  const flagged = items.filter((i) => i.is_late || i.duplicate_flag || i.receipt_missing);
+  const flagged = items.filter((i) => i.is_late || i.duplicate_flag || i.receipt_missing || i.future_dated);
+  // Reviewer anomalies. Future-dated lines block approval and payment (the server refuses them too); a missing
+  // receipt is a warning the reviewer must acknowledge.
+  const futureLines = items.filter((i) => i.future_dated);
+  const payable = items.filter((i) => (stage ? decisionFor(i).status !== 'rejected' : i.item_status !== 'rejected'));
+  const receiptGaps = payable.filter((i) => i.receipt_missing);
+  const blockedByDates = futureLines.length > 0;
+  const today = formatExpenseDate(istToday());
   const commentCopy: Record<CommentAction, { title: string; description: string; confirm: string; danger?: boolean }> = {
     'manager-reject': { title: 'Reject claim', description: 'The employee is notified with your comment. Rejection is final; they can copy the claim into a new draft.', confirm: 'Reject claim', danger: true },
     'accounts-reject': { title: 'Reject claim', description: 'The employee is notified with your comment. Rejection is final.', confirm: 'Reject claim', danger: true },
@@ -276,12 +286,27 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
         </dl>
       </Card>
 
+      {(stage || actions.includes('process')) && blockedByDates && (
+        <InfoCallout variant="danger" title="Expenses dated after today">
+          {futureLines.length} line{futureLines.length === 1 ? ' is' : 's are'} dated after today ({today}). This claim cannot be approved or paid until the
+          dates are corrected — ask the employee for clarification or reject it.
+        </InfoCallout>
+      )}
+
       {stage && flagged.length > 0 && (
         <InfoCallout variant="warning" title="Lines that need a closer look">
           <ul className="text-sm space-y-0.5">
             {flagged.map((i) => (
               <li key={i.id}>
-                {i.purpose}: {[i.is_late && 'late submission', i.duplicate_flag && 'possible duplicate', i.receipt_missing && 'receipt missing'].filter(Boolean).join(', ')}
+                {i.purpose}:{' '}
+                {[
+                  i.future_dated && `dated ${formatExpenseDate(i.expense_date)} (after today)`,
+                  i.is_late && 'late submission',
+                  i.duplicate_flag && 'possible duplicate',
+                  i.receipt_missing && 'receipt missing',
+                ]
+                  .filter(Boolean)
+                  .join(', ')}
               </li>
             ))}
           </ul>
@@ -384,12 +409,24 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
             </Button>
           )}
           {(actions.includes('manager_approve') || actions.includes('accounts_approve')) && (
-            <Button leftIcon={<Check className="h-4 w-4" />} isLoading={busy === 'approve'} disabled={Boolean(busy)} onClick={approve}>
+            <Button
+              leftIcon={<Check className="h-4 w-4" />}
+              isLoading={busy === 'approve'}
+              disabled={Boolean(busy) || blockedByDates}
+              title={blockedByDates ? 'Expenses dated after today cannot be approved' : undefined}
+              onClick={() => { setActionError(null); setApproveOpen(true); }}
+            >
               Approve {projectedTotal !== null ? formatExpenseAmount(projectedTotal) : ''}
             </Button>
           )}
           {actions.includes('process') && (
-            <Button variant={actions.includes('accounts_approve') ? 'secondary' : 'primary'} leftIcon={<Receipt className="h-4 w-4" />} disabled={Boolean(busy)} onClick={() => { setProcessErrors({}); setProcessServerError(null); setProcessOpen(true); }}>
+            <Button
+              variant={actions.includes('accounts_approve') ? 'secondary' : 'primary'}
+              leftIcon={<Receipt className="h-4 w-4" />}
+              disabled={Boolean(busy) || blockedByDates}
+              title={blockedByDates ? 'Expenses dated after today cannot be paid' : undefined}
+              onClick={() => { setProcessErrors({}); setProcessServerError(null); setProcessOpen(true); }}
+            >
               {claim.status === 'accounts_review' ? 'Approve & process' : 'Mark processed'}
             </Button>
           )}
@@ -420,12 +457,32 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
         total={claim.status === 'accounts_review' ? projectedTotal : claim.total_approved}
         errors={processErrors}
         serverError={processServerError}
+        anomalies={{ futureDated: futureLines.length, receiptMissing: receiptGaps.length }}
         onClose={() => setProcessOpen(false)}
         onConfirm={async (v) => {
           const ok = await run('process', 'process', { ...v, items: claim.status === 'accounts_review' ? decisionPayload() : undefined }, 'Marked as paid — payment reference saved.');
           if (ok) setProcessOpen(false);
         }}
       />
+
+      {approveOpen && stage && (
+        <ApproveDialog
+          claim={claim}
+          stage={stage}
+          items={items}
+          decisionFor={decisionFor}
+          ceiling={ceiling}
+          total={projectedTotal}
+          busy={busy === 'approve'}
+          serverError={actionError}
+          onPreview={setPreview}
+          onClose={() => setApproveOpen(false)}
+          onConfirm={async () => {
+            const ok = await approve();
+            if (ok) setApproveOpen(false);
+          }}
+        />
+      )}
 
       <ReassignModal
         open={reassignOpen}
@@ -512,6 +569,7 @@ const LineRow: React.FC<{
             <Badge variant="outline" size="sm">{item.category_name}</Badge>
             {!stage && <ItemStatusBadge status={item.item_status} />}
             {item.is_late && <LateFlag />}
+            {item.future_dated && <Badge variant="danger" size="sm" className="gap-1"><CalendarX className="h-3 w-3" /> Dated after today</Badge>}
             {item.duplicate_flag && <Badge variant="warning" size="sm" className="gap-1"><Copy className="h-3 w-3" /> Possible duplicate</Badge>}
             {item.receipt_missing && <Badge variant="urgent" size="sm" className="gap-1"><Paperclip className="h-3 w-3" /> No receipt</Badge>}
           </div>
@@ -547,6 +605,11 @@ const LineRow: React.FC<{
         <p className="text-xs font-medium text-[#881337]">{[err('expense_date'), err('category_details.check_in'), err('category_details.check_out')].filter(Boolean).join(' ')}</p>
       )}
 
+      {item.attachments.length === 0 && !item.receipt_missing && (
+        <p className="flex items-center gap-1 text-[11px] text-[#6B7280]">
+          <Paperclip className="h-3 w-3" /> No receipt attached (not required for this category and amount)
+        </p>
+      )}
       {item.attachments.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {item.attachments.map((a) => (
@@ -599,5 +662,134 @@ const LineRow: React.FC<{
         </div>
       )}
     </div>
+  );
+};
+
+/** What a line's receipt situation is, for reviewers: attached files, missing (required) or not required. */
+const ReceiptCell: React.FC<{ item: ExpenseItem; onPreview: (a: ExpenseAttachment) => void }> = ({ item, onPreview }) => {
+  if (item.attachments.length > 0) {
+    return (
+      <div className="flex flex-wrap gap-1">
+        {item.attachments.map((a) => (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => onPreview(a)}
+            className="inline-flex max-w-full items-center gap-1 rounded-md border border-[#DCD8CE] bg-[#FBFAF7] px-1.5 py-1 text-[11px] text-[#0F5E63] hover:underline"
+          >
+            {a.mime_type === 'application/pdf' ? <FileText className="h-3 w-3 shrink-0" /> : <ImageIcon className="h-3 w-3 shrink-0" />}
+            <span className="max-w-[120px] truncate">{a.file_name}</span>
+          </button>
+        ))}
+      </div>
+    );
+  }
+  if (item.receipt_missing) {
+    return <Badge variant="warning" size="sm" className="gap-1 whitespace-nowrap"><Paperclip className="h-3 w-3" /> Missing — required</Badge>;
+  }
+  return <span className="text-[11px] text-[#6B7280]">None (not required)</span>;
+};
+
+/**
+ * Stage-1 (manager) / Stage-2 (Accounts) approval confirmation: every line with its date, category, amount, the
+ * decision being recorded and its receipt, plus the anomalies the reviewer must see before signing off. Future-dated
+ * lines block the approval (the API refuses them too); missing receipts need an explicit acknowledgement.
+ */
+const ApproveDialog: React.FC<{
+  claim: ExpenseClaim;
+  stage: 'manager' | 'accounts';
+  items: ExpenseItem[];
+  decisionFor: (i: ExpenseItem) => Decision;
+  ceiling: (i: ExpenseItem) => number;
+  total: number | null;
+  busy: boolean;
+  serverError: string | null;
+  onPreview: (a: ExpenseAttachment) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}> = ({ claim, stage, items, decisionFor, ceiling, total, busy, serverError, onPreview, onClose, onConfirm }) => {
+  const [ack, setAck] = useState(false);
+  const futureLines = items.filter((i) => i.future_dated);
+  const gaps = items.filter((i) => i.receipt_missing && decisionFor(i).status !== 'rejected');
+  const blocked = futureLines.length > 0;
+  const canConfirm = !blocked && (gaps.length === 0 || ack);
+  const decisionText = (i: ExpenseItem) => {
+    const d = decisionFor(i);
+    if (d.status === 'rejected') return <span className="font-semibold text-[#881337]">Reject</span>;
+    const amount = d.status === 'approved' ? ceiling(i) : Number(d.amount) || 0;
+    return (
+      <span className="font-semibold text-[#0F5E63]">
+        {d.status === 'partially_approved' ? 'Reduce to ' : 'Approve '}
+        <Money value={amount} />
+      </span>
+    );
+  };
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={stage === 'manager' ? 'Approve claim · Stage 1' : 'Approve claim · Stage 2 (Accounts)'}
+      description={`${claim.claim_number} · ${claim.employee_name} · ${claim.title}`}
+      maxWidth="2xl"
+    >
+      <div className="space-y-4">
+        {blocked && (
+          <InfoCallout variant="danger" title="Cannot approve: expenses dated after today">
+            {futureLines.map((i) => `${i.purpose} (${formatExpenseDate(i.expense_date)})`).join(', ')} {futureLines.length === 1 ? 'is' : 'are'} dated after
+            today ({formatExpenseDate(istToday())}). Close this and ask for clarification or reject the claim.
+          </InfoCallout>
+        )}
+        {gaps.length > 0 && (
+          <InfoCallout variant="warning" title="Receipt missing">
+            <p>
+              {gaps.length} line{gaps.length === 1 ? '' : 's'} you are approving {gaps.length === 1 ? 'has' : 'have'} no receipt although the category requires one:{' '}
+              {gaps.map((i) => i.purpose).join(', ')}. Reject {gaps.length === 1 ? 'it' : 'them'} or ask for clarification, or confirm below — the approval is
+              recorded in the claim history.
+            </p>
+            <div className="mt-2">
+              <Checkbox label="I have verified these lines without a receipt" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+            </div>
+          </InfoCallout>
+        )}
+
+        <ul className="divide-y divide-[#ECE9E2] rounded-[14px] border border-[#DCD8CE]">
+          {items.map((i) => (
+            <li key={i.id} className={`grid grid-cols-1 gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start ${i.future_dated ? 'bg-[#FCE8EC]/50' : ''}`}>
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#4A5568]">
+                  <DateText value={i.expense_date} className={i.future_dated ? 'font-semibold text-[#881337]' : ''} />
+                  <Badge variant="outline" size="sm">{i.category_name}</Badge>
+                  {i.future_dated && <Badge variant="danger" size="sm" className="gap-1"><CalendarX className="h-3 w-3" /> After today</Badge>}
+                  {i.is_late && <LateFlag />}
+                </div>
+                <div className="break-words text-sm font-medium text-[#14213D]">{i.purpose}</div>
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#4A5568]">
+                  <span className="font-semibold uppercase tracking-wide">Receipt</span>
+                  <ReceiptCell item={i} onPreview={onPreview} />
+                </div>
+              </div>
+              <div className="text-left text-sm sm:text-right">
+                <div className="text-xs text-[#4A5568]">Claimed <Money value={i.amount} /></div>
+                <div>{decisionText(i)}</div>
+              </div>
+            </li>
+          ))}
+        </ul>
+
+        <div className="flex items-center justify-between rounded-[14px] border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2.5">
+          <span className="text-sm text-[#4A5568]">{stage === 'manager' ? 'Forward to Accounts' : 'Mark ready for Tally'}</span>
+          <Money value={total} className="text-lg font-semibold text-[#14213D]" />
+        </div>
+
+        {serverError && <InfoCallout variant="danger" title="Not approved">{serverError}</InfoCallout>}
+
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="ghost" className="w-full sm:w-auto" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button className="w-full sm:w-auto" leftIcon={<Check className="h-4 w-4" />} isLoading={busy} disabled={!canConfirm} onClick={onConfirm}>
+            Approve {total !== null ? formatExpenseAmount(total) : ''}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 };

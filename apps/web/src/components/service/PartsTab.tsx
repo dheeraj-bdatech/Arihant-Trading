@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Button, Badge, Input } from '@/components/ui';
+import { Button, Badge, Input, formatDateIN } from '@/components/ui';
 import { api } from '@/lib/api';
 import { errMsg } from './serviceHelpers';
 
@@ -100,7 +100,7 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
                 {(p.store_remarks || p.expected_date) && (
                   <p className="text-[11px] text-[#4A5568]">
                     {p.store_remarks}
-                    {p.expected_date ? ` · expected ${new Date(p.expected_date).toLocaleDateString('en-IN')}` : ''}
+                    {p.expected_date ? ` · expected ${formatDateIN(p.expected_date)}` : ''}
                   </p>
                 )}
                 {canUpdate && next.length > 0 && (
@@ -129,7 +129,7 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
                   </div>
                 )}
                 {rowError?.id === p.id && (
-                  <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-700">
+                  <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-[#700F2D]">
                     {rowError?.msg}
                   </div>
                 )}
@@ -143,7 +143,7 @@ export const PartsTab: React.FC<Props> = ({ ticket, role, onChanged }) => {
         <form onSubmit={add} className="space-y-3 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] p-3 sm:p-3.5">
           <h6 className="font-serif text-xs font-bold text-[#14213D]">Raise a spare part request</h6>
           {error && (
-            <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+            <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">
               {error}
             </div>
           )}

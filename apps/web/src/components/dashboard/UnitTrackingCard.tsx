@@ -47,8 +47,8 @@ export function UnitTrackingCard({
           </div>
         </div>
 
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-medium">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3] text-xs font-medium">
+          <span className="h-1.5 w-1.5 rounded-full bg-[#0F5E63] animate-pulse"></span>
           {product.status}
         </span>
       </div>
@@ -60,7 +60,7 @@ export function UnitTrackingCard({
           <span className="text-[#4A5568] flex items-center gap-1">
             <Clock className="w-3 h-3 text-[#0F5E63]" /> 148.5 Hours
           </span>
-          <span className="font-semibold text-emerald-700">Calibrated</span>
+          <span className="font-semibold text-[#0B4A4E]">Calibrated</span>
         </div>
 
         {/* Readiness Progress Bar */}
@@ -71,7 +71,7 @@ export function UnitTrackingCard({
           </div>
           <div className="relative w-full h-2 rounded-full bg-[#E3EFEE] overflow-hidden">
             <div 
-              className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-[#0F5E63] to-emerald-600 rounded-full transition-all duration-1000"
+              className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-[#0F5E63] to-[#0F5E63] rounded-full transition-all duration-1000"
               style={{ width: `${product.readiness}%` }}
             />
           </div>

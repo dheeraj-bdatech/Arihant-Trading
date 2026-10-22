@@ -30,8 +30,9 @@ export class OrganisationsController {
     @Query('sector') sector?: string,
     @Query('zone_id') zone_id?: string,
     @Query('region_id') region_id?: string,
+    @CurrentUser() user?: AuthUser,
   ) {
-    return this.orgsService.findAll({ page, limit, search, sector, zone_id, region_id });
+    return this.orgsService.findAll({ page, limit, search, sector, zone_id, region_id }, user);
   }
 
   @Get('check-duplicate')

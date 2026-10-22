@@ -388,6 +388,32 @@ describe('Module 8 — Task & Productivity Management (e2e)', () => {
       expect((await http().get('/api/accountability/dashboard?scope=all').set(bearer(u.accounts))).status).toBe(200);
     });
 
+    it("a regional manager's team is the dashboard field team (zone + reports), never national roles in their region", async () => {
+      const region = await db.selectFrom('regions').select(['id', 'zone_id']).where('zone_id', 'is not', null).executeTakeFirstOrThrow();
+      const hash = await bcrypt.hash('password123', 10);
+      const ids = { rm: randomUUID(), rep: randomUUID(), desk: randomUUID() };
+      tempUserIds.push(...Object.values(ids));
+      const tag = ids.rm.slice(0, 6);
+      const add = (id: string, name: string, role: string, manager: string | null) =>
+        db.insertInto('users').values({
+          id, full_name: name, email: `m8.${name}.${tag}@test.local`, role, reporting_manager_id: manager,
+          zone_id: region.zone_id, region_id: region.id, password_hash: hash,
+        } as any).execute();
+      await add(ids.rm, 'zonerm', 'regional_manager', u.mgmt.id);
+      await add(ids.rep, 'zonerep', 'sales', u.mgmt.id); // based in the RM's zone, reports elsewhere → on the team
+      await add(ids.desk, 'zonedesk', 'tender_team', u.mgmt.id); // national tender desk sitting in the same region → not
+      const rm = await login(`m8.zonerm.${tag}@test.local`);
+      const toRep = await http().post('/api/tasks').set(bearer(rm)).send({ title: 'Zone team task', category_id: general, deadline: day(3), assignee_ids: [ids.rep] });
+      expect(toRep.status).toBe(201);
+      const toDesk = await http().post('/api/tasks').set(bearer(rm)).send({ title: 'Not my team', category_id: general, deadline: day(3), assignee_ids: [ids.desk] });
+      expect(toDesk.status).toBeGreaterThanOrEqual(400);
+      expect(toDesk.status).toBeLessThan(500);
+      const team = (await http().get('/api/accountability/dashboard').set(bearer(rm))).body;
+      const teamIds = team.employees.map((e: any) => e.employee_id);
+      expect(teamIds).toContain(ids.rep);
+      expect(teamIds).not.toContain(ids.desk);
+    });
+
     it('deactivated employee: open tasks need reassignment and their series pause', async () => {
       const id = await one(u.mgr, { assignee_ids: [u.e2.id] });
       const tpl = (await create(u.mgr, { assignee_ids: [u.e2.id], title: 'E2E daily check', recurrence_type: 'daily', recurrence_rule: {}, start_date: day(0) })).data[0];

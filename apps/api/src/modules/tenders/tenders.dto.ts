@@ -9,6 +9,7 @@ import {
   ValidateIf,
   Matches,
   IsBoolean,
+  Min,
 } from 'class-validator';
 import type { TenderCategory, TenderStatus } from '@arihant/shared';
 
@@ -109,6 +110,7 @@ export class CreateTenderDto {
   extra_fields?: any;
 
   @IsNumber()
+  @Min(1, { message: 'Quantity must be at least 1' })
   @IsOptional()
   quantity?: number;
 
@@ -121,6 +123,7 @@ export class CreateTenderDto {
   oem_turnover?: string;
 
   @IsNumber()
+  @Min(0, { message: 'EMD fee cannot be negative' })
   @IsOptional()
   emd_fee?: number;
 
@@ -184,6 +187,7 @@ export class CreateTenderDto {
   emd_required?: boolean;
 
   @IsNumber()
+  @Min(0, { message: 'EMD amount cannot be negative' })
   @IsOptional()
   emd_amount?: number;
 
@@ -196,6 +200,7 @@ export class CreateTenderDto {
   emd_exemption_reason?: string;
 
   @IsNumber()
+  @Min(0, { message: 'Tender fee cannot be negative' })
   @IsOptional()
   tender_fee_amount?: number;
 
@@ -214,10 +219,12 @@ export class CreateTenderDto {
   line_items?: any[];
 
   @IsNumber()
+  @Min(0, { message: 'Estimated value cannot be negative' })
   @IsOptional()
   estimated_value?: number;
 
   @IsNumber()
+  @Min(0, { message: 'Estimated value cannot be negative' })
   @IsOptional()
   estimated_value_lakh?: number; // alias in Lakhs
 
@@ -378,6 +385,7 @@ export class UpdateTenderDto {
   extra_fields?: any;
 
   @IsNumber()
+  @Min(1, { message: 'Quantity must be at least 1' })
   @IsOptional()
   quantity?: number;
 
@@ -390,6 +398,7 @@ export class UpdateTenderDto {
   oem_turnover?: string;
 
   @IsNumber()
+  @Min(0, { message: 'EMD fee cannot be negative' })
   @IsOptional()
   emd_fee?: number;
 
@@ -453,6 +462,7 @@ export class UpdateTenderDto {
   emd_required?: boolean;
 
   @IsNumber()
+  @Min(0, { message: 'EMD amount cannot be negative' })
   @IsOptional()
   emd_amount?: number;
 
@@ -465,6 +475,7 @@ export class UpdateTenderDto {
   emd_exemption_reason?: string;
 
   @IsNumber()
+  @Min(0, { message: 'Tender fee cannot be negative' })
   @IsOptional()
   tender_fee_amount?: number;
 
@@ -480,10 +491,12 @@ export class UpdateTenderDto {
   custom_fields?: any;
 
   @IsNumber()
+  @Min(0, { message: 'Estimated value cannot be negative' })
   @IsOptional()
   estimated_value?: number;
 
   @IsNumber()
+  @Min(0, { message: 'Estimated value cannot be negative' })
   @IsOptional()
   estimated_value_lakh?: number; // alias
 
@@ -1170,6 +1183,7 @@ export class CreateTenderLineItemDto {
   product_description?: string;
 
   @IsNumber()
+  @Min(1, { message: 'Quantity must be at least 1' })
   @IsNotEmpty()
   quantity!: number;
 
@@ -1190,10 +1204,12 @@ export class CreateTenderLineItemDto {
   compliance_remarks?: string;
 
   @IsNumber()
+  @Min(0, { message: 'Quoted unit price cannot be negative' })
   @IsOptional()
   quoted_unit_price?: number;
 
   @IsNumber()
+  @Min(0, { message: 'Quoted total cannot be negative' })
   @IsOptional()
   quoted_total?: number;
 
@@ -1201,10 +1217,12 @@ export class CreateTenderLineItemDto {
   awarded?: boolean;
 
   @IsNumber()
+  @Min(0, { message: 'Awarded quantity cannot be negative' })
   @IsOptional()
   awarded_quantity?: number;
 
   @IsNumber()
+  @Min(0, { message: 'Awarded unit price cannot be negative' })
   @IsOptional()
   awarded_unit_price?: number;
 }
@@ -1219,6 +1237,7 @@ export class UpdateTenderLineItemDto {
   product_description?: string;
 
   @IsNumber()
+  @Min(1, { message: 'Quantity must be at least 1' })
   @IsOptional()
   quantity?: number;
 
@@ -1239,10 +1258,12 @@ export class UpdateTenderLineItemDto {
   compliance_remarks?: string;
 
   @IsNumber()
+  @Min(0, { message: 'Quoted unit price cannot be negative' })
   @IsOptional()
   quoted_unit_price?: number;
 
   @IsNumber()
+  @Min(0, { message: 'Quoted total cannot be negative' })
   @IsOptional()
   quoted_total?: number;
 
@@ -1250,10 +1271,12 @@ export class UpdateTenderLineItemDto {
   awarded?: boolean;
 
   @IsNumber()
+  @Min(0, { message: 'Awarded quantity cannot be negative' })
   @IsOptional()
   awarded_quantity?: number;
 
   @IsNumber()
+  @Min(0, { message: 'Awarded unit price cannot be negative' })
   @IsOptional()
   awarded_unit_price?: number;
 }
@@ -1370,6 +1393,7 @@ export class CreateTenderFinancialInstrumentDto {
   instrument_type!: string;
 
   @IsNumber()
+  @Min(0.01, { message: 'Amount must be greater than zero' })
   @IsNotEmpty()
   amount!: number;
 
@@ -1408,6 +1432,7 @@ export class CreateTenderFinancialInstrumentDto {
 
 export class UpdateTenderFinancialInstrumentDto {
   @IsNumber()
+  @Min(0.01, { message: 'Amount must be greater than zero' })
   @IsOptional()
   amount?: number;
 

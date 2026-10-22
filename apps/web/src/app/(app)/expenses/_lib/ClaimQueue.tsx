@@ -23,7 +23,7 @@ import {
 import { api } from '@/lib/api';
 import { errorMessage, saveBlob, type ExpenseClaim, type Paged } from './expense-lib';
 import { ClaimDetail } from './ClaimDetail';
-import { DateText, ExpenseViewMenu, Money, PaymentInfo, StatusBadge, useToaster } from './expense-ui';
+import { AnomalyChips, DateText, ExpenseViewMenu, Money, PaymentInfo, StatusBadge, useToaster } from './expense-ui';
 
 const ageDays = (iso: string | null) => (iso ? Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)) : 0);
 
@@ -144,7 +144,7 @@ export const ClaimQueue: React.FC<{
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <ExpenseViewMenu />
           <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
             <input
               key={search}
               type="search"
@@ -153,7 +153,7 @@ export const ClaimQueue: React.FC<{
               defaultValue={search}
               onKeyDown={(e) => e.key === 'Enter' && setSearch((e.target as HTMLInputElement).value.trim())}
               onBlur={(e) => e.target.value.trim() !== search && setSearch(e.target.value.trim())}
-              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -259,6 +259,7 @@ export const ClaimQueue: React.FC<{
                       <TableCell className="max-w-[240px]">
                         <div className="font-mono text-xs font-semibold text-[#0F5E63]">{c.claim_number}</div>
                         <div className="truncate text-[11px] text-[#4A5568]" title={c.title}>{c.title}</div>
+                        <AnomalyChips futureDated={c.future_dated_lines} receiptMissing={c.receipt_missing_lines} className="mt-1" />
                       </TableCell>
                       <TableCell className="max-w-[180px]">
                         <div className="truncate text-sm text-[#14213D]" title={c.employee_name || undefined}>{c.employee_name}</div>
@@ -312,6 +313,7 @@ export const ClaimQueue: React.FC<{
                     </div>
                     <StatusBadge status={c.status} />
                   </div>
+                  <AnomalyChips futureDated={c.future_dated_lines} receiptMissing={c.receipt_missing_lines} />
                   <PaymentInfo claim={c} />
                   <div className="flex justify-between text-xs text-[#4A5568]">
                     <span>{c.status === 'processed' ? '' : `waiting ${ageDays(c.updated_at)}d`}</span>

@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { advanceTicket } from './helpers/service-flow';
+import { advanceTicket, istDay } from './helpers/service-flow';
 
 describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31-34)', () => {
   let app: INestApplication;
@@ -82,7 +82,8 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
       .set('Authorization', `Bearer ${mgmtToken}`);
     testProductId = prods.body[0].id;
 
-    customTicketNo = `TCK-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+    // a hand-typed ticket ref is the customer's own reference: TCK- numbers are issued by the system only
+    customTicketNo = `GEM-INC-${Math.floor(100000 + Math.random() * 900000)}`;
   });
 
   afterAll(async () => {
@@ -102,12 +103,12 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
         equipment_serial: 'SN-XRAY-DELHI-4001',
         location: 'Terminal 3 Baggage Screening Bay A',
         complaint: 'Conveyor belt intermittently stopping during high load scanning',
-        date_received: new Date().toISOString().split('T')[0],
-        received_date: new Date().toISOString().split('T')[0],
+        date_received: istDay(0), // never in the future (IST)
+        received_date: istDay(0),
         priority: 'high',
         warranty_status: 'in_warranty',
         assigned_to: serviceUserId,
-        planned_visit_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+        planned_visit_date: istDay(0), // visit today (work and the report may only follow the visit day)
       };
 
       const res = await request(app.getHttpServer())
@@ -186,7 +187,7 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           status: 'visit_scheduled',
-          planned_visit_date: new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0],
+          planned_visit_date: istDay(0), // the engineer goes today: work may start on/after the visit day
         });
 
       expect(scheduleRes.status).toBe(200);
@@ -270,7 +271,7 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
     });
 
     it('submits service report with further_work_required=true and transitions ticket to revisit_required', async () => {
-      const nextVisit = new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0];
+      const nextVisit = istDay(3);
       const res = await request(app.getHttpServer())
         .post(`/api/service/tickets/${revisitTicketId}/report`)
         .set('Authorization', `Bearer ${serviceToken}`)
@@ -392,10 +393,16 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
 
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body.data)).toBe(true);
-      // All tickets returned must either be assigned to this service engineer or unassigned
+      // All tickets returned are unassigned, this engineer's, or — service@ being the chief service engineer
+      // (DEF-064) — assigned to an engineer who reports to him
+      const team = await request(app.getHttpServer())
+        .get('/api/service/engineers')
+        .set('Authorization', `Bearer ${serviceToken}`);
+      const teamIds = team.body.map((e: any) => e.id);
+      expect(teamIds).toContain(serviceUserId);
       for (const t of res.body.data) {
         if (t.assigned_to) {
-          expect(t.assigned_to).toBe(serviceUserId);
+          expect(teamIds).toContain(t.assigned_to);
         }
       }
     });

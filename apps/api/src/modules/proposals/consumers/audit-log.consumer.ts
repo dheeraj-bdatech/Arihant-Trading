@@ -4,13 +4,12 @@ import { Kysely } from 'kysely';
 import { KYSELY_DB } from '../../../common/database/database.module.js';
 import { OutboxService, type DomainEventEnvelope } from '../../../common/outbox/outbox.service.js';
 import type { Database } from '@arihant/shared';
+import { PROPOSAL_DECISION_EVENTS } from '../../audit/audit-trail.listener.js';
 
 @Injectable()
 export class ProposalAuditLogConsumer {
   private readonly logger = new Logger(ProposalAuditLogConsumer.name);
   private readonly handlerName = 'AuditLogConsumer';
-  // Per-proposal last applied sequence for out-of-order protection
-  private readonly proposalSequences = new Map<string, number>();
 
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
@@ -19,7 +18,7 @@ export class ProposalAuditLogConsumer {
 
   @OnEvent('proposal.*')
   async handleProposalEvent(envelope: DomainEventEnvelope) {
-    const { eventId, eventType, aggregateId, aggregateSequence, actorId, payload } = envelope;
+    const { eventId, eventType, aggregateId, actorId, payload } = envelope;
 
     // Idempotency check (E51)
     const isProcessed = await this.outboxService.isEventProcessed(eventId, this.handlerName);
@@ -28,18 +27,11 @@ export class ProposalAuditLogConsumer {
       return;
     }
 
-    // Sequence check (E52): ignore if older than last applied sequence
-    if (aggregateSequence && aggregateId) {
-      const lastSeq = this.proposalSequences.get(aggregateId) || 0;
-      if (aggregateSequence < lastSeq) {
-        this.logger.warn(
-          `[${this.handlerName}] Ignoring out-of-order event ${eventId} (seq ${aggregateSequence} < last ${lastSeq})`,
-        );
-        await this.outboxService.markEventProcessed(eventId, this.handlerName);
-        return;
-      }
-      this.proposalSequences.set(aggregateId, aggregateSequence);
-    }
+    // QA DEF-028: no in-memory sequence check. Only the creation events carry a real aggregate_sequence (1-3);
+    // every later event defaults to 1, so the old "older than last applied" guard dropped nearly every decision.
+    // The audit trail is append-only and idempotent per event, so ordering is carried by created_at instead.
+    // Decision events (approved, sent, converted, lost…) are written by AuditTrailListener under readable codes.
+    if (PROPOSAL_DECISION_EVENTS.has(eventType)) return;
 
     try {
       // Determine action name from eventType e.g. "proposal.requested" -> "create"

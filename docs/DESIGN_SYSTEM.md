@@ -5,7 +5,7 @@
 The Arihant Business Operating System (BOS) follows a strict **Clean Light Executive Theme** engineered for defence and security enterprise workflows. All views must maintain visual consistency across all modules.
 
 ### Core Visual Principles
-1. **Light, Clean & High-Contrast**: Background is always `#F7FBFF` (cool tinted canvas). Cards are pure white `#FFFFFF` with `#D6E3F5` borders.
+1. **Light, Clean & High-Contrast**: Background is always `#F6F5F1` (warm linen canvas). Cards are pure white `#FFFFFF` with `#DCD8CE` borders.
 2. **Strictly No Dark/Black Themes**: Dark mode or black backgrounds (`bg-slate-900`, `bg-gray-900`, `bg-black`, `border-slate-800`) are **strictly prohibited** anywhere in the user interface.
 3. **Component-Driven Architecture**: Ad-hoc styles, custom buttons, unstandardized cards, and inconsistent paddings/spacings are prohibited. All views must consume components from `@/components/ui`.
 4. **Predictable Spacing & Typography**: Strict spacing scale and font sizing across all modules.
@@ -18,13 +18,13 @@ The Arihant Business Operating System (BOS) follows a strict **Clean Light Execu
 
 | Token | Hex Value | Tailwind Class | Usage |
 |---|---|---|---|
-| **Canvas Background** | `#F7FBFF` | `bg-[#F7FBFF]` | App container background |
+| **Canvas Background** | `#F6F5F1` | `bg-[#F6F5F1]` | App container background |
 | **Card Surface** | `#FFFFFF` | `bg-white` | Surfaces, modals, cards |
-| **Subtle Well** | `#F8FAFC` | `bg-slate-50` / `bg-gray-50/70` | Secondary wells, sub-panels |
-| **Border Primary** | `#D6E3F5` | `border-[#D6E3F5]` | All card, table, and container borders |
+| **Subtle Well** | `#FBFAF7` | `bg-slate-50` / `bg-gray-50/70` | Secondary wells, sub-panels |
+| **Border Primary** | `#DCD8CE` | `border-[#DCD8CE]` | All card, table, and container borders |
 | **Border Hover** | `#9FC0F5` | `hover:border-[#9FC0F5]` | Interactive card hover states |
-| **Brand Primary** | `#223FA7` | `bg-[#223FA7]`, `text-[#223FA7]` | Primary buttons, active tabs, key highlights |
-| **Brand Secondary** | `#EAF2FF` | `bg-[#EAF2FF]` | Module pills, subtle accents, badges |
+| **Brand Primary** | `#0F5E63` | `bg-[#0F5E63]`, `text-[#0F5E63]` | Primary buttons, active tabs, key highlights |
+| **Brand Secondary** | `#E3EFEE` | `bg-[#E3EFEE]` | Module pills, subtle accents, badges |
 | **Foreground Text** | `#1A1A1A` | `text-[#1A1A1A]` | Primary headings, titles, high-emphasis text |
 | **Muted Text** | `#5871A5` | `text-[#5871A5]` | Subtitles, helper text, table header labels |
 
@@ -35,7 +35,7 @@ The Arihant Business Operating System (BOS) follows a strict **Clean Light Execu
 | **Success** | `bg-emerald-50` | `border-emerald-200` | `text-emerald-700` | Completed, won, healthy, signoffs |
 | **Warning** | `bg-amber-50` | `border-amber-200` | `text-amber-700` | Pending, review, awaiting manager |
 | **Danger / Urgent** | `bg-red-50` | `border-red-200` | `text-red-700` | Deadlines ≤ 7 days, breakdown, rejected |
-| **Info / Focus** | `bg-blue-50` | `border-blue-200` | `text-[#223FA7]` | Information callouts, active indicators |
+| **Info / Focus** | `bg-[#E3EFEE]` | `border-[#0F5E63]/30` | `text-[#0F5E63]` | Information callouts, active indicators |
 
 ### Spacing & Layout Standards
 
@@ -128,7 +128,7 @@ Standard hero page header with module badge pill, icon, title, description, and 
   badge="Module 3 — Demonstrations"
   title="Field Demonstration Management"
   subtitle="Coordinate trial allocations, depot inventory, and customer signoffs."
-  icon={<Shield className="w-5 h-5 text-[#223FA7]" />}
+  icon={<Shield className="w-5 h-5 text-[#0F5E63]" />}
   actions={
     <Button variant="primary" onClick={handleNewDemo}>
       <Plus className="w-4 h-4 mr-1.5" />
@@ -167,7 +167,7 @@ Primitive layout building blocks with standardized gap tokens.
 ### 3.2 Cards & Surfaces
 
 #### `Card`
-Standardized card surface with built-in border `#D6E3F5`, rounded corners `rounded-xl`, shadow presets, selection states, and variant tints.
+Standardized card surface with built-in border `#DCD8CE`, rounded corners `rounded-xl`, shadow presets, selection states, and variant tints.
 ```tsx
 <Card variant="interactive" padding="md" hover onClick={handleClick}>
   <CardHeader>
@@ -189,7 +189,7 @@ Standardized card surface with built-in border `#D6E3F5`, rounded corners `round
 
 #### `Button`, `IconButton`, `ButtonGroup`
 Standardized action elements with variants, sizes, loading state with spinner, and icon support.
-- **Variants**: `primary` (`#223FA7`), `secondary` (`#EAF2FF`), `outline` (`border-[#D6E3F5]`), `ghost`, `danger`, `success`, `cyber`.
+- **Variants**: `primary` (`#0F5E63`), `secondary` (`#E3EFEE`), `outline` (`border-[#DCD8CE]`), `ghost`, `danger`, `success`, `cyber`.
 - **Sizes**: `xs`, `sm`, `md`, `lg`, `icon`.
 ```tsx
 <Button variant="primary" size="md" leftIcon={<Save className="w-4 h-4" />} isLoading={isSubmitting}>
@@ -206,7 +206,7 @@ Standardized action elements with variants, sizes, loading state with spinner, a
 ```
 
 #### `Input`, `Select`, `Textarea`, `Checkbox`
-Form controls with executive blue focus rings and labels.
+Form controls with brand teal focus rings and labels.
 ```tsx
 <Input
   label="Unit Serial Number"

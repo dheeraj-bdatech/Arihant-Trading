@@ -143,7 +143,7 @@ export default function LeaveHolidayPage() {
           {!holidays ? (
             <PageLoader rows={3} />
           ) : holidays.length === 0 ? (
-            <p className="text-sm text-[#8A8578]">No holidays in the calendar yet.</p>
+            <p className="text-sm text-[#6B7280]">No holidays in the calendar yet.</p>
           ) : (
             <ul className="divide-y divide-[#ECE9E2]">
               {holidays.map((h) => (
@@ -156,7 +156,7 @@ export default function LeaveHolidayPage() {
                     </Badge>
                   )}
                   {isAdminLike && (
-                    <button type="button" aria-label={`Remove ${h.name}`} onClick={() => removeHoliday(h)} className="-my-1 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-1">
+                    <button type="button" aria-label={`Remove ${h.name}`} onClick={() => removeHoliday(h)} className="-my-1 p-2 text-[#6B7280] hover:text-[#881337] sm:my-0 sm:p-1">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   )}

@@ -116,8 +116,8 @@ const FilePick: React.FC<{ files: File[]; onChange: (f: File[]) => void; label: 
             <li key={`${f.name}-${i}`} className="flex items-center gap-2 text-xs text-[#14213D]">
               <Paperclip className="h-3 w-3 shrink-0 text-[#4A5568]" />
               <span className="min-w-0 truncate flex-1">{f.name}</span>
-              <span className="shrink-0 text-[#8A8578] font-mono">{Math.max(1, Math.round(f.size / 1024))} KB</span>
-              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => onChange(files.filter((_, j) => j !== i))} className="-my-1 shrink-0 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-0">
+              <span className="shrink-0 text-[#6B7280] font-mono">{Math.max(1, Math.round(f.size / 1024))} KB</span>
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => onChange(files.filter((_, j) => j !== i))} className="-my-1 shrink-0 p-2 text-[#6B7280] hover:text-[#881337] sm:my-0 sm:p-0">
                 <X className="h-3.5 w-3.5" />
               </button>
             </li>

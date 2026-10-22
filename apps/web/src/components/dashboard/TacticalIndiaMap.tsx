@@ -45,7 +45,7 @@ export function TacticalIndiaMap({
       <div className="relative my-3 flex items-center justify-center min-h-[220px]">
         {/* Floating Stat Badge (Matching 2,561 shipments badge in reference image) */}
         <div className="absolute top-2 left-4 z-10 px-3 py-1.5 rounded-lg bg-[#14213D] text-white shadow-md text-xs font-mono flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          <span className="w-2 h-2 rounded-full bg-[#0F5E63] animate-ping"></span>
           <span>2,561 Active Deployments</span>
         </div>
 
@@ -156,7 +156,7 @@ export function TacticalIndiaMap({
 
         <div>
           <div className="text-[11px] text-[#4A5568]">On-Time Readiness</div>
-          <div className="font-mono text-xl font-bold text-emerald-700">
+          <div className="font-mono text-xl font-bold text-[#0B4A4E]">
             {onTimeRate}
           </div>
         </div>

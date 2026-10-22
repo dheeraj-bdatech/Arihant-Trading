@@ -312,7 +312,7 @@ export const TaskSearchInput: React.FC<{ value: string; onSearch: (q: string) =>
         commit();
       }}
     >
-      {compact && <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />}
+      {compact && <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />}
       <Input
         label={compact ? undefined : label}
         aria-label={compact ? label : undefined}

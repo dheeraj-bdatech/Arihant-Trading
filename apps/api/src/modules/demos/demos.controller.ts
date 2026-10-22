@@ -7,6 +7,9 @@ import {
   Body,
   Query,
   UseGuards,
+  Injectable,
+  NotFoundException,
+  type PipeTransform,
 } from '@nestjs/common';
 import { DemosService } from './demos.service.js';
 import {
@@ -30,6 +33,18 @@ import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import type { AuthUser } from '@arihant/shared';
+
+const UUID_PARAM = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** Route ids must be UUIDs: a malformed id (e.g. "undefined") is a clean 404, never a Postgres 500. */
+@Injectable()
+class DemoIdPipe implements PipeTransform<string, string> {
+  transform(value: string): string {
+    const id = String(value ?? '').trim();
+    if (!UUID_PARAM.test(id)) throw new NotFoundException(`Record ${value} not found`);
+    return id;
+  }
+}
 
 @Controller('demos')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -63,7 +78,7 @@ export class DemosController {
 
   @Get('equipment/:id')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin')
-  async getEquipmentById(@Param('id') id: string) {
+  async getEquipmentById(@Param('id', DemoIdPipe) id: string) {
     return this.demosService.getEquipmentById(id);
   }
 
@@ -76,7 +91,7 @@ export class DemosController {
   @Patch('equipment/:id')
   @Roles('demo_team', 'service_team', 'admin')
   async updateEquipment(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: UpdateEquipmentDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -145,13 +160,13 @@ export class DemosController {
 
   @Get(':id')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'admin')
-  async findOneDemo(@Param('id') id: string) {
+  async findOneDemo(@Param('id', DemoIdPipe) id: string) {
     return this.demosService.findOneDemo(id);
   }
 
   @Get(':id/audit')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'admin')
-  async getAuditTrail(@Param('id') id: string) {
+  async getAuditTrail(@Param('id', DemoIdPipe) id: string) {
     return this.demosService.getAuditTrail(id);
   }
 
@@ -164,7 +179,7 @@ export class DemosController {
   @Patch(':id')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'admin')
   async updateDemo(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: UpdateDemoDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -174,7 +189,7 @@ export class DemosController {
   @Post(':id/assign-team')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async assignTeam(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: AssignTeamDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -184,7 +199,7 @@ export class DemosController {
   @Post(':id/confirm')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async confirmDemo(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: ConfirmDemoDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -194,7 +209,7 @@ export class DemosController {
   @Post(':id/reschedule')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async rescheduleDemo(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: RescheduleDemoDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -204,7 +219,7 @@ export class DemosController {
   @Post(':id/cancel')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'admin')
   async cancelDemo(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: CancelDemoDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -214,7 +229,7 @@ export class DemosController {
   @Post(':id/reserve')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async reserveEquipment(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: ReserveEquipmentDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -224,7 +239,7 @@ export class DemosController {
   @Post(':id/reserve-equipment')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async reserveEquipmentAlias(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: ReserveEquipmentDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -234,7 +249,7 @@ export class DemosController {
   @Post('reservations/:id/alternative')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async suggestAlternative(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: SuggestAlternativeDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -244,7 +259,7 @@ export class DemosController {
   @Post('reservations/:id/approve')
   @Roles('management', 'regional_manager', 'demo_team', 'service_team', 'admin')
   async approveReservation(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: ApproveReservationDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -254,7 +269,7 @@ export class DemosController {
   @Post('reservations/:id/reject')
   @Roles('management', 'regional_manager', 'demo_team', 'service_team', 'admin')
   async rejectReservation(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: RejectReservationDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -264,7 +279,7 @@ export class DemosController {
   @Post('reservations/:id/allocate')
   @Roles('management', 'regional_manager', 'demo_team', 'service_team', 'admin')
   async allocateAnotherUnit(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: AllocateAnotherUnitDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -274,7 +289,7 @@ export class DemosController {
   @Post(':id/outcome')
   @Roles('management', 'regional_manager', 'demo_team', 'sales', 'admin')
   async submitOutcome(
-    @Param('id') id: string,
+    @Param('id', DemoIdPipe) id: string,
     @Body() dto: SubmitDemoOutcomeDto,
     @CurrentUser() user: AuthUser,
   ) {

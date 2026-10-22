@@ -605,7 +605,7 @@ export function Equipment3DViewer({ product, className = '' }: Equipment3DViewer
           </div>
 
           <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/90 backdrop-blur-md border border-[#DCD8CE] shadow-sm text-[11px] font-mono text-[#4A5568]">
-            <Activity className="w-3.5 h-3.5 text-emerald-600" />
+            <Activity className="w-3.5 h-3.5 text-[#0F5E63]" />
             <span>PBR REALTIME: 60 FPS</span>
           </div>
         </div>

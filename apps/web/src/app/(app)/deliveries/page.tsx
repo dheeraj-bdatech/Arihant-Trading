@@ -19,14 +19,18 @@ import {
   FileCheck,
   MapPin,
   Layers,
+  ChevronRight,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useOpenParam } from '@/lib/use-open-param';
+import { userWithRole } from '@/lib/role-label';
+import { PROPOSAL_ORDER_TYPES } from '@arihant/shared';
 import { canRead } from '@/lib/module-access';
 import { canOpen } from '@/lib/route-access';
 import {
   Button,
+  Badge,
   Card,
   Modal,
   Input,
@@ -37,7 +41,7 @@ import {
   FormSteps,
   FormSection,
   EmptyState, PageLoader, Table, TableHeader, TableRow, TableHead, TableBody, TableCell, StatGrid, StatCard, RowMenu,
-  RecordViews, rowDetails, toneFor, type RecordItem } from '@/components/ui';
+  RecordViews, RecordTable, RecordDetails, formatDateIN, daysFromToday, rowDetails, toneFor, type BadgeProps, type RecordItem } from '@/components/ui';
 
 // Consignment lifecycle in workflow order — drives the stage board lanes and the next-step button.
 const DELIVERY_STATUSES: { key: string; label: string }[] = [
@@ -50,8 +54,43 @@ const DELIVERY_STATUSES: { key: string; label: string }[] = [
   { key: 'cancelled', label: 'Cancelled' },
 ];
 const DELIVERY_FLOW = DELIVERY_STATUSES.filter((s) => s.key !== 'cancelled').map((s) => s.key);
+// Handover signed off / cancelled: the consignment is closed and its milestones can no longer change.
+const CLOSED_DELIVERY = ['handover_completed', 'cancelled'];
+// Milestones move one step at a time: the dialog offers the current stage (to update its details), the next one, or cancel.
+const allowedDeliveryStatuses = (current?: string) => {
+  const idx = DELIVERY_FLOW.indexOf(String(current));
+  const next = idx >= 0 ? DELIVERY_FLOW[idx + 1] : undefined;
+  return [current, next, 'cancelled'].filter((s, i, a): s is string => !!s && a.indexOf(s) === i);
+};
 const deliveryStatusLabel = (status?: string) =>
   DELIVERY_STATUSES.find((s) => s.key === status)?.label || String(status || 'Unknown').replace(/_/g, ' ');
+
+type BadgeVariant = NonNullable<BadgeProps['variant']>;
+const DELIVERY_BADGE: Record<string, BadgeVariant> = {
+  delivered: 'success',
+  installed: 'success',
+  handover_completed: 'success',
+  completed: 'success',
+  pending: 'warning',
+  awaiting: 'warning',
+  on_hold: 'warning',
+  scheduled: 'default',
+  dispatched: 'default',
+  in_transit: 'default',
+  cancelled: 'danger',
+  failed: 'danger',
+  rejected: 'danger',
+};
+const MILESTONE_OPTION_LABEL: Record<string, string> = {
+  scheduled: 'Scheduled (In Depot)',
+  dispatched: 'Dispatched (Left Facility)',
+  in_transit: 'In Transit (With Transporter)',
+  delivered: 'Delivered (Received at Site)',
+  installed: 'Installed & Commissioned',
+  handover_completed: 'Handover Completed (Client Signoff)',
+  cancelled: 'Cancelled',
+};
+const deliveryBadge = (status?: string): BadgeVariant => DELIVERY_BADGE[String(status || '').toLowerCase()] ?? 'outline';
 
 
 export default function DeliveriesPage() {
@@ -72,9 +111,12 @@ export default function DeliveriesPage() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isUpdateStatusOpen, setIsUpdateStatusOpen] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState<any | null>(null);
+  // List view's Inspect: the same details pop-up the cards open for a record.
+  const [inspected, setInspected] = useState<RecordItem | null>(null);
 
-  // New delivery form
-  const [newDelivery, setNewDelivery] = useState({
+  // New delivery form. PO / carrier / LR stay empty until the user enters them (or links a converted
+  // proposal, whose PO fills the order reference) — nothing is invented.
+  const emptyDelivery = () => ({
     organisation_id: '',
     product_id: '',
     assigned_to: '',
@@ -84,10 +126,61 @@ export default function DeliveriesPage() {
     serial_numbers: '',
     carrier_name: '',
     tracking_number: '',
-    order_reference: `PO/2026/${Math.floor(1000 + Math.random() * 9000)}`,
+    order_reference: '',
     remarks: '',
     tender_id: '',
+    proposal_id: '',
   });
+  const [newDelivery, setNewDelivery] = useState(emptyDelivery);
+  const openCreate = (prefill?: Partial<ReturnType<typeof emptyDelivery>>) => {
+    setNewDelivery({ ...emptyDelivery(), ...prefill });
+    setActionError(null);
+    setIsCreateOpen(true);
+  };
+
+  // Converted proposals (customer POs) of the selected customer, so the dispatch is raised against the order it fulfils.
+  const [orgProposals, setOrgProposals] = useState<any[]>([]);
+  useEffect(() => {
+    setOrgProposals([]);
+    if (!newDelivery.organisation_id || !canRead(user?.role, 'proposals')) return;
+    api
+      .get('/proposals', { organisation_id: newDelivery.organisation_id, status: 'CONVERTED', limit: 50 })
+      .then((res: any) =>
+        setOrgProposals((res?.data || []).filter((p: any) => String(p.status).toUpperCase() === 'CONVERTED')),
+      )
+      .catch(() => setOrgProposals([]));
+  }, [newDelivery.organisation_id, user?.role]);
+  // Older conversions recorded the PO number in converted_to; it now holds the order type ("Purchase Order" …).
+  const proposalPo = (p: any) =>
+    p?.conversion_reference ||
+    p?.converted_reference ||
+    (p?.converted_to && !(PROPOSAL_ORDER_TYPES as readonly string[]).includes(p.converted_to) ? p.converted_to : '') ||
+    '';
+  const selectProposal = (proposalId: string) => {
+    const p = orgProposals.find((x) => x.id === proposalId);
+    setNewDelivery((cur) => ({
+      ...cur,
+      proposal_id: proposalId,
+      // Fill only what the user has not typed yet.
+      order_reference: p && !cur.order_reference ? proposalPo(p) : cur.order_reference,
+      product_id: p?.product_id && !cur.product_id ? p.product_id : cur.product_id,
+    }));
+  };
+  // Deep link from a converted proposal: /deliveries?proposal=<id> opens the dispatch form against it.
+  useOpenParam(async (proposalId) => {
+    try {
+      const p: any = await api.get(`/proposals/${proposalId}`);
+      const orgId = p?.organisation_id || p?.customer_id || '';
+      openCreate({
+        organisation_id: orgId,
+        proposal_id: proposalId,
+        order_reference: proposalPo(p),
+        product_id: p?.product_id || '',
+      });
+    } catch {
+      openCreate();
+    }
+  }, true, 'proposal');
 
   // Won tenders of the selected customer, so a delivery can be raised against the bid it fulfils.
   const [orgTenders, setOrgTenders] = useState<any[]>([]);
@@ -107,6 +200,7 @@ export default function DeliveriesPage() {
     installation_date: '',
     installation_notes: '',
     remarks: '',
+    document_url: '',
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -163,6 +257,12 @@ export default function DeliveriesPage() {
       if (!newDelivery.organisation_id) {
         throw new Error('Please select an organization / client customer.');
       }
+      if (!newDelivery.delivery_location.trim()) {
+        throw new Error('Enter the delivery location / site address.');
+      }
+      if (!newDelivery.delivery_date || newDelivery.delivery_date < istToday()) {
+        throw new Error('The target delivery date cannot be in the past. Choose today or a later date.');
+      }
 
       await api.post('/deliveries', {
         organisation_id: newDelivery.organisation_id,
@@ -171,10 +271,11 @@ export default function DeliveriesPage() {
         delivery_date: newDelivery.delivery_date,
         delivery_location: newDelivery.delivery_location || undefined,
         // API field names: the serial is what the service portal matches a breakdown report back to this customer by.
-        model: newDelivery.product_model || undefined,
+        model: newDelivery.product_model.trim() || undefined,
         equipment_serial: newDelivery.serial_numbers.trim() || undefined,
         order_reference: newDelivery.order_reference || undefined,
         tender_id: newDelivery.tender_id || undefined,
+        proposal_id: newDelivery.proposal_id || undefined,
         // Deliveries have no carrier/LR columns; keep what was entered in the remarks instead of dropping it.
         remarks:
           [
@@ -201,12 +302,17 @@ export default function DeliveriesPage() {
     setIsSubmitting(true);
 
     try {
+      if (updateForm.status === 'handover_completed' && (updateForm.received_by.trim().length < 3 || !updateForm.document_url.trim())) {
+        throw new Error('Handover needs the client sign-off: the officer who signed and the signed handover certificate (link or reference number).');
+      }
       await api.patch(`/deliveries/${selectedDelivery.id}/status`, {
         status: updateForm.status,
-        received_by: updateForm.received_by || undefined,
+        received_by: updateForm.received_by.trim() || undefined,
         installation_date: updateForm.installation_date || undefined,
         installation_notes: updateForm.installation_notes || undefined,
-        remarks: updateForm.remarks || undefined,
+        // New transition remarks only: the API appends them to the delivery's milestone log.
+        remarks: updateForm.remarks.trim() || undefined,
+        document_url: updateForm.document_url.trim() || undefined,
       });
 
       setIsUpdateStatusOpen(false);
@@ -224,10 +330,11 @@ export default function DeliveriesPage() {
     setSelectedDelivery(delivery);
     setUpdateForm({
       status: next || delivery.status,
-      received_by: delivery.received_by || '',
+      received_by: '',
       installation_date: calendarDay(delivery.installation_date),
       installation_notes: delivery.installation_notes || '',
-      remarks: delivery.remarks || '',
+      remarks: '',
+      document_url: delivery.document_url || '',
     });
     setActionError(null);
     setIsUpdateStatusOpen(true);
@@ -242,9 +349,11 @@ export default function DeliveriesPage() {
     const idx = DELIVERY_FLOW.indexOf(delivery.status);
     const next = idx >= 0 && idx < DELIVERY_FLOW.length - 1 ? DELIVERY_FLOW[idx + 1] : undefined;
     const done = ['delivered', 'installed', 'handover_completed', 'cancelled'].includes(delivery.status);
+    const closed = CLOSED_DELIVERY.includes(delivery.status);
     const facts = [
       { label: 'Order ref', value: delivery.order_reference || '—' },
-      { label: 'Serial', value: delivery.equipment_serial || delivery.model || '—' },
+      delivery.model && { label: 'Model', value: delivery.model },
+      { label: 'Serial', value: delivery.equipment_serial || '—' },
       (carrier || tracking) && { label: 'Carrier / LR', value: [carrier, tracking].filter(Boolean).join(' · ') },
       delivery.tender_id && {
         label: 'Tender',
@@ -254,6 +363,17 @@ export default function DeliveriesPage() {
           </Link>
         ) : (
           delivery.tender_no || 'Linked'
+        ),
+      },
+      // QA DEF-070: the converted proposal (customer PO) this dispatch fulfils.
+      delivery.proposal_id && {
+        label: 'Proposal',
+        value: canOpen(user?.role, '/proposals') ? (
+          <Link href={`/proposals?open=${delivery.proposal_id}`} onClick={(e) => e.stopPropagation()} className="font-mono text-[#0F5E63] hover:underline">
+            {delivery.proposal_no || 'Linked'}
+          </Link>
+        ) : (
+          <span className="font-mono">{delivery.proposal_no || 'Linked'}</span>
         ),
       },
     ].filter(Boolean) as NonNullable<RecordItem['facts']>;
@@ -278,9 +398,12 @@ export default function DeliveriesPage() {
       due: { date: delivery.delivery_date, label: 'Delivery', done },
       owner: delivery.assigned_name || undefined,
       facts,
-      primary: next
-        ? { label: `Mark ${deliveryStatusLabel(next).toLowerCase()}`, onClick: () => openStatusUpdate(delivery, next) }
-        : { label: 'Update milestone', onClick: () => openStatusUpdate(delivery) },
+      // Closed consignments (handover signed off / cancelled) have no further milestones.
+      primary: closed
+        ? undefined
+        : next
+          ? { label: `Mark ${deliveryStatusLabel(next).toLowerCase()}`, onClick: () => openStatusUpdate(delivery, next) }
+          : { label: 'Update milestone', onClick: () => openStatusUpdate(delivery) },
       quick,
       details: rowDetails(delivery),
     };
@@ -296,6 +419,117 @@ export default function DeliveriesPage() {
   };
   const hasActiveFilters = activeTab !== 'all' || Boolean(searchQuery);
 
+  // Deep link from notifications / dashboards: /deliveries?open=<id> opens that consignment's details.
+  useOpenParam(async (id) => {
+    try {
+      const d = deliveries.find((x) => String(x.id) === id) ?? (await api.get(`/deliveries/${id}`));
+      if (d) setInspected(toDeliveryRecord(d));
+    } catch (err) {
+      console.error('Failed to open delivery:', err);
+    }
+  }, !isLoading);
+
+  const deliveryItems = deliveries.map(toDeliveryRecord);
+  const deliveryList = deliveries.length ? (
+    <RecordTable items={deliveryItems}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Delivery No.</TableHead>
+            <TableHead>Customer & Site</TableHead>
+            <TableHead>Equipment</TableHead>
+            <TableHead>Order Ref</TableHead>
+            <TableHead>Delivery Date</TableHead>
+            <TableHead>In-charge</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {deliveries.map((delivery, i) => {
+            const item = deliveryItems[i];
+            const daysLeft = item.due && !item.due.done ? daysFromToday(delivery.delivery_date) : null;
+            const equipmentMeta = [delivery.model, delivery.equipment_serial].filter(Boolean).join(' · ');
+            return (
+              <TableRow key={item.key}>
+                <TableCell className="font-bold whitespace-nowrap">
+                  <span className="font-mono text-[#0F5E63]">{delivery.delivery_no || '-'}</span>
+                </TableCell>
+                <TableCell className="font-bold text-[#14213D]">
+                  {delivery.organisation_name || 'Defence / Security Buyer'}
+                  {delivery.delivery_location && (
+                    <div className="text-[10px] text-[#4A5568] font-normal max-w-[240px] truncate" title={delivery.delivery_location}>
+                      {delivery.delivery_location}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="text-[#14213D]">
+                  {delivery.product_name || 'Security Scanning Equipment'}
+                  {equipmentMeta && <div className="text-[10px] text-[#4A5568] font-normal">{equipmentMeta}</div>}
+                </TableCell>
+                <TableCell className="font-bold whitespace-nowrap">
+                  {delivery.order_reference ? (
+                    <span className="font-mono text-[#0F5E63]">{delivery.order_reference}</span>
+                  ) : (
+                    <span className="text-[#4A5568]">-</span>
+                  )}
+                  {delivery.tender_id && (
+                    <div className="text-[10px] text-[#4A5568] font-normal">
+                      Tender{' '}
+                      {canOpen(user?.role, '/tenders') ? (
+                        <Link href={`/tenders?highlight=${delivery.tender_id}`} className="font-mono text-[#0F5E63] hover:underline">
+                          {delivery.tender_no || 'Linked'}
+                        </Link>
+                      ) : (
+                        <span className="font-mono">{delivery.tender_no || 'Linked'}</span>
+                      )}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="font-mono whitespace-nowrap">
+                  {formatDateIN(delivery.delivery_date)}
+                  {daysLeft !== null && daysLeft <= 7 && (
+                    <div className="text-[10px] font-bold text-[#881337]">
+                      {daysLeft < 0
+                        ? `${-daysLeft} ${daysLeft === -1 ? 'DAY' : 'DAYS'} OVERDUE`
+                        : daysLeft === 0
+                          ? 'DUE TODAY'
+                          : `${daysLeft} ${daysLeft === 1 ? 'DAY' : 'DAYS'} LEFT`}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="text-[#4A5568] whitespace-nowrap">{delivery.assigned_name || '-'}</TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={deliveryBadge(delivery.status)} size="sm" className="uppercase font-bold">
+                    {deliveryStatusLabel(delivery.status)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-2">
+                    {item.primary && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={item.primary.disabled}
+                        onClick={item.primary.onClick}
+                        className="text-xs text-[#0F5E63] hover:bg-[#E3EFEE]"
+                      >
+                        {item.primary.label}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="secondary" onClick={() => setInspected(item)} className="shadow-xs text-xs">
+                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
+
   return (
     <PageContainer>
       <PageHeader
@@ -303,10 +537,7 @@ export default function DeliveriesPage() {
         actions={
           <Button
             variant="primary"
-            onClick={() => {
-              setActionError(null);
-              setIsCreateOpen(true);
-            }}
+            onClick={() => openCreate()}
           >
             <Plus className="h-4 w-4 mr-1.5" />
             <span>Create Dispatch Order</span>
@@ -347,14 +578,14 @@ export default function DeliveriesPage() {
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
             <input
               type="search"
               aria-label="Search deliveries"
               placeholder="Search delivery, client, serial…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -396,7 +627,7 @@ export default function DeliveriesPage() {
           title="No Delivery Consignments Found"
           description="There are currently no delivery consignments matching your criteria. Create a dispatch order to track shipments."
           action={
-            <Button variant="primary" onClick={() => setIsCreateOpen(true)}>
+            <Button variant="primary" onClick={() => openCreate()}>
               <Plus className="h-4 w-4 mr-1" />
               <span>Create Dispatch Order</span>
             </Button>
@@ -411,8 +642,9 @@ export default function DeliveriesPage() {
           return (
             <RecordViews
               storageKey="deliveries"
-              defaultView="cards"
-              items={deliveries.map(toDeliveryRecord)}
+              defaultView="list"
+              list={deliveryList}
+              items={deliveryItems}
               lanes={[...DELIVERY_STATUSES, ...extraLanes].map((l) => ({ ...l, tone: toneFor(l.label) }))}
               laneOf={(i) => statusById.get(i.key) || ''}
               summary={
@@ -425,6 +657,7 @@ export default function DeliveriesPage() {
           );
         })()
       )}
+      <RecordDetails item={inspected} onClose={() => setInspected(null)} />
 
       {/* Modal: Create Dispatch Order */}
       <Modal
@@ -438,7 +671,7 @@ export default function DeliveriesPage() {
             onCancel={() => setIsCreateOpen(false)}
             banner={
               actionError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                <div className="p-3 bg-[#FCE8EC] border border-[#F3C7CF] rounded-lg text-xs text-[#700F2D]">
                   {actionError}
                 </div>
               )
@@ -493,9 +726,32 @@ export default function DeliveriesPage() {
                       </div>
                     )}
 
+                    {canRead(user?.role, 'proposals') && newDelivery.organisation_id && (
+                      <div>
+                        <label className="block text-xs font-semibold text-[#14213D] mb-1">Against converted proposal / PO (optional)</label>
+                        <select
+                          value={newDelivery.proposal_id}
+                          onChange={(e) => selectProposal(e.target.value)}
+                          className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
+                          disabled={!orgProposals.length && !newDelivery.proposal_id}
+                        >
+                          <option value="">{orgProposals.length ? 'Not linked to a proposal' : 'No converted proposals for this customer'}</option>
+                          {newDelivery.proposal_id && !orgProposals.some((p) => p.id === newDelivery.proposal_id) && (
+                            <option value={newDelivery.proposal_id}>Linked proposal</option>
+                          )}
+                          {orgProposals.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.proposal_number || p.proposal_no}
+                              {proposalPo(p) ? ` · PO ${proposalPo(p)}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
                     <div>
                       <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                        Tender / Order Reference
+                        Tender / Order (PO) Reference
                       </label>
                       <Input
                         placeholder="e.g. GeM-GEM/2026/B/8821"
@@ -569,6 +825,7 @@ export default function DeliveriesPage() {
                         </label>
                         <Input
                           type="date"
+                          min={istToday()}
                           value={newDelivery.delivery_date}
                           onChange={(e) => setNewDelivery({ ...newDelivery, delivery_date: e.target.value })}
                           required
@@ -587,7 +844,7 @@ export default function DeliveriesPage() {
                           <option value="">Select Staff...</option>
                           {users.map((u) => (
                             <option key={u.id} value={u.id}>
-                              {u.full_name} ({u.role})
+                              {userWithRole(u)}
                             </option>
                           ))}
                         </select>
@@ -596,9 +853,10 @@ export default function DeliveriesPage() {
 
                     <div>
                       <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                        Delivery Location / Site Address
+                        Delivery Location / Site Address *
                       </label>
                       <Input
+                        required
                         placeholder="e.g. Terminal 3 Gate 4, IGI Airport, New Delhi"
                         value={newDelivery.delivery_location}
                         onChange={(e) => setNewDelivery({ ...newDelivery, delivery_location: e.target.value })}
@@ -664,7 +922,7 @@ export default function DeliveriesPage() {
       >
         <form onSubmit={handleUpdateStatus} className="space-y-5">
           {actionError && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+            <div className="p-3 bg-[#FCE8EC] border border-[#F3C7CF] rounded-lg text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
@@ -681,14 +939,14 @@ export default function DeliveriesPage() {
                   className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
                   required
                 >
-                  <option value="scheduled">Scheduled (In Depot)</option>
-                  <option value="dispatched">Dispatched (Left Facility)</option>
-                  <option value="in_transit">In Transit (With Transporter)</option>
-                  <option value="delivered">Delivered (Received at Site)</option>
-                  <option value="installed">Installed & Commissioned</option>
-                  <option value="handover_completed">Handover Completed (Client Signoff)</option>
-                  <option value="cancelled">Cancelled</option>
+                  {allowedDeliveryStatuses(selectedDelivery?.status).map((s) => (
+                    <option key={s} value={s}>
+                      {MILESTONE_OPTION_LABEL[s] || deliveryStatusLabel(s)}
+                      {s === selectedDelivery?.status ? ' — current (update details)' : ''}
+                    </option>
+                  ))}
                 </select>
+                <p className="mt-1 text-[11px] text-[#4A5568]">Milestones are recorded in order: Scheduled → Dispatched → In Transit → Delivered → Installed → Handover.</p>
               </div>
 
               <div>
@@ -714,9 +972,24 @@ export default function DeliveriesPage() {
                   <Input
                     placeholder="e.g. Major R. K. Sharma (Store Officer)"
                     value={updateForm.received_by}
+                    required={updateForm.status === 'handover_completed'}
                     onChange={(e) => setUpdateForm({ ...updateForm, received_by: e.target.value })}
                   />
                 </div>
+
+                {updateForm.status === 'handover_completed' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-[#14213D] mb-1">
+                      Signed Handover Certificate (link or reference no.) *
+                    </label>
+                    <Input
+                      placeholder="e.g. HOC/2026/114 or a document link"
+                      value={updateForm.document_url}
+                      required
+                      onChange={(e) => setUpdateForm({ ...updateForm, document_url: e.target.value })}
+                    />
+                  </div>
+                )}
 
                 {['installed', 'handover_completed'].includes(updateForm.status) && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -726,6 +999,7 @@ export default function DeliveriesPage() {
                       </label>
                       <Input
                         type="date"
+                        max={istToday()}
                         value={updateForm.installation_date}
                         onChange={(e) => setUpdateForm({ ...updateForm, installation_date: e.target.value })}
                       />

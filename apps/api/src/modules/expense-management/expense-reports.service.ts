@@ -8,11 +8,13 @@ import { sql } from 'kysely';
 import ExcelJS from 'exceljs';
 import type { Writable } from 'stream';
 import {
+  EXPENSE_STAGE_BUCKETS,
   EXPENSE_STATUS_LABELS,
   EXPENSE_TALLY_EXPORT_COLUMNS,
   formatExpenseDate,
   type AuthUser,
   type ExpenseClaimStatus,
+  type ExpenseStageBucket,
 } from '@arihant/shared';
 import { ExpenseClaimsService, money } from './expense-claims.service.js';
 import {
@@ -165,8 +167,17 @@ export class ExpenseReportsService {
       pending_amount: Number(r?.pending || 0),
     });
 
+    // KPI buckets for the totals row: every non-draft status falls in exactly one, so
+    // Stage 1 + Clarification + Stage 2 + Settled + Rejected/withdrawn = total claimed, always.
+    const bucketKeys = (Object.keys(EXPENSE_STAGE_BUCKETS) as ExpenseStageBucket[]).filter((b) => b !== 'draft');
+    const bucketAgg = bucketKeys.flatMap((b) => [
+      sql<number>`(count(distinct c.id) filter (where c.status in (${sql.join(EXPENSE_STAGE_BUCKETS[b])})))::int`.as(`${b}_claims`),
+      sql<string>`coalesce(sum(i.amount) filter (where c.status in (${sql.join(EXPENSE_STAGE_BUCKETS[b])})), 0)`.as(`${b}_amount`),
+    ]);
+    const paidAgg = sql<string>`coalesce(sum(i.approved_amount) filter (where c.status = 'processed'), 0)`.as('paid');
+
     const [totals, byCategory, byEmployee, byRegion, byStatus, byMonth] = await Promise.all([
-      this.baseItems(f, user).select(agg).executeTakeFirst(),
+      this.baseItems(f, user).select([...agg, ...bucketAgg, paidAgg]).executeTakeFirst(),
       this.baseItems(f, user).select(['i.category_name as key', ...agg]).groupBy('i.category_name').orderBy('claimed', 'desc').execute(),
       this.baseItems(f, user).select(['emp.full_name as key', 'emp.id as id', ...agg]).groupBy(['emp.id', 'emp.full_name']).orderBy('claimed', 'desc').limit(25).execute(),
       this.baseItems(f, user)
@@ -184,8 +195,15 @@ export class ExpenseReportsService {
     ]);
     const group = (rows: any[], label?: (k: string) => string) =>
       rows.map((r) => ({ key: r.key, id: r.id, label: label ? label(r.key) : r.key, ...num(r) }));
+    const t = (totals || {}) as Record<string, unknown>;
     return {
-      totals: num(totals),
+      totals: {
+        ...num(totals),
+        /** Approved amount on processed (paid) claims. */
+        paid_amount: Number(t.paid || 0),
+        /** Claimed amount and distinct claims per stage; the amounts add up to total_claimed. */
+        buckets: Object.fromEntries(bucketKeys.map((b) => [b, { claims: Number(t[`${b}_claims`] || 0), amount: Number(t[`${b}_amount`] || 0) }])),
+      },
       by_category: group(byCategory),
       by_employee: group(byEmployee),
       by_region: group(byRegion),

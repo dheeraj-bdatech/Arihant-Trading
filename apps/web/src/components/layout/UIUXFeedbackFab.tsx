@@ -262,7 +262,7 @@ export const UIUXFeedbackFab: React.FC = () => {
               </button>
               <button
                 onClick={() => setIsOpen(false)}
-                className="p-1 rounded-[6px] hover:bg-slate-100 text-[#4A5568] hover:text-[#14213D] transition-colors"
+                className="p-1 rounded-[6px] hover:bg-[#ECE9E2] text-[#4A5568] hover:text-[#14213D] transition-colors"
                 aria-label="Close"
               >
                 <X className="w-4 h-4" />
@@ -274,7 +274,7 @@ export const UIUXFeedbackFab: React.FC = () => {
           <div className="mt-3 overflow-y-auto pr-1 flex-1 space-y-3">
             {submitted ? (
               <div className="py-10 text-center flex flex-col items-center justify-center gap-2">
-                <CheckCircle2 className="w-10 h-10 text-emerald-600 animate-in zoom-in-75 duration-200" />
+                <CheckCircle2 className="w-10 h-10 text-[#0F5E63] animate-in zoom-in-75 duration-200" />
                 <h4 className="font-serif font-bold text-sm text-[#14213D]">Feedback Recorded!</h4>
                 <p className="text-[11px] text-[#4A5568] max-w-[260px]">
                   Thank you for helping optimize field ergonomics for Arihant BOS.
@@ -311,9 +311,9 @@ export const UIUXFeedbackFab: React.FC = () => {
                     >
                       <div className="flex items-center justify-between text-[11px]">
                         <span className="font-bold text-[#0F5E63] font-mono">{item.moduleId}</span>
-                        <div className="flex items-center gap-1 text-amber-500">
+                        <div className="flex items-center gap-1 text-[#A15C07]">
                           {Array.from({ length: item.rating }).map((_, i) => (
-                            <Star key={i} className="w-3 h-3 fill-amber-500" />
+                            <Star key={i} className="w-3 h-3 fill-[#A15C07]" />
                           ))}
                         </div>
                       </div>
@@ -340,7 +340,7 @@ export const UIUXFeedbackFab: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleDeleteHistory(item.id)}
-                          className="text-red-600 hover:text-red-700 p-0.5"
+                          className="text-[#881337] hover:text-[#700F2D] p-0.5"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
@@ -388,8 +388,8 @@ export const UIUXFeedbackFab: React.FC = () => {
                         <Star
                           className={`w-5 h-5 ${
                             star <= (hoverRating || rating)
-                              ? 'text-amber-500 fill-amber-500'
-                              : 'text-gray-300'
+                              ? 'text-[#A15C07] fill-[#A15C07]'
+                              : 'text-[#C9C4B8]'
                           }`}
                         />
                       </button>
@@ -512,7 +512,7 @@ export const UIUXFeedbackFab: React.FC = () => {
           <div className="w-7 h-7 rounded-full bg-[#0F5E63] text-white flex items-center justify-center font-bold text-xs shadow-xs group-hover:scale-105 transition-transform">
             <MessageSquarePlus className="w-3.5 h-3.5" />
           </div>
-          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
+          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#9A3412] ring-2 ring-white" />
         </div>
 
         <div className="flex flex-col min-w-0 pr-1">

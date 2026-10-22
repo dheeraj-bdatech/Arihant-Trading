@@ -78,7 +78,7 @@ export function adjustmentChip(row: Pick<OccurrencePreviewRow, 'adjustment' | 'h
 
 /** Compact list of upcoming occurrences (date → final deadline, with adjustment chips). */
 export const OccurrenceList: React.FC<{ rows: OccurrencePreviewRow[]; emptyText?: string }> = ({ rows, emptyText = 'No upcoming occurrences — check the end date or the number of occurrences.' }) => {
-  if (!rows.length) return <p className="text-xs text-[#8A8578] px-1 py-2">{emptyText}</p>;
+  if (!rows.length) return <p className="text-xs text-[#6B7280] px-1 py-2">{emptyText}</p>;
   return (
     <ol className="divide-y divide-[#ECE9E2] rounded-[10px] border border-[#ECE9E2] bg-white">
       {rows.map((r, i) => {
@@ -88,7 +88,7 @@ export const OccurrenceList: React.FC<{ rows: OccurrencePreviewRow[]; emptyText?
         return (
           <li key={`${r.occurrence_date}-${i}`} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 px-3 py-2">
             <div className="min-w-0 space-y-0.5">
-              <div className={`font-mono text-xs tabular-nums ${skipped ? 'text-[#8A8578] line-through' : 'text-[#14213D] font-semibold'}`}>{dayLabel(r.work_date || r.occurrence_date)}</div>
+              <div className={`font-mono text-xs tabular-nums ${skipped ? 'text-[#6B7280] line-through' : 'text-[#14213D] font-semibold'}`}>{dayLabel(r.work_date || r.occurrence_date)}</div>
               {moved && <div className="text-[11px] text-[#4A5568]">Scheduled {dayLabel(r.occurrence_date)}</div>}
               {chip && (
                 <Badge variant={chip.variant} size="sm" className="whitespace-normal">
@@ -103,7 +103,7 @@ export const OccurrenceList: React.FC<{ rows: OccurrencePreviewRow[]; emptyText?
                   <div className="font-mono text-xs tabular-nums text-[#14213D]">{formatTaskDateTime(r.deadline)}</div>
                 </>
               ) : (
-                <span className="text-[11px] text-[#8A8578]">Not generated</span>
+                <span className="text-[11px] text-[#6B7280]">Not generated</span>
               )}
             </div>
           </li>
@@ -1272,7 +1272,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                     {previewLoading && <Spinner size="sm" />}
                   </div>
                   {!previewBody ? (
-                    <p className="text-xs text-[#8A8578]">Fix the schedule above to see the upcoming dates.</p>
+                    <p className="text-xs text-[#6B7280]">Fix the schedule above to see the upcoming dates.</p>
                   ) : Object.keys(previewError).length ? (
                     <ul className="space-y-0.5">
                       {Object.entries(previewError).map(([k, v]) => (
@@ -1286,7 +1286,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                       <OccurrenceList rows={preview} />
                     </div>
                   ) : (
-                    <p className="text-xs text-[#8A8578]">Calculating…</p>
+                    <p className="text-xs text-[#6B7280]">Calculating…</p>
                   )}
                   {count > 1 && <p className="text-[11px] text-[#4A5568]">Holidays and leave can differ per person — each series follows its own assignee’s calendar.</p>}
                 </div>
@@ -1402,7 +1402,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                   <Button type="button" size="sm" variant="secondary" className="h-10 sm:hidden" leftIcon={<Camera className="h-4 w-4" />} onClick={() => cameraRef.current?.click()} disabled={disabled || files.length >= MAX_FILES}>
                     Take photo
                   </Button>
-                  <span className="hidden sm:inline text-[11px] text-[#8A8578]">or drop files here</span>
+                  <span className="hidden sm:inline text-[11px] text-[#6B7280]">or drop files here</span>
                   {files.length > 0 && <span className="ml-auto text-[11px] font-mono text-[#4A5568]">{files.length}/{MAX_FILES}</span>}
                 </div>
                 {files.length > 0 && (
@@ -1411,13 +1411,13 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                       <li key={`${f.name}-${i}`} className="flex items-center gap-2 px-3 py-2">
                         <Paperclip className="h-3.5 w-3.5 shrink-0 text-[#4A5568]" />
                         <span className="min-w-0 flex-1 truncate text-xs text-[#14213D]">{f.name}</span>
-                        <span className="text-[11px] font-mono text-[#8A8578]">{fileSize(f.size)}</span>
+                        <span className="text-[11px] font-mono text-[#6B7280]">{fileSize(f.size)}</span>
                         <button
                           type="button"
                           aria-label={`Remove ${f.name}`}
                           disabled={disabled}
                           onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                          className="-my-1 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-1"
+                          className="-my-1 p-2 text-[#6B7280] hover:text-[#881337] sm:my-0 sm:p-1"
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>

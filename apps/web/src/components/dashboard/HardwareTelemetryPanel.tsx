@@ -243,7 +243,7 @@ export function HardwareTelemetryPanel({ product, className = '' }: HardwareTele
               {metrics.metric1.title}
             </span>
           </div>
-          <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
             {metrics.metric1.badge}
           </span>
         </div>
@@ -260,7 +260,7 @@ export function HardwareTelemetryPanel({ product, className = '' }: HardwareTele
         {/* Progress Bar */}
         <div className="w-full h-1.5 rounded-full bg-[#ECE9E2] overflow-hidden">
           <div 
-            className="h-full bg-emerald-600 rounded-full transition-all duration-700"
+            className="h-full bg-[#0F5E63] rounded-full transition-all duration-700"
             style={{ width: `${metrics.metric1.progress}%` }}
           />
         </div>

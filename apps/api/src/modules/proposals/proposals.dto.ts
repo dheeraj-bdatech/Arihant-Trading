@@ -4,7 +4,9 @@ import {
   IsOptional,
   IsDateString,
   IsInt,
+  IsNumber,
   Min,
+  Max,
   IsIn,
   Matches,
   IsBoolean,
@@ -16,6 +18,65 @@ import { Type, Transform } from 'class-transformer';
 
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
+/** Form numbers: '' clears the value (null), '1,25,000' / '125000' become 125000; anything else is left to the validator. */
+const toOptionalNumber = ({ value }: { value: unknown }) => {
+  if (value === undefined || value === null) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim().replace(/,/g, '');
+    if (trimmed === '') return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : value;
+  }
+  return value;
+};
+/** Optional text / date fields: '' clears the value (null). */
+const emptyToNull = ({ value }: { value: unknown }) =>
+  typeof value === 'string' && value.trim() === '' ? null : value;
+
+/**
+ * Commercial terms of a price quote (DEF-029). BOS records the quote prepared offline — it does not generate pricing.
+ * A quoted value above zero is required before the proposal can go to review or be approved.
+ */
+export class ProposalCommercialTermsDto {
+  @Transform(toOptionalNumber)
+  @IsNumber({ maxDecimalPlaces: 2 }, { message: 'Quoted value must be an amount in ₹ (up to 2 decimals)' })
+  @Min(0, { message: 'Quoted value cannot be negative' })
+  @Max(999999999999.99, { message: 'Quoted value is too large' })
+  @IsOptional()
+  quoted_value?: number | null;
+
+  @Transform(toOptionalNumber)
+  @IsInt({ message: 'Quantity must be a whole number' })
+  @Min(1, { message: 'Quantity must be at least 1' })
+  @Max(1000000, { message: 'Quantity is too large' })
+  @IsOptional()
+  quantity?: number | null;
+
+  @Transform(toOptionalNumber)
+  @IsNumber({ maxDecimalPlaces: 2 }, { message: 'Margin must be a percentage (up to 2 decimals)' })
+  @Min(-100, { message: 'Margin cannot be below -100%' })
+  @Max(100, { message: 'Margin cannot exceed 100%' })
+  @IsOptional()
+  margin_percent?: number | null;
+
+  @Transform(emptyToNull)
+  @IsDateString({}, { message: 'Quote validity date must be a valid YYYY-MM-DD date' })
+  @IsOptional()
+  validity_date?: string | null;
+
+  @Transform(emptyToNull)
+  @IsString()
+  @MaxLength(500, { message: 'Payment terms cannot exceed 500 characters' })
+  @IsOptional()
+  payment_terms?: string | null;
+
+  @Transform(emptyToNull)
+  @IsString()
+  @MaxLength(500, { message: 'Delivery terms cannot exceed 500 characters' })
+  @IsOptional()
+  delivery_terms?: string | null;
+}
+
 export class ProposalProductItemDto {
   @Matches(UUID_PATTERN, { message: 'Product ID must be a valid UUID' })
   @IsNotEmpty({ message: 'Product ID is required' })
@@ -26,7 +87,7 @@ export class ProposalProductItemDto {
   is_primary?: boolean;
 }
 
-export class CreateProposalDto {
+export class CreateProposalDto extends ProposalCommercialTermsDto {
   @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @Matches(UUID_PATTERN, { message: 'Customer/Organisation ID must be a valid UUID' })
   @IsOptional()
@@ -107,6 +168,7 @@ export class CreateProposalDto {
   @IsOptional()
   sent_date?: string;
 
+  /** Ignored: a new proposal always starts at v1.0 (the version is maintained by the server, DEF-080). */
   @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
   @IsString()
   @IsOptional()
@@ -154,7 +216,7 @@ export class CreateProposalDto {
   duplicate_override_reason?: string;
 }
 
-export class UpdateProposalDto {
+export class UpdateProposalDto extends ProposalCommercialTermsDto {
   @Matches(UUID_PATTERN, { message: 'Customer/Organisation ID must be a valid UUID' })
   @IsOptional()
   customer_id?: string;
@@ -209,6 +271,10 @@ export class UpdateProposalDto {
   @IsOptional()
   reference?: string;
 
+  /**
+   * Ignored: the version is not free text. Every content edit bumps the minor version (v1.0 → v1.1 …) and a
+   * customer revision starts the next major version (v2.0) — DEF-080.
+   */
   @IsString()
   @IsOptional()
   version?: string;
@@ -216,6 +282,12 @@ export class UpdateProposalDto {
   @IsString()
   @IsOptional()
   email_reference?: string;
+
+  /** Source lead / opportunity of the same customer (DEF-081). '' unlinks it. */
+  @Transform(emptyToNull)
+  @Matches(UUID_PATTERN, { message: 'Lead ID must be a valid UUID' })
+  @IsOptional()
+  lead_id?: string | null;
 
   @IsString()
   @IsOptional()
@@ -543,6 +615,11 @@ export class ChangeProposalStatusDto {
   @IsString()
   @IsOptional()
   converted_reference?: string;
+
+  /** Email / dispatch reference the quote went out under (required by Mark Sent). */
+  @IsString()
+  @IsOptional()
+  reference?: string;
 
   @IsString()
   @IsOptional()

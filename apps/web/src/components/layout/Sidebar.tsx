@@ -29,6 +29,7 @@ import {
   MessageSquarePlus,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { api } from '@/lib/api';
 import { useSidebar } from '@/lib/sidebar-context';
 import { ROLE_PROFILES, type UserRole, type BosModuleKey } from '@arihant/shared';
 import { useBadgeCounts, type BadgeCounts } from '@/app/(app)/expenses/_lib/expense-lib';
@@ -488,7 +489,8 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
           items: [
             {
               label: 'Expense Endorsements',
-              href: '/expenses',
+              // Stage-1 endorsement is the RM's job here; their own claims are one click away in the module's View menu.
+              href: '/expenses/approvals',
               icon: Receipt,
               moduleKey: 'expenses',
               badge: 'Stage 1 RM',
@@ -555,7 +557,7 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               href: '/tenders',
               icon: FileText,
               moduleKey: 'tenders',
-              badge: '30 Live',
+              badge: 'Live',
               badgeVariant: 'urgent',
             },
             {
@@ -677,7 +679,7 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               href: '/tenders',
               icon: FileText,
               moduleKey: 'tenders',
-              badge: '30 Live',
+              badge: 'Live',
               badgeVariant: 'urgent',
             },
             {
@@ -795,7 +797,9 @@ function withExpenseItems(groups: NavGroup[], role: UserRole, counts: BadgeCount
     items: g.items.map((item) =>
       item.href === '/expenses'
         ? { ...item, label: 'Expenses', badge: waiting > 0 ? String(waiting) : item.badge, badgeVariant: waiting > 0 ? 'urgent' : item.badgeVariant }
-        : item,
+        : item.href === '/expenses/approvals'
+          ? { ...item, badge: waiting > 0 ? String(waiting) : item.badge, badgeVariant: waiting > 0 ? 'urgent' : item.badgeVariant }
+          : item,
     ),
   }));
 }
@@ -816,6 +820,48 @@ function withTaskItems(groups: NavGroup[], s: TaskSummary | null): NavGroup[] {
   }));
 }
 
+interface NavCounts {
+  tendersLive: number;
+  tendersClosing7d: number;
+}
+
+/**
+ * Tender badges show the live figures from GET /dashboard/nav-counts (the dashboards' own definitions, in the
+ * user's scope) instead of fixed text, so the sidebar never disagrees with the dashboard or the Tenders page.
+ */
+function withTenderItems(groups: NavGroup[], c: NavCounts | null): NavGroup[] {
+  if (!c) return groups;
+  return groups.map((g) => ({
+    ...g,
+    items: g.items.map((item) => {
+      if (item.href !== '/tenders' || !item.badge) return item;
+      if (/live/i.test(item.badge)) return { ...item, badge: `${c.tendersLive} Live` };
+      if (/≤\s*7d|closing/i.test(item.badge)) return { ...item, badge: `${c.tendersClosing7d} ≤7d` };
+      return item;
+    }),
+  }));
+}
+
+function useNavCounts(enabled: boolean): NavCounts | null {
+  const [counts, setCounts] = useState<NavCounts | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    const load = () =>
+      api
+        .get<NavCounts>('/dashboard/nav-counts')
+        .then((r) => alive && setCounts(r))
+        .catch(() => undefined);
+    load();
+    const t = window.setInterval(load, 5 * 60 * 1000);
+    return () => {
+      alive = false;
+      window.clearInterval(t);
+    };
+  }, [enabled]);
+  return counts;
+}
+
 function toSentenceCase(str: string): string {
   if (!str) return '';
   const lower = str.toLowerCase();
@@ -831,7 +877,11 @@ export const Sidebar: React.FC = () => {
   const roleProfile = ROLE_PROFILES[role];
   const expenseCounts = useBadgeCounts(Boolean(user));
   const { summary: taskSummary } = useTaskSummary(Boolean(user));
-  const navGroups = useMemo(() => withTaskItems(withExpenseItems(getRoleNavGroups(role), role, expenseCounts), taskSummary), [role, expenseCounts, taskSummary]);
+  const navCounts = useNavCounts(Boolean(user));
+  const navGroups = useMemo(
+    () => withTenderItems(withTaskItems(withExpenseItems(getRoleNavGroups(role), role, expenseCounts), taskSummary), navCounts),
+    [role, expenseCounts, taskSummary, navCounts],
+  );
 
   // RBAC clearance validation
   const isModuleAllowed = (moduleKey: BosModuleKey | 'reports') => {
@@ -973,7 +1023,7 @@ export const Sidebar: React.FC = () => {
       })}
 
       {visibleGroups.length === 0 && (
-        <p className="px-2 py-6 text-center text-xs text-[#8A8578]">No module matches “{query}”.</p>
+        <p className="px-2 py-6 text-center text-xs text-[#6B7280]">No module matches “{query}”.</p>
       )}
     </nav>
   );

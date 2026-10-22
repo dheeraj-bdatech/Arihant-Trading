@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search,
@@ -13,18 +13,26 @@ import {
   Shield,
   ArrowRight,
   X,
+  Building2,
+  Wrench,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { canOpen } from '@/lib/route-access';
+import { canRead } from '@/lib/module-access';
 import { ROLE_PROFILES, formatLakh, type BosModuleKey } from '@arihant/shared';
 
 interface SearchResult {
   id: string;
   title: string;
   subtitle: string;
-  category: 'Tender' | 'Lead' | 'Action' | 'Page';
+  category: 'Tender' | 'Lead' | 'Account' | 'Ticket' | 'Action' | 'Page';
   href: string;
 }
+
+/** Records fetched per source; enough that a buyer with several open bids is not cut short. */
+const PER_SOURCE = 8;
+const rowsOf = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []);
 
 export const CommandPalette: React.FC<{
   isOpen: boolean;
@@ -33,6 +41,8 @@ export const CommandPalette: React.FC<{
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [active, setActive] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
   const { user } = useAuth();
 
@@ -43,9 +53,8 @@ export const CommandPalette: React.FC<{
     if (!user) return false;
     const path = href.split('?')[0];
     if (path === '/dashboard' || path === '/feedback') return true;
-    if (path === '/reports') {
-      return ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'].includes(user.role);
-    }
+    if (!canOpen(user.role, href)) return false;
+    if (path === '/reports' || (path === '/tenders' && user.role === 'sales')) return true;
     const moduleKey = path.replace('/', '') as BosModuleKey;
     return roleProfile?.allowedModules?.includes(moduleKey);
   };
@@ -62,7 +71,7 @@ export const CommandPalette: React.FC<{
     {
       id: 'page-tenders',
       title: 'GeM Defence Tenders Pipeline',
-      subtitle: 'View all 30 live bids, PQ compliance, and closing countdowns',
+      subtitle: 'Live bids, PQ compliance, and closing countdowns',
       category: 'Page',
       href: '/tenders',
     },
@@ -178,30 +187,52 @@ export const CommandPalette: React.FC<{
     const timer = setTimeout(async () => {
       setIsLoading(true);
       try {
-        const promises = [];
-        if (isHrefAllowed('/tenders')) {
-          promises.push(api.get('/tenders', { search: query, limit: 4 }).catch(() => ({ data: [] })));
-        } else {
-          promises.push(Promise.resolve({ data: [] }));
-        }
+        const role = user?.role;
+        const none = Promise.resolve({ data: [] });
+        const q = query.trim();
+        // Each source only when the role may both read it and open the page the result links to.
+        const [tenderRes, leadRes, orgRes, ticketRes] = await Promise.all([
+          isHrefAllowed('/tenders') ? api.get('/tenders', { search: q, limit: PER_SOURCE }).catch(() => ({ data: [] })) : none,
+          isHrefAllowed('/leads') ? api.get('/leads', { search: q, limit: PER_SOURCE }).catch(() => ({ data: [] })) : none,
+          isHrefAllowed('/leads') && canRead(role, 'organisations')
+            ? api.get('/organisations', { search: q, limit: 5 }).catch(() => ({ data: [] }))
+            : none,
+          canOpen(role, '/service') && canRead(role, 'service')
+            ? api.get('/service/tickets', { search: q, limit: 5 }).catch(() => ({ data: [] }))
+            : none,
+        ]);
 
-        if (isHrefAllowed('/leads')) {
-          promises.push(api.get('/leads', { search: query, limit: 4 }).catch(() => ({ data: [] })));
-        } else {
-          promises.push(Promise.resolve({ data: [] }));
-        }
+        const tenderItems: SearchResult[] = rowsOf(tenderRes).map((t: any) => {
+          const buyer = t.organisation_name || t.organisation || t.buyer_name || t.department || 'Government buyer';
+          const what = t.title || t.requirement_text || (t.category ? `${String(t.category).replace(/_/g, ' ').toUpperCase()} tender` : '');
+          return {
+            id: `tender-${t.id}`,
+            title: t.tender_no || t.tender_number || 'Tender',
+            subtitle: [buyer, what].filter(Boolean).join(' · ').slice(0, 90),
+            category: 'Tender' as const,
+            href: `/tenders?highlight=${t.id}`,
+          };
+        });
 
-        const [tenderRes, leadRes] = await Promise.all(promises);
-
-        const tenderItems: SearchResult[] = (tenderRes.data || []).map((t: any) => ({
-          id: `tender-${t.id}`,
-          title: t.tender_no,
-          subtitle: `${t.department || 'Govt'} · ${t.title || t.requirement_text || 'Defence Equipment'}`.slice(0, 70),
-          category: 'Tender' as const,
-          href: `/tenders?highlight=${t.id}`,
+        const orgItems: SearchResult[] = rowsOf(orgRes).map((o: any) => ({
+          id: `org-${o.id}`,
+          title: o.name || 'Customer account',
+          subtitle: ['Customer 360', o.sector, [o.city, o.state].filter(Boolean).join(', ')].filter(Boolean).join(' · '),
+          category: 'Account' as const,
+          href: `/leads?customer=${o.id}`,
         }));
 
-        const leadItems: SearchResult[] = (leadRes.data || []).map((l: any) => {
+        const ticketItems: SearchResult[] = rowsOf(ticketRes).map((t: any) => ({
+          id: `ticket-${t.id}`,
+          title: t.ticket_no || t.ticket_number || 'Service ticket',
+          subtitle: [t.organisation_name || t.customer_name || t.claimed_organisation_name, String(t.status || '').replace(/_/g, ' ')]
+            .filter(Boolean)
+            .join(' · '),
+          category: 'Ticket' as const,
+          href: `/service?open=${t.id}`,
+        }));
+
+        const leadItems: SearchResult[] = rowsOf(leadRes).map((l: any) => {
           const val = l.value_lakh ?? l.estimated_value_lakh;
           return {
             id: `lead-${l.id}`,
@@ -218,7 +249,7 @@ export const CommandPalette: React.FC<{
             item.subtitle.toLowerCase().includes(query.toLowerCase()),
         );
 
-        setResults([...tenderItems, ...leadItems, ...filteredStatic]);
+        setResults([...tenderItems, ...orgItems, ...leadItems, ...ticketItems, ...filteredStatic]);
       } catch {
         setResults(allowedStaticItems);
       } finally {
@@ -228,6 +259,44 @@ export const CommandPalette: React.FC<{
 
     return () => clearTimeout(timer);
   }, [query, user?.role]);
+
+  // New result set → highlight the top result, so Enter opens it.
+  useEffect(() => setActive(0), [results]);
+  useEffect(() => {
+    if (!isOpen) {
+      setQuery('');
+      setActive(0);
+    }
+  }, [isOpen]);
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [active]);
+
+  const openResult = (item: SearchResult | undefined) => {
+    if (!item) return;
+    router.push(item.href);
+    onClose();
+  };
+
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isLoading && e.key === 'Enter') return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive((i) => (results.length ? (i + 1) % results.length : 0));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive((i) => (results.length ? (i - 1 + results.length) % results.length : 0));
+    } else if (e.key === 'Home' && results.length) {
+      e.preventDefault();
+      setActive(0);
+    } else if (e.key === 'End' && results.length) {
+      e.preventDefault();
+      setActive(results.length - 1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      openResult(results[active]);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -244,6 +313,12 @@ export const CommandPalette: React.FC<{
           <Search className="h-5 w-5 text-[#0F5E63] mr-3 shrink-0" />
           <input
             type="text"
+            role="combobox"
+            aria-expanded
+            aria-controls="command-palette-results"
+            aria-activedescendant={results[active] ? `cmd-opt-${results[active].id}` : undefined}
+            aria-label="Search records and pages"
+            onKeyDown={onInputKeyDown}
             autoFocus
             placeholder="Type a command or search tenders, leads, visits..."
             value={query}
@@ -264,7 +339,7 @@ export const CommandPalette: React.FC<{
         </div>
 
         {/* Results list */}
-        <div className="max-h-80 overflow-y-auto p-2 divide-y divide-[#ECE9E2]">
+        <div ref={listRef} id="command-palette-results" role="listbox" className="max-h-80 overflow-y-auto p-2 divide-y divide-[#ECE9E2]">
           {isLoading && (
             <div className="p-4 text-center text-xs text-[#4A5568]">
               Searching database...
@@ -278,19 +353,26 @@ export const CommandPalette: React.FC<{
           )}
 
           {!isLoading &&
-            results.map((item) => (
+            results.map((item, index) => (
               <div
                 key={item.id}
-                onClick={() => {
-                  router.push(item.href);
-                  onClose();
-                }}
-                className="flex items-center justify-between p-3 rounded-xl hover:bg-[#FBFAF7] cursor-pointer transition-colors group"
+                id={`cmd-opt-${item.id}`}
+                role="option"
+                aria-selected={index === active}
+                data-index={index}
+                onMouseMove={() => index !== active && setActive(index)}
+                onClick={() => openResult(item)}
+                className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-colors group ${
+                  index === active ? 'bg-[#E3EFEE] ring-1 ring-[#0F5E63]/30' : 'hover:bg-[#FBFAF7]'
+                }`}
               >
                 <div className="flex items-center space-x-3 overflow-hidden">
                   <div className="h-8 w-8 rounded-lg bg-[#E3EFEE] flex items-center justify-center text-[#0F5E63] group-hover:bg-[#0F5E63] group-hover:text-white transition-colors shrink-0 border border-[#DCD8CE]">
                     {item.category === 'Tender' && <FileText className="h-4 w-4" />}
                     {item.category === 'Lead' && <Target className="h-4 w-4" />}
+                    {item.category === 'Account' && <Building2 className="h-4 w-4" />}
+                    {item.category === 'Ticket' && <Wrench className="h-4 w-4" />}
+                    {item.category === 'Action' && <CheckSquare className="h-4 w-4" />}
                     {item.category === 'Page' && <ArrowRight className="h-4 w-4" />}
                   </div>
                   <div className="truncate">
@@ -307,6 +389,11 @@ export const CommandPalette: React.FC<{
                 </span>
               </div>
             ))}
+        </div>
+        <div className="hidden items-center gap-3 border-t border-[#ECE9E2] bg-[#FBFAF7] px-4 py-2 font-mono text-[10px] text-[#4A5568] sm:flex">
+          <span><kbd className="rounded border border-[#DCD8CE] bg-white px-1">↑</kbd> <kbd className="rounded border border-[#DCD8CE] bg-white px-1">↓</kbd> move</span>
+          <span><kbd className="rounded border border-[#DCD8CE] bg-white px-1">Enter</kbd> open</span>
+          <span><kbd className="rounded border border-[#DCD8CE] bg-white px-1">Esc</kbd> close</span>
         </div>
       </div>
     </div>

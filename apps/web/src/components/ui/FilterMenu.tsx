@@ -30,7 +30,9 @@ export const FilterMenu: React.FC<{
   neutralKeys?: string[];
   align?: 'left' | 'right';
   className?: string;
-}> = ({ label, icon, options, neutralKeys = ['all'], align = 'left', className }) => {
+  /** Phones: show only the icon and the active-choice chip (the label stays for screen readers). */
+  compactOnPhone?: boolean;
+}> = ({ label, icon, options, neutralKeys = ['all'], align = 'left', className, compactOnPhone }) => {
   const [open, setOpen] = useState(false);
   const [nudge, setNudge] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
@@ -43,7 +45,11 @@ export const FilterMenu: React.FC<{
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault(); // closes only this menu, not an enclosing Modal
+      setOpen(false);
+    };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
@@ -80,7 +86,7 @@ export const FilterMenu: React.FC<{
         className={twMerge('filter-menu-btn', (open || applied.length > 0) && 'filter-menu-btn--on')}
       >
         {icon && <span className="shrink-0 [&>svg]:h-3.5 [&>svg]:w-3.5">{icon}</span>}
-        <span>{label}</span>
+        <span className={compactOnPhone ? 'max-sm:sr-only' : undefined}>{label}</span>
         {applied.length === 1 ? (
           <span className="filter-menu-chip max-w-[130px] truncate">{applied[0].label}</span>
         ) : applied.length > 1 ? (

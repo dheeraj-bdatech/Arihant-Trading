@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card, Button, Badge, Input, Textarea, Modal, InfoCallout, Spinner } from '@/components/ui';
 import { CheckCircle2, XCircle, ShieldAlert, ArrowRight, RefreshCw, HelpCircle, UserX, UserCheck } from 'lucide-react';
-import { formatTaskDateTime } from '@arihant/shared';
+import { formatTaskDate, formatTaskDateTime } from '@arihant/shared';
 import { api } from '@/lib/api';
 import { istToday } from '@/lib/ist-date';
 
@@ -277,7 +277,7 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
               <span className="font-medium text-[#0F5E63]">
                 {delegatesList[0]?.delegatee_name || delegatesList[0]?.delegatee_id}
               </span>{' '}
-              until <span className="font-mono">{String(delegatesList[0]?.end_date || '').slice(0, 10)}</span>
+              until <span className="font-mono">{delegatesList[0]?.end_date ? formatTaskDate(delegatesList[0].end_date) : '—'}</span>
             </div>
           </div>
           <Badge variant="outline" size="sm">

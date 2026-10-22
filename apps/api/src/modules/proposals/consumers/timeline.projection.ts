@@ -9,7 +9,6 @@ import type { Database } from '@arihant/shared';
 export class ProposalTimelineProjection {
   private readonly logger = new Logger(ProposalTimelineProjection.name);
   private readonly handlerName = 'TimelineProjection';
-  private readonly proposalSequences = new Map<string, number>();
 
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
@@ -18,7 +17,7 @@ export class ProposalTimelineProjection {
 
   @OnEvent('proposal.*')
   async handleProposalEvent(envelope: DomainEventEnvelope) {
-    const { eventId, eventType, aggregateId, aggregateSequence, actorId, occurredAt, payload } = envelope;
+    const { eventId, eventType, aggregateId, actorId, occurredAt, payload } = envelope;
 
     if (!aggregateId) return;
 
@@ -28,16 +27,8 @@ export class ProposalTimelineProjection {
       return;
     }
 
-    // Sequence check (E52)
-    if (aggregateSequence) {
-      const lastSeq = this.proposalSequences.get(aggregateId) || 0;
-      if (aggregateSequence < lastSeq) {
-        this.logger.warn(`[${this.handlerName}] Ignoring out-of-order event ${eventId}`);
-        await this.outboxService.markEventProcessed(eventId, this.handlerName);
-        return;
-      }
-      this.proposalSequences.set(aggregateId, aggregateSequence);
-    }
+    // QA DEF-028: no in-memory sequence check — events after creation all default to aggregate_sequence 1, so the
+    // guard discarded them. Entries are idempotent per event and ordered by occurred_at.
 
     try {
       const { title, description, category } = this.formatTimelineEntry(eventType, payload);

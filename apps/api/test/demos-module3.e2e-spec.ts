@@ -4,6 +4,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { purgeTaskModule } from './helpers/reset-tasks';
+import { istDay } from './helpers/ist-date';
 
 describe('Module 3: Demo Management E2E Test Suite', () => {
   let app: INestApplication;
@@ -21,6 +22,7 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
   let testProductId: string;
   let testEquipId1: string;
   let testEquipId2: string;
+  let otherProductEquipId: string | undefined;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -93,6 +95,10 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
     expect(equip.body.length).toBeGreaterThanOrEqual(2);
     testEquipId1 = equip.body[0].id;
     testEquipId2 = equip.body[1].id;
+    // The Scenario 1 demo is for the product of the unit it reserves: a unit of another product needs a
+    // substitute reason (QA DEF-022).
+    testProductId = equip.body[0].product_id || testProductId;
+    otherProductEquipId = equip.body.find((e: any) => e.product_id && e.product_id !== testProductId)?.id;
   });
 
   afterAll(async () => {
@@ -105,8 +111,10 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
   describe('Scenario 1: Normal Demo Lifecycle', () => {
     let demoId: string;
     let demoNo: string;
-    const requestedDate = '2026-11-10';
-    const confirmedDate = '2026-11-12';
+    // The trial runs today (IST): its outcome may only be recorded on/after the demo day (QA DEF-024), and
+    // requested / confirmed dates may not be in the past (DEF-046).
+    const requestedDate = istDay(0);
+    const confirmedDate = istDay(0);
 
     it('Salesperson creates a demo request (§1)', async () => {
       const res = await request(app.getHttpServer())
@@ -194,6 +202,16 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
     });
 
     it('Coordinator reserves physical equipment unit (§9 & §10)', async () => {
+      if (otherProductEquipId) {
+        // a unit of a different product is refused unless a substitute reason is given
+        const wrong = await request(app.getHttpServer())
+          .post(`/api/demos/${demoId}/reserve`)
+          .set('Authorization', `Bearer ${demoTeamToken}`)
+          .send({ equipment_id: otherProductEquipId, reserved_from: confirmedDate, reserved_to: confirmedDate });
+        expect(wrong.status).toBe(400);
+        expect(wrong.body.code).toBe('PRODUCT_MISMATCH');
+      }
+
       const res = await request(app.getHttpServer())
         .post(`/api/demos/${demoId}/reserve`)
         .set('Authorization', `Bearer ${demoTeamToken}`)
@@ -529,7 +547,7 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrgId,
-          requested_date: '2026-12-25',
+          requested_date: istDay(0), // the trial day has come: outcomes are recorded on/after it
           location: 'Delhi',
           purpose: 'Failure analysis test demo',
         });
@@ -688,6 +706,23 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
     it('Unauthenticated requests are rejected with 401 Unauthorized', async () => {
       const res = await request(app.getHttpServer()).get('/api/demos');
       expect(res.status).toBe(401);
+    });
+  });
+  describe('Malformed ids', () => {
+    it('a non-UUID demo / reservation / equipment id is a clean 404, never a 500', async () => {
+      const auth = { Authorization: `Bearer ${demoTeamToken}` };
+      const api = () => request(app.getHttpServer());
+      const calls = [
+        () => api().post('/api/demos/undefined/reserve').set(auth).send({ equipment_id: testEquipId1 }),
+        () => api().get('/api/demos/not-a-uuid').set(auth),
+        () => api().post('/api/demos/123/outcome').set(auth).send({ result: 'success' }),
+        () => api().post('/api/demos/reservations/undefined/approve').set(auth).send({}),
+        () => api().get('/api/demos/equipment/undefined').set(auth),
+      ];
+      for (const call of calls) {
+        const res = await call();
+        expect(res.status).toBe(404);
+      }
     });
   });
 });

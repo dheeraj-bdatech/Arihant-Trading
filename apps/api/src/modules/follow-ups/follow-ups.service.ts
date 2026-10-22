@@ -1,5 +1,5 @@
-import { todayInKolkata } from '../../common/utils/ist-date.util.js';
-import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { Injectable, Inject, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
@@ -13,12 +13,49 @@ import type {
   CancelFollowUpDto,
 } from './follow-ups.dto.js';
 
+/** Follow-ups are booked for today or later in IST — never in the past (QA DEF-053). */
+function assertNotPast(date: string, label: string) {
+  const day = calendarDay(date);
+  if (day && day < todayInKolkata()) {
+    throw new BadRequestException(`${label} cannot be in the past — choose today or a later date.`);
+  }
+}
+
 @Injectable()
 export class FollowUpsService {
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly outboxService: OutboxService,
   ) {}
+
+  /** Loads a follow-up the user may act on: sales only their own, RMs their region or team, others any. */
+  private async getActionable(id: string, user: AuthUser) {
+    const existing = await this.db
+      .selectFrom('follow_ups')
+      .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'follow_ups.assigned_to', 'assignee.id')
+      .selectAll('follow_ups')
+      .select(['organisations.region_id as org_region_id', 'assignee.reporting_manager_id as assignee_manager_id'])
+      .where('follow_ups.id', '=', id)
+      .executeTakeFirst();
+
+    if (!existing) {
+      throw new NotFoundException(`Follow-up with id '${id}' not found`);
+    }
+    if (user.role === 'sales' && existing.assigned_to !== user.id) {
+      throw new ForbiddenException('You can update only your own follow-ups.');
+    }
+    if (
+      user.role === 'regional_manager' &&
+      user.region_id &&
+      existing.org_region_id !== user.region_id &&
+      existing.assigned_to !== user.id &&
+      existing.assignee_manager_id !== user.id
+    ) {
+      throw new ForbiddenException('This follow-up is outside your region.');
+    }
+    return existing;
+  }
 
   async findAll(
     query: {
@@ -39,15 +76,24 @@ export class FollowUpsService {
     let baseQuery = this.db
       .selectFrom('follow_ups')
       .innerJoin('organisations', 'follow_ups.organisation_id', 'organisations.id')
-      .leftJoin('contacts', 'follow_ups.contact_id', 'contacts.id')
       .leftJoin('leads', 'follow_ups.lead_id', 'leads.id')
+      // the follow-up's own contact, else the lead's primary contact (QA DEF-095: designation was blank)
+      .leftJoin('contacts', (join) =>
+        join.on(sql<boolean>`contacts.id = coalesce(follow_ups.contact_id, leads.primary_contact_id)`),
+      )
       .leftJoin('users as assignee', 'follow_ups.assigned_to', 'assignee.id')
       .leftJoin('users as completed_by_user', 'follow_ups.completed_by', 'completed_by_user.id');
 
     if (user.role === 'sales') {
       baseQuery = baseQuery.where('follow_ups.assigned_to', '=', user.id);
     } else if (user.role === 'regional_manager' && user.region_id) {
-      baseQuery = baseQuery.where('organisations.region_id', '=', user.region_id);
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          eb('organisations.region_id', '=', user.region_id),
+          eb('follow_ups.assigned_to', '=', user.id),
+          eb('assignee.reporting_manager_id', '=', user.id),
+        ]),
+      );
     }
 
     if (query.status) {
@@ -122,6 +168,7 @@ export class FollowUpsService {
         'contacts.email as contact_email',
         'leads.lead_status',
         'assignee.full_name as assigned_to_name',
+        'assignee.full_name as assigned_salesperson_name',
         'completed_by_user.full_name as completed_by_name',
       ])
       .orderBy('follow_ups.due_date', 'asc')
@@ -137,12 +184,19 @@ export class FollowUpsService {
     const today = todayInKolkata();
     let query = this.db
       .selectFrom('follow_ups')
-      .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id');
+      .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'follow_ups.assigned_to', 'assignee.id');
 
     if (user.role === 'sales') {
       query = query.where('follow_ups.assigned_to', '=', user.id);
     } else if (user.role === 'regional_manager' && user.region_id) {
-      query = query.where('organisations.region_id', '=', user.region_id);
+      query = query.where((eb) =>
+        eb.or([
+          eb('organisations.region_id', '=', user.region_id),
+          eb('follow_ups.assigned_to', '=', user.id),
+          eb('assignee.reporting_manager_id', '=', user.id),
+        ]),
+      );
     }
 
     const stats = await query
@@ -175,6 +229,10 @@ export class FollowUpsService {
   }
 
   async create(dto: CreateFollowUpDto, user: AuthUser) {
+    assertNotPast(dto.due_date, 'Follow-up date');
+    if (user.role === 'sales' && dto.assigned_to !== user.id) {
+      throw new ForbiddenException('Sales executives can schedule follow-ups only for themselves.');
+    }
     const result = await this.db.transaction().execute(async (trx) => {
       const followUp = await trx
         .insertInto('follow_ups')
@@ -226,19 +284,18 @@ export class FollowUpsService {
   }
 
   async complete(id: string, dto: CompleteFollowUpDto, user: AuthUser) {
-    const existing = await this.db
-      .selectFrom('follow_ups')
-      .selectAll()
-      .where('id', '=', id)
-      .executeTakeFirst();
-
-    if (!existing) {
-      throw new NotFoundException(`Follow-up with id '${id}' not found`);
-    }
+    const existing = await this.getActionable(id, user);
 
     if (existing.status === 'completed') {
       throw new BadRequestException('Follow-up is already marked as completed.');
     }
+    if (existing.status === 'cancelled') {
+      throw new BadRequestException('This follow-up was cancelled and cannot be completed.');
+    }
+    if (dto.next_followup_date) {
+      assertNotPast(dto.next_followup_date, 'Next follow-up date');
+    }
+    dto.outcome = dto.outcome.trim();
 
     const result = await this.db.transaction().execute(async (trx) => {
       // Mark completed
@@ -333,15 +390,12 @@ export class FollowUpsService {
   }
 
   async reschedule(id: string, dto: RescheduleFollowUpDto, user: AuthUser) {
-    const existing = await this.db
-      .selectFrom('follow_ups')
-      .selectAll()
-      .where('id', '=', id)
-      .executeTakeFirst();
+    const existing = await this.getActionable(id, user);
 
-    if (!existing) {
-      throw new NotFoundException(`Follow-up with id '${id}' not found`);
+    if (existing.status !== 'pending') {
+      throw new BadRequestException(`A ${existing.status} follow-up cannot be rescheduled.`);
     }
+    assertNotPast(dto.new_due_date, 'New due date');
 
     const updated = await this.db.transaction().execute(async (trx) => {
       const res = await trx
@@ -349,9 +403,10 @@ export class FollowUpsService {
         .set({
           due_date: dto.new_due_date,
           due_time: dto.new_due_time || null,
-          remarks: dto.reason
-            ? `${existing.remarks || ''}\nRescheduled to ${dto.new_due_date}${dto.new_due_time ? ` ${dto.new_due_time}` : ''}: ${dto.reason}`.trim()
-            : existing.remarks,
+          // Every reschedule is noted on the follow-up, with the reason when one is given
+          remarks: `${existing.remarks || ''}\nRescheduled to ${dto.new_due_date}${dto.new_due_time ? ` ${dto.new_due_time}` : ''}${
+            dto.reason?.trim() ? `: ${dto.reason.trim()}` : ''
+          }`.trim(),
           updated_at: new Date(),
         })
         .where('id', '=', id)
@@ -377,15 +432,7 @@ export class FollowUpsService {
   }
 
   async cancel(id: string, dto: CancelFollowUpDto, user: AuthUser) {
-    const existing = await this.db
-      .selectFrom('follow_ups')
-      .selectAll()
-      .where('id', '=', id)
-      .executeTakeFirst();
-
-    if (!existing) {
-      throw new NotFoundException(`Follow-up with id '${id}' not found`);
-    }
+    const existing = await this.getActionable(id, user);
 
     const updated = await this.db
       .updateTable('follow_ups')

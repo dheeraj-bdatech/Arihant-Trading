@@ -5,6 +5,7 @@ import { KYSELY_DB } from '../../../common/database/database.module.js';
 import { OutboxService, type DomainEventEnvelope } from '../../../common/outbox/outbox.service.js';
 import { EventsGateway } from '../../../common/realtime/events.gateway.js';
 import type { Database } from '@arihant/shared';
+import { proposalDisplayNo } from '../proposals.workflow.js';
 
 @Injectable()
 export class ProposalNotificationConsumer {
@@ -34,6 +35,15 @@ export class ProposalNotificationConsumer {
     }
 
     try {
+      // DEF-105: notifications show the number every screen uses (PROP-2026-1076), never the internal PRP- id.
+      const row = aggregateId
+        ? await this.db
+            .selectFrom('proposals')
+            .select(['proposal_number', 'proposal_no'])
+            .where('id', '=', aggregateId)
+            .executeTakeFirst()
+        : undefined;
+      const no = proposalDisplayNo(row) || payload?.proposalNo || '';
       const recipientUserIds = new Set<string>();
       let title = '';
       let body = '';
@@ -41,65 +51,65 @@ export class ProposalNotificationConsumer {
       switch (eventType) {
         case 'proposal.assigned':
           if (payload?.newResponsibleId) recipientUserIds.add(payload.newResponsibleId);
-          title = `Proposal Assigned to You: ${payload?.proposalNo || ''}`;
-          body = `You have been assigned responsibility for proposal ${payload?.proposalNo || ''}.`;
+          title = `Proposal Assigned to You: ${no}`;
+          body = `You have been assigned responsibility for proposal ${no}.`;
           break;
 
         case 'proposal.requested':
           if (payload?.responsiblePersonId && payload.responsiblePersonId !== envelope.actorId) {
             recipientUserIds.add(payload.responsiblePersonId);
-            title = `Proposal Assigned to You: ${payload?.proposalNo || ''}`;
-            body = `You have been assigned responsibility for proposal ${payload?.proposalNo || ''}.`;
+            title = `Proposal Assigned to You: ${no}`;
+            body = `You have been assigned responsibility for proposal ${no}.`;
           }
           break;
 
         case 'proposal.submitted_for_review':
         case 'proposal.review_requested': {
-          // Approvers: Management & Regional Managers
+          // Approvers: Management & Admin only — the only roles that may approve a proposal (Module 5 §3.1, DEF-073)
           const approvers = await this.db
             .selectFrom('users')
             .select('id')
-            .where('role', 'in', ['management', 'admin', 'regional_manager'])
+            .where('role', 'in', ['management', 'admin'])
             .where('is_active', '=', true)
             .execute();
           approvers.forEach((a) => recipientUserIds.add(a.id));
-          title = `Proposal Submitted for Review: ${payload?.proposalNo || ''}`;
-          body = `Proposal ${payload?.proposalNo || ''} is awaiting your approval.`;
+          title = `Proposal Submitted for Review: ${no}`;
+          body = `Proposal ${no} is awaiting your approval.`;
           break;
         }
 
         case 'proposal.approved':
           if (payload?.responsiblePersonId) recipientUserIds.add(payload.responsiblePersonId);
           if (payload?.requestedById) recipientUserIds.add(payload.requestedById);
-          title = `Proposal Approved: ${payload?.proposalNo || ''}`;
-          body = `Proposal ${payload?.proposalNo || ''} has been approved for customer dispatch.`;
+          title = `Proposal Approved: ${no}`;
+          body = `Proposal ${no} has been approved for customer dispatch.`;
           break;
 
         case 'proposal.changes_requested':
           if (payload?.responsiblePersonId) recipientUserIds.add(payload.responsiblePersonId);
           if (payload?.requestedById) recipientUserIds.add(payload.requestedById);
-          title = `Proposal Changes Requested: ${payload?.proposalNo || ''}`;
-          body = `Reviewer requested changes on proposal ${payload?.proposalNo || ''}: ${payload?.comment || ''}`;
+          title = `Proposal Changes Requested: ${no}`;
+          body = `Reviewer requested changes on proposal ${no}: ${payload?.comment || ''}`;
           break;
 
         case 'proposal.sent':
           if (payload?.requestedById) recipientUserIds.add(payload.requestedById);
           if (payload?.followUpOwnerId) recipientUserIds.add(payload.followUpOwnerId);
           title = 'Proposal Dispatched to Customer';
-          body = `Proposal ${payload?.proposalNo || ''} has been sent. Follow-up is now active.`;
+          body = `Proposal ${no} has been sent. Follow-up is now active.`;
           break;
 
         case 'proposal.follow_up_owner_changed':
           if (payload?.oldOwnerId) recipientUserIds.add(payload.oldOwnerId);
           if (payload?.newOwnerId) recipientUserIds.add(payload.newOwnerId);
           title = 'Follow-up Ownership Updated';
-          body = `Follow-up ownership for proposal ${payload?.proposalNo || ''} was transferred.`;
+          body = `Follow-up ownership for proposal ${no} was transferred.`;
           break;
 
         case 'proposal.revision_requested':
           if (payload?.responsiblePersonId) recipientUserIds.add(payload.responsiblePersonId);
           title = 'Revision Requested by Customer';
-          body = `Customer requested a revision on proposal ${payload?.proposalNo || ''}. Follow-up schedule suspended.`;
+          body = `Customer requested a revision on proposal ${no}. Follow-up schedule suspended.`;
           break;
 
         case 'proposal.converted':
@@ -107,20 +117,23 @@ export class ProposalNotificationConsumer {
         case 'proposal.closed':
           if (payload?.requestedById) recipientUserIds.add(payload.requestedById);
           if (payload?.responsiblePersonId) recipientUserIds.add(payload.responsiblePersonId);
-          title = `Proposal ${eventType.split('.')[1].toUpperCase()}`;
-          body = `Proposal ${payload?.proposalNo || ''} was concluded with status ${eventType.split('.')[1].toUpperCase()}.`;
+          {
+            const outcome = { 'proposal.converted': 'Converted', 'proposal.lost': 'Lost', 'proposal.closed': 'Closed' }[eventType] || 'Concluded';
+            title = `Proposal ${outcome}: ${no}`;
+            body = `Proposal ${no} was concluded as ${outcome}. Its open follow-up tasks have been closed.`;
+          }
           break;
 
         case 'proposal.followup_escalated':
           if (payload?.managerId) recipientUserIds.add(payload.managerId);
           title = 'ESCALATION: Proposal Follow-up Overdue';
-          body = `Proposal ${payload?.proposalNo || ''} follow-up is severely overdue and requires intervention.`;
+          body = `Proposal ${no} follow-up is severely overdue and requires intervention.`;
           break;
 
         case 'proposal.required_date_missed':
           if (payload?.responsibleId) recipientUserIds.add(payload.responsibleId);
           title = 'Required Date Missed';
-          body = `Proposal ${payload?.proposalNo || ''} has exceeded its customer required deadline without dispatch.`;
+          body = `Proposal ${no} has exceeded its customer required deadline without dispatch.`;
           break;
 
         default:

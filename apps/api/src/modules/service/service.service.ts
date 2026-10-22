@@ -17,6 +17,7 @@ import {
   SERVICE_SLA_PAUSE_STATUSES,
   SERVICE_DONE_STATUSES,
   SERVICE_TRANSITIONS,
+  SERVICE_STATUS_LABELS,
   PORTAL_PROBLEM_CATEGORIES,
   allowedNextServiceStatuses,
   canTransitionService,
@@ -69,6 +70,22 @@ const PART_TRANSITIONS: Record<string, string[]> = {
   Returned: [],
 };
 const TICKET_NO_FORMAT = /^[A-Za-z0-9][A-Za-z0-9\-_/]{2,39}$/;
+/** System ticket numbers are TCK-YYYY-NNNNNN; a hand-typed reference may not imitate that series. */
+const SYSTEM_TICKET_PREFIX = /^TCK-/i;
+/** Holding organisation for complaints from a customer not yet in the master (same record the portal uses). */
+const UNVERIFIED_ORG_ID = '00000000-0000-4000-8000-0000000000a1';
+
+export type TicketListFilters = {
+  search?: string;
+  status?: string;
+  priority?: string;
+  assigned_to?: string;
+  complaint_source?: string;
+  overdue?: string | boolean;
+  unassigned?: string | boolean;
+  repeat?: string | boolean;
+  unverified?: string | boolean;
+};
 
 export interface CoreCreateInput {
   organisationId: string;
@@ -148,11 +165,14 @@ export class ServiceService {
     if (user.role === 'management' || user.role === 'admin' || user.role === 'tender_team') return null;
 
     if (user.role === 'service_team') {
+      // Own tickets, the unassigned intake queue, and — for a chief service engineer — tickets of the
+      // engineers who report to them (so tickets they dispatched stay on their board).
       return (eb: any) =>
         eb.or([
           eb('service_tickets.assigned_to', '=', user.id),
           eb('service_tickets.assigned_to', 'is', null),
           sql<boolean>`service_tickets.additional_engineer_ids @> ${JSON.stringify([user.id])}::jsonb`,
+          sql<boolean>`service_tickets.assigned_to in (select id from users where reporting_manager_id = ${user.id})`,
         ]);
     }
 
@@ -171,6 +191,55 @@ export class ServiceService {
       if (parts.length === 0) parts.push(sql<boolean>`false`);
       return eb.or(parts);
     };
+  }
+
+  /**
+   * Engineers this user may dispatch. Managers: every active service engineer (regional managers: their
+   * zone). A chief service engineer (a service_team user others report to): themselves, their direct reports
+   * and the other engineers of their depot zone. A field engineer: only themselves.
+   */
+  async assignableEngineers(user: AuthUser, db: Db = this.db): Promise<{ id: string; full_name: string; email: string; region_id: string | null; zone_id: string | null }[]> {
+    let q = db
+      .selectFrom('users')
+      .select(['id', 'full_name', 'email', 'region_id', 'zone_id'])
+      .where('role', '=', 'service_team')
+      .where('is_active', '=', true);
+    if (user.role === 'service_team') {
+      const reports = await db
+        .selectFrom('users')
+        .select(sql<number>`count(id)::int`.as('n'))
+        .where('reporting_manager_id', '=', user.id)
+        .where('is_active', '=', true)
+        .executeTakeFirst();
+      const isChief = (reports?.n || 0) > 0;
+      q = q.where((eb) => {
+        const parts: any[] = [eb('id', '=', user.id)];
+        if (isChief) {
+          parts.push(eb('reporting_manager_id', '=', user.id));
+          if (user.zone_id) parts.push(eb('zone_id', '=', user.zone_id));
+          else if (user.region_id) parts.push(eb('region_id', '=', user.region_id));
+        }
+        return eb.or(parts);
+      });
+    } else if (user.role === 'regional_manager') {
+      if (user.zone_id) q = q.where((eb) => eb.or([eb('zone_id', '=', user.zone_id as any), eb('zone_id', 'is', null)]));
+      else if (user.region_id) q = q.where((eb) => eb.or([eb('region_id', '=', user.region_id as any), eb('region_id', 'is', null)]));
+    }
+    return q.orderBy('full_name', 'asc').execute();
+  }
+
+  /** Throws unless `engineerId` is one this user may dispatch (managers: any service engineer). */
+  private async assertMayAssign(user: AuthUser, engineerId: string, db: Db = this.db) {
+    if (user.role !== 'service_team') return;
+    if (engineerId === user.id) return;
+    const team = await this.assignableEngineers(user, db);
+    if (!team.some((e) => e.id === engineerId)) {
+      throw new ForbiddenException(
+        team.length > 1
+          ? 'You can only assign tickets to engineers of your depot / team'
+          : 'Service engineers can only assign a ticket to themselves',
+      );
+    }
   }
 
   private async requireEngineer(db: Db, id: string, label = 'Assigned engineer') {
@@ -243,6 +312,58 @@ export class ServiceService {
     return { ...row, allowed_next_statuses: allowedNextServiceStatuses(String(row.status || 'received')) };
   }
 
+  /**
+   * Territory scope + the list filters. The ticket list and the KPI tiles both go through this, so the
+   * numbers on the tiles always describe exactly the tickets the list can show (DEF-110).
+   */
+  private applyTicketFilters<Q>(baseQuery: Q, query: TicketListFilters, user: AuthUser): Q {
+    let b: any = baseQuery;
+    const truthy = (v: unknown) => v === true || v === 'true' || v === '1';
+    const scope = this.scopeWhere(user);
+    if (scope) b = b.where(scope as any);
+
+    if (query.status) {
+      const wanted = normalizeServiceStatus(query.status);
+      const legacy = wanted === 'received' ? ['received', 'new', 'created'] : wanted === 'revisit_required' ? ['revisit_required', 'revisit'] : [wanted];
+      b = b.where('service_tickets.status', 'in', legacy as any);
+    }
+    if (query.priority) b = b.where('service_tickets.priority', '=', query.priority as any);
+    if (query.assigned_to) {
+      if (!UUID_REGEX.test(query.assigned_to)) throw new BadRequestException('assigned_to must be a valid UUID');
+      b = b.where('service_tickets.assigned_to', '=', query.assigned_to);
+    }
+    if (query.complaint_source) b = b.where('service_tickets.complaint_source', '=', query.complaint_source);
+    if (truthy(query.unassigned)) b = b.where('service_tickets.assigned_to', 'is', null);
+    if (truthy(query.repeat)) b = b.where('service_tickets.is_repeat_complaint', '=', true);
+    if (truthy(query.unverified)) b = b.where('service_tickets.claimed_organisation_name', 'is not', null);
+    if (truthy(query.overdue)) {
+      b = b
+        .where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any)
+        .where('service_tickets.status', 'not in', SERVICE_SLA_PAUSE_STATUSES as any)
+        .where((eb: any) =>
+          eb.or([
+            eb('service_tickets.planned_visit_date', '<', this.todayIst() as any),
+            eb('service_tickets.sla_resolution_due_at', '<', new Date()),
+          ]),
+        );
+    }
+
+    if (query.search) {
+      const s = `%${String(query.search).toLowerCase().replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
+      b = b.where((eb: any) =>
+        eb.or([
+          sql<boolean>`lower(coalesce(service_tickets.ticket_no, service_tickets.ticket_number, '')) like ${s}`,
+          sql<boolean>`lower(coalesce(service_tickets.complaint, service_tickets.complaint_description, '')) like ${s}`,
+          sql<boolean>`lower(coalesce(service_tickets.equipment_serial, service_tickets.serial_number, '')) like ${s}`,
+          sql<boolean>`lower(organisations.name) like ${s}`,
+          sql<boolean>`lower(coalesce(service_tickets.claimed_organisation_name, '')) like ${s}`,
+        ]),
+      );
+    }
+
+    return b as Q;
+  }
+
   // =========================================================================
   // 1. Ticket Query & Retrieval
   // =========================================================================
@@ -264,7 +385,6 @@ export class ServiceService {
   ): Promise<PaginatedResult<any>> {
     this.assertViewRole(user);
     const { page, limit, offset } = getPaginationParams(query);
-    const truthy = (v: unknown) => v === true || v === 'true' || v === '1';
 
     let baseQuery = this.db
       .selectFrom('service_tickets')
@@ -274,47 +394,7 @@ export class ServiceService {
       .leftJoin('users as assignee', 'service_tickets.assigned_to', 'assignee.id')
       .where('service_tickets.deleted_at', 'is', null);
 
-    const scope = this.scopeWhere(user);
-    if (scope) baseQuery = baseQuery.where(scope as any);
-
-    if (query.status) {
-      const wanted = normalizeServiceStatus(query.status);
-      const legacy = wanted === 'received' ? ['received', 'new', 'created'] : wanted === 'revisit_required' ? ['revisit_required', 'revisit'] : [wanted];
-      baseQuery = baseQuery.where('service_tickets.status', 'in', legacy as any);
-    }
-    if (query.priority) baseQuery = baseQuery.where('service_tickets.priority', '=', query.priority as any);
-    if (query.assigned_to) {
-      if (!UUID_REGEX.test(query.assigned_to)) throw new BadRequestException('assigned_to must be a valid UUID');
-      baseQuery = baseQuery.where('service_tickets.assigned_to', '=', query.assigned_to);
-    }
-    if (query.complaint_source) baseQuery = baseQuery.where('service_tickets.complaint_source', '=', query.complaint_source);
-    if (truthy(query.unassigned)) baseQuery = baseQuery.where('service_tickets.assigned_to', 'is', null);
-    if (truthy(query.repeat)) baseQuery = baseQuery.where('service_tickets.is_repeat_complaint', '=', true);
-    if (truthy(query.unverified)) baseQuery = baseQuery.where('service_tickets.claimed_organisation_name', 'is not', null);
-    if (truthy(query.overdue)) {
-      baseQuery = baseQuery
-        .where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any)
-        .where('service_tickets.status', 'not in', SERVICE_SLA_PAUSE_STATUSES as any)
-        .where((eb) =>
-          eb.or([
-            eb('service_tickets.planned_visit_date', '<', this.todayIst() as any),
-            eb('service_tickets.sla_resolution_due_at', '<', new Date()),
-          ]),
-        );
-    }
-
-    if (query.search) {
-      const s = `%${String(query.search).toLowerCase().replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          sql<boolean>`lower(coalesce(service_tickets.ticket_no, service_tickets.ticket_number, '')) like ${s}`,
-          sql<boolean>`lower(coalesce(service_tickets.complaint, service_tickets.complaint_description, '')) like ${s}`,
-          sql<boolean>`lower(coalesce(service_tickets.equipment_serial, service_tickets.serial_number, '')) like ${s}`,
-          sql<boolean>`lower(organisations.name) like ${s}`,
-          sql<boolean>`lower(coalesce(service_tickets.claimed_organisation_name, '')) like ${s}`,
-        ]),
-      );
-    }
+    baseQuery = this.applyTicketFilters(baseQuery, query, user);
 
     const countRes = await baseQuery.select(sql<number>`count(service_tickets.id)::int`.as('total')).executeTakeFirst();
     const total = countRes?.total || 0;
@@ -532,9 +612,22 @@ export class ServiceService {
   async createTicket(dto: CreateTicketDto, user: AuthUser) {
     this.assertViewRole(user);
 
-    const orgId = (dto.organisation_id || dto.customer_id || '').trim();
-    if (!orgId) throw new BadRequestException('Organisation is required');
+    // A customer not yet in the master: log it against the unverified-customer holding record (as the portal
+    // does) with the name as given; it is linked to the real organisation later (Link organisation).
+    const claimedName = cleanText(dto.claimed_organisation_name || '', 200);
+    const orgId = (dto.organisation_id || dto.customer_id || '').trim() || (claimedName ? UNVERIFIED_ORG_ID : '');
+    if (!orgId) throw new BadRequestException('Select the customer organisation (or enter its name if it is not in the customer master yet)');
     if (!UUID_REGEX.test(orgId)) throw new BadRequestException('Organisation must be a valid UUID');
+    if (orgId === UNVERIFIED_ORG_ID && claimedName.length < 3) {
+      throw new BadRequestException('Enter the customer organisation name (at least 3 characters)');
+    }
+
+    // Date received: a real calendar day, not in the future (IST).
+    const rawReceived = dto.received_date || dto.date_received;
+    const receivedDate = rawReceived ? this.parseDateOnly(rawReceived, 'received_date') : null;
+    if (receivedDate && receivedDate > this.todayIst()) {
+      throw new BadRequestException(`Date received (${receivedDate.split('-').reverse().join('/')}) cannot be in the future`);
+    }
 
     const complaint = cleanText(dto.complaint || dto.complaint_description || '', 4000);
     if (!complaint) throw new BadRequestException('Complaint details are required');
@@ -565,13 +658,15 @@ export class ServiceService {
     if ((assignedTo || (dto.additional_engineer_ids || []).length) && !ASSIGN_ROLES.includes(user.role)) {
       throw new ForbiddenException('Only the service team, regional managers, management or admin can assign an engineer');
     }
-    if (user.role === 'service_team' && assignedTo && assignedTo !== user.id) {
-      throw new ForbiddenException('Service engineers can only assign a new ticket to themselves');
-    }
+    if (assignedTo) await this.assertMayAssign(user, assignedTo);
+    for (const eid of dto.additional_engineer_ids || []) await this.assertMayAssign(user, eid);
 
     if (dto.ticket_no || dto.ticket_number) {
       const custom = String(dto.ticket_no || dto.ticket_number).trim();
       if (!TICKET_NO_FORMAT.test(custom)) throw new BadRequestException('ticket_no may contain letters, digits, - _ / and be 3–40 characters');
+      if (SYSTEM_TICKET_PREFIX.test(custom)) {
+        throw new BadRequestException('TCK- numbers are issued by the system (TCK-YYYY-NNNNNN). Leave Ticket Ref blank, or enter the customer\'s own reference (e.g. GEM-INC-1234).');
+      }
     }
 
     if (dto.is_chargeable !== undefined && !this.isManager(user)) {
@@ -623,9 +718,10 @@ export class ServiceService {
         additionalEngineerIds: dto.additional_engineer_ids || [],
         plannedVisitDate: visitDate,
         parentTicketId: dto.parent_ticket_id || null,
-        regionId: dto.region_id || org.region_id || null,
-        receivedDate: dto.received_date || dto.date_received || null,
+        regionId: dto.region_id || org.region_id || (orgId === UNVERIFIED_ORG_ID ? user.region_id || null : null),
+        receivedDate,
         customTicketNo: dto.ticket_no || dto.ticket_number || null,
+        claimedOrganisationName: orgId === UNVERIFIED_ORG_ID ? claimedName : null,
         actorId: user.id,
       });
     });
@@ -671,7 +767,11 @@ export class ServiceService {
 
     const status: ServiceStatus = input.assignedTo && input.plannedVisitDate ? 'visit_scheduled' : input.assignedTo ? 'assigned' : 'received';
     const now = new Date();
-    const sla = await computeSla(trx as any, priority, warranty, now);
+    // The SLA clock starts when the complaint reached us: a complaint received on an earlier day (logged late)
+    // runs from 09:00 IST that day, not from the moment it was typed in.
+    const receivedDay = calendarDay(input.receivedDate) || '';
+    const slaStart = receivedDay && receivedDay < todayInKolkata(now) ? new Date(`${receivedDay}T09:00:00+05:30`) : now;
+    const sla = await computeSla(trx as any, priority, warranty, slaStart);
 
     const ticket = await trx
       .insertInto('service_tickets')
@@ -914,8 +1014,10 @@ export class ServiceService {
     if (from === 'closed' && to !== 'reopened') {
       throw new BadRequestException('Cannot modify a closed service ticket. Reopening requires management authorization.');
     }
+    // Messages name statuses the way the desk shows them ("Visit Scheduled"), never as raw codes.
+    const label = (st: string) => SERVICE_STATUS_LABELS[st as ServiceStatus] || st.replace(/_/g, ' ');
     if (from === to) {
-      throw new BadRequestException(`Ticket is already ${to}`);
+      throw new BadRequestException(`Ticket is already ${label(to)}`);
     }
     if (dto.version !== undefined && existing.version !== undefined && dto.version !== existing.version) {
       throw new ConflictException(`This ticket was updated by another user (version mismatch: submitted ${dto.version}, current ${existing.version}) — please reload`);
@@ -923,7 +1025,9 @@ export class ServiceService {
     if (!canTransitionService(from, to)) {
       const allowed = allowedNextServiceStatuses(from);
       throw new BadRequestException(
-        `Cannot move a ticket from ${from} to ${to}.${allowed.length ? ` Allowed next steps: ${allowed.join(', ')}.` : ' This status is final.'}`,
+        `Cannot move a ticket from ${label(from)} to ${label(to)}.${
+          allowed.length ? ` Allowed next steps: ${allowed.map(label).join(', ')}.` : ' This status is final.'
+        }`,
       );
     }
 
@@ -955,9 +1059,7 @@ export class ServiceService {
     let assignedTo: string | null | undefined = undefined;
     if (requestedAssignee) {
       if (!ASSIGN_ROLES.includes(user.role)) throw new ForbiddenException('You cannot assign engineers');
-      if (user.role === 'service_team' && requestedAssignee !== user.id) {
-        throw new ForbiddenException('Service engineers can only assign a ticket to themselves');
-      }
+      await this.assertMayAssign(user, requestedAssignee);
       await this.requireEngineer(this.db, requestedAssignee);
       assignedTo = requestedAssignee;
     }
@@ -983,11 +1085,25 @@ export class ServiceService {
       this.assertFutureOrToday(visitDate, 'planned_visit_date', this.isManager(user) && dto.manager_override === true);
     }
 
-    // ---- resolution evidence
+    // ---- work starts on / after the scheduled visit day (IST); an earlier on-site check-in is recorded via the visit
+    const plannedDay = calendarDay((visitDate !== undefined ? visitDate : existing.planned_visit_date) as any) || '';
+    const managerOverride = this.isManager(user) && dto.manager_override === true;
+    if (to === 'in_progress' && from === 'visit_scheduled' && plannedDay && plannedDay > this.todayIst() && !managerOverride) {
+      throw new BadRequestException(
+        `The visit is scheduled for ${plannedDay.split('-').reverse().join('/')}. Work can start on or after that day — reschedule the visit if the engineer is going earlier.`,
+      );
+    }
+
+    // ---- resolution evidence: a filed service report (rectification + customer sign-off), never a note alone
     if (to === 'resolved') {
-      const hasReport = (existing.reports || []).length > 0;
-      if (!hasReport && (!reason || reason.length < 10)) {
-        throw new BadRequestException('Marking a ticket resolved needs rectification details (at least 10 characters) or an existing service report');
+      const latest = (existing.reports || [])[0];
+      if (!latest) {
+        throw new BadRequestException(
+          'File the service report (work done and customer sign-off) to resolve this ticket — submitting the report marks it resolved.',
+        );
+      }
+      if (latest.report_status === 'Returned for Correction') {
+        throw new BadRequestException('The latest service report was returned for correction — file the corrected report to resolve the ticket.');
       }
     }
 
@@ -1192,6 +1308,14 @@ export class ServiceService {
         ticket.assigned_to === user.id ||
         (Array.isArray(ticket.additional_engineer_ids) && (ticket.additional_engineer_ids as string[]).includes(user.id));
       if (!mine) throw new ForbiddenException('Only the assigned engineer can file the service report');
+    }
+    // The report records a visit that happened: on/after the planned visit day, or after an on-site check-in.
+    const plannedDay = calendarDay(ticket.planned_visit_date as any) || '';
+    const checkedIn = (ticket.visits || []).some((v: any) => !!v.actual_check_in);
+    if (plannedDay && plannedDay > this.todayIst() && !checkedIn) {
+      throw new BadRequestException(
+        `The visit is planned for ${plannedDay.split('-').reverse().join('/')}. File the service report after the visit (or check in on site first).`,
+      );
     }
 
     const problem = cleanText(dto.problem_identified, 2000);
@@ -1643,21 +1767,22 @@ export class ServiceService {
   // =========================================================================
   // 9. Service Dashboard Metrics (§34)
   // =========================================================================
-  async getDashboardStats(user: AuthUser) {
+  async getDashboardStats(user: AuthUser, filters: TicketListFilters = {}) {
     this.assertViewRole(user);
     const today = this.todayIst();
-    const scope = this.scopeWhere(user);
     const open = SERVICE_DONE_STATUSES as any;
     const pausable = SERVICE_SLA_PAUSE_STATUSES as any;
 
-    const q = () => {
-      let b = this.db
-        .selectFrom('service_tickets')
-        .innerJoin('organisations', 'service_tickets.organisation_id', 'organisations.id')
-        .where('service_tickets.deleted_at', 'is', null);
-      if (scope) b = b.where(scope as any);
-      return b;
-    };
+    // Same scope + filters as the ticket list, so the tiles count exactly the tickets the list shows.
+    const q = () =>
+      this.applyTicketFilters(
+        this.db
+          .selectFrom('service_tickets')
+          .innerJoin('organisations', 'service_tickets.organisation_id', 'organisations.id')
+          .where('service_tickets.deleted_at', 'is', null),
+        filters,
+        user,
+      );
     const count = sql<number>`count(service_tickets.id)::int`;
 
     const [total, fresh, pending, assigned, overdue, awaitingParts, completed, critical, repeat, closure, slaBreached, portalNew, unverified, workloadRows, engineers] = await Promise.all([
@@ -1698,10 +1823,10 @@ export class ServiceService {
         .groupBy('users.id')
         .execute(),
       // every active engineer in scope, including those with an empty queue (AVAILABLE badge)
-      (() => {
+      (async () => {
+        if (user.role === 'service_team') return this.assignableEngineers(user); // self, or a chief's team
         let e = this.db.selectFrom('users').select(['id', 'full_name', 'email']).where('role', '=', 'service_team').where('is_active', '=', true);
-        if (user.role === 'service_team') e = e.where('id', '=', user.id);
-        else if (user.role === 'regional_manager' || user.role === 'sales' || user.role === 'demo_team') {
+        if (user.role === 'regional_manager' || user.role === 'sales' || user.role === 'demo_team') {
           if (user.zone_id) e = e.where((eb) => eb.or([eb('zone_id', '=', user.zone_id as any), eb('zone_id', 'is', null)]));
           else if (user.region_id) e = e.where((eb) => eb.or([eb('region_id', '=', user.region_id as any), eb('region_id', 'is', null)]));
         }

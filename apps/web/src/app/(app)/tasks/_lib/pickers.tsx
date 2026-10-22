@@ -61,7 +61,11 @@ export const AssigneePicker: React.FC<{
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault(); // closes only this picker, not an enclosing Modal
+      setOpen(false);
+    };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
@@ -88,7 +92,7 @@ export const AssigneePicker: React.FC<{
         onClick={() => setOpen((o) => !o)}
         className={`flex min-h-10 w-full flex-wrap items-center gap-1.5 rounded-[8px] border bg-white px-2.5 py-1.5 text-left text-xs focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15 ${error ? 'border-[#881337]' : 'border-[#C9C4B8] focus:border-[#0F5E63]'}`}
       >
-        {selected.length === 0 && <span className="text-[#8A8578] px-1">Choose one or more people…</span>}
+        {selected.length === 0 && <span className="text-[#6B7280] px-1">Choose one or more people…</span>}
         {selected.map((s) => (
           <span key={s.id} className="inline-flex items-center gap-1 rounded-full bg-[#E3EFEE] px-2 py-0.5 text-[11px] font-semibold text-[#0F5E63]">
             {s.full_name}
@@ -108,21 +112,21 @@ export const AssigneePicker: React.FC<{
             </span>
           </span>
         ))}
-        <ChevronDown className="ml-auto h-4 w-4 text-[#8A8578]" />
+        <ChevronDown className="ml-auto h-4 w-4 text-[#6B7280]" />
       </button>
       {error && <p className="text-xs text-[#881337] mt-1">{error}</p>}
       {open && (
         <div className="absolute z-50 mt-1 w-full rounded-[10px] border border-[#DCD8CE] bg-white shadow-lg">
           <div className="flex items-center gap-2 border-b border-[#ECE9E2] px-3 py-2">
-            <Search className="h-3.5 w-3.5 text-[#8A8578]" />
+            <Search className="h-3.5 w-3.5 text-[#6B7280]" />
             <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search people…" className="w-full text-xs outline-none" aria-label="Search people" />
           </div>
           <div role="listbox" aria-multiselectable className="max-h-72 overflow-y-auto py-1">
-            {visible.length === 0 && <p className="px-3 py-2 text-xs text-[#8A8578]">{allowPeers ? 'No matches' : 'No matches in your team. Link the task to a customer, tender, demo or service ticket to request work from colleagues.'}</p>}
+            {visible.length === 0 && <p className="px-3 py-2 text-xs text-[#6B7280]">{allowPeers ? 'No matches' : 'No matches in your team. Link the task to a customer, tender, demo or service ticket to request work from colleagues.'}</p>}
             {groups.map(([title, rows]) =>
               rows.length ? (
                 <div key={title}>
-                  <div className="px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wide text-[#8A8578]">{title}</div>
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wide text-[#6B7280]">{title}</div>
                   {rows.map((o) => {
                     const on = value.includes(o.id);
                     return (
@@ -137,7 +141,7 @@ export const AssigneePicker: React.FC<{
                         <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${on ? 'border-[#0F5E63] bg-[#0F5E63] text-white' : 'border-[#C9C4B8]'}`}>{on && <Check className="h-3 w-3" />}</span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate">{o.full_name}</span>
-                          <span className="block truncate text-[10px] font-normal text-[#8A8578]">{[o.role.replace(/_/g, ' '), o.department_name].filter(Boolean).join(' · ')}</span>
+                          <span className="block truncate text-[10px] font-normal text-[#6B7280]">{[o.role.replace(/_/g, ' '), o.department_name].filter(Boolean).join(' · ')}</span>
                         </span>
                         {o.on_leave && <span className="shrink-0 rounded-full bg-[#FBEBDD] px-1.5 py-0.5 text-[10px] font-semibold text-[#7C2D12]">On leave</span>}
                       </button>
@@ -202,7 +206,7 @@ export const LinkPicker: React.FC<{
         aria-expanded={open}
         className={`flex h-10 w-full items-center gap-2 rounded-[8px] border bg-white px-3 text-left text-xs focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15 ${error ? 'border-[#881337]' : 'border-[#C9C4B8] focus:border-[#0F5E63]'}`}
       >
-        <span className={`flex-1 truncate ${selected ? 'text-[#14213D]' : 'text-[#8A8578]'}`}>{selected ? `${selected.label}${selected.sub ? ` · ${selected.sub}` : ''}` : `Search ${LINK_LABEL[type].toLowerCase()}…`}</span>
+        <span className={`flex-1 truncate ${selected ? 'text-[#14213D]' : 'text-[#6B7280]'}`}>{selected ? `${selected.label}${selected.sub ? ` · ${selected.sub}` : ''}` : `Search ${LINK_LABEL[type].toLowerCase()}…`}</span>
         {value && (
           <span
             role="button"
@@ -213,22 +217,22 @@ export const LinkPicker: React.FC<{
               onChange('', null);
             }}
             onKeyDown={(e) => e.key === 'Enter' && onChange('', null)}
-            className="-m-1.5 p-1.5 text-[#8A8578] hover:text-[#881337]"
+            className="-m-1.5 p-1.5 text-[#6B7280] hover:text-[#881337]"
           >
             <X className="h-3.5 w-3.5" />
           </span>
         )}
-        <ChevronDown className="h-4 w-4 text-[#8A8578]" />
+        <ChevronDown className="h-4 w-4 text-[#6B7280]" />
       </button>
       {error ? <p className="text-xs text-[#881337] mt-1">{error}</p> : helperText ? <p className="text-[11px] text-[#4A5568] mt-1">{helperText}</p> : null}
       {open && (
         <div className="absolute z-50 mt-1 w-full rounded-[10px] border border-[#DCD8CE] bg-white shadow-lg">
           <div className="flex items-center gap-2 border-b border-[#ECE9E2] px-3 py-2">
-            <Search className="h-3.5 w-3.5 text-[#8A8578]" />
+            <Search className="h-3.5 w-3.5 text-[#6B7280]" />
             <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Type to search…" className="w-full text-xs outline-none" aria-label={`Search ${LINK_LABEL[type]}`} />
           </div>
           <ul role="listbox" className="max-h-64 overflow-y-auto py-1">
-            {options.length === 0 && <li className="px-3 py-2 text-xs text-[#8A8578]">No open {LINK_LABEL[type].toLowerCase()} matches</li>}
+            {options.length === 0 && <li className="px-3 py-2 text-xs text-[#6B7280]">No open {LINK_LABEL[type].toLowerCase()} matches</li>}
             {options.map((o) => (
               <li key={o.id}>
                 <button

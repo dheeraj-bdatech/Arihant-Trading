@@ -30,6 +30,11 @@ export class CreateTicketDto {
   @IsOptional()
   organisation_id?: string;
 
+  /** Customer not yet in the master: logged against the unverified-customer record under this name, linked later. */
+  @IsString()
+  @IsOptional()
+  claimed_organisation_name?: string;
+
   @Matches(UUID_REGEX, { message: 'Customer must be a valid UUID' })
   @IsOptional()
   customer_id?: string;

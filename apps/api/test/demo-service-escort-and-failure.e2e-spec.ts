@@ -3,6 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
+import { istDay } from './helpers/ist-date';
 
 describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () => {
   let app: INestApplication;
@@ -65,13 +66,19 @@ describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () =
     const prod = await db.selectFrom('products').select(['id']).limit(1).executeTakeFirst();
     testProductId = prod.id;
 
+    // A dedicated unit of the demo's product (reservations must match the requested product — QA DEF-022).
+    // The failure scenario quarantines it, so it never takes a shared seed unit out of the fleet.
     const equip = await db
       .selectFrom('demo_equipment')
       .select(['id'])
-      .where('availability_status', '=', 'available')
-      .limit(1)
+      .where('serial_no', '=', 'SN-ESCORT-E2E')
       .executeTakeFirst();
     testEquipId = equip?.id;
+    if (testEquipId) {
+      await db.updateTable('demo_equipment').set({ product_id: testProductId }).where('id', '=', testEquipId).execute();
+      // free the unit from earlier runs' reservations
+      await db.deleteFrom('demo_reservations').where('equipment_id', '=', testEquipId).execute();
+    }
 
     if (!testEquipId) {
       const newEquip = await db
@@ -79,7 +86,7 @@ describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () =
         .values({
           product_id: testProductId,
           model: 'HHMD-SEC-TEST',
-          serial_no: `SN-ESCORT-${Date.now()}`,
+          serial_no: 'SN-ESCORT-E2E',
           current_location: 'Delhi',
           availability_status: 'available',
           condition: 'Operational',
@@ -162,8 +169,8 @@ describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () =
   });
 
   it('3. When live demo suffers TECHNICAL_FAILURE, auto-create Module 6 Breakdown Ticket and quarantine equipment to maintenance', async () => {
-    const randomOffset = 50 + Math.floor(Math.random() * 500);
-    const targetDate = new Date(Date.now() + 86400000 * randomOffset).toISOString().split('T')[0];
+    // The trial is today (IST): an outcome can only be recorded on/after the demo day (QA DEF-024)
+    const targetDate = istDay(0);
 
     // Ensure test equipment is in available state prior to reservation
     await db

@@ -7,6 +7,9 @@ import { Kysely } from 'kysely';
 import { Database as DB } from '@arihant/shared';
 import { purgeTaskModule } from './helpers/reset-tasks';
 
+/** IST calendar day `days` from today (demo / reservation dates cannot be in the past). */
+const istDay = (days = 0) => new Date(Date.now() + 5.5 * 3600000 + days * 86400000).toISOString().slice(0, 10);
+
 describe('Arihant BOS API E2E Suite', () => {
   let app: INestApplication;
   let mgmtToken: string;
@@ -186,7 +189,8 @@ describe('Arihant BOS API E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: orgId,
-          planned_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
+          // DEF-040: the post-visit report is accepted only on / after the visit date, so the visit is for today.
+          planned_date: istDay(0),
           purpose: 'Quarterly review with procurement IG',
           location: 'Jalandhar Frontier HQ',
         });
@@ -327,7 +331,7 @@ describe('Arihant BOS API E2E Suite', () => {
         .send({
           organisation_id: orgId,
           location: 'Delhi Police HQ',
-          requested_date: '2026-10-01',
+          requested_date: istDay(30),
           equipment_required: 'Hand Held Metal Detector',
         });
       expect(res.status).toBe(201);
@@ -341,8 +345,8 @@ describe('Arihant BOS API E2E Suite', () => {
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           equipment_id: testEquipmentId,
-          reserved_from: '2026-10-01',
-          reserved_to: '2026-10-05',
+          reserved_from: istDay(30),
+          reserved_to: istDay(34),
         });
       expect(res.status).toBe(201);
       expect(res.body.status).toBe('approved');
@@ -354,8 +358,8 @@ describe('Arihant BOS API E2E Suite', () => {
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           equipment_id: testEquipmentId,
-          reserved_from: '2026-10-03',
-          reserved_to: '2026-10-07',
+          reserved_from: istDay(32),
+          reserved_to: istDay(36),
         });
       expect(res.status).toBe(409);
       expect(res.body.message).toContain('already reserved');
@@ -370,8 +374,9 @@ describe('Arihant BOS API E2E Suite', () => {
       const orgId = orgs.body.data[0].id;
 
       const res = await request(app.getHttpServer())
+        // Sales raise complaints through the service desk; ticket creation is for service / managers (Module 6 RBAC).
         .post('/api/service/tickets')
-        .set('Authorization', `Bearer ${salesToken}`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: orgId,
           complaint: 'X-Ray scanner conveyor belt motor stalled during peak shift',

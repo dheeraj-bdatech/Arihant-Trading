@@ -3,6 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
+import { istDay } from './helpers/ist-date';
 
 describe('Module 2: Visit & Field Planning E2E Suite', () => {
   let app: INestApplication;
@@ -91,7 +92,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
   // SCENARIO A: Normal Visit Lifecycle (Plan -> Manager View -> Post-Visit -> History & Activity)
   // =========================================================================
   describe('Scenario A: Normal Visit Lifecycle', () => {
-    const plannedDate = new Date().toISOString().split('T')[0];
+    const plannedDate = istDay(0);
 
     it('sales executive plans a client field visit with full details', async () => {
       const res = await request(app.getHttpServer())
@@ -154,7 +155,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
           outcome: 'Client satisfied with sensitivity parameters; requested field trial next week.',
           opportunity: 'High probability upcoming tender for 150 units',
           next_action: 'Coordinate depot demo unit dispatch',
-          followup_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
+          followup_date: istDay(7),
           demo_required: true,
           tender_opportunity: 'Tender closing in October 2026',
         });
@@ -230,7 +231,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
   // SCENARIO B: Trips & Manager Optimization (Trip ├── Visit 1, Visit 2)
   // =========================================================================
   describe('Scenario B: Trips & Manager Optimization', () => {
-    const tripDate = new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0];
+    const tripDate = istDay(2);
 
     it('sales executive creates a new planned trip', async () => {
       const res = await request(app.getHttpServer())
@@ -308,7 +309,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
   // SCENARIO C: Conflict & Proximity Detection
   // =========================================================================
   describe('Scenario C: Conflict & Proximity Detection', () => {
-    const conflictDate = new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0];
+    const conflictDate = istDay(3);
 
     it('creates an initial visit from 10:00 to 11:30', async () => {
       const res = await request(app.getHttpServer())
@@ -372,7 +373,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg1Id,
-          planned_date: new Date(Date.now() + 86400000 * 6).toISOString().split('T')[0],
+          planned_date: istDay(6),
           purpose: 'Pre-demonstration site readiness check',
         });
       visitToRescheduleId = res.body.id;
@@ -383,7 +384,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .post(`/api/visits/${visitToRescheduleId}/reschedule`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          new_date: new Date(Date.now() + 86400000 * 8).toISOString().split('T')[0],
+          new_date: istDay(8),
           reason: '',
         });
 
@@ -396,7 +397,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .post(`/api/visits/${visitToRescheduleId}/reschedule`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          new_date: new Date(Date.now() + 86400000 * 8).toISOString().split('T')[0],
+          new_date: istDay(8),
           reason: 'Customer requested another date due to VIP visit.',
         });
 
@@ -433,7 +434,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg2Id,
-          planned_date: new Date().toISOString().split('T')[0],
+          planned_date: istDay(0),
           purpose: 'Demonstration of Passive Night Vision',
         });
       visitToCancelId = res.body.id;
@@ -488,7 +489,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg1Id,
-          planned_date: new Date(Date.now() + 86400000 * 14).toISOString().split('T')[0],
+          planned_date: istDay(14),
           location: 'Delhi Central Base',
           purpose: 'Service review',
         });
@@ -524,7 +525,8 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg2Id,
-          planned_date: new Date(Date.now() + 86400000 * 10).toISOString().split('T')[0],
+          // the visit is today: a post-visit report is only accepted on/after the visit day (QA DEF-040)
+          planned_date: istDay(0),
           purpose: 'Validation test meeting',
         });
       visitForValidationId = res.body.id;
@@ -570,7 +572,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
           discussion: 'Valid discussion',
           outcome: 'Valid outcome',
           next_action: 'Follow-up meeting',
-          followup_date: '2026-09-20', // Earlier than visit date 2026-09-26
+          followup_date: istDay(-1), // earlier than the visit date (today)
         });
 
       expect(res.status).toBe(400);
@@ -608,7 +610,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           organisation_id: testOrg1Id,
-          planned_date: new Date(Date.now() + 86400000 * 12).toISOString().split('T')[0],
+          planned_date: istDay(12),
           purpose: 'RBAC boundary validation',
         });
       rbacVisitId = res.body.id;

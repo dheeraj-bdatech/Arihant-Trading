@@ -242,7 +242,7 @@ export const DelayMixBar: React.FC<{ counts: Partial<Record<MixKey, number>>; ti
 }) => {
   const rows = DELAY_SERIES.filter((s) => series.includes(s.key)).map((s) => ({ ...s, n: counts[s.key] || 0 }));
   const total = rows.reduce((a, r) => a + r.n, 0);
-  if (!total) return <p className="text-xs text-[#8A8578]">{emptyText}</p>;
+  if (!total) return <p className="text-xs text-[#6B7280]">{emptyText}</p>;
   const share = (n: number) => Math.round((n / total) * 1000) / 10;
   return (
     <figure className="space-y-2.5">
@@ -265,7 +265,7 @@ export const DelayMixBar: React.FC<{ counts: Partial<Record<MixKey, number>>; ti
               <Swatch color={r.color} />
               <span className="text-[#4A5568]">{r.label}</span>
               <span className="font-mono tabular-nums font-semibold">{r.n}</span>
-              <span className="font-mono tabular-nums text-[11px] text-[#8A8578]">({share(r.n)}%)</span>
+              <span className="font-mono tabular-nums text-[11px] text-[#6B7280]">({share(r.n)}%)</span>
             </li>
           ))}
         </ul>
@@ -338,8 +338,8 @@ export const ReviewCard: React.FC<{ review: EvidenceReview & Partial<Performance
       </p>
     )}
     <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
-      <Meta label="Rating">{r.rating ? <Num>{`${r.rating} / ${r.rating_scale}`}</Num> : <span className="text-[#8A8578]">Not given</span>}</Meta>
-      <Meta label="Employee acknowledgement">{r.employee_acknowledged_at ? <DateTime value={r.employee_acknowledged_at} /> : <span className="text-[#8A8578]">{r.status === 'draft' ? '—' : 'Not yet'}</span>}</Meta>
+      <Meta label="Rating">{r.rating ? <Num>{`${r.rating} / ${r.rating_scale}`}</Num> : <span className="text-[#6B7280]">Not given</span>}</Meta>
+      <Meta label="Employee acknowledgement">{r.employee_acknowledged_at ? <DateTime value={r.employee_acknowledged_at} /> : <span className="text-[#6B7280]">{r.status === 'draft' ? '—' : 'Not yet'}</span>}</Meta>
     </dl>
     <div className="space-y-2.5">
       <TextBlock label="Strengths" value={r.strengths} />
@@ -356,7 +356,7 @@ export const ReviewCard: React.FC<{ review: EvidenceReview & Partial<Performance
             </span>
           )}
         </p>
-        <p className={`mt-0.5 text-sm whitespace-pre-wrap break-words ${r.employee_response ? 'text-[#14213D]' : 'text-[#8A8578]'}`}>{r.employee_response || 'No response added.'}</p>
+        <p className={`mt-0.5 text-sm whitespace-pre-wrap break-words ${r.employee_response ? 'text-[#14213D]' : 'text-[#6B7280]'}`}>{r.employee_response || 'No response added.'}</p>
       </div>
     )}
     {children}
@@ -407,7 +407,7 @@ const TaskLink: React.FC<{ id?: string | null; number: string }> = ({ id, number
   );
 
 const TaskAppendix: React.FC<{ tasks: EvidenceTaskRow[] }> = ({ tasks }) => {
-  if (!tasks.length) return <p className="text-sm text-[#8A8578]">No tasks fall in this period.</p>;
+  if (!tasks.length) return <p className="text-sm text-[#6B7280]">No tasks fall in this period.</p>;
   return (
     <>
       <div className="hidden md:block">
@@ -450,7 +450,7 @@ const TaskAppendix: React.FC<{ tasks: EvidenceTaskRow[] }> = ({ tasks }) => {
                       </div>
                     )}
                   </TableCell>
-                  <TableCell className="whitespace-nowrap">{t.completed_at ? <DateTime value={t.completed_at} /> : <span className="text-[#8A8578]">—</span>}</TableCell>
+                  <TableCell className="whitespace-nowrap">{t.completed_at ? <DateTime value={t.completed_at} /> : <span className="text-[#6B7280]">—</span>}</TableCell>
                   <TableCell>
                     <StatusBadge status={t.status as TaskDisplayStatus} />
                   </TableCell>
@@ -460,7 +460,7 @@ const TaskAppendix: React.FC<{ tasks: EvidenceTaskRow[] }> = ({ tasks }) => {
                     ) : t.delay_class && t.delay_class !== 'open' ? (
                       <DelayBadge delay={t.delay_class} />
                     ) : (
-                      <span className="text-[#8A8578]">Open, not yet due</span>
+                      <span className="text-[#6B7280]">Open, not yet due</span>
                     )}
                   </TableCell>
                   <TableCell className="text-right">
@@ -517,7 +517,7 @@ const TaskAppendix: React.FC<{ tasks: EvidenceTaskRow[] }> = ({ tasks }) => {
 };
 
 const BlockerHistory: React.FC<{ rows: EvidenceBlockerRow[]; taskIds: Map<string, string> }> = ({ rows, taskIds }) => {
-  if (!rows.length) return <p className="text-sm text-[#8A8578]">No blockers were raised in this period.</p>;
+  if (!rows.length) return <p className="text-sm text-[#6B7280]">No blockers were raised in this period.</p>;
   return (
     <>
       <div className="hidden md:block">
@@ -765,7 +765,7 @@ export const EvidenceReport: React.FC<{ report: EvidenceReportData; reviewsSlot?
               ))}
             </div>
           ) : (
-            <p className="text-sm text-[#8A8578]">No submitted manager review overlaps this period.</p>
+            <p className="text-sm text-[#6B7280]">No submitted manager review overlaps this period.</p>
           ))}
       </Section>
 

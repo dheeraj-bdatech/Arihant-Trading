@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
+import { useAuth, PRESET_ROLE_USERS, DEMO_PERSONAS_ENABLED } from '@/lib/auth-context';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
 import { ShellEnhancer } from '@/components/layout/ShellEnhancer';
@@ -36,23 +36,20 @@ export default function AppLayout({
 
   useEffect(() => {
     if (!isLoading && !user) {
-      router.push('/login');
+      router.replace('/login');
     }
   }, [user, isLoading, router]);
 
-  if (isLoading) {
+  // Signed out (or session expired): keep the loader up while /login loads instead of an empty page.
+  if (isLoading || !user) {
     return (
       <div className="app-shell min-h-screen flex flex-col items-center justify-center gap-4">
         <Spinner size="lg" />
         <p className="font-mono text-[11px] font-semibold text-[#4A5568] tracking-[0.2em] uppercase">
-          Securing session<span className="loader-dots" aria-hidden />
+          {isLoading ? 'Securing session' : 'Redirecting to sign in'}<span className="loader-dots" aria-hidden />
         </p>
       </div>
     );
-  }
-
-  if (!user) {
-    return null;
   }
 
   // Route-Level Security Guard Check
@@ -122,6 +119,7 @@ export default function AppLayout({
                     <span>Return to Executive Deck</span>
                   </Button>
 
+                  {DEMO_PERSONAS_ENABLED && (
                   <div className="flex items-center gap-2 bg-[#FBFAF7] px-3 py-1.5 rounded-[8px] border border-[#DCD8CE]">
                     <UserCheck className="h-4 w-4 text-[#0F5E63]" />
                     <span className="text-xs font-medium text-[#14213D]">Switch Role:</span>
@@ -137,6 +135,7 @@ export default function AppLayout({
                       ))}
                     </select>
                   </div>
+                  )}
                 </div>
               </div>
             ) : (

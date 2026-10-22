@@ -55,9 +55,9 @@ export const Surface = React.forwardRef<HTMLDivElement, SurfaceProps>(
       default: 'border border-[#DCD8CE]',
       subtle: 'border border-[#ECE9E2]',
       brand: 'border border-[#0F5E63]',
-      danger: 'border border-red-200',
-      warning: 'border border-amber-200',
-      success: 'border border-emerald-200',
+      danger: 'border border-[#F3C7CF]',
+      warning: 'border border-[#E9C9B4]',
+      success: 'border border-[#D0E5E3]',
       none: 'border-0',
     };
 

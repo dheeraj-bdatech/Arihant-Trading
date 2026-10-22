@@ -8,12 +8,14 @@ import {
   ArrowLeft,
   ArrowRightLeft,
   BarChart3,
+  CalendarX,
   CheckCircle2,
   ClipboardCheck,
   Download,
   FileText,
   Landmark,
   LayoutList,
+  Paperclip,
   Receipt,
   RefreshCw,
   Settings2,
@@ -236,9 +238,11 @@ export const ProcessModal: React.FC<{
   errors: Record<string, string>;
   /** The server's refusal (e.g. future-dated lines) — shown inside the dialog so it never fails silently. */
   serverError?: string | null;
+  /** Reviewer flags on the lines being paid: future-dated lines block payment; missing receipts are a warning. */
+  anomalies?: { futureDated: number; receiptMissing: number };
   onClose: () => void;
   onConfirm: (v: { tally_voucher_ref: string; payment_reference: string; payment_date: string }) => void;
-}> = ({ open, busy, total, errors, serverError, onClose, onConfirm }) => {
+}> = ({ open, busy, total, errors, serverError, anomalies, onClose, onConfirm }) => {
   const blank = () => ({ tally_voucher_ref: '', payment_reference: '', payment_date: istToday() });
   const [v, setV] = useState(blank);
   const [touched, setTouched] = useState(false);
@@ -263,10 +267,23 @@ export const ProcessModal: React.FC<{
         onSubmit={(e) => {
           e.preventDefault();
           setTouched(true);
+          if (anomalies && anomalies.futureDated > 0) return;
           if (!Object.keys(local).length) onConfirm({ ...v, tally_voucher_ref: v.tally_voucher_ref.trim(), payment_reference: v.payment_reference.trim() });
         }}
         className="space-y-4"
       >
+        {anomalies && anomalies.futureDated > 0 && (
+          <InfoCallout variant="danger" title="Future-dated expenses">
+            {anomalies.futureDated} line{anomalies.futureDated === 1 ? ' is' : 's are'} dated after today ({formatExpenseDate(istToday())}). A claim cannot be paid
+            until the dates are corrected — send it back for clarification or reject it.
+          </InfoCallout>
+        )}
+        {anomalies && anomalies.receiptMissing > 0 && (
+          <InfoCallout variant="warning" title="Receipt missing">
+            {anomalies.receiptMissing} payable line{anomalies.receiptMissing === 1 ? ' has' : 's have'} no receipt although the category requires one.
+            Paying it is recorded in the claim history.
+          </InfoCallout>
+        )}
         {serverError && (
           <InfoCallout variant="danger" title="Not marked as paid">
             <p>{serverError}</p>
@@ -294,7 +311,7 @@ export const ProcessModal: React.FC<{
           <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" className="w-full sm:w-auto" isLoading={busy}>
+          <Button type="submit" className="w-full sm:w-auto" isLoading={busy} disabled={Boolean(anomalies && anomalies.futureDated > 0)}>
             Mark paid
           </Button>
         </div>
@@ -303,23 +320,80 @@ export const ProcessModal: React.FC<{
   );
 };
 
-/** How a processed claim was paid: bank reference + date (and the Tally voucher). */
+/** How a processed claim was paid: bank reference (UTR) + date and the Tally voucher. */
 export const PaymentInfo: React.FC<{
   claim: { status: string; payment_reference?: string | null; payment_date?: string | null; tally_voucher_ref?: string | null };
   className?: string;
 }> = ({ claim, className = '' }) => {
   if (claim.status !== 'processed') return null;
   return (
-    <div className={`text-[11px] text-[#4A5568] ${className}`}>
+    <div className={`break-words text-[11px] text-[#4A5568] ${className}`}>
       {claim.payment_reference ? (
         <>Paid · UTR <span className="font-mono text-[#14213D]">{claim.payment_reference}</span></>
       ) : (
         <span className="text-[#9A3412]">Paid · no bank reference recorded</span>
       )}
       {claim.payment_date && <> · <DateText value={claim.payment_date} /></>}
+      {claim.tally_voucher_ref && <> · Voucher <span className="font-mono text-[#14213D]">{claim.tally_voucher_ref}</span></>}
     </div>
   );
 };
+
+/** Reviewer flags on a claim row: lines dated after today (IST) and lines missing a required receipt. */
+export const AnomalyChips: React.FC<{ futureDated?: number | null; receiptMissing?: number | null; className?: string }> = ({ futureDated, receiptMissing, className = '' }) => {
+  if (!futureDated && !receiptMissing) return null;
+  return (
+    <span className={`inline-flex flex-wrap gap-1 ${className}`}>
+      {futureDated ? (
+        <Badge variant="danger" size="sm" className="gap-1 whitespace-nowrap" title="Expense dated after today — cannot be approved or paid">
+          <CalendarX className="h-3 w-3" /> Future-dated{futureDated > 1 ? ` ×${futureDated}` : ''}
+        </Badge>
+      ) : null}
+      {receiptMissing ? (
+        <Badge variant="warning" size="sm" className="gap-1 whitespace-nowrap" title="A receipt is required for this category and amount">
+          <Paperclip className="h-3 w-3" /> No receipt{receiptMissing > 1 ? ` ×${receiptMissing}` : ''}
+        </Badge>
+      ) : null}
+    </span>
+  );
+};
+
+/**
+ * In-app replacement for window.confirm: `if (!(await confirm({...}))) return;`. Render `confirmDialog` once in the
+ * component; it stacks above any open popup.
+ */
+export function useConfirm() {
+  const [state, setState] = useState<{
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    danger?: boolean;
+    resolve: (ok: boolean) => void;
+  } | null>(null);
+  const confirm = useCallback(
+    (opts: { title: string; description?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) =>
+      new Promise<boolean>((resolve) => setState({ ...opts, resolve })),
+    [],
+  );
+  const settle = (ok: boolean) => {
+    state?.resolve(ok);
+    setState(null);
+  };
+  const confirmDialog = state ? (
+    <Modal isOpen onClose={() => settle(false)} title={state.title} description={state.description} maxWidth="sm">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button variant="ghost" className="w-full sm:w-auto" onClick={() => settle(false)}>
+          {state.cancelLabel || 'Cancel'}
+        </Button>
+        <Button variant={state.danger ? 'danger' : 'primary'} className="w-full sm:w-auto" autoFocus onClick={() => settle(true)}>
+          {state.confirmLabel || 'Confirm'}
+        </Button>
+      </div>
+    </Modal>
+  ) : null;
+  return { confirm, confirmDialog };
+}
 
 export const ReassignModal: React.FC<{
   open: boolean;
@@ -454,11 +528,24 @@ export const Timeline: React.FC<{ history: ExpenseHistory[] }> = ({ history }) =
               {h.actor_name || (h.actor_role === 'system' ? 'System' : '—')}
               {h.actor_role && h.actor_role !== 'system' ? ` · ${h.actor_role.replace(/_/g, ' ')}` : ''}
             </span>
-            <span className="text-[11px] font-mono text-[#8A8578] ml-auto">
+            <span className="text-[11px] font-mono text-[#6B7280] ml-auto">
               {new Date(h.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
             </span>
           </div>
           {h.comment && <p className="mt-1 text-sm text-[#14213D] bg-[#FBFAF7] border border-[#ECE9E2] rounded-lg px-3 py-2">{h.comment}</p>}
+          {h.action === 'process' && h.metadata?.payment_reference && (
+            <p className="mt-1 text-xs text-[#4A5568]">
+              UTR <span className="font-mono text-[#14213D]">{h.metadata.payment_reference}</span>
+              {h.metadata.payment_date && <> · paid <DateText value={h.metadata.payment_date} /></>}
+              {h.metadata.tally_voucher_ref && <> · voucher <span className="font-mono text-[#14213D]">{h.metadata.tally_voucher_ref}</span></>}
+            </p>
+          )}
+          {Array.isArray(h.metadata?.anomalies?.receipt_missing) && h.metadata.anomalies.receipt_missing.length > 0 && (
+            <p className="mt-1 flex items-start gap-1 text-xs text-[#9A3412]">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              Approved without a required receipt on: {h.metadata.anomalies.receipt_missing.map((g: { purpose?: string }) => g.purpose || 'a line').join(', ')}
+            </p>
+          )}
           {h.action === 'clarification_edit' && h.metadata?.before && h.metadata?.after && (
             <p className="mt-1 text-xs text-[#4A5568]">
               {['purpose', 'amount', 'expense_date'].filter((k) => String(h.metadata.before[k]) !== String(h.metadata.after[k])).map((k) => `${k.replace('_', ' ')}: ${h.metadata.before[k]} → ${h.metadata.after[k]}`).join(' · ') || 'Details updated'}

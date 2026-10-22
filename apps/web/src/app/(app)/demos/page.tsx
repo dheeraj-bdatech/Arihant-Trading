@@ -64,7 +64,7 @@ import {
   InfoCallout,
   Checkbox, Spinner, PageLoader, FormSteps, FormSection,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu,
-  RecordViews, toneFor, type RecordItem } from '@/components/ui';
+  RecordTable, RecordViews, formatDateIN, daysFromToday, toneFor, type BadgeProps, type RecordItem, formatDateTimeIN } from '@/components/ui';
 
 // =========================================================================
 // STRUCTURED FAILURE TAXONOMY METADATA (§17 & §18)
@@ -156,8 +156,32 @@ const DEMO_STATUSES: { key: string; label: string }[] = [
   { key: 'rescheduled', label: 'Rescheduled' },
   { key: 'cancelled', label: 'Cancelled' },
 ];
+// A demo's day (confirmed, else requested) as an IST calendar day; outcomes are recorded on or after it.
+const demoDay = (demo: any) => calendarDay(demo?.confirmed_date || demo?.requested_date) || '';
+const isDemoDayAhead = (demo: any) => demoDay(demo) > istToday();
+const dmy = (day?: string | null) => {
+  const d = calendarDay(day);
+  if (!d) return '—';
+  const [y, m, dd] = d.split('-');
+  return `${dd}/${m}/${y}`;
+};
 const demoStatusLabel = (status?: string) =>
   DEMO_STATUSES.find((s) => s.key === status)?.label || String(status || 'Unknown').replace(/_/g, ' ');
+// Register list: demo date stays plain once the demo is closed out (same set as the card's due date).
+const DEMO_DONE = ['completed', 'cancelled', 'failed', 'closed'];
+type BadgeVariant = NonNullable<BadgeProps['variant']>;
+const DEMO_STATUS_BADGE: Record<string, BadgeVariant> = {
+  requested: 'warning',
+  under_planning: 'warning',
+  team_assigned: 'default',
+  equipment_reserved: 'default',
+  confirmed: 'default',
+  rescheduled: 'default',
+  completed: 'success',
+  cancelled: 'danger',
+  failed: 'danger',
+};
+const demoStatusBadge = (status?: string): BadgeVariant => DEMO_STATUS_BADGE[String(status || '')] ?? 'outline';
 
 // Action row at the end of a dialog form. From `sm` up it is the plain divider row it always was (each
 // dialog adds its own `sm:justify-*` / `sm:gap-*`). Phones (bottom sheet): pinned to the bottom edge of
@@ -472,7 +496,7 @@ function DemosPageContent() {
       const statusTag = isAvail
         ? '🟢 [AVAILABLE]'
         : isReserved
-        ? `🟡 [RESERVED${e.reserved_until ? ` to ${new Date(e.reserved_until).toLocaleDateString()}` : ''}]`
+        ? `🟡 [RESERVED${e.reserved_until ? ` to ${formatDateIN(e.reserved_until)}` : ''}]`
         : isMaint
         ? '🔴 [MAINTENANCE]'
         : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
@@ -530,6 +554,9 @@ function DemosPageContent() {
   // 409 from the API when the unit is booked for another demo: who holds it and which bid is worth more (§16).
   const [reserveConflict, setReserveConflict] = useState<any | null>(null);
   const [overrideReason, setOverrideReason] = useState('');
+  // A unit of another product than the demo requested is a substitute: hidden by default, and needs a reason.
+  const [showOtherProducts, setShowOtherProducts] = useState(false);
+  const [substituteReason, setSubstituteReason] = useState('');
   const canOverrideConflict = user?.role === 'management' || user?.role === 'admin';
   const [modalEquipmentUnits, setModalEquipmentUnits] = useState<any[]>([]);
   const [isLoadingModalEquipment, setIsLoadingModalEquipment] = useState(false);
@@ -538,7 +565,10 @@ function DemosPageContent() {
   const [confirmForm, setConfirmForm] = useState({
     confirmed_date: '',
     remarks: '',
+    extend_reservation: false,
   });
+  // 400 DATE_OUTSIDE_RESERVATION: the confirmed day is not covered by this demo's equipment reservation.
+  const [confirmError, setConfirmError] = useState<{ message: string; outsideReservation: boolean } | null>(null);
 
   // 5. Reschedule Form
   const [rescheduleForm, setRescheduleForm] = useState({
@@ -772,6 +802,9 @@ function DemosPageContent() {
     setIsSubmitting(true);
 
     try {
+      if ((calendarDay(newDemo.requested_date) || '') < istToday()) {
+        throw new Error('The requested trial date is in the past. Choose today or a later date.');
+      }
       const payload: any = {
         ...newDemo,
         product_id: newDemo.product_id || undefined,
@@ -885,6 +918,8 @@ function DemosPageContent() {
     setReserveModalError(null);
     setReserveConflict(null);
     setOverrideReason('');
+    setShowOtherProducts(false);
+    setSubstituteReason('');
     const dateStr = calendarDay(demo.confirmed_date || demo.requested_date) || istToday();
     setReserveForm({
       equipment_id: '',
@@ -942,6 +977,14 @@ function DemosPageContent() {
     const activeRoster = modalEquipmentUnits.length > 0 ? modalEquipmentUnits : equipmentList;
     const chosenUnit = activeRoster.find((u) => u.id === reserveForm.equipment_id);
 
+    const isSubstitute = !!(chosenUnit && selectedDemo?.product_id && chosenUnit.product_id && chosenUnit.product_id !== selectedDemo.product_id);
+    if (isSubstitute && substituteReason.trim().length < 5) {
+      setReserveModalError(
+        `${chosenUnit.model} is a ${chosenUnit.product_name || 'different product'} unit, but this demo is for ${selectedDemo.product_name || 'another product'}. Give a reason (at least 5 characters) for sending a substitute, or pick a matching unit.`,
+      );
+      return;
+    }
+
     if (chosenUnit) {
       const isAlreadyOnThisDemo = selectedDemo?.reservations?.some((r: any) => r.equipment_id === chosenUnit.id);
       if (isAlreadyOnThisDemo) {
@@ -962,7 +1005,7 @@ function DemosPageContent() {
       // management override in favour of the higher-value one. Units in maintenance are never bookable.
       if (inMaintenance || (isUnavailable && !canOverrideConflict)) {
         setReserveModalError(
-          `Equipment unit ${chosenUnit.model} (${chosenUnit.serial_no || 'Unit'}) is already reserved for the chosen date window (${fromDate} to ${toDate}). Please select an available unit.`,
+          `Equipment unit ${chosenUnit.model} (${chosenUnit.serial_no || 'Unit'}) is already reserved for the chosen date window (${dmy(fromDate)} to ${dmy(toDate)}). Please select an available unit.`,
         );
         return;
       }
@@ -976,6 +1019,7 @@ function DemosPageContent() {
         reserved_from: fromDate,
         reserved_to: toDate,
         ...(override ? { override_conflict: true, override_reason: overrideReason.trim() } : {}),
+        ...(isSubstitute ? { product_mismatch_reason: substituteReason.trim() } : {}),
       });
       setReserveConflict(null);
 
@@ -1082,13 +1126,24 @@ function DemosPageContent() {
     setActionError(null);
     setIsSubmitting(true);
 
+    setConfirmError(null);
     try {
-      await api.post(`/demos/${selectedDemo.id}/confirm`, confirmForm);
+      if ((calendarDay(confirmForm.confirmed_date) || '') < istToday()) {
+        throw new Error('The confirmed demo date is in the past. Choose today or a later date.');
+      }
+      await api.post(`/demos/${selectedDemo.id}/confirm`, {
+        confirmed_date: confirmForm.confirmed_date,
+        remarks: confirmForm.remarks,
+        ...(confirmForm.extend_reservation ? { extend_reservation: true } : {}),
+      });
       setActionSuccess(`Demonstration date confirmed for ${selectedDemo.demo_no}.`);
       setIsConfirmDateOpen(false);
       await fetchDemosData();
     } catch (err: any) {
-      setActionError(err.message || 'Failed to confirm date.');
+      setConfirmError({
+        message: err.message || 'Failed to confirm date.',
+        outsideReservation: err?.data?.code === 'DATE_OUTSIDE_RESERVATION',
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -1131,6 +1186,11 @@ function DemosPageContent() {
   };
 
   const handleOpenOutcome = (demo: any) => {
+    // An outcome describes a trial that has happened: only on or after the demo day (IST).
+    if (!demo.outcome && isDemoDayAhead(demo)) {
+      setActionError(`Demo ${demo.demo_no} is scheduled for ${dmy(demoDay(demo))}. Its outcome can only be recorded on or after that date.`);
+      return;
+    }
     setSelectedDemo(demo);
     if (demo.outcome) {
       setOutcomeForm({
@@ -1151,14 +1211,15 @@ function DemosPageContent() {
         completed: true,
         result: 'success',
         failure_reason: 'TECHNICAL_FAILURE',
-        customer_response: 'Customer appreciated live sensitivity and false-alarm rejection',
-        technical_performance: 'Zero misfires during comprehensive field trial',
-        product_suitability: 'Met all DGQA & MHA security trial parameters',
+        // No pre-written narrative: what the team enters is what feeds the failure analysis / auto-ticket.
+        customer_response: '',
+        technical_performance: '',
+        product_suitability: '',
         decision_maker_present: true,
         competitor_involved: '',
-        next_step: 'Commercial quotation & tender participation',
+        next_step: '',
         opportunity_stage: 'Proposal',
-        remarks: 'Demonstration successfully witnessed by procurement committee.',
+        remarks: '',
       });
     }
     setIsOutcomeOpen(true);
@@ -1171,6 +1232,9 @@ function DemosPageContent() {
     setIsSubmitting(true);
 
     try {
+      if (outcomeForm.result === 'fail' && !outcomeForm.technical_performance.trim() && !outcomeForm.remarks.trim()) {
+        throw new Error('Describe what went wrong in the trial (technical performance or remarks) when the demo was unsuccessful.');
+      }
       await api.post(`/demos/${selectedDemo.id}/outcome`, outcomeForm);
       setActionSuccess(`Demo ${selectedDemo.demo_no} marked completed and outcome logged.`);
       setIsOutcomeOpen(false);
@@ -1287,17 +1351,20 @@ function DemosPageContent() {
 
   const openConfirmDate = (demo: any) => {
     setSelectedDemo(demo);
+    const day = demoDay(demo);
     setConfirmForm({
-      confirmed_date: demo.confirmed_date || demo.requested_date || istToday(),
+      confirmed_date: day && day >= istToday() ? day : istToday(),
       remarks: demo.remarks || '',
+      extend_reservation: false,
     });
+    setConfirmError(null);
     setIsConfirmDateOpen(true);
   };
 
   const openRescheduleDemo = (demo: any) => {
     setSelectedDemo(demo);
     setRescheduleForm({
-      new_date: demo.confirmed_date || demo.requested_date || istToday(),
+      new_date: demoDay(demo) || istToday(),
       reason: '',
     });
     setIsRescheduleOpen(true);
@@ -1367,7 +1434,7 @@ function DemosPageContent() {
 
           {demo.visit_id && (
             <span
-              className="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200"
+              className="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]"
               title="Originating from planned customer field visit"
             >
               <MapPin className="h-3 w-3" />
@@ -1376,7 +1443,7 @@ function DemosPageContent() {
           )}
 
           {demo.travel_required && (
-            <span className="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+            <span className="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
               <Plane className="h-3 w-3" />
               TRAVEL REQ.
             </span>
@@ -1418,7 +1485,7 @@ function DemosPageContent() {
           <p className="text-xs text-[#4A5568] mt-0.5 flex items-center gap-1">
             <Calendar className="h-3.5 w-3.5 text-[#4A5568]" />
             {demo.confirmed_date ? (
-              <span className="text-emerald-700 font-bold">
+              <span className="text-[#0B4A4E] font-bold">
                 Confirmed: {formatDemoDate(demo.confirmed_date)}
               </span>
             ) : (
@@ -1437,7 +1504,7 @@ function DemosPageContent() {
             {demo.assignee_name ? (
               <span className="text-[#0F5E63] font-bold">{demo.assignee_name}</span>
             ) : (
-              <span className="text-amber-700 italic font-medium">Unassigned</span>
+              <span className="text-[#7C2D12] italic font-medium">Unassigned</span>
             )}
           </p>
           <p className="text-xs text-[#4A5568] mt-0.5">
@@ -1460,8 +1527,8 @@ function DemosPageContent() {
 
       {/* Reschedule / Cancellation Banner if applicable */}
       {demo.reschedule_reason && (
-        <div className="p-2.5 mb-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-center gap-2">
-          <Clock className="h-4 w-4 text-amber-600 flex-shrink-0" />
+        <div className="p-2.5 mb-3 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12] flex items-center gap-2">
+          <Clock className="h-4 w-4 text-[#9A3412] flex-shrink-0" />
           <span>
             <strong>Rescheduled from {formatDemoDate(demo.rescheduled_from)}:</strong>{' '}
             {demo.reschedule_reason}
@@ -1470,8 +1537,8 @@ function DemosPageContent() {
       )}
 
       {demo.cancellation_reason && (
-        <div className="p-2.5 mb-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-900 flex items-center gap-2">
-          <XCircle className="h-4 w-4 text-rose-600 flex-shrink-0" />
+        <div className="p-2.5 mb-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] flex items-center gap-2">
+          <XCircle className="h-4 w-4 text-[#881337] flex-shrink-0" />
           <span>
             <strong>Cancellation Reason:</strong> {demo.cancellation_reason}
           </span>
@@ -1508,17 +1575,17 @@ function DemosPageContent() {
                     Depot: <strong>{res.current_location}</strong> • Window: {formatDemoDate(res.reserved_from)} to {formatDemoDate(res.reserved_to)}
                   </p>
                   {res.approved_by_name && (
-                    <p className="text-[11px] text-emerald-700">
+                    <p className="text-[11px] text-[#0B4A4E]">
                       Approved by: {res.approved_by_name}
                     </p>
                   )}
                   {res.rejection_reason && (
-                    <p className="text-[11px] text-rose-700">
+                    <p className="text-[11px] text-[#700F2D]">
                       Rejection: {res.rejection_reason}
                     </p>
                   )}
                   {res.alt_model && (
-                    <p className="text-[11px] text-indigo-700">
+                    <p className="text-[11px] text-[#0B4A4E]">
                       Alt Unit: {res.alt_model} ({res.alt_serial_no || 'N/A'}) @ {res.alt_location}
                     </p>
                   )}
@@ -1533,7 +1600,7 @@ function DemosPageContent() {
                         variant="outline"
                         size="xs"
                         onClick={() => handleApproveReservation(res)}
-                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
+                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3] hover:bg-[#E3EFEE]"
                       >
                         <Check className="h-3 w-3 mr-1" />
                         Approve
@@ -1542,7 +1609,7 @@ function DemosPageContent() {
                         variant="outline"
                         size="xs"
                         onClick={() => handleOpenAllocate(res, demo)}
-                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
+                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#E3EFEE] text-[#0F5E63] border-[#D0E5E3] hover:bg-[#E3EFEE]"
                       >
                         Allocate Alt Unit
                       </Button>
@@ -1550,7 +1617,7 @@ function DemosPageContent() {
                         variant="outline"
                         size="xs"
                         onClick={() => handleOpenReject(res, demo)}
-                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
+                        className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#FCE8EC] text-[#700F2D] border-[#F3C7CF] hover:bg-[#FCE8EC]"
                       >
                         <X className="h-3 w-3 mr-1" />
                         Reject
@@ -1579,10 +1646,10 @@ function DemosPageContent() {
         <div
           className={`p-3.5 mb-3 rounded-xl border text-xs space-y-2.5 ${
             demo.outcome.result === 'success'
-              ? 'bg-emerald-50/60 border-emerald-200 text-emerald-950'
+              ? 'bg-[#E3EFEE]/60 border-[#D0E5E3] text-[#0B4A4E]'
               : demo.outcome.result === 'fail'
-              ? 'bg-rose-50/60 border-rose-200 text-rose-950'
-              : 'bg-amber-50/60 border-amber-200 text-amber-950'
+              ? 'bg-[#FCE8EC]/60 border-[#F3C7CF] text-[#700F2D]'
+              : 'bg-[#FFF8EB]/60 border-[#E9C9B4] text-[#7C2D12]'
           }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/5 pb-2">
@@ -1590,10 +1657,10 @@ function DemosPageContent() {
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide border ${
                   demo.outcome.result === 'success'
-                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                    ? 'bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3]'
                     : demo.outcome.result === 'fail'
-                    ? 'bg-rose-100 text-rose-800 border-rose-300'
-                    : 'bg-amber-100 text-amber-800 border-amber-300'
+                    ? 'bg-[#FCE8EC] text-[#700F2D] border-[#F3C7CF]'
+                    : 'bg-[#FBEBDD] text-[#7C2D12] border-[#E9C9B4]'
                 }`}
               >
                 {demo.outcome.result === 'success'
@@ -1602,14 +1669,14 @@ function DemosPageContent() {
                   ? 'Trial Result: Fail / Deficiency'
                   : 'Trial Result: Partial'}
               </span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-white/90 border border-[#DCD8CE] text-gray-700">
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-white/90 border border-[#DCD8CE] text-[#14213D]">
                 Opportunity Stage: {demo.outcome.opportunity_stage || 'Not set'}
               </span>
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
                   demo.outcome.completed
-                    ? 'bg-blue-50 text-blue-700 border-blue-200'
-                    : 'bg-gray-100 text-gray-600 border-gray-200'
+                    ? 'bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3]'
+                    : 'bg-[#ECE9E2] text-[#4A5568] border-[#DCD8CE]'
                 }`}
               >
                 {demo.outcome.completed ? '✓ Demo Completed on Site' : '⚠ Incomplete / Cut Short'}
@@ -1618,12 +1685,12 @@ function DemosPageContent() {
 
             <div>
               {demo.outcome.decision_maker_present ? (
-                <span className="inline-flex items-center gap-1 font-semibold text-[11px] text-emerald-800 bg-emerald-100/70 px-2 py-0.5 rounded-full border border-emerald-200">
+                <span className="inline-flex items-center gap-1 font-semibold text-[11px] text-[#0B4A4E] bg-[#E3EFEE]/70 px-2 py-0.5 rounded-full border border-[#D0E5E3]">
                   <CheckCircle2 className="h-3 w-3" />
                   Decision-Maker Attended
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 font-medium text-[11px] text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full border border-gray-200">
+                <span className="inline-flex items-center gap-1 font-medium text-[11px] text-[#4A5568] bg-[#ECE9E2] px-2 py-0.5 rounded-full border border-[#DCD8CE]">
                   Decision-Maker Absent
                 </span>
               )}
@@ -1631,22 +1698,22 @@ function DemosPageContent() {
           </div>
 
           {demo.outcome.result === 'fail' && demo.outcome.failure_reason && (
-            <div className="p-2 rounded-lg bg-rose-100/80 border border-rose-300 text-rose-900 flex flex-wrap items-center justify-between gap-1 text-[11px]">
+            <div className="p-2 rounded-lg bg-[#FCE8EC]/80 border border-[#F3C7CF] text-[#700F2D] flex flex-wrap items-center justify-between gap-1 text-[11px]">
               <span className="font-bold flex items-center gap-1.5">
-                <AlertTriangle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                <AlertTriangle className="h-3.5 w-3.5 text-[#881337] shrink-0" />
                 <span>
                   Failure Reason:{' '}
                   {FAILURE_REASON_METADATA[demo.outcome.failure_reason]?.label ||
                     demo.outcome.failure_reason.replace(/_/g, ' ')}
                 </span>
               </span>
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-rose-800 border border-rose-200">
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-[#700F2D] border border-[#F3C7CF]">
                 {demo.outcome.failure_reason}
               </span>
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-[11px] pt-1 text-gray-700">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-[11px] pt-1 text-[#14213D]">
             {demo.outcome.customer_response && (
               <div className="bg-white/80 p-2 rounded-lg border border-[#DCD8CE]">
                 <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block">
@@ -1747,7 +1814,14 @@ function DemosPageContent() {
                 },
                 { key: 'confirm', label: 'Confirm Date', icon: <CheckCircle2 />, hidden: !open, onSelect: () => openConfirmDate(demo) },
                 { key: 'resched', label: 'Reschedule', icon: <Clock />, hidden: !open, onSelect: () => openRescheduleDemo(demo) },
-                { key: 'outcome', label: 'Record Outcome', icon: <ShieldCheck />, hidden: !open, onSelect: () => handleOpenOutcome(demo) },
+                {
+                  key: 'outcome',
+                  label: isDemoDayAhead(demo) ? `Record Outcome (from ${dmy(demoDay(demo))})` : 'Record Outcome',
+                  icon: <ShieldCheck />,
+                  hidden: !open,
+                  disabled: isDemoDayAhead(demo),
+                  onSelect: () => handleOpenOutcome(demo),
+                },
                 { key: 'cancel', label: 'Cancel Demo', icon: <X />, danger: true, hidden: !open, onSelect: () => openCancelDemo(demo) },
               ]}
             />
@@ -1790,9 +1864,9 @@ function DemosPageContent() {
             variant="outline"
             size="sm"
             onClick={() => handleOpenAssignTeam(demo)}
-            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-indigo-700 hover:bg-indigo-50"
+            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-[#0B4A4E] hover:bg-[#E3EFEE]"
           >
-            <Users className="h-3.5 w-3.5 mr-1 text-indigo-600" />
+            <Users className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
             {demo.assigned_to ? 'Change Team' : 'Assign Team'}
           </Button>
   
@@ -1800,9 +1874,9 @@ function DemosPageContent() {
             variant="outline"
             size="sm"
             onClick={() => handleOpenReserve(demo)}
-            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-amber-700 hover:bg-amber-50"
+            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-[#7C2D12] hover:bg-[#FFF8EB]"
           >
-            <Package className="h-3.5 w-3.5 mr-1 text-amber-600" />
+            <Package className="h-3.5 w-3.5 mr-1 text-[#9A3412]" />
             Reserve Depot Unit
           </Button>
   
@@ -1820,7 +1894,7 @@ function DemosPageContent() {
   
       {/* Coordinator View of Reservations (§16) */}
       {demo.reservations && demo.reservations.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-[#E2ECF8] space-y-2">
+        <div className="mt-3 pt-3 border-t border-[#E3EFEE] space-y-2">
           <span className="text-xs font-bold text-[#14213D] flex items-center gap-1.5">
             <Package className="h-3.5 w-3.5 text-[#0F5E63]" />
             Allocated Fleet Units & Custodian Status:
@@ -1829,7 +1903,7 @@ function DemosPageContent() {
             {demo.reservations.map((res: any) => (
               <div
                 key={res.id}
-                className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] text-xs flex flex-col justify-between gap-1.5"
+                className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-xs flex flex-col justify-between gap-1.5"
               >
                 <div>
                   <div className="flex items-start justify-between gap-2 sm:items-center">
@@ -1846,25 +1920,25 @@ function DemosPageContent() {
                     Depot: {res.current_location} • {formatDemoDate(res.reserved_from)} to {formatDemoDate(res.reserved_to)}
                   </p>
                   {res.approved_by_name && (
-                    <p className="text-[11px] text-emerald-700">Approved by: {res.approved_by_name}</p>
+                    <p className="text-[11px] text-[#0B4A4E]">Approved by: {res.approved_by_name}</p>
                   )}
                   {res.rejection_reason && (
-                    <p className="text-[11px] text-rose-700">Reason: {res.rejection_reason}</p>
+                    <p className="text-[11px] text-[#700F2D]">Reason: {res.rejection_reason}</p>
                   )}
                   {res.alt_model && (
-                    <p className="text-[11px] text-indigo-700">
+                    <p className="text-[11px] text-[#0B4A4E]">
                       Alternative: {res.alt_model} ({res.alt_serial_no || 'N/A'})
                     </p>
                   )}
                 </div>
   
                 {res.status === 'requested' && (
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#E2ECF8]">
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#E3EFEE]">
                     <Button
                       variant="outline"
                       size="xs"
                       onClick={() => handleApproveReservation(res)}
-                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
+                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3] hover:bg-[#E3EFEE]"
                     >
                       <Check className="h-3 w-3 mr-1" />
                       Approve
@@ -1873,7 +1947,7 @@ function DemosPageContent() {
                       variant="outline"
                       size="xs"
                       onClick={() => handleOpenAllocate(res, demo)}
-                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-blue-50 text-[#0F5E63] border-blue-200 hover:bg-blue-100"
+                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#E3EFEE] text-[#0F5E63] border-[#D0E5E3] hover:bg-[#E3EFEE]"
                     >
                       Allocate Alt Unit
                     </Button>
@@ -1881,7 +1955,7 @@ function DemosPageContent() {
                       variant="outline"
                       size="xs"
                       onClick={() => handleOpenReject(res, demo)}
-                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100"
+                      className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#FCE8EC] text-[#700F2D] border-[#F3C7CF] hover:bg-[#FCE8EC]"
                     >
                       <X className="h-3 w-3 mr-1" />
                       Reject
@@ -1924,7 +1998,9 @@ function DemosPageContent() {
       if (!demo.assigned_to && canAssign && ['requested', 'under_planning'].includes(demo.status)) {
         primary = { label: 'Assign team', onClick: () => handleOpenAssignTeam(demo) };
       } else if (demo.status === 'confirmed') {
-        primary = { label: 'Record outcome', onClick: () => handleOpenOutcome(demo) };
+        primary = isDemoDayAhead(demo)
+          ? { label: `Outcome from ${dmy(demoDay(demo))}`, disabled: true, onClick: () => {} }
+          : { label: 'Record outcome', onClick: () => handleOpenOutcome(demo) };
       } else {
         primary = { label: 'Confirm date', onClick: () => openConfirmDate(demo) };
       }
@@ -2024,7 +2100,7 @@ function DemosPageContent() {
             value={analyticsData.overview.completed_demos}
             valueColor="emerald"
             subtext={`${analyticsData.overview.successful} successful trials`}
-            icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+            icon={<CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />}
           />
 
           <StatCard
@@ -2041,7 +2117,7 @@ function DemosPageContent() {
             value={`${analyticsData.overview.cancelled_demos} / ${analyticsData.overview.rescheduled_demos}`}
             valueColor="amber"
             subtext="Fleet reallocations logged"
-            icon={<Clock className="h-4 w-4 text-amber-600" />}
+            icon={<Clock className="h-4 w-4 text-[#9A3412]" />}
           />
         </StatGrid>
       )}
@@ -2053,21 +2129,21 @@ function DemosPageContent() {
             value={failedDemos.length}
             subtext="Field deficiencies & objections"
             valueColor="rose"
-            icon={<AlertTriangle className="h-4 w-4 text-rose-600" />}
+            icon={<AlertTriangle className="h-4 w-4 text-[#881337]" />}
           />
           <StatCard
             label="Technical Breakdowns"
             value={failedDemos.filter((d) => d.outcome?.failure_reason === 'TECHNICAL_FAILURE').length}
             subtext="Hardware / calibration / defect"
             valueColor="rose"
-            icon={<Wrench className="h-4 w-4 text-rose-600" />}
+            icon={<Wrench className="h-4 w-4 text-[#881337]" />}
           />
           <StatCard
             label="Module 6 Auto-Tickets"
             value={failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length}
             subtext="Breakdown tickets auto-logged"
             valueColor="amber"
-            icon={<ShieldAlert className="h-4 w-4 text-amber-600" />}
+            icon={<ShieldAlert className="h-4 w-4 text-[#9A3412]" />}
           />
           <StatCard
             label="Quarantined Fleet Units"
@@ -2086,14 +2162,14 @@ function DemosPageContent() {
           {activeTab === 'pipeline' && (
             <>
               <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
                 <input
                   type="search"
                   aria-label="Search demos"
                   placeholder="Search demo ID, client, product, assignee…"
                   value={filterSearch}
                   onChange={(e) => setFilterSearch(e.target.value)}
-                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -2185,14 +2261,14 @@ function DemosPageContent() {
           {activeTab === 'failures' && (
             <>
               <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
                 <input
                   type="search"
                   aria-label="Search incidents"
                   placeholder="Search client, location, product, S/N, ticket #…"
                   value={failSearchQuery}
                   onChange={(e) => setFailSearchQuery(e.target.value)}
-                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -2332,11 +2408,83 @@ function DemosPageContent() {
               const extraLanes = Array.from(new Set(filteredDemos.map((d) => d.status as string)))
                 .filter((s) => s && !DEMO_STATUSES.some((l) => l.key === s))
                 .map((s) => ({ key: s, label: demoStatusLabel(s) }));
+              const demoItems = filteredDemos.map(toDemoRecord);
+              const demoList = filteredDemos.length ? (
+                <RecordTable items={demoItems}>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Demo Request No.</TableHead>
+                        <TableHead>Customer & Location</TableHead>
+                        <TableHead>Product / Equipment</TableHead>
+                        <TableHead>Assigned To</TableHead>
+                        <TableHead>Demo Date</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredDemos.map((demo, idx) => {
+                        const item = demoItems[idx];
+                        const demoDate = demo.confirmed_date || demo.requested_date;
+                        const daysLeft = DEMO_DONE.includes(demo.status) ? null : daysFromToday(demoDate);
+                        const product = demo.product_name || demo.equipment_required;
+                        const owner = demo.assignee_name || (demo.requested_by_name ? `By ${demo.requested_by_name}` : '');
+                        return (
+                          <TableRow key={item.key}>
+                            <TableCell className="font-bold whitespace-nowrap">
+                              <span className="font-mono text-[#0F5E63]">{demo.demo_no || '-'}</span>
+                            </TableCell>
+                            <TableCell className="font-bold text-[#14213D]">
+                              {demo.organisation_name || 'Client Organisation'}
+                              <div className="text-[10px] text-[#4A5568] font-normal">{demo.location || demo.city || '-'}</div>
+                            </TableCell>
+                            <TableCell className="text-[#14213D] max-w-[240px] truncate" title={product || undefined}>
+                              {product || '-'}
+                            </TableCell>
+                            <TableCell className="text-[#4A5568] whitespace-nowrap">{owner || '-'}</TableCell>
+                            <TableCell className="font-mono whitespace-nowrap">
+                              {formatDateIN(demoDate)}
+                              {daysLeft !== null && daysLeft >= 0 && daysLeft <= 7 && (
+                                <div className="text-[10px] font-bold text-[#881337]">{daysLeft === 0 ? 'TODAY' : `${daysLeft} DAYS LEFT`}</div>
+                              )}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap">
+                              <Badge variant={demoStatusBadge(demo.status)} size="sm" className="uppercase font-bold">
+                                {demoStatusLabel(demo.status)}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-2">
+                                {item.primary && (
+                                  <Button
+                                    size="sm"
+                                    variant="primary"
+                                    disabled={item.primary.disabled}
+                                    onClick={item.primary.onClick}
+                                    className="shadow-xs text-xs"
+                                  >
+                                    {item.primary.label}
+                                  </Button>
+                                )}
+                                <Button size="sm" variant="secondary" onClick={() => setLinkedDemo(demo)} className="shadow-xs text-xs">
+                                  Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </RecordTable>
+              ) : undefined;
               return (
                 <RecordViews
                   storageKey="demos"
-                  defaultView="cards"
-                  items={filteredDemos.map(toDemoRecord)}
+                  defaultView="list"
+                  items={demoItems}
+                  list={demoList}
                   lanes={[...DEMO_STATUSES, ...extraLanes].map((l) => ({ ...l, tone: toneFor(l.label) }))}
                   laneOf={(i) => statusById.get(i.key) || ''}
                   summary={
@@ -2399,7 +2547,7 @@ function DemosPageContent() {
           <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <h2 className="text-base font-bold text-[#14213D] flex items-center gap-2">
-                <Wrench className="h-5 w-5 text-amber-600" />
+                <Wrench className="h-5 w-5 text-[#9A3412]" />
                 Demo Dispatch & Planning Workbench
               </h2>
               <p className="text-xs text-[#4A5568] mt-0.5">
@@ -2517,23 +2665,23 @@ function DemosPageContent() {
                   </span>
                 </div>
 
-                <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200">
-                  <span className="text-xs font-medium text-emerald-700 block">Available Now</span>
-                  <span className="text-xl font-bold text-emerald-800">
+                <div className="p-3 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3]">
+                  <span className="text-xs font-medium text-[#0B4A4E] block">Available Now</span>
+                  <span className="text-xl font-bold text-[#0B4A4E]">
                     {availabilityResults.summary.available}
                   </span>
                 </div>
 
-                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200">
-                  <span className="text-xs font-medium text-amber-700 block">Reserved for Demos</span>
-                  <span className="text-xl font-bold text-amber-800">
+                <div className="p-3 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4]">
+                  <span className="text-xs font-medium text-[#7C2D12] block">Reserved for Demos</span>
+                  <span className="text-xl font-bold text-[#7C2D12]">
                     {availabilityResults.summary.reserved}
                   </span>
                 </div>
 
-                <div className="p-3 rounded-lg bg-rose-50 border border-rose-200">
-                  <span className="text-xs font-medium text-rose-700 block">In Maintenance</span>
-                  <span className="text-xl font-bold text-rose-800">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF]">
+                  <span className="text-xs font-medium text-[#700F2D] block">In Maintenance</span>
+                  <span className="text-xl font-bold text-[#700F2D]">
                     {availabilityResults.summary.maintenance}
                   </span>
                 </div>
@@ -2563,9 +2711,9 @@ function DemosPageContent() {
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#E2ECF8]">
+                <tbody className="divide-y divide-[#E3EFEE]">
                   {equipmentList.map((unit) => (
-                    <tr key={unit.id} className="hover:bg-[#F0F5FF] transition-colors">
+                    <tr key={unit.id} className="hover:bg-[#E3EFEE] transition-colors">
                       <td className="py-3 px-4">
                         <p className="font-semibold text-[#14213D]">{unit.model}</p>
                         <span className="font-mono text-xs text-[#4A5568]">
@@ -2648,7 +2796,7 @@ function DemosPageContent() {
               {/* Structured Failure Analysis Breakdown & Recurring Pattern Matrix (§18 & §19) */}
               <Card className="p-4 sm:p-6 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs space-y-6">
                 <SectionHeader
-                  icon={<AlertTriangle className="h-5 w-5 text-rose-500" />}
+                  icon={<AlertTriangle className="h-5 w-5 text-[#881337]" />}
                   title="Management Recurring Failure Pattern Analysis (§17 & §18)"
                   description="Systematic taxonomy of trial deficiencies to understand why demonstrations fail and direct engineering R&D, commercial terms, and field prep protocols."
                   badge={<Badge variant="danger">{analyticsData.overview.unsuccessful} Total Failures Recorded</Badge>}
@@ -2678,9 +2826,9 @@ function DemosPageContent() {
                                   {item.count} trials ({item.percentage}%)
                                 </span>
                               </div>
-                              <div className="w-full bg-[#E2ECF8] h-2 rounded-full overflow-hidden">
+                              <div className="w-full bg-[#E3EFEE] h-2 rounded-full overflow-hidden">
                                 <div
-                                  className="bg-rose-500 h-full rounded-full transition-all"
+                                  className="bg-[#881337] h-full rounded-full transition-all"
                                   style={{ width: `${Math.max(item.percentage, 4)}%` }}
                                 />
                               </div>
@@ -2718,7 +2866,7 @@ function DemosPageContent() {
                               const pct = found?.percentage || 0;
 
                               return (
-                                <TableRow key={key} className={count > 0 ? 'bg-rose-50/20' : 'hover:bg-[#FBFAF7]'}>
+                                <TableRow key={key} className={count > 0 ? 'bg-[#FCE8EC]/20' : 'hover:bg-[#FBFAF7]'}>
                                   <TableCell className="py-3 px-3">
                                     <div className="font-bold text-[#14213D]">{meta.label}</div>
                                     <div className="text-[11px] text-[#4A5568]">{meta.description}</div>
@@ -2727,21 +2875,21 @@ function DemosPageContent() {
                                     <span
                                       className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ${
                                         meta.severity === 'critical'
-                                          ? 'bg-rose-100 text-rose-800 border-rose-200'
+                                          ? 'bg-[#FCE8EC] text-[#700F2D] border-[#F3C7CF]'
                                           : meta.severity === 'high'
-                                          ? 'bg-amber-100 text-amber-800 border-amber-200'
-                                          : 'bg-blue-50 text-blue-700 border-blue-200'
+                                          ? 'bg-[#FBEBDD] text-[#7C2D12] border-[#E9C9B4]'
+                                          : 'bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3]'
                                       }`}
                                     >
                                       {meta.severity}
                                     </span>
                                   </TableCell>
                                   <TableCell className="py-3 px-2 text-center">
-                                    <span className={`font-mono font-bold ${count > 0 ? 'text-rose-600' : 'text-gray-400'}`}>
+                                    <span className={`font-mono font-bold ${count > 0 ? 'text-[#881337]' : 'text-[#6B7280]'}`}>
                                       {count} ({pct}%)
                                     </span>
                                   </TableCell>
-                                  <TableCell className="py-3 px-3 text-[11px] text-gray-700">
+                                  <TableCell className="py-3 px-3 text-[11px] text-[#14213D]">
                                     {meta.typicalRootCause}
                                   </TableCell>
                                   <TableCell className="py-3 px-3 text-[11px] text-[#0F5E63] font-medium">
@@ -2786,10 +2934,10 @@ function DemosPageContent() {
                       <div key={idx} className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-1">
                         <div className="font-bold text-[#14213D] text-xs">{pf.product_name}</div>
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className="text-rose-700 font-medium">
+                          <span className="text-[#700F2D] font-medium">
                             {FAILURE_REASON_METADATA[pf.failure_reason]?.label || pf.failure_reason.replace(/_/g, ' ')}
                           </span>
-                          <span className="font-mono font-bold bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded border border-rose-200">
+                          <span className="font-mono font-bold bg-[#FCE8EC] text-[#700F2D] px-1.5 py-0.2 rounded border border-[#F3C7CF]">
                             {pf.fail_count} failed
                           </span>
                         </div>
@@ -2820,25 +2968,25 @@ function DemosPageContent() {
                     className="mb-4"
                   />
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-200">
+                    <div className="p-4 rounded-xl bg-[#E3EFEE]/50 border border-[#D0E5E3]">
                       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 mb-2">
-                        <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">
+                        <span className="text-xs font-bold text-[#0B4A4E] uppercase tracking-wider">
                           Decision-Maker Attended Trial
                         </span>
-                        <span className="text-xs font-bold text-emerald-700">
+                        <span className="text-xs font-bold text-[#0B4A4E]">
                           {analyticsData.decision_maker_impact.attended.rate_percent}% Success Rate
                         </span>
                       </div>
-                      <p className="text-2xl font-bold text-emerald-950">
+                      <p className="text-2xl font-bold text-[#0B4A4E]">
                         {analyticsData.decision_maker_impact.attended.successful} /{' '}
                         {analyticsData.decision_maker_impact.attended.total}
-                        <span className="text-xs font-normal text-emerald-700 ml-1.5">
+                        <span className="text-xs font-normal text-[#0B4A4E] ml-1.5">
                           trials succeeded
                         </span>
                       </p>
-                      <div className="w-full bg-emerald-200 h-2 rounded-full overflow-hidden mt-3">
+                      <div className="w-full bg-[#D0E5E3] h-2 rounded-full overflow-hidden mt-3">
                         <div
-                          className="bg-emerald-600 h-full rounded-full transition-all"
+                          className="bg-[#0F5E63] h-full rounded-full transition-all"
                           style={{
                             width: `${Math.max(
                               analyticsData.decision_maker_impact.attended.rate_percent,
@@ -2849,7 +2997,7 @@ function DemosPageContent() {
                       </div>
                     </div>
 
-                    <div className="p-4 rounded-xl bg-slate-50 border border-[#DCD8CE]">
+                    <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
                       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 mb-2">
                         <span className="text-xs font-bold text-[#4A5568] uppercase tracking-wider">
                           Decision-Maker Absent
@@ -2865,7 +3013,7 @@ function DemosPageContent() {
                           trials succeeded
                         </span>
                       </p>
-                      <div className="w-full bg-[#E2ECF8] h-2 rounded-full overflow-hidden mt-3">
+                      <div className="w-full bg-[#E3EFEE] h-2 rounded-full overflow-hidden mt-3">
                         <div
                           className="bg-[#4A5568] h-full rounded-full transition-all"
                           style={{
@@ -2894,11 +3042,11 @@ function DemosPageContent() {
                         <span className="text-[#4A5568] block">Total</span>
                         <span className="font-bold text-[#14213D] text-sm">{depot.total_units}</span>
                       </div>
-                      <div className="p-2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <div className="p-2 rounded bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
                         <span className="block">Free</span>
                         <span className="font-bold text-sm">{depot.available_units}</span>
                       </div>
-                      <div className="p-2 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                      <div className="p-2 rounded bg-[#FFF8EB] text-[#7C2D12] border border-[#E9C9B4]">
                         <span className="block">Booked</span>
                         <span className="font-bold text-sm">{depot.reserved_units}</span>
                       </div>
@@ -3057,7 +3205,7 @@ function DemosPageContent() {
                       <div className="h-2 rounded-full bg-[#ECE9E2] overflow-hidden mt-1">
                         <div className="h-full rounded-full" style={{ width: `${Math.min(100, (r.n / total) * 100)}%`, background: r.color }} />
                       </div>
-                      <div className="text-[10px] text-[#8A8578] mt-0.5">{r.hint}</div>
+                      <div className="text-[10px] text-[#6B7280] mt-0.5">{r.hint}</div>
                     </div>
                   ))}
                 </Card>
@@ -3106,7 +3254,7 @@ function DemosPageContent() {
                           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#4A5568]">
                             <span className="inline-flex items-center gap-1"><Package className="h-3.5 w-3.5" />{demo.product_name || 'Model unspecified'}{serials ? ` · S/N ${serials}` : ''}</span>
                             <span className="inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{demo.location || demo.city || 'Command / Depot Range'}</span>
-                            <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />{when ? new Date(when).toLocaleDateString('en-IN') : 'N/A'} · {outcome.completed ? 'executed on site' : 'cut short'}</span>
+                            <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5" />{when ? formatDateIN(when) : 'N/A'} · {outcome.completed ? 'executed on site' : 'cut short'}</span>
                           </div>
                         </div>
                         <RowMenu
@@ -3123,7 +3271,7 @@ function DemosPageContent() {
                       {/* response timeline */}
                       <ol className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
                         {steps.map((st, i) => (
-                          <li key={i} className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold ${st.done ? 'border-[#C98A1B]/50 bg-[#FFF6E6] text-[#7C2D12]' : 'border-dashed border-[#DCD8CE] text-[#8A8578]'}`}>
+                          <li key={i} className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold ${st.done ? 'border-[#C98A1B]/50 bg-[#FFF6E6] text-[#7C2D12]' : 'border-dashed border-[#DCD8CE] text-[#6B7280]'}`}>
                             <span className={`h-2 w-2 shrink-0 rounded-full ${st.done ? 'bg-[#9A3412]' : 'bg-[#DCD8CE]'}`} />
                             <span className="truncate">{st.label}</span>
                           </li>
@@ -3312,10 +3460,10 @@ function DemosPageContent() {
                             <span
                               className={`text-[10px] font-mono font-bold shrink-0 whitespace-nowrap ml-1.5 px-1.5 py-0.5 rounded ${
                                 availCount > 0
-                                  ? 'bg-emerald-100 text-emerald-800'
+                                  ? 'bg-[#E3EFEE] text-[#0B4A4E]'
                                   : total > 0
-                                  ? 'bg-amber-100 text-amber-800'
-                                  : 'bg-gray-100 text-gray-600'
+                                  ? 'bg-[#FBEBDD] text-[#7C2D12]'
+                                  : 'bg-[#ECE9E2] text-[#4A5568]'
                               }`}
                             >
                               {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
@@ -3335,17 +3483,17 @@ function DemosPageContent() {
                         Live Product Fleet Availability:
                       </span>
                       {activeNewDemoProductFleet.availableCount > 0 ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
                           AVAILABLE ({activeNewDemoProductFleet.availableCount} Ready)
                         </span>
                       ) : activeNewDemoProductFleet.total > 0 ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#9A3412]" />
                           RESERVED ({activeNewDemoProductFleet.total} in Fleet)
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#ECE9E2] text-[#14213D] border border-[#C9C4B8]">
                           No Fleet Unit
                         </span>
                       )}
@@ -3361,10 +3509,10 @@ function DemosPageContent() {
                       </span>
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px]">
                         <span>Fleet: <b>{activeNewDemoProductFleet.total}</b></span>
-                        <span className="text-emerald-700">Ready: <b>{activeNewDemoProductFleet.availableCount}</b></span>
-                        <span className="text-amber-700">In-Trial: <b>{activeNewDemoProductFleet.reservedCount}</b></span>
+                        <span className="text-[#0B4A4E]">Ready: <b>{activeNewDemoProductFleet.availableCount}</b></span>
+                        <span className="text-[#7C2D12]">In-Trial: <b>{activeNewDemoProductFleet.reservedCount}</b></span>
                         {activeNewDemoProductFleet.maintenanceCount > 0 && (
-                          <span className="text-red-700">Maint: <b>{activeNewDemoProductFleet.maintenanceCount}</b></span>
+                          <span className="text-[#700F2D]">Maint: <b>{activeNewDemoProductFleet.maintenanceCount}</b></span>
                         )}
                       </div>
                     </div>
@@ -3442,15 +3590,15 @@ function DemosPageContent() {
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
                               {isReady ? (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
                                   🟢 Ready
                                 </span>
                               ) : isReserved ? (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
                                   🟡 Reserved
                                 </span>
                               ) : (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FCE8EC] text-[#700F2D] border border-[#F3C7CF]">
                                   🔴 Maint
                                 </span>
                               )}
@@ -3479,7 +3627,7 @@ function DemosPageContent() {
                           <Badge variant="success">● READY & AVAILABLE</Badge>
                         ) : selectedNewDemoEquipUnit.availability_status === 'reserved' || selectedNewDemoEquipUnit.availability_status === 'in_use' ? (
                           <Badge variant="warning">
-                            ○ RESERVED {selectedNewDemoEquipUnit.reserved_until ? `UNTIL ${new Date(selectedNewDemoEquipUnit.reserved_until).toLocaleDateString()}` : ''}
+                            ○ RESERVED {selectedNewDemoEquipUnit.reserved_until ? `UNTIL ${formatDateIN(selectedNewDemoEquipUnit.reserved_until)}` : ''}
                           </Badge>
                         ) : (
                           <Badge variant="danger">▲ MAINTENANCE: {selectedNewDemoEquipUnit.condition || 'Service Needed'}</Badge>
@@ -3507,7 +3655,7 @@ function DemosPageContent() {
                       <div className="grid grid-cols-1 gap-1 text-[11px] text-[#14213D]">
                         {getStandardKitAccessories(selectedNewDemoEquipUnit.product_name, selectedNewDemoEquipUnit.product_category).map((item, idx) => (
                           <div key={idx} className="flex items-start gap-1.5 p-1 rounded bg-white border border-[#ECE9E2] sm:items-center">
-                            <CheckCircle className="mt-0.5 h-3 w-3 text-emerald-600 shrink-0 sm:mt-0" />
+                            <CheckCircle className="mt-0.5 h-3 w-3 text-[#0F5E63] shrink-0 sm:mt-0" />
                             <span className="min-w-0 sm:truncate">{item}</span>
                           </div>
                         ))}
@@ -3516,18 +3664,18 @@ function DemosPageContent() {
 
                     {/* Status Note Callout */}
                     {selectedNewDemoEquipUnit.availability_status === 'available' ? (
-                      <div className="p-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px] flex items-center gap-1.5">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700 shrink-0" />
+                      <div className="p-1.5 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[10px] flex items-center gap-1.5">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-[#0B4A4E] shrink-0" />
                         <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedNewDemoEquipUnit.current_location} Depot.</span>
                       </div>
                     ) : selectedNewDemoEquipUnit.availability_status === 'reserved' || selectedNewDemoEquipUnit.availability_status === 'in_use' ? (
-                      <div className="p-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[10px] flex items-center gap-1.5">
-                        <AlertTriangle className="h-3.5 w-3.5 text-amber-700 shrink-0" />
+                      <div className="p-1.5 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[10px] flex items-center gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5 text-[#7C2D12] shrink-0" />
                         <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
                       </div>
                     ) : (
-                      <div className="p-1.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[10px] flex items-center gap-1.5">
-                        <AlertCircle className="h-3.5 w-3.5 text-red-700 shrink-0" />
+                      <div className="p-1.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] text-[10px] flex items-center gap-1.5">
+                        <AlertCircle className="h-3.5 w-3.5 text-[#700F2D] shrink-0" />
                         <span>Unit marked under maintenance ({selectedNewDemoEquipUnit.condition}). You may select another serial or custom kit.</span>
                       </div>
                     )}
@@ -3547,6 +3695,7 @@ function DemosPageContent() {
             <Input
               label="Requested Trial Date *"
               type="date"
+              min={istToday()}
               value={newDemo.requested_date}
               onChange={(e) => setNewDemo({ ...newDemo, requested_date: e.target.value })}
               required
@@ -3693,8 +3842,8 @@ function DemosPageContent() {
                   ]}
                   required
                 />
-                <div className="p-2 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 text-[11px] flex items-center gap-2">
-                  <Info className="h-3.5 w-3.5 text-teal-700 shrink-0" />
+                <div className="p-2 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[11px] flex items-center gap-2">
+                  <Info className="h-3.5 w-3.5 text-[#0B4A4E] shrink-0" />
                   <span>
                     <b>Note:</b> Service Engineers do not schedule independent sales tours. When requested, they are attached to the sales representative&apos;s tour program for this demonstration. Management, Demo Team, Service Team, Salesperson, and Regional Manager will receive notifications.
                   </span>
@@ -3747,8 +3896,8 @@ function DemosPageContent() {
                     teamForm.assigned_to === member.id
                       ? 'bg-[#E3EFEE] border-[#0F5E63] text-[#14213D]'
                       : member.is_available
-                      ? 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#F0F5FF]'
-                      : 'bg-rose-50 border-rose-200 text-rose-800 opacity-90'
+                      ? 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#E3EFEE]'
+                      : 'bg-[#FCE8EC] border-[#F3C7CF] text-[#700F2D] opacity-90'
                   }`}
                 >
                   <div className="flex min-w-0 items-center gap-2">
@@ -3769,12 +3918,12 @@ function DemosPageContent() {
 
                   <div className="shrink-0 pl-2">
                     {member.is_available ? (
-                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
                         AVAILABLE
                       </span>
                     ) : (
                       <span
-                        className="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200"
+                        className="px-2 py-0.5 rounded text-[10px] font-semibold bg-[#FCE8EC] text-[#700F2D] border border-[#F3C7CF]"
                         title={`Conflict: Assigned to ${member.active_demo?.demo_no} at ${member.active_demo?.location}`}
                       >
                         BUSY: {member.active_demo?.demo_no || 'Assigned'}
@@ -3866,7 +4015,7 @@ function DemosPageContent() {
       >
         <form onSubmit={handleReserveSubmit} className="space-y-5 text-sm">
           {reserveModalError && (
-            <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 flex items-start gap-2.5">
+            <div className="p-3 rounded-xl bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] flex items-start gap-2.5">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
               <div className="space-y-0.5 text-xs">
                 <p className="font-bold">Reservation Conflict Detected</p>
@@ -3971,7 +4120,25 @@ function DemosPageContent() {
           <div>
             <div className="space-y-2 max-h-64 overflow-y-auto border border-[#DCD8CE] rounded-xl p-2 bg-[#FBFAF7]">
               {(() => {
-                const roster = modalEquipmentUnits.length > 0 ? modalEquipmentUnits : equipmentList;
+                const fullRoster = modalEquipmentUnits.length > 0 ? modalEquipmentUnits : equipmentList;
+                const demoProductId = selectedDemo?.product_id;
+                const otherProductCount = demoProductId ? fullRoster.filter((u) => u.product_id !== demoProductId).length : 0;
+                // Units of the requested product only, unless the coordinator opts to look at substitutes.
+                const roster =
+                  demoProductId && !showOtherProducts
+                    ? fullRoster.filter((u) => u.product_id === demoProductId || u.id === reserveForm.equipment_id)
+                    : fullRoster;
+                const substituteToggle = demoProductId && otherProductCount > 0 && (
+                  <button
+                    type="button"
+                    className="w-full rounded-lg border border-dashed border-[#C9C4B8] bg-white p-2 text-[11px] font-semibold text-[#0F5E63] hover:bg-[#E3EFEE]"
+                    onClick={() => setShowOtherProducts((v) => !v)}
+                  >
+                    {showOtherProducts
+                      ? 'Show only units of the requested product'
+                      : `Show ${otherProductCount} unit${otherProductCount === 1 ? '' : 's'} of other products (substitute — reason required)`}
+                  </button>
+                );
                 const sortedRoster = [...roster].sort((a, b) => {
                   const aOnDemo = selectedDemo?.reservations?.some((r: any) => r.equipment_id === a.id);
                   const bOnDemo = selectedDemo?.reservations?.some((r: any) => r.equipment_id === b.id);
@@ -3995,13 +4162,18 @@ function DemosPageContent() {
 
                 if (sortedRoster.length === 0) {
                   return (
-                    <div className="p-4 text-center text-xs text-[#4A5568]">
-                      No fleet equipment units found in depot inventory.
-                    </div>
+                    <>
+                      <div className="p-4 text-center text-xs text-[#4A5568]">
+                        {demoProductId && !showOtherProducts
+                          ? `No ${selectedDemo?.product_name || 'requested product'} units found in depot inventory.`
+                          : 'No fleet equipment units found in depot inventory.'}
+                      </div>
+                      {substituteToggle}
+                    </>
                   );
                 }
 
-                return sortedRoster.map((unit) => {
+                return [...sortedRoster.map((unit) => {
                   const isLocationMismatch =
                     unit.current_location &&
                     selectedDemo?.location &&
@@ -4019,7 +4191,7 @@ function DemosPageContent() {
                     return (
                       <div
                         key={unit.id}
-                        className="block p-2.5 rounded-lg border border-gray-200 bg-gray-50/90 text-gray-500 cursor-not-allowed select-none transition-all"
+                        className="block p-2.5 rounded-lg border border-[#DCD8CE] bg-[#FBFAF7]/90 text-[#4A5568] cursor-not-allowed select-none transition-all"
                       >
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                           <div className="flex items-start gap-2">
@@ -4031,26 +4203,26 @@ function DemosPageContent() {
                               className="mt-0.5 cursor-not-allowed opacity-40"
                             />
                             <div>
-                              <p className="font-semibold text-xs text-gray-600 line-through">
+                              <p className="font-semibold text-xs text-[#4A5568] line-through">
                                 {unit.model} — {unit.serial_no || 'Unserialized'}
                               </p>
-                              <span className="text-[10px] text-gray-500">
+                              <span className="text-[10px] text-[#4A5568]">
                                 Product: {unit.product_name} • Depot: {unit.current_location}
                               </span>
                               {unit.conflicting_reservation ? (
-                                <p className="text-[10px] text-red-600 font-semibold mt-0.5">
-                                  ⚠️ Booked for {unit.conflicting_reservation.demo_no || 'Another Demo'} ({unit.conflicting_reservation.reserved_from} to {unit.conflicting_reservation.reserved_to})
+                                <p className="text-[10px] text-[#881337] font-semibold mt-0.5">
+                                  ⚠️ Booked for {unit.conflicting_reservation.demo_no || 'Another Demo'} ({dmy(unit.conflicting_reservation.reserved_from)} to {dmy(unit.conflicting_reservation.reserved_to)})
                                 </p>
                               ) : isAlreadyOnThisDemo ? (
-                                <p className="text-[10px] text-blue-700 font-semibold mt-0.5">
+                                <p className="text-[10px] text-[#0B4A4E] font-semibold mt-0.5">
                                   ℹ️ Already allocated to this Demo ({selectedDemo?.demo_no})
                                 </p>
                               ) : isMaintenance ? (
-                                <p className="text-[10px] text-red-600 font-semibold mt-0.5">
+                                <p className="text-[10px] text-[#881337] font-semibold mt-0.5">
                                   ⚠️ Unit is currently under maintenance
                                 </p>
                               ) : (
-                                <p className="text-[10px] text-amber-700 font-semibold mt-0.5">
+                                <p className="text-[10px] text-[#7C2D12] font-semibold mt-0.5">
                                   ⚠️ Unit is currently locked or reserved for selected dates
                                 </p>
                               )}
@@ -4077,7 +4249,7 @@ function DemosPageContent() {
                       className={`block p-2.5 rounded-lg border cursor-pointer transition-all ${
                         reserveForm.equipment_id === unit.id
                           ? 'bg-[#E3EFEE] border-[#0F5E63] text-[#14213D] shadow-sm ring-1 ring-[#0F5E63]/20'
-                          : 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#F0F5FF]'
+                          : 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#E3EFEE]'
                       }`}
                     >
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -4106,9 +4278,14 @@ function DemosPageContent() {
                               MATCHES DEMO PRODUCT
                             </span>
                           )}
+                          {selectedDemo?.product_id && unit.product_id && !isProductMatch && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#FBEBDD] text-[#9A3412] border border-[#9A3412]/20">
+                              OTHER PRODUCT
+                            </span>
+                          )}
                           {isLocationMismatch && (
                             <span
-                              className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200"
+                              className="px-2 py-0.5 rounded text-[10px] font-semibold bg-[#FFF8EB] text-[#7C2D12] border border-[#E9C9B4]"
                               title={`Depot (${unit.current_location}) differs from Demo Location (${selectedDemo?.location})`}
                             >
                               DEPOT MISMATCH
@@ -4119,9 +4296,29 @@ function DemosPageContent() {
                       </div>
                     </label>
                   );
-                });
+                }), <React.Fragment key="__substitute_toggle">{substituteToggle}</React.Fragment>];
               })()}
             </div>
+            {(() => {
+              const roster = modalEquipmentUnits.length > 0 ? modalEquipmentUnits : equipmentList;
+              const chosen = roster.find((u) => u.id === reserveForm.equipment_id);
+              if (!chosen || !selectedDemo?.product_id || !chosen.product_id || chosen.product_id === selectedDemo.product_id) return null;
+              return (
+                <div className="mt-2 space-y-2 rounded-lg border border-[#9A3412]/30 bg-[#FBEBDD] p-3 text-xs text-[#7C2D12]">
+                  <p>
+                    <strong>Substitute unit:</strong> {chosen.model} is a {chosen.product_name || 'different product'} unit, but this demo is for{' '}
+                    {selectedDemo.product_name || 'another product'}.
+                  </p>
+                  <Input
+                    label="Reason for sending a substitute *"
+                    placeholder="e.g. Requested model under calibration; client agreed to trial the variant"
+                    value={substituteReason}
+                    onChange={(e) => setSubstituteReason(e.target.value)}
+                    required
+                  />
+                </div>
+              );
+            })()}
           </div>
           </FormSection>
 
@@ -4173,15 +4370,44 @@ function DemosPageContent() {
       >
         <form onSubmit={handleConfirmDateSubmit} className="space-y-4 text-sm">
           <p className="text-xs text-[#4A5568]">
-            Requested date is <strong>{selectedDemo?.requested_date}</strong>. Confirm the final
+            Requested date is <strong className="font-mono">{dmy(selectedDemo?.requested_date)}</strong>. Confirm the final
             scheduled date approved by client command.
           </p>
+          {(() => {
+            const held = (selectedDemo?.reservations || []).filter((r: any) => ['approved', 'requested'].includes(r.status));
+            if (!held.length) return null;
+            return (
+              <div className="rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] p-3 text-xs text-[#14213D] space-y-1">
+                <span className="text-[10px] font-bold uppercase text-[#4A5568] block">Equipment reserved</span>
+                {held.map((r: any) => (
+                  <div key={r.id} className="font-mono">
+                    {r.model || 'Unit'} ({r.serial_no || 'no serial'}): {dmy(r.reserved_from)} – {dmy(r.reserved_to || r.reserved_from)}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {confirmError && (
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] space-y-2">
+              <p>{confirmError.message}</p>
+              {confirmError.outsideReservation && (
+                <Checkbox
+                  checked={confirmForm.extend_reservation}
+                  onChange={(e) => setConfirmForm({ ...confirmForm, extend_reservation: e.target.checked })}
+                  label="Extend the reservation to cover this date"
+                  description="Only possible when no other demo holds the unit on the added days."
+                />
+              )}
+            </div>
+          )}
 
           <Input
             label="Final Confirmed Date *"
             type="date"
+            min={istToday()}
             value={confirmForm.confirmed_date}
-            onChange={(e) => setConfirmForm({ ...confirmForm, confirmed_date: e.target.value })}
+            onChange={(e) => setConfirmForm({ ...confirmForm, confirmed_date: e.target.value, extend_reservation: false })}
             required
           />
 
@@ -4210,7 +4436,7 @@ function DemosPageContent() {
         title={`Reschedule Demo — ${selectedDemo?.demo_no}`}
       >
         <form onSubmit={handleRescheduleSubmit} className="space-y-4 text-sm">
-          <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
+          <div className="p-3 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12]">
             Current Date: <strong>{selectedDemo?.confirmed_date || selectedDemo?.requested_date}</strong>.
             Rescheduling will update or release reserved equipment and re-verify specialist availability.
           </div>
@@ -4254,7 +4480,7 @@ function DemosPageContent() {
         title={`Cancel Demonstration — ${selectedDemo?.demo_no}`}
       >
         <form onSubmit={handleCancelSubmit} className="space-y-4 text-sm">
-          <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800">
+          <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
             Cancelling this demonstration will immediately release all reserved equipment units back to
             the depot pool and relieve assigned team members.
           </div>
@@ -4378,7 +4604,7 @@ function DemosPageContent() {
                 required
               />
               {outcomeForm.failure_reason && FAILURE_REASON_METADATA[outcomeForm.failure_reason] && (
-                <div className="text-[11px] text-rose-800 bg-white/80 p-2.5 rounded-lg border border-rose-200 space-y-1">
+                <div className="text-[11px] text-[#700F2D] bg-white/80 p-2.5 rounded-lg border border-[#F3C7CF] space-y-1">
                   <div><strong>Identified Pattern:</strong> {FAILURE_REASON_METADATA[outcomeForm.failure_reason].typicalRootCause}</div>
                   <div><strong>Mitigation Protocol:</strong> {FAILURE_REASON_METADATA[outcomeForm.failure_reason].recommendedCountermeasure}</div>
                 </div>
@@ -4402,8 +4628,9 @@ function DemosPageContent() {
                 required
               />
               <Input
-                label="Technical Performance"
-                placeholder="e.g. 100% detection rate during 50-pass trial"
+                label={outcomeForm.result === 'fail' ? 'What went wrong (technical performance) *' : 'Technical Performance'}
+                placeholder={outcomeForm.result === 'fail' ? 'e.g. Sensor lost calibration after 20 passes' : 'e.g. 100% detection rate during 50-pass trial'}
+                required={outcomeForm.result === 'fail'}
                 value={outcomeForm.technical_performance}
                 onChange={(e) =>
                   setOutcomeForm({ ...outcomeForm, technical_performance: e.target.value })
@@ -4501,7 +4728,7 @@ function DemosPageContent() {
                   <p className="text-[#4A5568] mt-0.5 italic">Reason: "{res.reason}"</p>
                   <p className="text-[10px] text-[#4A5568] mt-1">
                     By: {res.actor_name || 'Coordinator'} ({res.actor_role}) on{' '}
-                    {new Date(res.created_at).toLocaleString()}
+                    {formatDateTimeIN(res.created_at)}
                   </p>
                 </div>
               ))}
@@ -4515,7 +4742,7 @@ function DemosPageContent() {
                 <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
                   <span className="min-w-0 font-mono font-semibold text-[#0F5E63]">{log.action}</span>
                   <span className="text-[10px] text-[#4A5568]">
-                    {new Date(log.created_at).toLocaleString()}
+                    {formatDateTimeIN(log.created_at)}
                   </span>
                 </div>
                 <p className="text-[#4A5568] mt-1">
@@ -4677,7 +4904,7 @@ function DemosPageContent() {
         title="Reject Equipment Reservation Request"
       >
         <form onSubmit={handleRejectReservationSubmit} className="space-y-4 text-sm">
-          <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-900">
+          <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
             Rejecting reservation for <strong>{selectedReservation?.model}</strong> (Serial:{' '}
             {selectedReservation?.serial_no || 'N/A'}) requested for Demo{' '}
             <strong>{selectedDemo?.demo_no}</strong>.
@@ -4737,7 +4964,7 @@ function DemosPageContent() {
         title="Allocate Alternative Equipment Unit"
       >
         <form onSubmit={handleAllocateAnotherSubmit} className="space-y-5 text-sm">
-          <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900">
+          <div className="p-3 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-xs text-[#0B4A4E]">
             Reallocating equipment for Demo <strong>{selectedDemo?.demo_no}</strong> (Site:{' '}
             {selectedDemo?.location}). Currently requested: <strong>{selectedReservation?.model}</strong>.
           </div>
@@ -4757,7 +4984,7 @@ function DemosPageContent() {
                     className={`block p-2.5 rounded-lg border cursor-pointer transition-all ${
                       allocateForm.equipment_id === unit.id
                         ? 'bg-[#E3EFEE] border-[#0F5E63] text-[#14213D]'
-                        : 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#F0F5FF]'
+                        : 'bg-white border-[#DCD8CE] text-[#14213D] hover:bg-[#E3EFEE]'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -4863,9 +5090,7 @@ function DemosPageContent() {
                 <div className="text-[11px] text-[#9A3412] mt-0.5">
                   Demo #{selectedFailureDetail.demo_no} • Version {selectedFailureDetail.version || 1} •{' '}
                   Logged{' '}
-                  {new Date(
-                    selectedFailureDetail.updated_at || selectedFailureDetail.created_at,
-                  ).toLocaleString('en-IN')}
+                  {formatDateTimeIN(selectedFailureDetail.updated_at || selectedFailureDetail.created_at,)}
                 </div>
               </div>
               <Badge variant="urgent" size="sm" className="font-bold uppercase tracking-wider">
@@ -4886,9 +5111,9 @@ function DemosPageContent() {
                     <span className="shrink-0 text-[#4A5568]">Trial Scheduled:</span>
                     <span className="text-right font-semibold text-[#14213D]">
                       {selectedFailureDetail.confirmed_date
-                        ? new Date(selectedFailureDetail.confirmed_date).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedFailureDetail.confirmed_date)
                         : selectedFailureDetail.requested_date
-                        ? new Date(selectedFailureDetail.requested_date).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedFailureDetail.requested_date)
                         : 'Not specified'}
                     </span>
                   </div>
@@ -5027,8 +5252,8 @@ function DemosPageContent() {
                 <strong
                   className={
                     selectedFailureDetail.outcome?.decision_maker_present
-                      ? 'text-emerald-700'
-                      : 'text-gray-600'
+                      ? 'text-[#0B4A4E]'
+                      : 'text-[#4A5568]'
                   }
                 >
                   {selectedFailureDetail.outcome?.decision_maker_present ? '✓ Attended' : 'Absent'}

@@ -44,9 +44,10 @@ import {
   Check,
   X,
   ShieldCheck,
+  Award,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { formatTaskDateTime } from '@arihant/shared';
+import { formatINR, formatTaskDate, formatTaskDateTime } from '@arihant/shared';
 import { istToday, istNowLocalInput, fromIstLocalInput, toIstLocalInput } from '@/lib/ist-date';
 
 /** Server-computed submission readiness (GET /tenders/:id → document_readiness). */
@@ -61,8 +62,30 @@ interface DocumentReadiness {
 }
 
 const SUBMISSION_STAGES = ['submitted', 'pq_submitted'];
+/** Closed stages: the BOQ, deadline countdown and lifecycle are frozen (mirrors the API's terminal statuses). */
+const CLOSED_STAGES = ['won', 'partially_won', 'lost', 'cancelled', 'rejected_internally', 'pq_not_qualified', 'technically_disqualified', 'not_submitted'];
+/** Stages where the submission deadline still drives a live countdown (the bid has not gone in yet). */
+const PRE_SUBMISSION_STAGES = ['identified', 'awaiting_approval', 'under_preparation', 'pq_qualified', 'on_hold'];
+/** Lifecycle cards that declare a verdict: the API only accepts these through the Record outcome form. */
+const RESULT_TARGETS = ['won', 'lost', 'partially_won'];
+
+/**
+ * A deadline instant as IST date + time. Legacy date-only deadlines were stored as UTC midnight (05:30 IST);
+ * those carry no real time, so they are shown as the date alone instead of a misleading "5:30 AM".
+ */
+const formatDeadline = (value?: string | Date | null): string => {
+  if (!value) return 'N/A';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return 'N/A';
+  const isDateOnly = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
+  return isDateOnly ? formatTaskDate(d) : `${formatTaskDateTime(d)} IST`;
+};
+/** Submitted bids whose verdict can now be recorded (same stages as the pipeline's Record outcome action). */
+const AWAITING_RESULT = ['submitted', 'technical_eval', 'commercial_eval'];
 import { RelatedRecords } from '@/components/links/RelatedRecords';
 import { GuardedLink } from '@/components/links/GuardedLink';
+import { userWithRole } from '@/lib/role-label';
+import { tenderCategoryLabel, bidStillOpen, BID_OPENING_STAGES } from '@/components/tender/labels';
 
 interface TenderDossierModalProps {
   isOpen: boolean;
@@ -71,6 +94,8 @@ interface TenderDossierModalProps {
   currentUser: any;
   users?: any[];
   onTenderUpdated?: () => void;
+  /** Opens the page's Record outcome form for a submitted bid; omitted when the user may not record one. */
+  onRecordOutcome?: (tender: any) => void;
 }
 
 export function TenderDossierModal({
@@ -80,6 +105,7 @@ export function TenderDossierModal({
   currentUser,
   users,
   onTenderUpdated,
+  onRecordOutcome,
 }: TenderDossierModalProps) {
   const [tender, setTender] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
@@ -101,6 +127,9 @@ export function TenderDossierModal({
         .catch(() => {});
     }
   }, [users, isOpen]);
+
+  /** A submitted bid before its closing time: evaluation / result stages stay locked (bids open after closing). */
+  const awaitingBidOpening = tender?.status === 'submitted' && bidStillOpen(tender);
 
   const canReassign =
     ['management', 'admin', 'tender_team', 'regional_manager'].includes(currentUser?.role) ||
@@ -253,8 +282,8 @@ export function TenderDossierModal({
             defaultRemarks: 'Buyer published PQ minutes; Arihant officially qualified.',
           },
           {
-            status: 'lost',
-            label: 'Mark PQ Disqualified / Lost',
+            status: 'pq_not_qualified',
+            label: 'Mark PQ Not Qualified',
             variant: 'danger' as const,
             description: 'Buyer rejected credentials during pre-qualification screening.',
             defaultRemarks: 'Disqualified in PQ screening.',
@@ -318,7 +347,7 @@ export function TenderDossierModal({
             defaultRemarks: 'Technical evaluation and trial report cleared; commercial opened.',
           },
           {
-            status: 'lost',
+            status: 'technically_disqualified',
             label: 'Disqualified in Technical Evaluation',
             variant: 'danger' as const,
             description: 'Field trial or spec non-compliance rejection.',
@@ -375,6 +404,9 @@ export function TenderDossierModal({
     is_compliant: 'Not Checked',
   });
 
+  const [lineItemError, setLineItemError] = useState<string | null>(null);
+  const [lineItemToDelete, setLineItemToDelete] = useState<any | null>(null);
+
   const [isCorrigendumOpen, setIsCorrigendumOpen] = useState(false);
   const [newCorrigendum, setNewCorrigendum] = useState({
     corrigendum_number: '',
@@ -392,6 +424,7 @@ export function TenderDossierModal({
     reference_number: '',
     status: 'Requested',
   });
+  const [instrumentError, setInstrumentError] = useState<string | null>(null);
 
   const [isCommentSubmitting, setIsCommentSubmitting] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -497,12 +530,29 @@ export function TenderDossierModal({
 
   const handleAddLineItem = async () => {
     if (!tenderId) return;
+    setLineItemError(null);
+    // Same rules as the API: a description, quantity ≥ 1 and a non-negative unit price.
+    const qty = Number(newLineItem.quantity);
+    const price = newLineItem.quoted_unit_price === '' ? null : Number(newLineItem.quoted_unit_price);
+    if (!newLineItem.product_description.trim()) {
+      setLineItemError('Product description is required.');
+      return;
+    }
+    if (!Number.isFinite(qty) || qty < 1) {
+      setLineItemError('Quantity must be at least 1.');
+      return;
+    }
+    if (price !== null && (!Number.isFinite(price) || price < 0)) {
+      setLineItemError('Quoted unit price cannot be negative.');
+      return;
+    }
     setActionLoading(true);
     try {
       await api.post(`/tenders/${tenderId}/line-items`, {
         ...newLineItem,
-        quantity: Number(newLineItem.quantity),
-        quoted_unit_price: newLineItem.quoted_unit_price ? Number(newLineItem.quoted_unit_price) : undefined,
+        product_description: newLineItem.product_description.trim(),
+        quantity: qty,
+        quoted_unit_price: price ?? undefined,
       });
       setIsAddLineItemOpen(false);
       setNewLineItem({
@@ -517,7 +567,25 @@ export function TenderDossierModal({
       onTenderUpdated?.();
       setFeedbackMsg({ type: 'success', text: 'Product line item added successfully' });
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to add line item' });
+      // Shown inside the dialog (the dossier banner is hidden behind it).
+      setLineItemError(err?.message || 'Failed to add line item');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteLineItem = async () => {
+    if (!tenderId || !lineItemToDelete) return;
+    setActionLoading(true);
+    try {
+      await api.delete(`/tenders/${tenderId}/line-items/${lineItemToDelete.id}`);
+      setLineItemToDelete(null);
+      await loadTender();
+      onTenderUpdated?.();
+      setFeedbackMsg({ type: 'success', text: 'Line item removed.' });
+    } catch (err: any) {
+      setLineItemToDelete(null);
+      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to remove line item' });
     } finally {
       setActionLoading(false);
     }
@@ -677,11 +745,17 @@ export function TenderDossierModal({
 
   const handleAddInstrument = async () => {
     if (!tenderId) return;
+    setInstrumentError(null);
+    const amount = Number(newInstrument.amount);
+    if (!newInstrument.amount || !Number.isFinite(amount) || amount <= 0) {
+      setInstrumentError('Amount must be greater than zero.');
+      return;
+    }
     setActionLoading(true);
     try {
       await api.post(`/tenders/${tenderId}/financial-instruments`, {
         ...newInstrument,
-        amount: Number(newInstrument.amount),
+        amount,
       });
       setIsInstrumentOpen(false);
       setNewInstrument({
@@ -694,9 +768,12 @@ export function TenderDossierModal({
       });
       await loadTender();
       onTenderUpdated?.();
-      setFeedbackMsg({ type: 'success', text: 'Financial instrument request registered' });
+      setFeedbackMsg({
+        type: 'success',
+        text: 'Financial instrument request registered — it now appears in the Finance & EMD / PBG repository.',
+      });
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to request financial instrument' });
+      setInstrumentError(err?.message || 'Failed to request financial instrument');
     } finally {
       setActionLoading(false);
     }
@@ -760,6 +837,18 @@ export function TenderDossierModal({
     }
   };
 
+  // Submission readiness from the server (mandatory checklist items Ready). No checklist = not ready, never 100%.
+  const docReadiness: DocumentReadiness | undefined = tender?.document_readiness;
+  const docsSubmissionReady = Boolean(docReadiness?.checklist_created && docReadiness?.all_mandatory_ready);
+  const boqLocked = CLOSED_STAGES.includes((tender?.status || '').toLowerCase());
+  // Same roles as DELETE /tenders/:id/line-items/:itemId (sales only on their own tenders — enforced by the API).
+  const canDeleteLineItems =
+    !boqLocked && ['management', 'regional_manager', 'tender_team', 'sales', 'admin'].includes(currentUser?.role);
+  const openAddLineItem = () => {
+    setLineItemError(null);
+    setIsAddLineItemOpen(true);
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -767,7 +856,8 @@ export function TenderDossierModal({
       isOpen={isOpen}
       onClose={onClose}
       title={tender?.tender_title || tender?.tender_number || 'Tender Dossier & Lifecycle'}
-      description={`Reference: ${tender?.internal_ref || 'TND-2026-00000'} • Portal: ${tender?.portal || 'GeM'} • Buyer: ${tender?.organisation_name || tender?.organisation || 'Direct Government Department'}`}
+      // The reference and bid number sit in the dark header strip below; the subtitle only names the buyer and portal.
+      description={[tender?.organisation_name || tender?.organisation || 'Government buyer', tender?.portal || 'GeM'].join(' · ')}
       maxWidth="4xl"
     >
       {loading ? (
@@ -789,7 +879,7 @@ export function TenderDossierModal({
           )}
 
           {/* Dossier Header Strip */}
-          <div className="p-4 rounded-xl bg-gradient-to-r from-[#14213D] to-[#1F2E52] text-white flex flex-wrap items-center justify-between gap-4 shadow-sm">
+          <div className="p-3 sm:p-4 rounded-xl bg-gradient-to-r from-[#14213D] to-[#1F2E52] text-white flex flex-wrap items-center justify-between gap-3 sm:gap-4 shadow-sm">
             <div className="min-w-0 space-y-1">
               {/* wraps on phones instead of squeezing the ref onto three lines and pushing chips off the card */}
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -800,11 +890,15 @@ export function TenderDossierModal({
                 <span className="break-all font-semibold text-white/90">{tender.tender_number || tender.tender_no}</span>
                 <Badge
                   variant={
-                    tender.category === 'pq' ? 'cyber' : tender.category === 'mha' ? 'warning' : 'default'
+                    String(tender.category || '').toLowerCase() === 'pq'
+                      ? 'cyber'
+                      : String(tender.category || '').toLowerCase() === 'mha'
+                        ? 'warning'
+                        : 'default'
                   }
                   size="sm"
                 >
-                  {tender.category ? tender.category.toUpperCase() : 'GENERAL'}
+                  {tenderCategoryLabel(tender.category_code || tender.category, tender.category_name) || 'General'}
                 </Badge>
                 <Badge
                   variant={
@@ -815,7 +909,8 @@ export function TenderDossierModal({
                   {tender.priority || 'Medium'} Priority
                 </Badge>
               </div>
-              <p className="text-xs text-white/70 line-clamp-1">{tender.tender_title || tender.requirement_text || 'Standard Tender Supply Specification'}</p>
+              {/* the dialog title already names the tender; on phones the strip keeps only the ref, chips and stage */}
+              <p className="hidden text-xs text-white/70 line-clamp-1 sm:block">{tender.tender_title || tender.requirement_text || 'Standard Tender Supply Specification'}</p>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -847,12 +942,20 @@ export function TenderDossierModal({
                 </Badge>
               </div>
 
-              {tender.days_left !== null && tender.days_left !== undefined && (
+              {/* live countdown only while the bid is still to be submitted; closed tenders show "Closed" */}
+              {CLOSED_STAGES.includes((tender.status || '').toLowerCase()) ? (
+                <div className="p-2 rounded-lg bg-white/10 text-center min-w-[70px] border border-white/15">
+                  <span className="text-[10px] text-white/70 block uppercase font-bold">Deadline</span>
+                  <span className="font-mono text-xs font-bold text-white/80">Closed</span>
+                </div>
+              ) : PRE_SUBMISSION_STAGES.includes((tender.status || '').toLowerCase()) &&
+                tender.days_left !== null &&
+                tender.days_left !== undefined && (
                 <div className="p-2 rounded-lg bg-white/10 text-center min-w-[70px] border border-white/15">
                   <span className="text-[10px] text-white/70 block uppercase font-bold">Deadline</span>
                   <span
                     className={`font-mono text-xs font-bold ${
-                      tender.days_left <= 2 ? 'text-red-300 animate-pulse' : 'text-[#F2B872]'
+                      tender.days_left <= 2 ? 'text-[#F3C7CF] animate-pulse' : 'text-[#F2B872]'
                     }`}
                   >
                     {tender.days_left < 0 ? 'Overdue' : `${tender.days_left}d left`}
@@ -863,7 +966,14 @@ export function TenderDossierModal({
           </div>
 
           {/* 11 Dossier Tabs Strip */}
-          <ScrollStrip role="tablist" aria-label="Dossier sections" activeKey={activeTab} wrapperClassName="border-b border-[#DCD8CE]" className="gap-1 pb-1 select-none">
+          {/* pinned under the dialog header so the sections stay reachable while a long tab scrolls (phones especially) */}
+          <ScrollStrip
+            role="tablist"
+            aria-label="Dossier sections"
+            activeKey={activeTab}
+            wrapperClassName="sticky -top-4 z-10 -mx-4 border-b border-[#DCD8CE] bg-[var(--th-pop,#FBFAF7)] px-4 pt-1 sm:-top-5 sm:-mx-5 sm:px-5"
+            className="gap-1 pb-1 select-none"
+          >
             {[
               { id: 'overview', label: 'Overview', icon: <FileText className="h-3.5 w-3.5" /> },
               {
@@ -879,12 +989,14 @@ export function TenderDossierModal({
               },
               {
                 id: 'transitions',
-                label: 'Lifecycle & Transitions',
+                label: 'Lifecycle',
                 icon: <ArrowRight className="h-3.5 w-3.5" />,
               },
               {
                 id: 'documents',
-                label: `Documents (${tender.document_completion_percentage ?? 0}%)`,
+                label: tender.document_readiness?.checklist_created
+                  ? `Documents (${tender.document_completion_percentage ?? 0}%)`
+                  : 'Documents (not initialised)',
                 icon: <Paperclip className="h-3.5 w-3.5" />,
               },
               {
@@ -968,12 +1080,12 @@ export function TenderDossierModal({
                   <span className="text-[10px] font-bold text-[#4A5568] uppercase block">Key Milestones</span>
                   <div className="space-y-1 font-mono text-[11px]">
                     <p className="text-[#4A5568]">
-                      Published: <span className="font-bold text-[#14213D]">{tender.publication_date || 'N/A'}</span>
+                      Published: <span className="font-bold text-[#14213D]">{tender.publication_date ? formatTaskDate(tender.publication_date) : 'N/A'}</span>
                     </p>
                     <p className="text-[#4A5568]">
                       Deadline:{' '}
                       <span className="font-bold text-[#9A3412]">
-                        {tender.submission_deadline ? `${formatTaskDateTime(tender.submission_deadline)} IST` : 'N/A'}
+                        {formatDeadline(tender.submission_deadline)}
                       </span>
                     </p>
                     {tender.pre_bid_meeting_date && (
@@ -1051,13 +1163,14 @@ export function TenderDossierModal({
                         : 'warning'
                     }
                     size="sm"
+                    className="shrink-0 whitespace-nowrap"
                   >
                     {(tender.status || 'IDENTIFIED').replace(/_/g, ' ').toUpperCase()}
                   </Badge>
                 </div>
 
                 {decisionError && (
-                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
                     {decisionError}
                   </div>
                 )}
@@ -1172,15 +1285,24 @@ export function TenderDossierModal({
           {/* TAB 2: LINE ITEMS */}
           {activeTab === 'line_items' && (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
+                <div className="min-w-[12rem] flex-1">
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Tender Products & BOQ Specifications</h4>
                   <p className="text-[11px] text-[#4A5568]">Products linked to this tender with catalogue and GeM compliance checks</p>
                 </div>
-                <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setIsAddLineItemOpen(true)}>
-                  Add Line Item
-                </Button>
+                {!boqLocked && (
+                  <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={openAddLineItem}>
+                    Add Line Item
+                  </Button>
+                )}
               </div>
+
+              {boqLocked && (
+                <InfoCallout variant="neutral" title="BOQ locked">
+                  This tender is closed ({(tender.status || '').replace(/_/g, ' ').toUpperCase()}); line items can no longer be added, edited or removed.
+                </InfoCallout>
+              )}
 
               {tender.line_items && tender.line_items.length > 0 ? (
                 <Table>
@@ -1192,6 +1314,7 @@ export function TenderDossierModal({
                       <TableHead>Compliance</TableHead>
                       <TableHead>Quoted Unit Price</TableHead>
                       <TableHead>Quoted Total</TableHead>
+                      {canDeleteLineItems && <TableHead className="text-right">Action</TableHead>}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1237,6 +1360,13 @@ export function TenderDossierModal({
                         <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">
                           {item.quoted_total ? `₹ ${Number(item.quoted_total).toLocaleString('en-IN')}` : '—'}
                         </TableCell>
+                        {canDeleteLineItems && (
+                          <TableCell className="text-right">
+                            <Button variant="ghost" size="xs" className="text-[#9A3412]" onClick={() => setLineItemToDelete(item)}>
+                              Remove
+                            </Button>
+                          </TableCell>
+                        )}
                       </TableRow>
                     ))}
                   </TableBody>
@@ -1245,7 +1375,7 @@ export function TenderDossierModal({
                 <EmptyState
                   title="No line items configured"
                   description="Add equipment and specifications to verify GeM catalogue compatibility."
-                  action={<Button variant="outline" size="sm" onClick={() => setIsAddLineItemOpen(true)}>Add First Item</Button>}
+                  action={boqLocked ? undefined : <Button variant="outline" size="sm" onClick={openAddLineItem}>Add First Item</Button>}
                 />
               )}
             </div>
@@ -1265,6 +1395,13 @@ export function TenderDossierModal({
                     size="sm"
                     leftIcon={<Send className="h-3.5 w-3.5" />}
                     onClick={async () => {
+                      if (!tender.assigned_to && !tender.assigned_person_id) {
+                        setFeedbackMsg({
+                          type: 'error',
+                          text: 'Assign a salesperson (Overview → Reassign Team) before submitting this tender for approval.',
+                        });
+                        return;
+                      }
                       setActionLoading(true);
                       try {
                         await api.post(`/tenders/${tender.id}/approval-request`, { remarks: 'Official approval requested' });
@@ -1296,11 +1433,17 @@ export function TenderDossierModal({
                         </div>
                         <Badge
                           variant={
-                            app.status === 'APPROVED' ? 'success' : app.status === 'REJECTED' ? 'danger' : 'warning'
+                            app.status === 'APPROVED'
+                              ? 'success'
+                              : app.status === 'REJECTED'
+                              ? 'danger'
+                              : app.status === 'PENDING' || !app.status
+                              ? 'warning'
+                              : 'default'
                           }
                           size="sm"
                         >
-                          {app.status || 'PENDING'}
+                          {app.status === 'WITHDRAWN' || app.status === 'SUPERSEDED' ? 'CLOSED' : app.status || 'PENDING'}
                         </Badge>
                       </div>
                       {app.decision_reason && (
@@ -1323,8 +1466,9 @@ export function TenderDossierModal({
           {/* TAB: LIFECYCLE & STAGE TRANSITIONS */}
           {activeTab === 'transitions' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
+                <div className="min-w-[12rem] flex-1">
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Tender Lifecycle & Stage Advancement</h4>
                   <p className="text-[11px] text-[#4A5568]">Controlled stage transitions adhering to the Arihant BOS finite-state machine.</p>
                 </div>
@@ -1347,22 +1491,22 @@ export function TenderDossierModal({
               {/* Visual 6-Step Tracker */}
               <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-1 text-center text-[10px] font-semibold">
-                  <div className={`p-2 rounded ${['identified', 'awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                  <div className={`p-2 rounded ${['identified', 'awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
                     1. Identified
                   </div>
-                  <div className={`p-2 rounded ${['awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                  <div className={`p-2 rounded ${['awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
                     2. Approval
                   </div>
-                  <div className={`p-2 rounded ${['under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                  <div className={`p-2 rounded ${['under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
                     3. Preparation
                   </div>
-                  <div className={`p-2 rounded ${['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                  <div className={`p-2 rounded ${['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
                     4. PQ Phase
                   </div>
-                  <div className={`p-2 rounded ${['submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-slate-200 text-slate-500'}`}>
+                  <div className={`p-2 rounded ${['submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
                     5. Submitted
                   </div>
-                  <div className={`p-2 rounded ${['won', 'lost'].includes(tender.status) ? (tender.status === 'won' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white') : 'bg-slate-200 text-slate-500'}`}>
+                  <div className={`p-2 rounded ${['won', 'lost'].includes(tender.status) ? (tender.status === 'won' ? 'bg-[#0F5E63] text-white' : 'bg-[#881337] text-white') : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
                     6. Result
                   </div>
                 </div>
@@ -1370,25 +1514,25 @@ export function TenderDossierModal({
 
               {/* Status Specific Helper / Actions */}
               {['awaiting_approval', 'under_review'].includes(tender.status) ? (
-                <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-2">
+                <div className="p-4 rounded-xl bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] space-y-2">
                   <div className="flex items-center gap-2">
-                    <ShieldAlert className="h-5 w-5 text-amber-700 shrink-0" />
+                    <ShieldAlert className="h-5 w-5 text-[#7C2D12] shrink-0" />
                     <span className="font-bold text-xs">Awaiting Executive Management Signoff</span>
                   </div>
-                  <p className="text-xs text-amber-800 leading-relaxed">
+                  <p className="text-xs text-[#7C2D12] leading-relaxed">
                     This tender is currently undergoing Internal Review. To authorize participation and advance to <strong>Under Preparation</strong>, please switch to the <strong>Approvals</strong> tab above.
                   </p>
                   <Button
                     size="xs"
                     variant="primary"
-                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                    className="bg-[#9A3412] hover:bg-[#7C2D12] text-white"
                     onClick={() => setActiveTab('approvals')}
                   >
                     Go to Approvals Tab
                   </Button>
                 </div>
               ) : getAllowedDossierTransitions(tender.status, tender.category).length === 0 ? (
-                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 text-xs">
+                <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-[#14213D] text-xs">
                   This tender is in a terminal state (<strong>{tender.status?.toUpperCase()}</strong>). No further stage advancements are permitted.
                 </div>
               ) : (
@@ -1399,11 +1543,13 @@ export function TenderDossierModal({
                         <Paperclip className="h-4 w-4 text-[#0F5E63]" />
                         <span className="text-[#4A5568]">Document Compliance Gate:</span>
                         <span className="font-bold text-[#14213D]">
-                          {tender.document_completion_percentage || 0}% Ready
+                          {docReadiness?.checklist_created
+                            ? `${docReadiness.mandatory_ready} of ${docReadiness.mandatory_total} mandatory Ready (${docReadiness.percentage}%)`
+                            : 'Checklist not initialised'}
                         </span>
                       </div>
-                      {tender.document_completion_percentage === 100 ? (
-                        <span className="text-emerald-700 font-semibold text-[11px] flex items-center gap-1">
+                      {docsSubmissionReady ? (
+                        <span className="text-[#0B4A4E] font-semibold text-[11px] flex items-center gap-1">
                           <CheckCircle2 className="h-3.5 w-3.5" /> All Mandatory Files Ready for Submission
                         </span>
                       ) : (
@@ -1412,26 +1558,56 @@ export function TenderDossierModal({
                           onClick={() => setActiveTab('documents')}
                           className="text-[#9A3412] hover:underline font-semibold text-[11px] flex items-center gap-1 cursor-pointer"
                         >
-                          Review Incomplete Documents <ArrowRight className="h-3 w-3" />
+                          {docReadiness?.checklist_created ? 'Review Incomplete Documents' : 'Initialise Checklist'} <ArrowRight className="h-3 w-3" />
                         </button>
                       )}
                     </div>
+                  )}
+
+                  {transitionError && (
+                    <InfoCallout variant="danger" title="Stage not changed" onClose={() => setTransitionError(null)}>
+                      {transitionError}
+                    </InfoCallout>
                   )}
 
                   <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
                     <span className="text-xs text-[#14213D] font-bold block uppercase tracking-wide">
                       Permitted Stage Advancements ({getAllowedDossierTransitions(tender.status, tender.category).length})
                     </span>
+                    {awaitingBidOpening && (
+                      <InfoCallout variant="warning" title="Bids not opened yet">
+                        Evaluation and result stages unlock after the bid closes on {formatDeadline(tender.submission_deadline || tender.bid_closing_date)}.
+                        Bids are opened only after closing; record a corrigendum if the closing date changed.
+                      </InfoCallout>
+                    )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {getAllowedDossierTransitions(tender.status, tender.category).map((tr) => (
+                      {getAllowedDossierTransitions(tender.status, tender.category).map((tr) => {
+                        const lockedUntilClosing = awaitingBidOpening && BID_OPENING_STAGES.includes(tr.status);
+                        return (
                         <div
                           key={tr.status}
-                          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
-                            selectedNextStatus === tr.status
-                              ? 'border-[#0F5E63] bg-[#E3EFEE]/40 ring-1 ring-[#0F5E63]'
-                              : 'border-[#DCD8CE] hover:border-[#0F5E63]/50 bg-white'
+                          aria-disabled={lockedUntilClosing || undefined}
+                          title={lockedUntilClosing ? 'Available after the bid closing date' : undefined}
+                          className={`p-3.5 rounded-xl border transition-all ${
+                            lockedUntilClosing
+                              ? 'cursor-not-allowed opacity-60 border-[#DCD8CE] bg-[#FBFAF7]'
+                              : selectedNextStatus === tr.status
+                                ? 'cursor-pointer border-[#0F5E63] bg-[#E3EFEE]/40 ring-1 ring-[#0F5E63]'
+                                : 'cursor-pointer border-[#DCD8CE] hover:border-[#0F5E63]/50 bg-white'
                           }`}
                           onClick={() => {
+                            if (lockedUntilClosing) return;
+                            setTransitionError(null);
+                            // Won / Lost are recorded only through the Record outcome form (award value, date, reasons).
+                            if (RESULT_TARGETS.includes(tr.status)) {
+                              setSelectedNextStatus('');
+                              if (onRecordOutcome) {
+                                onRecordOutcome({ ...tender, preset_result: tr.status === 'lost' ? 'lost' : 'won' });
+                              } else {
+                                setTransitionError('Only Management, Tender Team or Sales can record the tender result.');
+                              }
+                              return;
+                            }
                             setSelectedNextStatus(tr.status);
                             setTransitionNotes(tr.defaultRemarks || '');
                           }}
@@ -1439,12 +1615,18 @@ export function TenderDossierModal({
                           <div className="flex items-center justify-between mb-1">
                             <span className="font-bold text-xs text-[#14213D]">{tr.label}</span>
                             <Badge variant={tr.variant as any} size="sm">
-                              {tr.status.replace(/_/g, ' ').toUpperCase()}
+                              {RESULT_TARGETS.includes(tr.status) ? 'RECORD OUTCOME' : tr.status.replace(/_/g, ' ').toUpperCase()}
                             </Badge>
                           </div>
                           <p className="text-[11px] text-[#4A5568] leading-relaxed">{tr.description}</p>
+                          {lockedUntilClosing && (
+                            <p className="mt-1 text-[11px] font-semibold text-[#9A3412]">
+                              Locked until the bid closes ({formatDeadline(tender.submission_deadline || tender.bid_closing_date)}).
+                            </p>
+                          )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -1614,25 +1796,27 @@ export function TenderDossierModal({
                 <div className="flex justify-between text-[11px] font-semibold">
                   <span>Readiness Progress</span>
                   <span className="font-mono text-[#0F5E63]">
-                    {tender.documents?.filter((d: any) => ['Ready', 'Not Applicable'].includes(d.status)).length || 0} of {tender.documents?.length || 0} Ready ({tender.document_completion_percentage || 0}%)
+                    {docReadiness?.checklist_created
+                      ? `${docReadiness.mandatory_ready} of ${docReadiness.mandatory_total} mandatory Ready (${docReadiness.percentage}%)`
+                      : 'Checklist not initialised (0%)'}
                   </span>
                 </div>
-                <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                <div className="w-full h-2 rounded-full bg-[#DCD8CE] overflow-hidden">
                   <div
                     className="h-full bg-[#0F5E63] transition-all duration-300"
-                    style={{ width: `${tender.document_completion_percentage || 0}%` }}
+                    style={{ width: `${docReadiness?.checklist_created ? docReadiness.percentage : 0}%` }}
                   />
                 </div>
               </div>
 
               {/* Status Linkage Banner: Direct Stage Advancement when 100% Ready */}
-              {tender.document_completion_percentage === 100 && ['under_preparation', 'UNDER_PREPARATION'].includes(tender.status) && (
-                <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-emerald-900 animate-in fade-in duration-200">
+              {docsSubmissionReady && ['under_preparation', 'UNDER_PREPARATION'].includes(tender.status) && (
+                <div className="p-3.5 rounded-xl bg-[#E3EFEE] border border-[#D0E5E3] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-[#0B4A4E] animate-in fade-in duration-200">
                   <div className="flex items-center gap-2.5">
-                    <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
+                    <CheckCircle2 className="h-5 w-5 text-[#0F5E63] shrink-0" />
                     <div>
                       <div className="font-bold text-xs">All Mandatory Documents Verified & Ready (100%)!</div>
-                      <div className="text-[11px] text-emerald-700">Document compliance is fully satisfied. Tender is ready for portal submission.</div>
+                      <div className="text-[11px] text-[#0B4A4E]">Document compliance is fully satisfied. Tender is ready for portal submission.</div>
                     </div>
                   </div>
                   <Button
@@ -1666,7 +1850,7 @@ export function TenderDossierModal({
                     </TableHeader>
                     <TableBody>
                       {tender.documents.map((doc: any) => (
-                        <TableRow key={doc.id} className="hover:bg-[#F8FAFC]">
+                        <TableRow key={doc.id} className="hover:bg-[#FBFAF7]">
                           <TableCell className="font-semibold text-xs text-[#14213D] max-w-[200px]">
                             <div className="truncate font-medium" title={doc.document_type}>
                               {doc.document_type}
@@ -1692,7 +1876,7 @@ export function TenderDossierModal({
                                 <option value="">-- Unassigned (None) --</option>
                                 {users && users.map((u: any) => (
                                   <option key={u.id} value={u.id}>
-                                    {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                                    {userWithRole(u)}
                                   </option>
                                 ))}
                               </select>
@@ -1731,7 +1915,7 @@ export function TenderDossierModal({
                                       setAttachedFileName('');
                                       setAttachedDriveUrl('');
                                     }}
-                                    className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5"
+                                    className="text-[#6B7280] hover:text-[#4A5568] cursor-pointer p-0.5"
                                   >
                                     <X className="h-3 w-3" />
                                   </button>
@@ -1765,7 +1949,7 @@ export function TenderDossierModal({
                                       setAttachedFileName('');
                                       setAttachedDriveUrl('');
                                     }}
-                                    className="px-2 py-1 rounded text-[10px] text-gray-600 hover:bg-gray-100 cursor-pointer"
+                                    className="px-2 py-1 rounded text-[10px] text-[#4A5568] hover:bg-[#ECE9E2] cursor-pointer"
                                   >
                                     Cancel
                                   </button>
@@ -1795,7 +1979,7 @@ export function TenderDossierModal({
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveFile(doc.id)}
-                                  className="text-red-500 hover:text-red-700 p-0.5 rounded hover:bg-red-50 shrink-0 cursor-pointer transition-colors"
+                                  className="text-[#881337] hover:text-[#700F2D] p-0.5 rounded hover:bg-[#FCE8EC] shrink-0 cursor-pointer transition-colors"
                                   title="Remove attachment"
                                 >
                                   <X className="h-3 w-3" />
@@ -1822,7 +2006,7 @@ export function TenderDossierModal({
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveFile(doc.id)}
-                                  className="text-red-500 hover:text-red-700 p-0.5 rounded hover:bg-red-50 shrink-0 cursor-pointer"
+                                  className="text-[#881337] hover:text-[#700F2D] p-0.5 rounded hover:bg-[#FCE8EC] shrink-0 cursor-pointer"
                                   title="Remove attachment"
                                 >
                                   <X className="h-3 w-3" />
@@ -1892,7 +2076,7 @@ export function TenderDossierModal({
                       { value: '', label: '-- Unassigned --' },
                       ...(users || []).map((u: any) => ({
                         value: u.id,
-                        label: `${u.full_name} (${u.role?.replace(/_/g, ' ')})`,
+                        label: userWithRole(u),
                       })),
                     ]}
                   />
@@ -1934,8 +2118,9 @@ export function TenderDossierModal({
           {/* TAB 5: CORRIGENDA */}
           {activeTab === 'corrigenda' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
+                <div className="min-w-[12rem] flex-1">
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Corrigenda & Deadline Extensions</h4>
                   <p className="text-[11px] text-[#4A5568]">Official portal corrigenda history. Modifying deadline preserves original submission date.</p>
                 </div>
@@ -1964,13 +2149,9 @@ export function TenderDossierModal({
                     {tender.corrigenda.map((c: any) => (
                       <TableRow key={c.id}>
                         <TableCell className="font-bold font-mono text-xs text-[#14213D]">{c.corrigendum_number}</TableCell>
-                        <TableCell className="text-xs">{c.issued_date || 'N/A'}</TableCell>
-                        <TableCell className="font-mono text-xs text-[#4A5568]">
-                          {c.old_deadline ? `${formatTaskDateTime(c.old_deadline)} IST` : 'N/A'}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">
-                          {c.new_deadline ? `${formatTaskDateTime(c.new_deadline)} IST` : 'N/A'}
-                        </TableCell>
+                        <TableCell className="font-mono text-xs">{c.issued_date ? formatTaskDate(c.issued_date) : 'N/A'}</TableCell>
+                        <TableCell className="font-mono text-xs text-[#4A5568]">{formatDeadline(c.old_deadline)}</TableCell>
+                        <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">{formatDeadline(c.new_deadline)}</TableCell>
                         <TableCell className="text-xs text-[#4A5568]">{c.summary || 'Deadline extended'}</TableCell>
                       </TableRow>
                     ))}
@@ -1988,12 +2169,16 @@ export function TenderDossierModal({
           {/* TAB 6: FINANCIAL INSTRUMENTS */}
           {activeTab === 'finance' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
+                <div className="min-w-[12rem] flex-1">
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Financial Instruments (EMD, PBG & Fees)</h4>
                   <p className="text-[11px] text-[#4A5568]">Tracked in real time with the Finance department until refund or contract release.</p>
                 </div>
-                <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setIsInstrumentOpen(true)}>
+                <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => {
+                  setInstrumentError(null);
+                  setIsInstrumentOpen(true);
+                }}>
                   Request Instrument
                 </Button>
               </div>
@@ -2050,8 +2235,9 @@ export function TenderDossierModal({
           {/* TAB 7: PORTAL ISSUES */}
           {activeTab === 'portal_issues' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
+                <div className="min-w-[12rem] flex-1">
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">External Portal Glitch / Downtime Log</h4>
                   <p className="text-[11px] text-[#4A5568]">External GeM/CPPP portal problems are tracked for deadline extension claims.</p>
                 </div>
@@ -2064,17 +2250,17 @@ export function TenderDossierModal({
                       <div className="flex items-center justify-between">
                         <span className="font-semibold text-xs text-[#14213D]">{pi.issue || pi.issue_description}</span>
                         <Badge
-                          variant={pi.resolution_status === 'RESOLVED' ? 'success' : 'warning'}
+                          variant={String(pi.resolution_status || '').toUpperCase() === 'RESOLVED' ? 'success' : 'warning'}
                           size="sm"
                         >
-                          {pi.resolution_status || 'OPEN'}
+                          {String(pi.resolution_status || 'OPEN').toUpperCase().replace(/_/g, ' ')}
                         </Badge>
                       </div>
                       <p className="text-[11px] text-[#4A5568] mt-1">
-                        Reported on {pi.reported_date} • Responsible: {pi.responsible_name || 'Executive'}
+                        Reported on {pi.reported_date ? formatTaskDate(pi.reported_date) : 'N/A'} • Responsible: {pi.responsible_name || 'Executive'}
                       </p>
                       {pi.resolution && (
-                        <p className="text-[11px] text-emerald-800 font-medium mt-1 bg-emerald-50 p-1.5 rounded">
+                        <p className="text-[11px] text-[#0B4A4E] font-medium mt-1 bg-[#E3EFEE] p-1.5 rounded">
                           Resolution: {pi.resolution}
                         </p>
                       )}
@@ -2154,7 +2340,11 @@ export function TenderDossierModal({
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                     <div>
                       <span className="text-[10px] text-[#4A5568] block uppercase font-bold">Result Date</span>
-                      <span className="font-mono font-semibold">{tender.result_date || 'N/A'}</span>
+                      <span className="font-mono font-semibold">
+                        {tender.result_date || tender.tender_result?.result_date
+                          ? formatTaskDate(tender.result_date || tender.tender_result?.result_date)
+                          : 'N/A'}
+                      </span>
                     </div>
                     <div>
                       <span className="text-[10px] text-[#4A5568] block uppercase font-bold">Awarded Value</span>
@@ -2175,8 +2365,8 @@ export function TenderDossierModal({
                   </div>
 
                   {tender.tender_result?.loss_reasons && tender.tender_result.loss_reasons.length > 0 && (
-                    <div className="p-2.5 rounded bg-red-50 border border-red-200">
-                      <span className="text-[10px] text-red-800 font-bold block uppercase mb-1">Loss Reasons</span>
+                    <div className="p-2.5 rounded bg-[#FCE8EC] border border-[#F3C7CF]">
+                      <span className="text-[10px] text-[#700F2D] font-bold block uppercase mb-1">Loss Reasons</span>
                       <div className="flex flex-wrap gap-1">
                         {tender.tender_result.loss_reasons.map((r: string, i: number) => (
                           <Badge key={i} variant="danger" size="sm">{r}</Badge>
@@ -2187,8 +2377,21 @@ export function TenderDossierModal({
                 </Card>
               ) : (
                 <EmptyState
-                  title="Tender in progress"
-                  description="Outcomes (Won, Lost, Partially Won) can be officially recorded once commercial evaluation concludes."
+                  title={AWAITING_RESULT.includes(tender.status) ? 'Awaiting result' : 'Tender in progress'}
+                  description={
+                    awaitingBidOpening
+                      ? `The bid is submitted. The result can be recorded after the bid closes on ${formatDeadline(tender.submission_deadline || tender.bid_closing_date)}.`
+                      : AWAITING_RESULT.includes(tender.status)
+                      ? 'The bid is submitted. Record the outcome (won or lost) once the buyer declares the result.'
+                      : 'Outcomes (Won, Lost, Partially Won) can be officially recorded once commercial evaluation concludes.'
+                  }
+                  action={
+                    onRecordOutcome && AWAITING_RESULT.includes(tender.status) && !awaitingBidOpening ? (
+                      <Button variant="primary" size="sm" leftIcon={<Award className="h-4 w-4" />} onClick={() => onRecordOutcome(tender)}>
+                        Record outcome
+                      </Button>
+                    ) : undefined
+                  }
                 />
               )}
             </div>
@@ -2295,6 +2498,11 @@ export function TenderDossierModal({
         maxWidth="lg"
       >
         <div className="space-y-5 text-xs">
+          {lineItemError && (
+            <InfoCallout variant="danger" onClose={() => setLineItemError(null)}>
+              {lineItemError}
+            </InfoCallout>
+          )}
           <FormSection title="Product" icon={<ShoppingBag />} description="What is being quoted and its key specifications.">
             <Input
               label="Product Description / Name"
@@ -2311,10 +2519,12 @@ export function TenderDossierModal({
             />
           </FormSection>
           <FormSection title="Quantity & Price" icon={<DollarSign />}>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Input
                 label="Quantity"
                 type="number"
+                min="1"
+                step="any"
                 value={newLineItem.quantity}
                 onChange={(e) => setNewLineItem({ ...newLineItem, quantity: Number(e.target.value) })}
                 required
@@ -2329,14 +2539,44 @@ export function TenderDossierModal({
             <Input
               label="Quoted Unit Price (INR)"
               type="number"
+              min="0"
               value={newLineItem.quoted_unit_price}
               onChange={(e) => setNewLineItem({ ...newLineItem, quoted_unit_price: e.target.value })}
               placeholder="e.g. 150000"
+              helperText={
+                Number(newLineItem.quantity) >= 1 && newLineItem.quoted_unit_price !== '' && Number(newLineItem.quoted_unit_price) >= 0
+                  ? `Quoted total: ${formatINR(Number(newLineItem.quantity) * Number(newLineItem.quoted_unit_price))}`
+                  : 'Quoted total = quantity × unit price.'
+              }
             />
           </FormSection>
           <div className="flex justify-end space-x-2 pt-2">
             <Button variant="outline" size="sm" onClick={() => setIsAddLineItemOpen(false)}>Cancel</Button>
             <Button variant="primary" size="sm" onClick={handleAddLineItem} isLoading={actionLoading}>Save Line Item</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Sub-Modal: Confirm line item removal (in-app, never a browser confirm) */}
+      <Modal
+        isOpen={Boolean(lineItemToDelete)}
+        onClose={() => setLineItemToDelete(null)}
+        title="Remove line item?"
+        description={lineItemToDelete?.product_name || lineItemToDelete?.product_description || undefined}
+        maxWidth="sm"
+      >
+        <div className="space-y-4 text-xs">
+          <p className="text-[#4A5568]">
+            The line ({lineItemToDelete?.quantity} {lineItemToDelete?.unit || 'Nos'}) is removed from this tender's BOQ. The removal is
+            recorded in the audit timeline.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setLineItemToDelete(null)}>
+              Cancel
+            </Button>
+            <Button variant="danger" size="sm" isLoading={actionLoading} onClick={handleDeleteLineItem}>
+              Remove line item
+            </Button>
           </div>
         </div>
       </Modal>
@@ -2390,6 +2630,11 @@ export function TenderDossierModal({
         maxWidth="md"
       >
         <div className="space-y-3 text-xs">
+          {instrumentError && (
+            <InfoCallout variant="danger" onClose={() => setInstrumentError(null)}>
+              {instrumentError}
+            </InfoCallout>
+          )}
           <Select
             label="Instrument Type"
             value={newInstrument.instrument_type}
@@ -2404,6 +2649,7 @@ export function TenderDossierModal({
           <Input
             label="Amount (INR)"
             type="number"
+            min="1"
             value={newInstrument.amount}
             onChange={(e) => setNewInstrument({ ...newInstrument, amount: e.target.value })}
             placeholder="e.g. 500000"
@@ -2457,7 +2703,7 @@ export function TenderDossierModal({
                   <option value="">-- Unassigned (None) --</option>
                   {userList.map((u) => (
                     <option key={u.id} value={u.id}>
-                      {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                      {userWithRole(u)}
                     </option>
                   ))}
                 </Select>
@@ -2474,7 +2720,7 @@ export function TenderDossierModal({
                   <option value="">-- Unassigned (None) --</option>
                   {userList.map((u) => (
                     <option key={u.id} value={u.id}>
-                      {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                      {userWithRole(u)}
                     </option>
                   ))}
                 </Select>

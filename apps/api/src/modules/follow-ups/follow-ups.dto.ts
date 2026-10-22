@@ -8,6 +8,8 @@ import {
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Any non-whitespace character — one decorator, one friendly message for missing / empty / blank text. */
+const NOT_BLANK = /\S/;
 
 export class CreateFollowUpDto {
   @Matches(UUID_PATTERN, { message: 'Organisation ID must be a valid UUID' })
@@ -30,8 +32,8 @@ export class CreateFollowUpDto {
   @IsNotEmpty()
   assigned_to!: string;
 
-  @IsDateString()
-  @IsNotEmpty()
+  @IsDateString({}, { message: 'Due date must be a valid date (YYYY-MM-DD)' })
+  @IsNotEmpty({ message: 'Due date is required' })
   due_date!: string;
 
   @Matches(TIME_PATTERN, { message: 'Due time must be in HH:mm format' })
@@ -44,15 +46,15 @@ export class CreateFollowUpDto {
 }
 
 export class CompleteFollowUpDto {
-  @IsString()
-  @IsNotEmpty({ message: 'Outcome is required to complete follow-up' })
+  // A single check so a missing outcome reads as one friendly message, not raw validator text (QA DEF-094)
+  @Matches(NOT_BLANK, { message: 'Enter the touchpoint outcome to complete this follow-up' })
   outcome!: string;
 
   @IsString()
   @IsOptional()
   remarks?: string;
 
-  @IsDateString()
+  @IsDateString({}, { message: 'Next follow-up date must be a valid date (YYYY-MM-DD)' })
   @IsOptional()
   next_followup_date?: string;
 
@@ -62,8 +64,7 @@ export class CompleteFollowUpDto {
 }
 
 export class RescheduleFollowUpDto {
-  @IsDateString()
-  @IsNotEmpty({ message: 'New due date is required' })
+  @IsDateString({}, { message: 'Enter a valid new due date' })
   new_due_date!: string;
 
   @Matches(TIME_PATTERN, { message: 'Due time must be in HH:mm format' })

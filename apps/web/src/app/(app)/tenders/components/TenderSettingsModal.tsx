@@ -256,7 +256,7 @@ export function TenderSettingsModal({
                   Tender Categories (PQ, General, MHA)
                 </h4>
                 <p className="text-[11px] text-[#4A5568]">
-                  Controls category-specific checklists, qualification rules, and Vikas KPI metrics.
+                  Controls category-specific checklists, qualification rules, and category KPI metrics.
                 </p>
               </div>
             </div>
@@ -332,7 +332,7 @@ export function TenderSettingsModal({
                           Yes
                         </Badge>
                       ) : (
-                        <span className="text-slate-400">No</span>
+                        <span className="text-[#6B7280]">No</span>
                       )}
                     </TableCell>
                     <TableCell>

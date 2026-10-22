@@ -86,19 +86,19 @@ export function DeploymentsTable({ className = '' }: { className?: string }) {
     switch (status) {
       case 'Delivered':
         return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-[#E3EFEE] text-[#0B4A4E]">
             Active in Field
           </span>
         );
       case 'Picked Up':
         return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-[#EEF1F5] text-[#14213D]">
             Under Calibration
           </span>
         );
       case 'In Transit':
         return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-[#FBEBDD] text-[#7C2D12]">
             Base Transfer
           </span>
         );
@@ -241,7 +241,7 @@ export function DeploymentsTable({ className = '' }: { className?: string }) {
                 </td>
                 <td className="py-3 px-3">
                   <div className="flex items-center gap-2">
-                    <span className="w-4 h-3 bg-emerald-700 rounded-sm text-[8px] text-white flex items-center justify-center font-bold">
+                    <span className="w-4 h-3 bg-[#0B4A4E] rounded-sm text-[8px] text-white flex items-center justify-center font-bold">
                       IN
                     </span>
                     <span className="font-medium text-[#14213D]">{row.assignedTo}</span>

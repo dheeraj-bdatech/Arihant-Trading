@@ -138,6 +138,8 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
 
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
         if (e.key === 'Escape') {
+          // Handled here: the enclosing Modal must not also close (and drop the form) on this Escape.
+          e.preventDefault();
           setIsOpen(false);
           setSearchQuery('');
           triggerRef.current?.focus();
@@ -229,7 +231,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
             className="block text-xs font-semibold text-[#14213D] mb-1.5"
           >
             {required && typeof label === 'string' ? label.replace(/\s*\*\s*$/, '') : label}
-            {required && <span className="text-red-500 ml-0.5">*</span>}
+            {required && <span className="text-[#881337] ml-0.5">*</span>}
           </label>
         )}
 
@@ -280,7 +282,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
           <span
             className={twMerge(
               'truncate mr-2 font-normal',
-              isPlaceholder ? 'text-[#8A8578]' : 'text-[#14213D]',
+              isPlaceholder ? 'text-[#6B7280]' : 'text-[#14213D]',
             )}
           >
             {displayLabel}
@@ -316,7 +318,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
                     }}
                     onKeyDown={handleKeyDown}
                     placeholder={searchPlaceholder || `Search ${label ? label.replace(/\s*\(.*\)/g, '') : 'options'}...`}
-                    className="w-full h-8 pl-8 pr-7 text-xs bg-white border border-[#DCD8CE] rounded-[6px] text-[#14213D] placeholder:text-[#8A8578] focus:outline-none focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]"
+                    className="w-full h-8 pl-8 pr-7 text-xs bg-white border border-[#DCD8CE] rounded-[6px] text-[#14213D] placeholder:text-[#6B7280] focus:outline-none focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]"
                   />
                   {searchQuery && (
                     <button
@@ -325,7 +327,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
                         setSearchQuery('');
                         searchInputRef.current?.focus();
                       }}
-                      className="absolute right-2 p-0.5 text-gray-400 hover:text-gray-600 rounded"
+                      className="absolute right-2 p-0.5 text-[#6B7280] hover:text-[#4A5568] rounded"
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
@@ -366,7 +368,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
                           : isHighlighted
                           ? 'bg-[#F6F5F1] text-[#14213D]'
                           : 'text-[#14213D] hover:bg-[#FBFAF7]',
-                        opt.value === '' && 'text-gray-400 italic',
+                        opt.value === '' && 'text-[#6B7280] italic',
                       )}
                     >
                       <span className="truncate pr-2">{opt.label}</span>
@@ -377,7 +379,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
                   );
                 })
               ) : (
-                <div className="py-4 px-3 text-center text-xs text-[#8A8578] italic">
+                <div className="py-4 px-3 text-center text-xs text-[#6B7280] italic">
                   No matching options found for &quot;{searchQuery}&quot;
                 </div>
               )}

@@ -657,7 +657,8 @@ export class TendersController {
   }
 
   @Delete(':id/line-items/:itemId')
-  @Roles('management', 'regional_manager', 'tender_team', 'admin')
+  // Sales may remove a wrong line from their own tender (same roles that can add one; service enforces ownership).
+  @Roles('management', 'regional_manager', 'tender_team', 'sales', 'admin')
   async deleteLineItem(
     @Param('id') id: string,
     @Param('itemId') itemId: string,

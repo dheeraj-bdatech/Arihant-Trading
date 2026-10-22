@@ -6,7 +6,10 @@ import {
   IsNumber,
   IsDateString,
   IsArray,
+  IsEmail,
+  IsPositive,
   Matches,
+  Min,
 } from 'class-validator';
 import type {
   LeadCategory,
@@ -16,8 +19,12 @@ import type {
   LeadType,
   LeadLossReason,
 } from '@arihant/shared';
+import { INDIAN_MOBILE_PATTERN } from '@arihant/shared';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Any non-whitespace character — one decorator that rejects missing, empty and whitespace-only text with one message. */
+const NOT_BLANK = /\S/;
+const DATE_MESSAGE = (field: string) => `${field} must be a valid date (YYYY-MM-DD)`;
 
 export class CreateLeadDto {
   @Matches(UUID_PATTERN, { message: 'Organisation ID must be a valid UUID' })
@@ -32,19 +39,21 @@ export class CreateLeadDto {
   @IsOptional()
   primary_contact_id?: string;
 
-  @IsString()
+  // Optional for API callers linking an existing contact, but never blank when sent (QA DEF-056)
+  @Matches(NOT_BLANK, { message: 'Contact person name is required' })
   @IsOptional()
   contact_name?: string;
 
-  @IsString()
+  @Matches(NOT_BLANK, { message: 'Designation / rank is required for the contact officer' })
   @IsOptional()
   contact_designation?: string;
 
-  @IsString()
+  // QA DEF-010: a real 10-digit Indian mobile number, not free text
+  @Matches(INDIAN_MOBILE_PATTERN, { message: 'Enter a valid 10-digit mobile number (e.g. 98110 00000)' })
   @IsOptional()
   contact_mobile?: string;
 
-  @IsString()
+  @IsEmail({}, { message: 'Enter a valid email address' })
   @IsOptional()
   contact_email?: string;
 
@@ -124,7 +133,7 @@ export class CreateLeadDto {
   @IsOptional()
   bill_qtr?: string;
 
-  @IsDateString()
+  @IsDateString({}, { message: DATE_MESSAGE('Last interaction date') })
   @IsOptional()
   last_interaction_date?: string;
 
@@ -136,31 +145,40 @@ export class CreateLeadDto {
   @IsOptional()
   last_interaction_notes?: string;
 
-  @IsDateString()
+  @IsDateString({}, { message: DATE_MESSAGE('Next follow-up date') })
   @IsOptional()
   next_followup_date?: string;
 
-  @IsNumber()
+  @IsNumber({}, { message: 'Quantity must be a number' })
+  @Min(0, { message: 'Quantity cannot be negative' })
   @IsOptional()
   qty?: number;
 
-  @IsNumber()
+  @IsNumber({}, { message: 'Quoted price must be a number' })
+  @Min(0, { message: 'Quoted price cannot be negative' })
   @IsOptional()
   quot_price?: number;
 
-  @IsNumber()
+  @IsNumber({}, { message: 'Order price must be a number' })
+  @Min(0, { message: 'Order price cannot be negative' })
   @IsOptional()
   order_price?: number;
 
-  @IsNumber()
+  // QA DEF-011: the estimated deal value must be a positive amount
+  @IsNumber({}, { message: 'Estimated deal value must be a number' })
+  @IsPositive({ message: 'Estimated deal value must be greater than zero' })
   @IsOptional()
   value_lakh?: number;
 
-  @IsNumber()
+  // QA DEF-011: the estimated deal value must be a positive amount
+  @IsNumber({}, { message: 'Estimated deal value must be a number' })
+  @IsPositive({ message: 'Estimated deal value must be greater than zero' })
   @IsOptional()
   estimated_value_lakh?: number;
 
-  @IsNumber()
+  // QA DEF-011: the estimated deal value must be a positive amount
+  @IsNumber({}, { message: 'Estimated deal value must be a number' })
+  @IsPositive({ message: 'Estimated deal value must be greater than zero' })
   @IsOptional()
   estimated_value?: number;
 
@@ -238,31 +256,40 @@ export class UpdateLeadDto {
   @IsOptional()
   bill_qtr?: string;
 
-  @IsDateString()
+  @IsDateString({}, { message: DATE_MESSAGE('Next follow-up date') })
   @IsOptional()
   next_followup_date?: string;
 
-  @IsNumber()
+  @IsNumber({}, { message: 'Quantity must be a number' })
+  @Min(0, { message: 'Quantity cannot be negative' })
   @IsOptional()
   qty?: number;
 
-  @IsNumber()
+  @IsNumber({}, { message: 'Quoted price must be a number' })
+  @Min(0, { message: 'Quoted price cannot be negative' })
   @IsOptional()
   quot_price?: number;
 
-  @IsNumber()
+  @IsNumber({}, { message: 'Order price must be a number' })
+  @Min(0, { message: 'Order price cannot be negative' })
   @IsOptional()
   order_price?: number;
 
-  @IsNumber()
+  // QA DEF-011: the estimated deal value must be a positive amount
+  @IsNumber({}, { message: 'Estimated deal value must be a number' })
+  @IsPositive({ message: 'Estimated deal value must be greater than zero' })
   @IsOptional()
   value_lakh?: number;
 
-  @IsNumber()
+  // QA DEF-011: the estimated deal value must be a positive amount
+  @IsNumber({}, { message: 'Estimated deal value must be a number' })
+  @IsPositive({ message: 'Estimated deal value must be greater than zero' })
   @IsOptional()
   estimated_value_lakh?: number;
 
-  @IsNumber()
+  // QA DEF-011: the estimated deal value must be a positive amount
+  @IsNumber({}, { message: 'Estimated deal value must be a number' })
+  @IsPositive({ message: 'Estimated deal value must be greater than zero' })
   @IsOptional()
   estimated_value?: number;
 
@@ -284,8 +311,7 @@ export class UpdateLeadDto {
 }
 
 export class ChangeLeadStatusDto {
-  @IsString()
-  @IsNotEmpty({ message: 'Status is required' })
+  @Matches(NOT_BLANK, { message: 'Status is required' })
   status!: string;
 
   @IsString()
@@ -294,7 +320,25 @@ export class ChangeLeadStatusDto {
 
   @IsString()
   @IsOptional()
+  loss_remarks?: string;
+
+  @IsString()
+  @IsOptional()
   remarks?: string;
+
+  // Win details — required when the lead is marked CONVERTED (QA DEF-054; Module 1 §6: "PO number, contract value")
+  @IsString()
+  @IsOptional()
+  po_reference?: string;
+
+  @IsNumber({}, { message: 'Order value must be a number' })
+  @IsPositive({ message: 'Order value must be greater than zero' })
+  @IsOptional()
+  order_value_lakh?: number;
+
+  @IsDateString({}, { message: DATE_MESSAGE('Order date') })
+  @IsOptional()
+  order_date?: string;
 }
 
 export class AssignLeadDto {

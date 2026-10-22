@@ -8,88 +8,149 @@ import {
   IsUUID,
   IsArray,
   ValidateNested,
+  MaxLength,
+  MinLength,
+  Matches,
+  ValidateIf,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import type { UserRole } from '@arihant/shared';
 import { USER_ROLES } from '@arihant/shared';
 
+const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+/** '' from a cleared form field means "no value" (null), so optional relations can be unset. */
+const emptyToNull = ({ value }: { value: unknown }) => (value === '' ? null : typeof value === 'string' ? value.trim() : value);
+
+/** Indian or international phone: digits with optional +, spaces and dashes, 8–15 digits in total. */
+const PHONE_RE = /^\+?[0-9][0-9\s-]{6,18}[0-9]$/;
+const ROLE_MESSAGE = `Role must be one of: ${USER_ROLES.join(', ')}`;
+
 export class CreateUserDto {
-  @IsEmail({}, { message: 'Valid email is required' })
-  @IsNotEmpty()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsEmail({}, { message: 'Enter a valid email address' })
+  @IsNotEmpty({ message: 'Email is required' })
+  @MaxLength(254, { message: 'Email is too long' })
   email!: string;
 
+  @Transform(trim)
   @IsString()
   @IsNotEmpty({ message: 'Full name is required' })
+  @MinLength(2, { message: 'Full name must be at least 2 characters' })
+  @MaxLength(120, { message: 'Full name must be at most 120 characters' })
   full_name!: string;
 
-  @IsString()
+  @Transform(emptyToNull)
   @IsOptional()
-  phone?: string;
+  @IsString()
+  @Matches(PHONE_RE, { message: 'Enter a valid phone number (digits, optional +, 8–15 digits)' })
+  phone?: string | null;
 
-  @IsEnum(USER_ROLES, { message: 'Invalid role' })
+  @IsEnum(USER_ROLES, { message: ROLE_MESSAGE })
   role!: UserRole;
 
-  @IsUUID('all', { message: 'Invalid region ID' })
+  @Transform(emptyToNull)
   @IsOptional()
-  region_id?: string;
+  @IsUUID('all', { message: 'Choose a valid department' })
+  department_id?: string | null;
 
-  @IsUUID('all', { message: 'Invalid zone ID' })
+  @Transform(emptyToNull)
   @IsOptional()
-  zone_id?: string;
+  @IsUUID('all', { message: 'Choose a valid region' })
+  region_id?: string | null;
 
-  @IsUUID('all', { message: 'Invalid manager ID' })
+  @Transform(emptyToNull)
   @IsOptional()
-  reporting_manager_id?: string;
+  @IsUUID('all', { message: 'Choose a valid zone' })
+  zone_id?: string | null;
 
+  @Transform(emptyToNull)
+  @IsOptional()
+  @IsUUID('all', { message: 'Choose a valid reporting manager' })
+  reporting_manager_id?: string | null;
+
+  @IsOptional()
+  @IsBoolean({ message: 'Active must be true or false' })
+  is_active?: boolean;
+
+  /** Optional admin-chosen initial password; otherwise a one-time temporary password is generated. */
+  @Transform(emptyToNull)
+  @IsOptional()
   @IsString()
-  @IsOptional()
-  password?: string;
+  @MinLength(8, { message: 'Initial password must be at least 8 characters' })
+  @MaxLength(72, { message: 'Initial password must be at most 72 characters' })
+  password?: string | null;
 }
 
 export class UpdateUserDto {
-  @IsString()
+  @Transform(trim)
   @IsOptional()
+  @IsString()
+  @MinLength(2, { message: 'Full name must be at least 2 characters' })
+  @MaxLength(120, { message: 'Full name must be at most 120 characters' })
   full_name?: string;
 
-  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
   @IsOptional()
-  phone?: string;
+  @IsEmail({}, { message: 'Enter a valid email address' })
+  @MaxLength(254, { message: 'Email is too long' })
+  email?: string;
 
-  @IsEnum(USER_ROLES)
+  @Transform(emptyToNull)
   @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @Matches(PHONE_RE, { message: 'Enter a valid phone number (digits, optional +, 8–15 digits)' })
+  phone?: string | null;
+
+  @IsOptional()
+  @IsEnum(USER_ROLES, { message: ROLE_MESSAGE })
   role?: UserRole;
 
-  @IsUUID('all')
+  @Transform(emptyToNull)
   @IsOptional()
+  @IsUUID('all', { message: 'Choose a valid department' })
+  department_id?: string | null;
+
+  @Transform(emptyToNull)
+  @IsOptional()
+  @IsUUID('all', { message: 'Choose a valid region' })
   region_id?: string | null;
 
-  @IsUUID('all')
+  @Transform(emptyToNull)
   @IsOptional()
+  @IsUUID('all', { message: 'Choose a valid zone' })
   zone_id?: string | null;
 
-  @IsUUID('all')
+  @Transform(emptyToNull)
   @IsOptional()
+  @IsUUID('all', { message: 'Choose a valid reporting manager' })
   reporting_manager_id?: string | null;
 
-  @IsBoolean()
   @IsOptional()
+  @IsBoolean({ message: 'Active must be true or false' })
   is_active?: boolean;
 }
 
 export class BulkInviteUserItemDto {
-  @IsEmail()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsEmail({}, { message: 'Enter a valid email address' })
   email!: string;
 
+  @Transform(trim)
   @IsString()
+  @IsNotEmpty({ message: 'Full name is required' })
+  @MaxLength(120)
   full_name!: string;
 
-  @IsEnum(USER_ROLES)
+  @IsEnum(USER_ROLES, { message: ROLE_MESSAGE })
   role!: UserRole;
 
   @IsOptional()
+  @IsString()
   region_name?: string;
 
   @IsOptional()
+  @IsString()
   manager_email?: string;
 }
 

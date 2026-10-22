@@ -30,6 +30,7 @@ import {
   assertNoFutureDates,
   ExpenseValidationException,
   isIsoDate,
+  lineAnomalies,
   readText,
   receiptRequired,
   TEXT_LIMITS,
@@ -165,6 +166,28 @@ export class ExpenseWorkflowService {
       .where('i.deleted_at', 'is', null)
       .orderBy('i.expense_date')
       .execute();
+  }
+
+  /**
+   * Payable lines that lack a receipt their category requires. Submission refuses these, so they only reach an
+   * approver on legacy imports or after a category threshold was raised; the approval is allowed but the gap is
+   * written to the history row so the audit trail shows who approved / paid it without the bill.
+   */
+  private async receiptGaps(trx: Transaction<Database>, items: any[], payableIds: Set<string>, today: string) {
+    const ids = items.filter((i) => payableIds.has(i.id)).map((i) => i.id);
+    if (!ids.length) return [];
+    const counts = await trx
+      .selectFrom('expense_attachments')
+      .select(['item_id', sql<number>`count(*)::int`.as('n')])
+      .where('item_id', 'in', ids)
+      .where('deleted_at', 'is', null)
+      .groupBy('item_id')
+      .execute();
+    const n = new Map(counts.map((c) => [c.item_id, Number(c.n)]));
+    return items
+      .filter((i) => payableIds.has(i.id))
+      .filter((i) => lineAnomalies({ ...i, attachment_count: n.get(i.id) ?? 0 }, today).includes('receipt_missing'))
+      .map((i) => ({ item_id: i.id, purpose: i.purpose, category: i.category_name, amount: Number(i.amount) }));
   }
 
   private async writeItemDecisions(trx: Transaction<Database>, items: any[], updates: ReturnType<typeof applyItemDecisions>['updates'], stage: 'manager' | 'accounts', user: AuthUser) {
@@ -339,6 +362,8 @@ export class ExpenseWorkflowService {
         const decide = !(rule.action === 'process' && from === 'accounts_approved');
         let totalApproved = money(claim.total_approved) ?? 0;
         let decisionMeta: unknown;
+        // Lines that stay payable after this step (rejected lines need no receipt).
+        const payableIds = new Set(items.filter((i) => i.item_status !== 'rejected').map((i) => i.id));
         if (decide) {
           const result = applyItemDecisions(
             items.map((i) => ({ id: i.id, amount: Number(i.amount), approved_amount: money(i.approved_amount), item_status: i.item_status as any })),
@@ -350,6 +375,10 @@ export class ExpenseWorkflowService {
             throw new ExpenseValidationException({ items: 'Nothing is approved on this claim — reject it instead of processing.' });
           }
           await this.writeItemDecisions(trx, items, result.updates, stage, user);
+          for (const u of result.updates) {
+            if (u.item_status === 'rejected') payableIds.delete(u.id);
+            else payableIds.add(u.id);
+          }
           totalApproved = result.totalApproved;
           if (result.allRejected) {
             // §5.22: rejecting every line rejects the claim.
@@ -377,6 +406,8 @@ export class ExpenseWorkflowService {
           if (comment) patch.last_reviewer_comment = comment;
           decisionMeta = { decisions: result.updates, total_approved: totalApproved };
         }
+        const gaps = await this.receiptGaps(trx, items, payableIds, today);
+        if (gaps.length) decisionMeta = { ...((decisionMeta as object | undefined) ?? {}), anomalies: { receipt_missing: gaps } };
 
         if (rule.action === 'manager_approve') {
           await this.claims.history(trx, claim.id, { from, to: 'manager_approved', action: 'manager_approve', actor: user, comment, metadata: decisionMeta });
@@ -404,7 +435,7 @@ export class ExpenseWorkflowService {
             action: 'process',
             actor: user,
             comment,
-            metadata: { tally_voucher_ref: ref, payment_reference: payRef, payment_date: payDate, ...(decide ? (decisionMeta as object) : {}) },
+            metadata: { tally_voucher_ref: ref, payment_reference: payRef, payment_date: payDate, ...((decisionMeta as object | undefined) ?? {}) },
           });
           event = EXPENSE_EVENTS.PROCESSED;
           payload = { ...base, amount: totalApproved, tallyRef: ref, paymentReference: payRef, paymentDate: payDate };

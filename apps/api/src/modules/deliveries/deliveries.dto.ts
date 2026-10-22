@@ -44,6 +44,11 @@ export class CreateDeliveryDto {
   @IsOptional()
   tender_id?: string;
 
+  /** The converted proposal (customer PO) this dispatch fulfils: pre-fills the PO reference and product. */
+  @Matches(UUID_REGEX, { message: 'proposal_id must be a valid UUID' })
+  @IsOptional()
+  proposal_id?: string;
+
   @IsString()
   @IsOptional()
   order_reference?: string;
@@ -93,10 +98,17 @@ export class UpdateDeliveryStatusDto {
   @IsOptional()
   installation_notes?: string;
 
+  /** Transition remarks: appended to the delivery's milestone log. */
   @IsString()
   @IsOptional()
   remarks?: string;
 
+  /** Client officer who received the consignment / signed the handover (required for handover). */
+  @IsString()
+  @IsOptional()
+  received_by?: string;
+
+  /** Signed handover certificate: a link or its reference number (required for handover). */
   @IsString()
   @IsOptional()
   document_url?: string;
@@ -124,6 +136,10 @@ export class DeliveryQueryDto {
   @Matches(UUID_REGEX, { message: 'tender_id must be a valid UUID' })
   @IsOptional()
   tender_id?: string;
+
+  @Matches(UUID_REGEX, { message: 'proposal_id must be a valid UUID' })
+  @IsOptional()
+  proposal_id?: string;
 
   @IsString()
   @IsOptional()

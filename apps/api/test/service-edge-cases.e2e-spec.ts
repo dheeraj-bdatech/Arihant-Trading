@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
-import { advanceTicket, validReport } from './helpers/service-flow';
+import { advanceTicket, istDay, validReport } from './helpers/service-flow';
 
 jest.setTimeout(60000);
 
@@ -99,7 +99,8 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         });
 
       expect(res.status).toBe(400);
-      expect(JSON.stringify(res.body.message)).toContain('Organisation');
+      // DEF-067: the message now also offers logging an unlisted customer by name
+      expect(JSON.stringify(res.body.message)).toMatch(/organisation/i);
     });
 
     it('E2: rejects ticket creation when complaint text is missing or empty (400)', async () => {
@@ -190,7 +191,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .send({
           organisation_id: testOrgId,
           assigned_to: serviceUserId,
-          planned_visit_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+          planned_visit_date: istDay(1),
           complaint: 'Motor bearing noise at conveyor head',
         });
 
@@ -330,7 +331,8 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
     });
 
     it('E16: progresses from assigned to visit_scheduled with planned visit date', async () => {
-      const visitDate = new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0];
+      // the visit is today: an engineer may only start work on/after the scheduled visit day (IST)
+      const visitDate = istDay(0);
       const res = await request(app.getHttpServer())
         .patch(`/api/service/tickets/${lifecycleTicketId}/status`)
         .set('Authorization', `Bearer ${mgmtToken}`)
@@ -428,16 +430,29 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .send({ status: 'in_progress', remarks: 'OEM specialist resolved the firmware fault remotely' });
       expect(back.status).toBe(200);
 
-      const res = await request(app.getHttpServer())
+      // DEF-065: a rectification note alone no longer resolves a ticket — the service report (with customer sign-off) does
+      const noteOnly = await request(app.getHttpServer())
         .patch(`/api/service/tickets/${lifecycleTicketId}/status`)
         .set('Authorization', `Bearer ${serviceToken}`)
         .send({
           status: 'resolved',
           remarks: 'All diagnostics passed radiation safety standards',
         });
+      expect(noteOnly.status).toBe(400);
+      expect(JSON.stringify(noteOnly.body.message)).toContain('service report');
 
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('resolved');
+      const report = await request(app.getHttpServer())
+        .post(`/api/service/tickets/${lifecycleTicketId}/report`)
+        .set('Authorization', `Bearer ${serviceToken}`)
+        .send(validReport({ action_taken: 'Firmware reflashed; all diagnostics passed radiation safety standards' }));
+      expect(report.status).toBe(201);
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/service/tickets/${lifecycleTicketId}`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+      expect(res.body.status).toBe('report_submitted');
+      expect(res.body.resolved_at).toBeTruthy();
+      expect(res.body.status_history.map((h: any) => h.to_status)).toContain('resolved');
     });
   });
 
@@ -517,7 +532,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         });
       await advanceTicket(app, revisitTicket.body.id, mgmtToken, serviceUserId, 'in_progress');
 
-      const nextVisit = new Date(Date.now() + 86400000 * 4).toISOString().split('T')[0];
+      const nextVisit = istDay(4);
       const res = await request(app.getHttpServer())
         .post(`/api/service/tickets/${revisitTicket.body.id}/report`)
         .set('Authorization', `Bearer ${serviceToken}`)
@@ -779,9 +794,16 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
 
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body.data)).toBe(true);
+      // service@ is the chief service engineer (DEF-064): besides his own and unassigned tickets he sees
+      // those of the engineers who report to him
+      const team = await request(app.getHttpServer())
+        .get('/api/service/engineers')
+        .set('Authorization', `Bearer ${serviceToken}`);
+      const teamIds = team.body.map((e: any) => e.id);
+      expect(teamIds).toContain(serviceUserId);
       for (const t of res.body.data) {
         if (t.assigned_to) {
-          expect(t.assigned_to).toBe(serviceUserId);
+          expect(teamIds).toContain(t.assigned_to);
         }
       }
     });

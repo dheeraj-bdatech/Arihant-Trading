@@ -693,7 +693,7 @@ export default function RecurringTaskDetailPage() {
               <p className="text-sm text-[#14213D] whitespace-pre-wrap break-words">{t.expected_outcome}</p>
             </div>
           )}
-          <p className="text-[11px] text-[#8A8578] font-mono">Updated {formatTaskDateTime(t.updated_at)}</p>
+          <p className="text-[11px] text-[#6B7280] font-mono">Updated {formatTaskDateTime(t.updated_at)}</p>
         </Card>
 
         <div className="lg:col-span-2 space-y-5 min-w-0">
@@ -704,7 +704,7 @@ export default function RecurringTaskDetailPage() {
               <h3 className="font-serif text-lg text-[#14213D]">Next 10 occurrences</h3>
             </div>
             {t.status === 'ended' ? (
-              <p className="text-xs text-[#8A8578]">This series has ended — nothing more will be generated.</p>
+              <p className="text-xs text-[#6B7280]">This series has ended — nothing more will be generated.</p>
             ) : (
               <>
                 {t.status === 'paused' && <p className="text-xs text-[#9A3412] font-medium">Paused — these dates are generated only after the series is resumed.</p>}
@@ -726,7 +726,7 @@ export default function RecurringTaskDetailPage() {
               </span>
             </div>
             {history.length === 0 ? (
-              <p className="text-xs text-[#8A8578]">No tasks generated yet.</p>
+              <p className="text-xs text-[#6B7280]">No tasks generated yet.</p>
             ) : (
               <ol className="divide-y divide-[#ECE9E2] rounded-[10px] border border-[#ECE9E2]">
                 {history.map((h) =>
@@ -750,10 +750,10 @@ export default function RecurringTaskDetailPage() {
                     </li>
                   ) : (
                     <li key={`s-${h.skip.id}`} className="flex flex-col sm:flex-row sm:items-center gap-2 px-3 py-2.5 bg-[#FBFAF7]">
-                      <div className="sm:w-40 shrink-0 font-mono text-[11px] text-[#8A8578] line-through">{formatTaskDate(h.date)}</div>
+                      <div className="sm:w-40 shrink-0 font-mono text-[11px] text-[#6B7280] line-through">{formatTaskDate(h.date)}</div>
                       <div className="min-w-0 flex-1">
                         <div className="text-xs font-semibold text-[#4A5568]">{SKIP_LABEL[h.skip.reason] || 'Skipped'}</div>
-                        {h.skip.detail && <div className="text-[11px] text-[#8A8578] break-words">{h.skip.detail}</div>}
+                        {h.skip.detail && <div className="text-[11px] text-[#6B7280] break-words">{h.skip.detail}</div>}
                       </div>
                       <Badge variant="outline" size="sm" className="self-start sm:self-center">
                         Not counted as missed

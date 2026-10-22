@@ -64,7 +64,7 @@ import {
   InfoCallout,
   Checkbox, CountUp, PageLoader, Spinner, FilterMenu,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu,
-  FormSteps, FormSection } from '@/components/ui';
+  FormSteps, FormSection, formatDateIN, formatDateTimeIN } from '@/components/ui';
 import type { RowMenuItem } from '@/components/ui/RowMenu';
 import type { FilterMenuOption } from '@/components/ui/FilterMenu';
 import { NewClaimButton } from '../expenses/_lib/ClaimFormModal';
@@ -128,6 +128,20 @@ const getStandardKitAccessories = (productName?: string, category?: string) => {
     'Certified demonstration verification sample kit',
     'OEM operational manual and calibration compliance card',
   ];
+};
+
+// Same rules the API enforces: a visit's time window must end after it starts; field plans cannot be made
+// for a past day; a visit is reported on or after its planned day (all IST).
+const timeRangeError = (start?: string | null, end?: string | null): string | undefined =>
+  start && end && end <= start ? `End time (${end}) must be after the start time (${start}).` : undefined;
+const isFutureVisit = (v: any) => (calendarDay(v?.planned_date) || '') > istToday();
+const REPORT_PENDING = ['planned', 'modified', 'rescheduled'];
+// Visit day has passed but no report yet (the API sets report_overdue; derive it for older payloads).
+const isReportOverdue = (v: any) =>
+  v?.report_overdue ?? (REPORT_PENDING.includes(v?.status) && (calendarDay(v?.planned_date) || '') < istToday());
+const fmtDay = (d: string) => {
+  const [y, m, dd] = d.split('-');
+  return `${dd}/${m}/${y}`;
 };
 
 export default function VisitsPage() {
@@ -282,7 +296,7 @@ export default function VisitsPage() {
       const statusTag = isAvail
         ? '🟢 [AVAILABLE]'
         : isReserved
-        ? `🟡 [RESERVED${e.reserved_until ? ` to ${new Date(e.reserved_until).toLocaleDateString()}` : ''}]`
+        ? `🟡 [RESERVED${e.reserved_until ? ` to ${formatDateIN(e.reserved_until)}` : ''}]`
         : isMaint
         ? '🔴 [MAINTENANCE]'
         : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
@@ -521,6 +535,21 @@ export default function VisitsPage() {
     'customer',
   );
 
+  // Deep link from notifications: /visits?open=<visit id> opens the visit in its customer's history.
+  useOpenParam(
+    async (visitId) => {
+      const v = visits.find((x) => x.id === visitId) ?? (await api.get(`/visits/${visitId}`).catch(() => null));
+      if (!v?.organisation_id) return;
+      setActiveTab('customer_history');
+      if (!organisations.some((o) => o.id === v.organisation_id)) {
+        const org = await api.get(`/organisations/${v.organisation_id}`).catch(() => null);
+        if (org?.id) setOrganisations((prev) => [org, ...prev]);
+      }
+      setSelectedOrgId(v.organisation_id);
+    },
+    organisations.length > 0,
+  );
+
   // Load customer history when selectedOrgId changes
   useEffect(() => {
     if (selectedOrgId) {
@@ -564,6 +593,11 @@ export default function VisitsPage() {
       if (!newVisit.organisation_id) {
         throw new Error('Please select a customer organisation.');
       }
+      if ((newVisit.planned_date || '') < istToday()) {
+        throw new Error('Cannot schedule a field visit for a past date.');
+      }
+      const rangeErr = timeRangeError(newVisit.start_time, newVisit.end_time);
+      if (rangeErr) throw new Error(rangeErr);
 
       const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
       const chosenOfficer = [newVisit.assigned_to, user?.id].find(
@@ -685,6 +719,9 @@ export default function VisitsPage() {
     setIsSubmitting(true);
 
     try {
+      if ((newTrip.trip_date || '') < istToday()) {
+        throw new Error('Cannot schedule a tour program for a past date.');
+      }
       await api.post('/visits/trips', {
         employee_id: newTrip.employee_id || user?.id,
         trip_date: newTrip.trip_date,
@@ -714,6 +751,8 @@ export default function VisitsPage() {
     setIsSubmitting(true);
 
     try {
+      const rangeErr = timeRangeError(tripVisit.start_time, tripVisit.end_time);
+      if (rangeErr) throw new Error(rangeErr);
       await api.post(`/visits/trips/${selectedTrip.id}/visits`, {
         organisation_id: tripVisit.organisation_id,
         location: tripVisit.location,
@@ -749,6 +788,10 @@ export default function VisitsPage() {
     setIsSubmitting(true);
 
     try {
+      if (alsoMeetData.assign_additional) {
+        const rangeErr = timeRangeError(alsoMeetData.start_time, alsoMeetData.end_time);
+        if (rangeErr) throw new Error(rangeErr);
+      }
       await api.post(`/visits/${selectedVisit.id}/intervention`, {
         instructions: alsoMeetData.instructions,
         organisation_id: alsoMeetData.assign_additional && alsoMeetData.organisation_id ? alsoMeetData.organisation_id : undefined,
@@ -785,6 +828,14 @@ export default function VisitsPage() {
     setIsSubmitting(true);
 
     try {
+      if ((calendarDay(rescheduleData.new_date) || '') < istToday()) {
+        throw new Error('Rescheduled date must be today or a future date.');
+      }
+      const rangeErr = timeRangeError(
+        rescheduleData.start_time || selectedVisit.start_time,
+        rescheduleData.end_time || selectedVisit.end_time,
+      );
+      if (rangeErr) throw new Error(rangeErr);
       await api.post(`/visits/${selectedVisit.id}/reschedule`, {
         new_date: rescheduleData.new_date,
         start_time: rescheduleData.start_time || undefined,
@@ -900,6 +951,17 @@ export default function VisitsPage() {
   };
 
   // Status badge styling helper
+  // Visit-level badge: the status, plus a "report overdue" flag once the visit day has passed unreported.
+  const getVisitBadges = (v: any) => (
+    <>
+      {getStatusBadge(v.status)}
+      {isReportOverdue(v) && (
+        <Badge variant="urgent" size="sm" title="The visit day has passed: submit the post-visit report, reschedule or cancel it.">
+          REPORT OVERDUE
+        </Badge>
+      )}
+    </>
+  );
   const getStatusBadge = (status: string) => {
     switch (status?.toLowerCase()) {
       case 'completed':
@@ -965,7 +1027,8 @@ export default function VisitsPage() {
     const todayCount = visits.filter((v) => calendarDay(v.planned_date) === today).length;
     const directives = visits.filter((v) => v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention') || v.assigned_by_manager).length;
     const completed = visits.filter((v) => v.status === 'completed').length;
-    return { total, todayCount, directives, completed };
+    const overdue = visits.filter(isReportOverdue).length;
+    return { total, todayCount, directives, completed, overdue };
   }, [visits]);
 
   // ── Row action openers (shared by "My Visits" and manager tables) ──
@@ -991,6 +1054,7 @@ export default function VisitsPage() {
     setIsAlsoMeetOpen(true);
   };
   const openReport = (v: any) => {
+    if (isFutureVisit(v)) return; // reported on or after the visit day only
     setSelectedVisit(v);
     setReportData({
       met_completed: true,
@@ -1029,7 +1093,7 @@ export default function VisitsPage() {
   };
 
   const fmtDate = (d: any) =>
-    d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+    d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—';
   const isActiveVisit = (v: any) => ['planned', 'modified', 'rescheduled'].includes(v.status);
   const isManagerRole = hasRole(['management', 'regional_manager', 'admin']);
 
@@ -1039,7 +1103,7 @@ export default function VisitsPage() {
       className="p-4 bg-white border border-[#DCD8CE] rounded-xl hover:border-[#0F5E63] transition-all shadow-2xs space-y-3"
     >
       {/* Top row: Organisation, Tour tag, Requirement badges, Status */}
-      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-gray-100 pb-2.5">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-[#ECE9E2] pb-2.5">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             {v.organisation_id ? (
@@ -1050,13 +1114,13 @@ export default function VisitsPage() {
               <span className="font-extrabold text-[#14213D] text-base">{v.organisation_name}</span>
             )}
             {v.trip_base_location && (
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3] flex items-center gap-1">
                 <Route className="h-3 w-3" />
                 Tour: {v.trip_base_location}
               </span>
             )}
             {v.travel_required && (
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3] flex items-center gap-1">
                 <Compass className="h-3 w-3" />
                 Travel Required
               </span>
@@ -1074,7 +1138,7 @@ export default function VisitsPage() {
                 ) : (
                   <GuardedLink
                     href={`/demos`}
-                    className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 flex items-center gap-1"
+                    className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#FFF8EB] text-[#7C2D12] border border-[#E9C9B4] hover:bg-[#FBEBDD] flex items-center gap-1"
                   >
                     <Sparkles className="h-3 w-3" />
                     Demo Required • Request Demo
@@ -1087,11 +1151,11 @@ export default function VisitsPage() {
           {/* Key metadata row: Location, Date & Time, Assigned Officer, Contact Person */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#4A5568] mt-1.5">
             <span className="flex items-center gap-1">
-              <MapPin className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-              <span className="font-medium text-gray-700">{v.location || 'HQ Station'}</span>
+              <MapPin className="h-3.5 w-3.5 text-[#6B7280] shrink-0" />
+              <span className="font-medium text-[#14213D]">{v.location || 'HQ Station'}</span>
             </span>
             <span className="flex items-center gap-1">
-              <Calendar className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+              <Calendar className="h-3.5 w-3.5 text-[#6B7280] shrink-0" />
               <span>
                 {new Date(v.planned_date).toLocaleDateString('en-IN', {
                   weekday: 'short',
@@ -1103,20 +1167,20 @@ export default function VisitsPage() {
               </span>
             </span>
             <span className="flex items-center gap-1">
-              <User className="h-3.5 w-3.5 text-blue-600 shrink-0" />
-              <span>Officer: <strong className="text-gray-800">{v.assignee_name || 'Sales Staff'}</strong></span>
+              <User className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
+              <span>Officer: <strong className="text-[#14213D]">{v.assignee_name || 'Sales Staff'}</strong></span>
             </span>
             {(v.contact_name || v.contact_person) && (
               <span className="flex items-center gap-1 text-[#0F5E63]">
                 <Users className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                <span>Contact: <strong className="text-gray-800">{v.contact_name || v.contact_person}</strong></span>
+                <span>Contact: <strong className="text-[#14213D]">{v.contact_name || v.contact_person}</strong></span>
               </span>
             )}
           </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {getStatusBadge(v.status)}
+          {getVisitBadges(v)}
         </div>
       </div>
 
@@ -1124,17 +1188,17 @@ export default function VisitsPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
         <div className="p-2.5 bg-[#FBFAF7] rounded-lg border border-[#DCD8CE]/60 space-y-1">
           <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block">Visit Purpose</span>
-          <p className="text-gray-800 font-medium">{v.purpose || 'Portfolio review & client engagement'}</p>
+          <p className="text-[#14213D] font-medium">{v.purpose || 'Portfolio review & client engagement'}</p>
         </div>
 
         <div className="p-2.5 bg-[#FBFAF7] rounded-lg border border-[#DCD8CE]/60 space-y-1">
           <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block">Product & Expected Outcome</span>
-          <div className="flex items-center gap-1.5 text-gray-800 font-medium">
-            <Layers className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+          <div className="flex items-center gap-1.5 text-[#14213D] font-medium">
+            <Layers className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
             <span>{v.product_name || 'General Defence Portfolio'}</span>
           </div>
           {v.expected_outcome && (
-            <p className="text-gray-600 text-[11px] italic mt-0.5">
+            <p className="text-[#4A5568] text-[11px] italic mt-0.5">
               Outcome: {v.expected_outcome}
             </p>
           )}
@@ -1145,17 +1209,17 @@ export default function VisitsPage() {
       {(v.remarks || v.change_reason) && (
         <div className="text-xs space-y-1">
           {v.remarks && (
-            <div className="p-2 bg-gray-50 rounded-lg border border-gray-200 text-gray-700 flex items-start gap-1.5">
-              <FileText className="h-3.5 w-3.5 text-gray-400 mt-0.5 shrink-0" />
+            <div className="p-2 bg-[#FBFAF7] rounded-lg border border-[#DCD8CE] text-[#14213D] flex items-start gap-1.5">
+              <FileText className="h-3.5 w-3.5 text-[#6B7280] mt-0.5 shrink-0" />
               <div>
-                <span className="font-semibold text-gray-900">Remarks: </span>
+                <span className="font-semibold text-[#14213D]">Remarks: </span>
                 <span>{v.remarks}</span>
               </div>
             </div>
           )}
           {v.change_reason && (
-            <div className="p-2 bg-amber-50 rounded-lg border border-amber-200 text-amber-900 flex items-start gap-1.5">
-              <AlertCircle className="h-3.5 w-3.5 text-amber-600 mt-0.5 shrink-0" />
+            <div className="p-2 bg-[#FFF8EB] rounded-lg border border-[#E9C9B4] text-[#7C2D12] flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 text-[#9A3412] mt-0.5 shrink-0" />
               <div>
                 <span className="font-bold">Schedule Change: </span>
                 <span>{v.change_reason}</span>
@@ -1166,9 +1230,9 @@ export default function VisitsPage() {
       )}
 
       {/* Manager Actions Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-100">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#ECE9E2]">
         <div className="text-[11px] text-[#4A5568]">
-          Visit ID: <span className="font-mono text-gray-600 font-semibold">{v.id.slice(0, 8)}</span>
+          Visit ID: <span className="font-mono text-[#4A5568] font-semibold">{v.id.slice(0, 8)}</span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -1196,9 +1260,9 @@ export default function VisitsPage() {
               });
               setIsAlsoMeetOpen(true);
             }}
-            className="border-amber-300 text-amber-800 hover:bg-amber-50 text-xs"
+            className="border-[#E9C9B4] text-[#7C2D12] hover:bg-[#FFF8EB] text-xs"
           >
-            <UserPlus className="h-3.5 w-3.5 mr-1 text-amber-700" />
+            <UserPlus className="h-3.5 w-3.5 mr-1 text-[#7C2D12]" />
             <span>Also-Meet Directive</span>
           </Button>
 
@@ -1276,7 +1340,7 @@ export default function VisitsPage() {
           value={stats.todayCount}
           valueColor="emerald"
           subtext="Active deployments today"
-          icon={<Clock className="h-4 w-4 text-emerald-600" />}
+          icon={<Clock className="h-4 w-4 text-[#0F5E63]" />}
         />
 
         <StatCard
@@ -1284,7 +1348,7 @@ export default function VisitsPage() {
           value={stats.directives}
           valueColor="amber"
           subtext='"Also-Meet" strategic guidance'
-          icon={<Sparkles className="h-4 w-4 text-amber-600" />}
+          icon={<Sparkles className="h-4 w-4 text-[#9A3412]" />}
         />
 
         <StatCard
@@ -1309,7 +1373,7 @@ export default function VisitsPage() {
 
           {isVisitList && (
             <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
               <input
                 type="search"
                 aria-label="Search field visits"
@@ -1319,7 +1383,7 @@ export default function VisitsPage() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') fetchData();
                 }}
-                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
               />
             </div>
           )}
@@ -1335,6 +1399,7 @@ export default function VisitsPage() {
                   { key: 'planned', label: 'Planned' },
                   { key: 'modified', label: 'Modified' },
                   { key: 'rescheduled', label: 'Rescheduled' },
+                  { key: 'overdue', label: 'Report overdue', count: stats.overdue || undefined },
                   { key: 'completed', label: 'Completed', count: stats.completed },
                   { key: 'not_completed', label: 'Not completed' },
                   { key: 'cancelled', label: 'Cancelled' },
@@ -1462,6 +1527,14 @@ export default function VisitsPage() {
       {/* TAB CONTENT: MY VISITS */}
       {activeTab === 'my_visits' && (
         <div className="space-y-3.5">
+          {!isLoading && stats.overdue > 0 && filterStatus !== 'overdue' && (
+            <InfoCallout variant="warning" title={`${stats.overdue} visit report${stats.overdue === 1 ? '' : 's'} overdue`}>
+              {stats.overdue === 1 ? 'A visit' : 'Some visits'} dated before today {stats.overdue === 1 ? 'is' : 'are'} still open. Submit the post-visit report, or reschedule / cancel the visit.{' '}
+              <button type="button" className="font-bold text-[#0F5E63] hover:underline" onClick={() => setFilterStatus('overdue')}>
+                Show overdue
+              </button>
+            </InfoCallout>
+          )}
           {isLoading ? (
             <PageLoader label="Loading field visits" />
           ) : visits.length === 0 ? (
@@ -1472,21 +1545,21 @@ export default function VisitsPage() {
             visits.map((v) => (
               <div
                 key={v.id}
-                className="p-5 rounded-xl border border-[#DCD8CE] bg-white hover:border-[#3770E3] transition-all space-y-4 shadow-xs"
+                className="p-5 rounded-xl border border-[#DCD8CE] bg-white hover:border-[#0F5E63] transition-all space-y-4 shadow-xs"
               >
                 <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
                   <div className="space-y-1.5 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      {getStatusBadge(v.status)}
+                      {getVisitBadges(v)}
 
                       {v.manager_assigned && (
-                        <Badge variant="warning" size="sm" className="bg-amber-100 text-amber-900 border-amber-300">
+                        <Badge variant="warning" size="sm" className="bg-[#FBEBDD] text-[#7C2D12] border-[#E9C9B4]">
                           Manager Assigned
                         </Badge>
                       )}
 
                       {v.travel_required && (
-                        <Badge variant="info" size="sm" className="bg-blue-50 text-blue-800 border-blue-200">
+                        <Badge variant="info" size="sm" className="bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3]">
                           Travel Required
                         </Badge>
                       )}
@@ -1497,7 +1570,7 @@ export default function VisitsPage() {
                         const diffDays = Math.round((planDate.getTime() - createdDate.getTime()) / (1000 * 3600 * 24));
                         if (diffDays >= 5) {
                           return (
-                            <Badge variant="outline" size="sm" className="bg-emerald-50 text-emerald-800 border-emerald-300">
+                            <Badge variant="outline" size="sm" className="bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3]">
                               1-Wk Cycle
                             </Badge>
                           );
@@ -1515,7 +1588,7 @@ export default function VisitsPage() {
                             DEMO: {v.linked_demo_no}
                           </GuardedLink>
                         ) : (
-                          <Badge variant="default" size="sm" className="bg-purple-50 text-purple-800 border-purple-200">
+                          <Badge variant="default" size="sm" className="bg-[#EEF1F5] text-[#14213D] border-[#DCD8CE]">
                             DEMO TRIAL REQ.
                           </Badge>
                         )
@@ -1531,11 +1604,11 @@ export default function VisitsPage() {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#4A5568]">
-                      <span className="flex items-center gap-1 text-gray-700 font-medium">
+                      <span className="flex items-center gap-1 text-[#14213D] font-medium">
                         <MapPin className="h-3.5 w-3.5 text-[#0F5E63]" />
                         {v.location || 'Site Location'}
                       </span>
-                      <span className="flex items-center gap-1 font-mono text-gray-700">
+                      <span className="flex items-center gap-1 font-mono text-[#14213D]">
                         <Clock className="h-3.5 w-3.5 text-[#4A5568]" />
                         {new Date(v.planned_date).toLocaleDateString('en-IN', {
                           weekday: 'short',
@@ -1550,43 +1623,43 @@ export default function VisitsPage() {
                         Officer: {v.assignee_name || 'Sales Staff'}
                       </span>
                       {v.product_name && (
-                        <span className="flex items-center gap-1 text-emerald-800 font-medium">
-                          <Layers className="h-3.5 w-3.5 text-emerald-600" />
+                        <span className="flex items-center gap-1 text-[#0B4A4E] font-medium">
+                          <Layers className="h-3.5 w-3.5 text-[#0F5E63]" />
                           Product: {v.product_name}
                         </span>
                       )}
                       {(v.contact_name || v.contact_person) && (
                         <span className="flex items-center gap-1 text-[#0F5E63] font-medium">
                           <User className="h-3.5 w-3.5 text-[#0F5E63]" />
-                          Contact: <span className="font-semibold text-gray-800">{v.contact_name || v.contact_person}</span>
+                          Contact: <span className="font-semibold text-[#14213D]">{v.contact_name || v.contact_person}</span>
                         </span>
                       )}
                     </div>
 
                     {v.purpose && (
-                      <p className="text-xs text-gray-700 pt-1 font-medium">
+                      <p className="text-xs text-[#14213D] pt-1 font-medium">
                         <span className="text-[#4A5568] font-semibold">Purpose:</span> {v.purpose}
                       </p>
                     )}
 
                     {v.expected_outcome && (
                       <p className="text-xs text-[#4A5568]">
-                        <span className="font-semibold text-gray-600">Expected Outcome:</span> {v.expected_outcome}
+                        <span className="font-semibold text-[#4A5568]">Expected Outcome:</span> {v.expected_outcome}
                       </p>
                     )}
 
                     {v.remarks && !v.remarks.includes('Manager Directive:') && !v.remarks.includes('Manager Intervention') && (
                       <p className="text-xs text-[#4A5568] bg-[#FBFAF7] px-2.5 py-1.5 rounded-lg border border-[#DCD8CE] mt-1">
-                        <span className="font-semibold text-gray-700">Remarks: </span>
+                        <span className="font-semibold text-[#14213D]">Remarks: </span>
                         {v.remarks}
                       </p>
                     )}
 
                     {v.change_reason && (
-                      <div className="text-xs text-amber-900 bg-amber-50/80 p-2 rounded-lg border border-amber-200 mt-1">
+                      <div className="text-xs text-[#7C2D12] bg-[#FFF8EB]/80 p-2 rounded-lg border border-[#E9C9B4] mt-1">
                         <span className="font-bold">Change Reason:</span> {v.change_reason}
                         {v.rescheduled_from && (
-                          <span className="text-amber-700 ml-2">(Rescheduled from {new Date(v.rescheduled_from).toLocaleDateString('en-IN')})</span>
+                          <span className="text-[#7C2D12] ml-2">(Rescheduled from {formatDateIN(v.rescheduled_from)})</span>
                         )}
                       </div>
                     )}
@@ -1620,7 +1693,7 @@ export default function VisitsPage() {
                           });
                           setIsAlsoMeetOpen(true);
                         }}
-                        className="border-amber-300 text-amber-800 hover:bg-amber-50"
+                        className="border-[#E9C9B4] text-[#7C2D12] hover:bg-[#FFF8EB]"
                       >
                         <UserPlus className="h-3.5 w-3.5 mr-1" />
                         <span>Also-Meet Directive</span>
@@ -1633,6 +1706,8 @@ export default function VisitsPage() {
                         <Button
                           size="sm"
                           variant="secondary"
+                          disabled={isFutureVisit(v)}
+                          title={isFutureVisit(v) ? `The report can be submitted on or after ${fmtDay(calendarDay(v.planned_date) || '')}.` : undefined}
                           onClick={() => {
                             setSelectedVisit(v);
                             setReportData({
@@ -1684,7 +1759,7 @@ export default function VisitsPage() {
                             });
                             setIsDestinationOpen(true);
                           }}
-                          className="text-gray-700"
+                          className="text-[#14213D]"
                         >
                           <span>Change Station</span>
                         </Button>
@@ -1697,7 +1772,7 @@ export default function VisitsPage() {
                             setCancelReason('');
                             setIsCancelOpen(true);
                           }}
-                          className="text-red-600 hover:bg-red-50"
+                          className="text-[#881337] hover:bg-[#FCE8EC]"
                         >
                           <span>Cancel</span>
                         </Button>
@@ -1706,7 +1781,7 @@ export default function VisitsPage() {
 
                     {/* Claim Expense for this visit — only the visit's own people can claim against it, and never a cancelled one */}
                     {v.status !== 'cancelled' && !!user?.id && [v.assigned_to, v.planned_by, v.service_engineer_id].includes(user.id) && (
-                      <NewClaimButton size="sm" variant="ghost" className="text-[#0F5E63]" visitId={v.id}>
+                      <NewClaimButton size="sm" variant="ghost" className="text-[#0F5E63]" visitId={v.id} tripId={v.trip_id || undefined}>
                         <Receipt className="h-3.5 w-3.5 mr-1 text-[#4A5568]" />
                         <span>Claim Expense</span>
                       </NewClaimButton>
@@ -1717,7 +1792,7 @@ export default function VisitsPage() {
                       size="sm"
                       variant="ghost"
                       onClick={() => handleOpenAudit(v)}
-                      className="text-gray-500 hover:text-gray-800"
+                      className="text-[#4A5568] hover:text-[#14213D]"
                     >
                       <History className="h-3.5 w-3.5" />
                     </Button>
@@ -1726,10 +1801,10 @@ export default function VisitsPage() {
 
                 {/* Manager "Also-Meet" Banner Callout */}
                 {(v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention')) && (
-                  <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start space-x-3 shadow-xs">
-                    <Sparkles className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="p-3.5 rounded-xl bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12] flex items-start space-x-3 shadow-xs">
+                    <Sparkles className="h-4 w-4 text-[#9A3412] shrink-0 mt-0.5" />
                     <div>
-                      <span className="font-bold text-amber-800 uppercase tracking-wider block text-[10px]">
+                      <span className="font-bold text-[#7C2D12] uppercase tracking-wider block text-[10px]">
                         REGIONAL MANAGER STRATEGIC "ALSO-MEET" DIRECTIVE:
                       </span>
                       <p className="mt-0.5 font-medium leading-relaxed">
@@ -1741,10 +1816,10 @@ export default function VisitsPage() {
 
                 {/* Completed Report Callout */}
                 {v.updates && v.updates.length > 0 && (
-                  <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-gray-800 space-y-1.5">
+                  <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D] space-y-1.5">
                     <div className="flex items-center justify-between">
                       <span className="font-bold text-[#0F5E63] uppercase tracking-wider text-[10px] flex items-center gap-1">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                        <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63]" />
                         POST-VISIT INTELLIGENCE LOGGED:
                       </span>
                       {v.updates[0].updated_by_name && (
@@ -1753,23 +1828,23 @@ export default function VisitsPage() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                       <div>
-                        <span className="font-bold text-gray-700">Person Met: </span>
+                        <span className="font-bold text-[#14213D]">Person Met: </span>
                         <span>{v.updates[0].person_met || 'N/A'}</span>
                       </div>
                       <div>
-                        <span className="font-bold text-gray-700">Outcome: </span>
-                        <span className="font-semibold text-emerald-700">{v.updates[0].outcome || 'Completed'}</span>
+                        <span className="font-bold text-[#14213D]">Outcome: </span>
+                        <span className="font-semibold text-[#0B4A4E]">{v.updates[0].outcome || 'Completed'}</span>
                       </div>
                       {v.updates[0].product_discussed && (
                         <div>
-                          <span className="font-bold text-gray-700">Product Discussed: </span>
+                          <span className="font-bold text-[#14213D]">Product Discussed: </span>
                           <span className="text-[#0F5E63] font-medium">{v.updates[0].product_discussed}</span>
                         </div>
                       )}
                       {v.updates[0].opportunity && (
                         <div>
-                          <span className="font-bold text-gray-700">Opportunity: </span>
-                          <span className="text-emerald-700 font-medium">{v.updates[0].opportunity}</span>
+                          <span className="font-bold text-[#14213D]">Opportunity: </span>
+                          <span className="text-[#0B4A4E] font-medium">{v.updates[0].opportunity}</span>
                         </div>
                       )}
                       {v.updates[0].tender_opportunity && (
@@ -1789,19 +1864,19 @@ export default function VisitsPage() {
                       )}
                     </div>
                     {v.updates[0].discussion && (
-                      <p className="text-gray-700 italic border-l-2 border-[#3770E3] pl-2 mt-1.5">
+                      <p className="text-[#14213D] italic border-l-2 border-[#0F5E63] pl-2 mt-1.5">
                         "{v.updates[0].discussion}"
                       </p>
                     )}
                     {v.updates[0].remarks && (
-                      <p className="text-xs text-gray-600 bg-white p-2 rounded border border-[#DCD8CE] mt-1">
-                        <span className="font-bold text-gray-700">Field Remarks: </span>{v.updates[0].remarks}
+                      <p className="text-xs text-[#4A5568] bg-white p-2 rounded border border-[#DCD8CE] mt-1">
+                        <span className="font-bold text-[#14213D]">Field Remarks: </span>{v.updates[0].remarks}
                       </p>
                     )}
                     {v.updates[0].followup_date && (
                       <div className="text-[11px] text-[#0F5E63] font-semibold flex items-center gap-1 mt-1.5">
                         <Clock className="h-3 w-3" />
-                        Next Follow-up Commitment: {new Date(v.updates[0].followup_date).toLocaleDateString('en-IN')}
+                        Next Follow-up Commitment: {formatDateIN(v.updates[0].followup_date)}
                         {v.updates[0].next_action ? ` — ${v.updates[0].next_action}` : ''}
                       </div>
                     )}
@@ -1841,15 +1916,15 @@ export default function VisitsPage() {
 
           {/* Group 1: Today */}
           <div className="space-y-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-emerald-800 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200 flex items-center justify-between">
+            <h3 className="text-xs font-black uppercase tracking-wider text-[#0B4A4E] bg-[#E3EFEE] px-3 py-1.5 rounded-lg border border-[#D0E5E3] flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Clock className="h-3.5 w-3.5" />
                 <span>Today's Deployed Operations ({managerData.grouped?.today?.length || 0})</span>
               </span>
-              <span className="text-xs font-medium text-emerald-700">Live Field Status</span>
+              <span className="text-xs font-medium text-[#0B4A4E]">Live Field Status</span>
             </h3>
             {(!managerData.grouped?.today || managerData.grouped?.today?.length === 0) ? (
-              <p className="text-xs text-gray-500 italic p-3 bg-white rounded-lg border border-gray-200">No field visits scheduled for today.</p>
+              <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No field visits scheduled for today.</p>
             ) : (
               managerData.grouped?.today?.map((v: any) => renderManagerVisitCard(v))
             )}
@@ -1857,15 +1932,15 @@ export default function VisitsPage() {
 
           {/* Group 2: Tomorrow */}
           <div className="space-y-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 flex items-center justify-between">
+            <h3 className="text-xs font-black uppercase tracking-wider text-[#0B4A4E] bg-[#E3EFEE] px-3 py-1.5 rounded-lg border border-[#D0E5E3] flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Calendar className="h-3.5 w-3.5" />
                 <span>Tomorrow's Deployments ({managerData.grouped?.tomorrow?.length || 0})</span>
               </span>
-              <span className="text-xs font-medium text-blue-700">Departure Readiness</span>
+              <span className="text-xs font-medium text-[#0B4A4E]">Departure Readiness</span>
             </h3>
             {(!managerData.grouped?.tomorrow || managerData.grouped?.tomorrow?.length === 0) ? (
-              <p className="text-xs text-gray-500 italic p-3 bg-white rounded-lg border border-gray-200">No field visits scheduled for tomorrow.</p>
+              <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No field visits scheduled for tomorrow.</p>
             ) : (
               managerData.grouped?.tomorrow?.map((v: any) => renderManagerVisitCard(v))
             )}
@@ -1873,15 +1948,15 @@ export default function VisitsPage() {
 
           {/* Group 3: Next 7 Days */}
           <div className="space-y-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-indigo-800 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-200 flex items-center justify-between">
+            <h3 className="text-xs font-black uppercase tracking-wider text-[#0B4A4E] bg-[#E3EFEE] px-3 py-1.5 rounded-lg border border-[#D0E5E3] flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <CalendarDays className="h-3.5 w-3.5" />
                 <span>Next 7 Days Field Schedule ({managerData.grouped?.next_7_days?.length || 0})</span>
               </span>
-              <span className="text-xs font-medium text-indigo-700">Pre-Planned Horizon</span>
+              <span className="text-xs font-medium text-[#0B4A4E]">Pre-Planned Horizon</span>
             </h3>
             {(!managerData.grouped?.next_7_days || managerData.grouped?.next_7_days?.length === 0) ? (
-              <p className="text-xs text-gray-500 italic p-3 bg-white rounded-lg border border-gray-200">No field visits scheduled for the next 7 days.</p>
+              <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No field visits scheduled for the next 7 days.</p>
             ) : (
               managerData.grouped?.next_7_days?.map((v: any) => renderManagerVisitCard(v))
             )}
@@ -1889,15 +1964,15 @@ export default function VisitsPage() {
 
           {/* Group 4: Later / Future Deployments */}
           <div className="space-y-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-purple-800 bg-purple-50 px-3 py-1.5 rounded-lg border border-purple-200 flex items-center justify-between">
+            <h3 className="text-xs font-black uppercase tracking-wider text-[#14213D] bg-[#EEF1F5] px-3 py-1.5 rounded-lg border border-[#DCD8CE] flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Route className="h-3.5 w-3.5" />
                 <span>Later & Long-Range Tour Programs ({managerData.grouped?.later?.length || 0})</span>
               </span>
-              <span className="text-xs font-medium text-purple-700">Future Calendar</span>
+              <span className="text-xs font-medium text-[#14213D]">Future Calendar</span>
             </h3>
             {(!managerData.grouped?.later || managerData.grouped?.later?.length === 0) ? (
-              <p className="text-xs text-gray-500 italic p-3 bg-white rounded-lg border border-gray-200">No long-range visits scheduled beyond 7 days.</p>
+              <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No long-range visits scheduled beyond 7 days.</p>
             ) : (
               managerData.grouped?.later?.map((v: any) => renderManagerVisitCard(v))
             )}
@@ -1925,7 +2000,7 @@ export default function VisitsPage() {
           ) : (
             trips.map((t) => (
               <div key={t.id} className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#ECE9E2] pb-3">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <Badge variant="info" size="sm">TRIP</Badge>
@@ -1968,9 +2043,9 @@ export default function VisitsPage() {
                           });
                           setIsAddTripVisitOpen(true);
                         }}
-                        className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                        className="border-[#D0E5E3] text-[#0B4A4E] hover:bg-[#E3EFEE]"
                       >
-                        <Navigation className="h-3.5 w-3.5 mr-1 text-indigo-600" />
+                        <Navigation className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
                         <span>+ Add Customer Visit to Trip</span>
                       </Button>
                     )}
@@ -1984,12 +2059,12 @@ export default function VisitsPage() {
                   </span>
 
                   {(!t.visits || t.visits.length === 0) ? (
-                    <p className="text-xs text-gray-400 italic">No visits currently attached to this tour.</p>
+                    <p className="text-xs text-[#6B7280] italic">No visits currently attached to this tour.</p>
                   ) : (
                     t.visits.map((tv: any, idx: number) => (
                       <div
                         key={tv.id}
-                        className="flex items-center justify-between p-3 rounded-lg bg-gray-50 border border-gray-200 text-xs"
+                        className="flex items-center justify-between p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-xs"
                       >
                         <div className="flex items-center gap-3">
                           <span className="h-6 w-6 rounded-full bg-[#0F5E63] text-white flex items-center justify-center font-bold text-[10px]">
@@ -2019,7 +2094,7 @@ export default function VisitsPage() {
                             size="sm"
                             variant="ghost"
                             onClick={() => handleOpenAudit(tv)}
-                            className="text-gray-400 hover:text-gray-700"
+                            className="text-[#6B7280] hover:text-[#14213D]"
                           >
                             <History className="h-3 w-3" />
                           </Button>
@@ -2051,7 +2126,7 @@ export default function VisitsPage() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Badge variant="info" size="sm">VISIT RECORD</Badge>
-                      <span className="text-xs font-bold text-gray-800">
+                      <span className="text-xs font-bold text-[#14213D]">
                         {new Date(item.planned_date).toLocaleDateString('en-IN', {
                           year: 'numeric',
                           month: 'long',
@@ -2062,7 +2137,7 @@ export default function VisitsPage() {
                     {getStatusBadge(item.status)}
                   </div>
 
-                  <div className="text-xs text-gray-700 grid grid-cols-1 sm:grid-cols-3 gap-2 bg-gray-50 p-2.5 rounded-lg">
+                  <div className="text-xs text-[#14213D] grid grid-cols-1 sm:grid-cols-3 gap-2 bg-[#FBFAF7] p-2.5 rounded-lg">
                     <div>
                       <span className="font-semibold text-[#4A5568]">Officer Met:</span> {item.person_met || 'N/A'}
                     </div>
@@ -2075,15 +2150,15 @@ export default function VisitsPage() {
                   </div>
 
                   {item.discussion && (
-                    <p className="text-xs text-gray-700 pt-1">
+                    <p className="text-xs text-[#14213D] pt-1">
                       <span className="font-bold text-[#4A5568]">Discussion Notes:</span> {item.discussion}
                     </p>
                   )}
 
                   {item.followup_date && (
-                    <div className="text-[11px] text-emerald-800 font-semibold flex items-center gap-1">
+                    <div className="text-[11px] text-[#0B4A4E] font-semibold flex items-center gap-1">
                       <Clock className="h-3 w-3" />
-                      Follow-up Commitment: {new Date(item.followup_date).toLocaleDateString('en-IN')}
+                      Follow-up Commitment: {formatDateIN(item.followup_date)}
                       {item.next_action ? ` (${item.next_action})` : ''}
                     </div>
                   )}
@@ -2099,7 +2174,7 @@ export default function VisitsPage() {
         <div className="space-y-4">
           <div className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs">
             <h3 className="text-xs font-bold uppercase tracking-wider text-[#0F5E63]">Field Performance & Activity Log</h3>
-            <p className="text-xs text-gray-500 mt-0.5">Chronological record of verified customer engagements and milestone follow-ups.</p>
+            <p className="text-xs text-[#4A5568] mt-0.5">Chronological record of verified customer engagements and milestone follow-ups.</p>
           </div>
 
           <div className="space-y-3">
@@ -2120,19 +2195,19 @@ export default function VisitsPage() {
                   <div className="text-xs text-[#4A5568] flex items-center gap-3">
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3.5 w-3.5" />
-                      {new Date(act.activity_date).toLocaleDateString('en-IN')}
+                      {formatDateIN(act.activity_date)}
                     </span>
                     {act.outcome && (
-                      <span className="font-semibold text-emerald-800">
+                      <span className="font-semibold text-[#0B4A4E]">
                         Outcome: {act.outcome}
                       </span>
                     )}
                   </div>
 
                   {act.next_action && (
-                    <div className="text-xs text-blue-900 bg-blue-50 p-2 rounded-lg border border-blue-200">
+                    <div className="text-xs text-[#0B4A4E] bg-[#E3EFEE] p-2 rounded-lg border border-[#D0E5E3]">
                       <span className="font-bold">Next Action Commitment:</span> {act.next_action}
-                      {act.followup_date && ` (By ${new Date(act.followup_date).toLocaleDateString('en-IN')})`}
+                      {act.followup_date && ` (By ${formatDateIN(act.followup_date)})`}
                     </div>
                   )}
                 </div>
@@ -2157,7 +2232,7 @@ export default function VisitsPage() {
             onCancel={() => setIsScheduleOpen(false)}
             banner={
               actionError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] font-semibold">
                   {actionError}
                 </div>
               )
@@ -2234,15 +2309,15 @@ export default function VisitsPage() {
                 description: 'When the visit happens and its main purpose.',
                 content: (
                   <div className="space-y-3">
-                    <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900 flex items-center gap-2">
-                      <Info className="h-4 w-4 shrink-0 text-blue-600" />
+                    <div className="p-3 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-xs text-[#0B4A4E] flex items-center gap-2">
+                      <Info className="h-4 w-4 shrink-0 text-[#0F5E63]" />
                       <span>Standard operating procedure: Plan field visits approximately 1 week in advance.</span>
                     </div>
 
                     <div className="w-full flex flex-col justify-end text-left">
                       <div className="flex items-center justify-between mb-1.5">
                         <label className="text-xs font-semibold text-[#14213D]">
-                          Planned Date <span className="text-red-500">*</span>
+                          Planned Date <span className="text-[#881337]">*</span>
                         </label>
                         <button
                           type="button"
@@ -2257,6 +2332,7 @@ export default function VisitsPage() {
                       <input
                         type="date"
                         required
+                        min={istToday()}
                         value={newVisit.planned_date}
                         onChange={(e) => setNewVisit({ ...newVisit, planned_date: e.target.value })}
                         className="flex h-10 w-full rounded-[8px] border border-[#C9C4B8] bg-white px-3.5 py-2 text-xs text-[#14213D] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
@@ -2274,6 +2350,7 @@ export default function VisitsPage() {
                       <Input
                         label="End Time"
                         type="time"
+                        error={timeRangeError(newVisit.start_time, newVisit.end_time)}
                         value={newVisit.end_time}
                         onChange={(e) => setNewVisit({ ...newVisit, end_time: e.target.value })}
                       />
@@ -2367,7 +2444,7 @@ export default function VisitsPage() {
                         onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
                         options={[
                           { value: '', label: '-- Standalone Field Visit --' },
-                          ...trips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${new Date(t.trip_date).toLocaleDateString('en-IN')})` })),
+                          ...trips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})` })),
                         ]}
                       />
                     )}
@@ -2381,7 +2458,7 @@ export default function VisitsPage() {
                         onChange={(e) => setNewVisit({ ...newVisit, remarks: e.target.value })}
                         placeholder="e.g. Officer requested technical compliance sheets; gate pass required for vehicle."
                         rows={2}
-                        className="flex w-full rounded-lg border border-[#DCD8CE] bg-white px-3.5 py-2 text-xs font-normal text-[#14213D] placeholder:text-gray-400 transition-colors focus:border-[#3770E3] focus:outline-none focus:ring-2 focus:ring-[#3770E3]/15"
+                        className="flex w-full rounded-lg border border-[#DCD8CE] bg-white px-3.5 py-2 text-xs font-normal text-[#14213D] placeholder:text-[#6B7280] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                       />
                     </div>
                   </div>
@@ -2421,7 +2498,7 @@ export default function VisitsPage() {
                         <div>
                           <span className="text-[#4A5568] block text-[10px]">Requested Date:</span>
                           <span className="font-semibold text-[#14213D] block font-mono">
-                            📅 {new Date(newVisit.planned_date).toLocaleDateString()}
+                            📅 {formatDateIN(newVisit.planned_date)}
                           </span>
                         </div>
                         <div>
@@ -2445,7 +2522,7 @@ export default function VisitsPage() {
                           </span>
                         ) : (
                           <span className="text-[10px] text-[#4A5568]">
-                            Availability for {new Date(newVisit.planned_date).toLocaleDateString()}
+                            Availability for {formatDateIN(newVisit.planned_date)}
                           </span>
                         )}
                       </div>
@@ -2464,7 +2541,7 @@ export default function VisitsPage() {
                         <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                              Demo Team Availability on {new Date(newVisit.planned_date).toLocaleDateString()}:
+                              Demo Team Availability on {formatDateIN(newVisit.planned_date)}:
                             </span>
                             <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
                           </div>
@@ -2488,7 +2565,7 @@ export default function VisitsPage() {
                                   </div>
                                   <span
                                     className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
-                                      isAvail ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                      isAvail ? 'bg-[#E3EFEE] text-[#0B4A4E]' : 'bg-[#FBEBDD] text-[#7C2D12]'
                                     }`}
                                   >
                                     {isAvail ? '🟢 Available' : '🟡 Booked'}
@@ -2515,7 +2592,7 @@ export default function VisitsPage() {
                             </div>
                             <div>
                               {selectedDemoMember.is_available ?? true ? (
-                                <Badge variant="success">● AVAILABLE ON {new Date(newVisit.planned_date).toLocaleDateString()}</Badge>
+                                <Badge variant="success">● AVAILABLE ON {formatDateIN(newVisit.planned_date)}</Badge>
                               ) : (
                                 <Badge variant="warning">
                                   ▲ BUSY ON {selectedDemoMember.active_demo?.demo_no || 'ANOTHER TRIAL'}
@@ -2526,13 +2603,13 @@ export default function VisitsPage() {
 
                           <div className="text-[11px] text-[#4A5568]">
                             {selectedDemoMember.is_available ?? true ? (
-                              <div className="flex items-center gap-1.5 text-emerald-800">
-                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                              <div className="flex items-center gap-1.5 text-[#0B4A4E]">
+                                <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                                 <span>Specialist has zero trial schedule conflicts on this date and is cleared for field demonstration.</span>
                               </div>
                             ) : (
-                              <div className="flex items-center gap-1.5 text-amber-800">
-                                <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                              <div className="flex items-center gap-1.5 text-[#7C2D12]">
+                                <AlertTriangle className="h-3.5 w-3.5 text-[#9A3412] shrink-0" />
                                 <span>Specialist has active trial booking for <strong>{selectedDemoMember.active_demo?.organisation_name || 'Client'}</strong>. Booking will flag a schedule overlap notice.</span>
                               </div>
                             )}
@@ -2647,10 +2724,10 @@ export default function VisitsPage() {
                                   <span
                                     className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
                                       availCount > 0
-                                        ? 'bg-emerald-100 text-emerald-800'
+                                        ? 'bg-[#E3EFEE] text-[#0B4A4E]'
                                         : total > 0
-                                        ? 'bg-amber-100 text-amber-800'
-                                        : 'bg-gray-100 text-gray-600'
+                                        ? 'bg-[#FBEBDD] text-[#7C2D12]'
+                                        : 'bg-[#ECE9E2] text-[#4A5568]'
                                     }`}
                                   >
                                     {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
@@ -2675,17 +2752,17 @@ export default function VisitsPage() {
                               </span>
                             </div>
                             {activeProductFleet.availableCount > 0 ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
                                 AVAILABLE ({activeProductFleet.availableCount} Ready)
                               </span>
                             ) : activeProductFleet.total > 0 ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#9A3412]" />
                                 RESERVED ({activeProductFleet.total} in Fleet)
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#ECE9E2] text-[#14213D] border border-[#C9C4B8]">
                                 No Fleet Unit
                               </span>
                             )}
@@ -2701,10 +2778,10 @@ export default function VisitsPage() {
                             </span>
                             <div className="flex items-center gap-2 font-mono text-[10px]">
                               <span>Fleet: <b>{activeProductFleet.total}</b></span>
-                              <span className="text-emerald-700">Ready: <b>{activeProductFleet.availableCount}</b></span>
-                              <span className="text-amber-700">In-Trial: <b>{activeProductFleet.reservedCount}</b></span>
+                              <span className="text-[#0B4A4E]">Ready: <b>{activeProductFleet.availableCount}</b></span>
+                              <span className="text-[#7C2D12]">In-Trial: <b>{activeProductFleet.reservedCount}</b></span>
                               {activeProductFleet.maintenanceCount > 0 && (
-                                <span className="text-red-700">Maint: <b>{activeProductFleet.maintenanceCount}</b></span>
+                                <span className="text-[#700F2D]">Maint: <b>{activeProductFleet.maintenanceCount}</b></span>
                               )}
                             </div>
                           </div>
@@ -2745,15 +2822,15 @@ export default function VisitsPage() {
                                       </span>
                                       <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
                                       {isReady ? (
-                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
                                           🟢 Ready
                                         </span>
                                       ) : isReserved ? (
-                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
                                           🟡 Reserved
                                         </span>
                                       ) : (
-                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FCE8EC] text-[#700F2D] border border-[#F3C7CF]">
                                           🔴 Maint
                                         </span>
                                       )}
@@ -2788,7 +2865,7 @@ export default function VisitsPage() {
                                 <Badge variant="success">● READY & AVAILABLE</Badge>
                               ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
                                 <Badge variant="warning">
-                                  ○ RESERVED {selectedEquipUnit.reserved_until ? `UNTIL ${new Date(selectedEquipUnit.reserved_until).toLocaleDateString()}` : ''}
+                                  ○ RESERVED {selectedEquipUnit.reserved_until ? `UNTIL ${formatDateIN(selectedEquipUnit.reserved_until)}` : ''}
                                 </Badge>
                               ) : (
                                 <Badge variant="danger">▲ MAINTENANCE: {selectedEquipUnit.condition || 'Service Needed'}</Badge>
@@ -2824,7 +2901,7 @@ export default function VisitsPage() {
                             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
                               {getStandardKitAccessories(selectedEquipUnit.product_name, selectedEquipUnit.product_category).map((item, idx) => (
                                 <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
-                                  <CheckCircle className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                  <CheckCircle className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                                   <span className="truncate text-[11px]">{item}</span>
                                 </div>
                               ))}
@@ -2833,18 +2910,18 @@ export default function VisitsPage() {
 
                           {/* Status Note Callout */}
                           {selectedEquipUnit.availability_status === 'available' ? (
-                            <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
-                              <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                            <div className="p-2 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[11px] flex items-center gap-2">
+                              <CheckCircle2 className="h-4 w-4 text-[#0B4A4E] shrink-0" />
                               <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedEquipUnit.current_location} Depot.</span>
                             </div>
                           ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
-                            <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-center gap-2">
-                              <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                            <div className="p-2 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[11px] flex items-center gap-2">
+                              <AlertTriangle className="h-4 w-4 text-[#7C2D12] shrink-0" />
                               <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
                             </div>
                           ) : (
-                            <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-center gap-2">
-                              <AlertCircle className="h-4 w-4 text-red-700 shrink-0" />
+                            <div className="p-2 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] text-[11px] flex items-center gap-2">
+                              <AlertCircle className="h-4 w-4 text-[#700F2D] shrink-0" />
                               <span>Unit marked under maintenance ({selectedEquipUnit.condition}). You may select another serial or custom kit.</span>
                             </div>
                           )}
@@ -2974,8 +3051,8 @@ export default function VisitsPage() {
                             ]}
                             required
                           />
-                          <div className="p-2 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 text-[11px] flex items-center gap-2">
-                            <Info className="h-3.5 w-3.5 text-teal-700 shrink-0" />
+                          <div className="p-2 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[11px] flex items-center gap-2">
+                            <Info className="h-3.5 w-3.5 text-[#0B4A4E] shrink-0" />
                             <span>
                               Attaching a Service Engineer will automatically link them to this tour program and notify Management, Demo Team, Service Team, Salesperson, and the Regional Manager.
                             </span>
@@ -3030,7 +3107,7 @@ export default function VisitsPage() {
                           { value: '', label: '-- Auto-Generate New Tour Program --' },
                           ...trips.map((t) => ({
                             value: t.id,
-                            label: `${t.base_location} Tour (${new Date(t.trip_date).toLocaleDateString('en-IN')})`,
+                            label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})`,
                           })),
                         ]}
                       />
@@ -3085,7 +3162,7 @@ export default function VisitsPage() {
       >
         <form onSubmit={handleCreateTrip} className="space-y-4">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
@@ -3115,6 +3192,7 @@ export default function VisitsPage() {
               label="Trip Date"
               type="date"
               required
+              min={istToday()}
               value={newTrip.trip_date}
               onChange={(e) => setNewTrip({ ...newTrip, trip_date: e.target.value })}
             />
@@ -3150,12 +3228,12 @@ export default function VisitsPage() {
       >
         <form onSubmit={handleAddTripVisit} className="space-y-4">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
 
-          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
+          <div className="p-3 bg-[#FFF8EB] border border-[#E9C9B4] rounded-lg text-xs text-[#7C2D12]">
             <span className="font-bold block">Base Station: {selectedTrip?.base_location}</span>
             <span>Visits in this tour program should be reasonably close to avoid travel schedule conflict.</span>
           </div>
@@ -3196,6 +3274,7 @@ export default function VisitsPage() {
               <Input
                 label="End"
                 type="time"
+                error={timeRangeError(tripVisit.start_time, tripVisit.end_time)}
                 value={tripVisit.end_time}
                 onChange={(e) => setTripVisit({ ...tripVisit, end_time: e.target.value })}
               />
@@ -3245,7 +3324,7 @@ export default function VisitsPage() {
             onCancel={() => setIsAlsoMeetOpen(false)}
             banner={
               actionError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
                   {actionError}
                 </div>
               )
@@ -3274,23 +3353,23 @@ export default function VisitsPage() {
                               Target Agency Selected
                             </Badge>
                           </div>
-                          <span className="font-mono text-gray-500 text-[11px]">Visit #{selectedVisit.id.slice(0, 8)}</span>
+                          <span className="font-mono text-[#4A5568] text-[11px]">Visit #{selectedVisit.id.slice(0, 8)}</span>
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-[#4A5568]">
                           <div>
-                            <span className="text-gray-400 block">Visiting Officer:</span>
+                            <span className="text-[#6B7280] block">Visiting Officer:</span>
                             <strong className="text-[#14213D]">{selectedVisit.assignee_name || selectedVisit.assigned_to_name || 'Assigned Officer'}</strong>
                           </div>
                           <div>
-                            <span className="text-gray-400 block">Station / City:</span>
+                            <span className="text-[#6B7280] block">Station / City:</span>
                             <strong className="text-[#14213D]">{selectedVisit.location || 'N/A'}</strong>
                           </div>
                           <div>
-                            <span className="text-gray-400 block">Planned Date:</span>
-                            <strong className="text-[#14213D]">{selectedVisit.planned_date ? new Date(selectedVisit.planned_date).toLocaleDateString('en-IN') : 'N/A'}</strong>
+                            <span className="text-[#6B7280] block">Planned Date:</span>
+                            <strong className="text-[#14213D]">{selectedVisit.planned_date ? formatDateIN(selectedVisit.planned_date) : 'N/A'}</strong>
                           </div>
                           <div>
-                            <span className="text-gray-400 block">Customer Contact:</span>
+                            <span className="text-[#6B7280] block">Customer Contact:</span>
                             <strong className="text-[#14213D]">{selectedVisit.contact_person || selectedVisit.contact_name || 'General Office'}</strong>
                           </div>
                         </div>
@@ -3299,7 +3378,7 @@ export default function VisitsPage() {
 
                     <div>
                       <label className="block text-xs font-bold text-[#14213D] mb-1">
-                        Manager Directive Instructions <span className="text-red-500">*</span>
+                        Manager Directive Instructions <span className="text-[#881337]">*</span>
                       </label>
                       <textarea
                         required
@@ -3344,7 +3423,7 @@ export default function VisitsPage() {
                             <span className="text-xs font-bold text-[#14213D] block">
                               Add a Second Organisation to this Trip (Multi-Stop Itinerary)
                             </span>
-                            <span className="text-[11px] text-gray-500">
+                            <span className="text-[11px] text-[#4A5568]">
                               Optional: Check only if you want the officer to visit a DIFFERENT client agency in the same city.
                             </span>
                           </div>
@@ -3366,7 +3445,7 @@ export default function VisitsPage() {
                 hidden: !alsoMeetData.assign_additional,
                 content: (
                   <div className="space-y-3">
-                    <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-200 text-[11px] text-blue-900">
+                    <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[11px] text-[#0B4A4E]">
                       This will schedule an additional separate field visit for <strong>{selectedVisit?.assignee_name || 'the officer'}</strong> and group both meetings into a unified tour program.
                     </div>
 
@@ -3415,6 +3494,7 @@ export default function VisitsPage() {
                       <Input
                         label="End Time for 2nd Visit"
                         type="time"
+                        error={timeRangeError(alsoMeetData.start_time, alsoMeetData.end_time)}
                         value={alsoMeetData.end_time}
                         onChange={(e) => setAlsoMeetData({ ...alsoMeetData, end_time: e.target.value })}
                       />
@@ -3439,7 +3519,7 @@ export default function VisitsPage() {
       >
         <form onSubmit={handleRescheduleSubmit} className="space-y-4">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] font-semibold">
               {actionError}
             </div>
           )}
@@ -3449,6 +3529,7 @@ export default function VisitsPage() {
               label="New Planned Date"
               type="date"
               required
+              min={istToday()}
               value={rescheduleData.new_date}
               onChange={(e) => setRescheduleData({ ...rescheduleData, new_date: e.target.value })}
             />
@@ -3463,6 +3544,7 @@ export default function VisitsPage() {
               <Input
                 label="End Time"
                 type="time"
+                error={timeRangeError(rescheduleData.start_time || selectedVisit?.start_time, rescheduleData.end_time || selectedVisit?.end_time)}
                 value={rescheduleData.end_time}
                 onChange={(e) => setRescheduleData({ ...rescheduleData, end_time: e.target.value })}
               />
@@ -3470,8 +3552,8 @@ export default function VisitsPage() {
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">
-              Mandatory Rescheduling Reason <span className="text-red-500">*</span>
+            <label className="block text-xs font-bold text-[#14213D] mb-1">
+              Mandatory Rescheduling Reason <span className="text-[#881337]">*</span>
             </label>
             <textarea
               required
@@ -3479,7 +3561,7 @@ export default function VisitsPage() {
               value={rescheduleData.reason}
               onChange={(e) => setRescheduleData({ ...rescheduleData, reason: e.target.value })}
               placeholder="e.g. Customer requested postponement due to VIP convoy duty."
-              className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+              className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
             />
           </div>
 
@@ -3506,14 +3588,14 @@ export default function VisitsPage() {
       >
         <form onSubmit={handleCancelSubmit} className="space-y-4">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] font-semibold">
               {actionError}
             </div>
           )}
 
           <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">
-              Cancellation Reason <span className="text-red-500">*</span>
+            <label className="block text-xs font-bold text-[#14213D] mb-1">
+              Cancellation Reason <span className="text-[#881337]">*</span>
             </label>
             <textarea
               required
@@ -3521,7 +3603,7 @@ export default function VisitsPage() {
               value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)}
               placeholder="e.g. Field trial cancelled by Ministry due to weather."
-              className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+              className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
             />
           </div>
 
@@ -3548,7 +3630,7 @@ export default function VisitsPage() {
       >
         <form onSubmit={handleDestinationSubmit} className="space-y-4">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
@@ -3562,8 +3644,8 @@ export default function VisitsPage() {
           />
 
           <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">
-              Reason for Venue Change <span className="text-red-500">*</span>
+            <label className="block text-xs font-bold text-[#14213D] mb-1">
+              Reason for Venue Change <span className="text-[#881337]">*</span>
             </label>
             <textarea
               required
@@ -3571,7 +3653,7 @@ export default function VisitsPage() {
               value={newDestination.reason}
               onChange={(e) => setNewDestination({ ...newDestination, reason: e.target.value })}
               placeholder="e.g. Demonstrations moved to outdoor proving range by DIG technical."
-              className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+              className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
             />
           </div>
 
@@ -3601,7 +3683,7 @@ export default function VisitsPage() {
             onCancel={() => setIsReportOpen(false)}
             banner={
               actionError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] font-semibold">
                   {actionError}
                 </div>
               )
@@ -3619,9 +3701,9 @@ export default function VisitsPage() {
                 content: (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
-                      <label className="block text-xs font-bold text-gray-700">Did the meeting take place?</label>
+                      <label className="block text-xs font-bold text-[#14213D]">Did the meeting take place?</label>
                       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
-                        <label className="flex items-center gap-2 cursor-pointer font-semibold text-emerald-800">
+                        <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#0B4A4E]">
                           <input
                             type="radio"
                             name="met_completed"
@@ -3631,7 +3713,7 @@ export default function VisitsPage() {
                           <span>Yes — Meeting Completed</span>
                         </label>
 
-                        <label className="flex items-center gap-2 cursor-pointer font-semibold text-red-800">
+                        <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#700F2D]">
                           <input
                             type="radio"
                             name="met_completed"
@@ -3645,8 +3727,8 @@ export default function VisitsPage() {
 
                     {!reportData.met_completed && (
                       <div>
-                        <label className="block text-xs font-bold text-gray-700 mb-1">
-                          Reason Why Meeting Did Not Take Place <span className="text-red-500">*</span>
+                        <label className="block text-xs font-bold text-[#14213D] mb-1">
+                          Reason Why Meeting Did Not Take Place <span className="text-[#881337]">*</span>
                         </label>
                         <textarea
                           required
@@ -3654,7 +3736,7 @@ export default function VisitsPage() {
                           value={reportData.remarks}
                           onChange={(e) => setReportData({ ...reportData, remarks: e.target.value })}
                           placeholder="e.g. Officer was summoned urgently for VIP convoy movement."
-                          className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+                          className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
                         />
                       </div>
                     )}
@@ -3686,8 +3768,8 @@ export default function VisitsPage() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold text-gray-700 mb-1">
-                        Discussion Summary & Technical Notes <span className="text-red-500">*</span>
+                      <label className="block text-xs font-bold text-[#14213D] mb-1">
+                        Discussion Summary & Technical Notes <span className="text-[#881337]">*</span>
                       </label>
                       <textarea
                         required
@@ -3695,7 +3777,7 @@ export default function VisitsPage() {
                         value={reportData.discussion}
                         onChange={(e) => setReportData({ ...reportData, discussion: e.target.value })}
                         placeholder="Points discussed, customer reactions, technical clarifications requested..."
-                        className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+                        className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
                       />
                     </div>
                   </div>
@@ -3768,7 +3850,7 @@ export default function VisitsPage() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold text-gray-700 mb-1">
+                      <label className="block text-xs font-bold text-[#14213D] mb-1">
                         General Remarks & Field Intelligence Notes
                       </label>
                       <textarea
@@ -3776,7 +3858,7 @@ export default function VisitsPage() {
                         value={reportData.remarks}
                         onChange={(e) => setReportData({ ...reportData, remarks: e.target.value })}
                         placeholder="Additional field intelligence, competitive products observed, technical feedback..."
-                        className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#3770E3] focus:border-[#3770E3]"
+                        className="w-full text-xs p-2.5 rounded-lg border border-[#DCD8CE] focus:ring-1 focus:ring-[#0F5E63] focus:border-[#0F5E63]"
                       />
                     </div>
                   </div>
@@ -3799,21 +3881,21 @@ export default function VisitsPage() {
       >
         <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
           {auditLogs.length === 0 ? (
-            <p className="text-xs text-gray-500 italic p-4 text-center">No audit records found.</p>
+            <p className="text-xs text-[#4A5568] italic p-4 text-center">No audit records found.</p>
           ) : (
             auditLogs.map((log) => (
-              <div key={log.id} className="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs space-y-1">
+              <div key={log.id} className="p-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-xs space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-[#0F5E63]">{log.action}</span>
-                  <span className="text-[10px] text-gray-500">
-                    {new Date(log.created_at).toLocaleString('en-IN')}
+                  <span className="text-[10px] text-[#4A5568]">
+                    {formatDateTimeIN(log.created_at)}
                   </span>
                 </div>
-                <div className="text-gray-700">
-                  <span className="font-semibold text-gray-600">Actor:</span> {log.actor_name || 'System'} ({log.actor_role})
+                <div className="text-[#14213D]">
+                  <span className="font-semibold text-[#4A5568]">Actor:</span> {log.actor_name || 'System'} ({log.actor_role})
                 </div>
                 {log.new_value?.reason && (
-                  <div className="text-gray-600 italic">
+                  <div className="text-[#4A5568] italic">
                     Reason: "{log.new_value.reason}"
                   </div>
                 )}

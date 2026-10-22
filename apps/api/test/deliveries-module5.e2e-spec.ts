@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { istDay } from './helpers/ist-date';
 
 describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
   let app: INestApplication;
@@ -70,7 +71,7 @@ describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
           product_id: testProductId,
           model: 'XBIS-6040 Dual View Scanner',
           equipment_serial: 'SN-XBIS-2026-9901',
-          delivery_date: new Date(Date.now() + 86400000 * 5).toISOString().split('T')[0],
+          delivery_date: istDay(5), // target date may not be in the past (QA DEF-045)
           delivery_location: 'Central Ordnance Depot, Warehouse 4',
           order_reference: 'PO-MHA-2026-90812',
           installation_required: true,
@@ -83,6 +84,20 @@ describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
       expect(res.body.status).toBe('scheduled');
       expect(res.body.installation_required).toBe(true);
       deliveryId = res.body.id;
+    });
+
+    it('refuses a past target date and milestone jumps (sequential milestones only, QA DEF-045)', async () => {
+      const past = await request(app.getHttpServer())
+        .post('/api/deliveries')
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ organisation_id: testOrgId, product_id: testProductId, delivery_date: istDay(-7), delivery_location: 'Depot 4' });
+      expect(past.status).toBe(400);
+
+      const jump = await request(app.getHttpServer())
+        .patch(`/api/deliveries/${deliveryId}/status`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ status: 'delivered', received_by: 'Store Officer', remarks: 'Skipping dispatch and transit' });
+      expect(jump.status).toBe(400);
     });
 
     it('retrieves delivery by ID with customer, product and details', async () => {
@@ -130,7 +145,7 @@ describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
         .set('Authorization', `Bearer ${serviceToken}`)
         .send({
           status: 'installed',
-          installation_date: new Date().toISOString().split('T')[0],
+          installation_date: istDay(0),
           installation_notes: 'Calibration complete. Both X-Ray generators passed radiation safety test.',
         });
 
@@ -138,13 +153,20 @@ describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
       expect(installedRes.body.status).toBe('installed');
       expect(installedRes.body.installation_notes).toContain('Both X-Ray generators passed');
 
-      // 5. Handover Completed
+      // 5. Handover Completed — needs the client officer who signed and the signed certificate (QA DEF-045)
+      const unsigned = await request(app.getHttpServer())
+        .patch(`/api/deliveries/${deliveryId}/status`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ status: 'handover_completed', remarks: 'Handover without client sign-off' });
+      expect(unsigned.status).toBe(400);
+
       const handoverRes = await request(app.getHttpServer())
         .patch(`/api/deliveries/${deliveryId}/status`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           status: 'handover_completed',
           document_url: 'https://docs.arihant.com/handovers/HO-2026-9901.pdf',
+          received_by: 'Maj. R. K. Singh, Store Officer',
           remarks: 'Signed handover certificate and warranty card received from Store Officer.',
         });
 
@@ -160,7 +182,9 @@ describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.length).toBeGreaterThanOrEqual(1);
-      expect(res.body.data[0].id).toBe(deliveryId);
+      // earlier runs leave other XBIS handovers behind: ours must be among the matches, and all must match
+      expect(res.body.data.map((d: any) => d.id)).toContain(deliveryId);
+      expect(res.body.data.every((d: any) => d.status === 'handover_completed')).toBe(true);
     });
 
     it('retrieves delivery dashboard metrics', async () => {

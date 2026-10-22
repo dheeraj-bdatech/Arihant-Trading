@@ -10,14 +10,14 @@ import {
   AlertCircle,
   Lock,
 } from 'lucide-react';
-import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
+import { useAuth, PRESET_ROLE_USERS, DEMO_PERSONAS_ENABLED } from '@/lib/auth-context';
 import { Button, Input } from '@/components/ui';
 import { AppearanceMenu } from '@/components/layout/AppearanceMenu';
 import { BrandMark } from '@/components/layout/BrandMark';
 import type { UserRole } from '@arihant/shared';
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, demoLogin } = useAuth();
   const router = useRouter();
 
   const [email, setEmail] = useState('');
@@ -40,10 +40,19 @@ export default function LoginPage() {
     }
   };
 
-  const handleQuickRoleSelect = (role: UserRole) => {
+  // Demo profiles sign in on the server (POST /auth/demo-login) — no credentials are filled in or shipped.
+  const handleQuickRoleSelect = async (role: UserRole) => {
     setActiveRoleKey(role);
-    setEmail(PRESET_ROLE_USERS[role].email);
-    setPassword('password123');
+    setError(null);
+    setIsLoading(true);
+    try {
+      await demoLogin(role);
+    } catch (err: any) {
+      setError(err?.message || 'Demo sign-in is not available in this environment.');
+      setActiveRoleKey(null);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -120,13 +129,15 @@ export default function LoginPage() {
               Sign in to Arihant BOS
             </h2>
             <p className="text-xs text-[#4A5568] mt-1">
-              Authenticate with your enterprise credentials or choose one of the 8 RBAC profiles below.
+              {DEMO_PERSONAS_ENABLED
+                ? 'Authenticate with your enterprise credentials or choose one of the 8 demo profiles below.'
+                : 'Authenticate with your enterprise credentials.'}
             </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
             {/* Credentials Card */}
-            <div className="md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-6 shadow-2xs space-y-4">
+            <div className={`${DEMO_PERSONAS_ENABLED ? 'md:col-span-6' : 'md:col-span-8 md:col-start-3'} bg-white border border-[#DCD8CE] rounded-[14px] p-6 shadow-2xs space-y-4`}>
               <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
                   Credentials
@@ -137,7 +148,7 @@ export default function LoginPage() {
               </div>
 
               {error && (
-                <div className="p-3 rounded-[8px] bg-[#FCE8EC] border border-red-200 text-xs text-[#881337] flex items-center space-x-2">
+                <div className="p-3 rounded-[8px] bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#881337] flex items-center space-x-2">
                   <AlertCircle className="h-4 w-4 shrink-0 text-[#881337]" />
                   <span>{error}</span>
                 </div>
@@ -182,7 +193,8 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* Persona Switcher (8 Roles) */}
+            {/* Demo persona picker (8 roles) — development / explicitly opted-in builds only */}
+            {DEMO_PERSONAS_ENABLED && (
             <div className="md:col-span-6 bg-white border border-[#DCD8CE] rounded-[14px] p-5 shadow-2xs space-y-3">
               <div className="flex items-center justify-between pb-2 border-b border-[#ECE9E2]">
                 <div className="flex items-center space-x-1.5">
@@ -202,10 +214,13 @@ export default function LoginPage() {
                   const isSelected = activeRoleKey === roleKey;
 
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={roleKey}
                       onClick={() => handleQuickRoleSelect(roleKey)}
-                      className={`p-2.5 rounded-[8px] border transition-all cursor-pointer text-left flex items-center justify-between ${
+                      disabled={isLoading}
+                      aria-pressed={isSelected}
+                      className={`w-full p-2.5 rounded-[8px] border transition-all cursor-pointer text-left flex items-center justify-between ${
                         isSelected
                           ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]'
                           : 'border-[#DCD8CE] bg-white hover:border-[#0F5E63] hover:bg-[#FBFAF7] text-[#14213D]'
@@ -227,15 +242,16 @@ export default function LoginPage() {
                       <span className="ml-2 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-[#FBFAF7] text-[#4A5568] border border-[#DCD8CE] shrink-0">
                         {roleKey.replace('_', ' ')}
                       </span>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
 
               <div className="p-2 rounded-[6px] bg-[#FBFAF7] border border-[#DCD8CE] text-[10px] text-[#4A5568] text-center font-medium">
-                Click any clearance above to auto-fill credentials (pw: password123)
+                Demo environment: pick a profile to sign in as that role.
               </div>
             </div>
+            )}
           </div>
 
           <a

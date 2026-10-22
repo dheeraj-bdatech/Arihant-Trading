@@ -14,7 +14,6 @@ import {
   MapPin,
   Calendar,
   IndianRupee,
-  Eye,
   ShieldCheck,
   Award,
   AlertCircle,
@@ -35,8 +34,11 @@ import {
   ChevronUp,
   LayoutList,
   SlidersHorizontal,
+  ChevronRight,
 } from 'lucide-react';
 import { TenderDossierModal } from './components/TenderDossierModal';
+import { tenderCategoryLabel, tenderEstimatedRupees, bidStillOpen } from '@/components/tender/labels';
+import { roleLabel, userWithRole } from '@/lib/role-label';
 import { ApprovalsInboxView } from './components/ApprovalsInboxView';
 import { TenderCalendarView } from './components/TenderCalendarView';
 import { FinanceEmdView } from './components/FinanceEmdView';
@@ -67,10 +69,19 @@ import {
   FormSteps,
   FormSection,
   RecordViews,
+  RecordTable,
+  formatDateIN,
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
   toneFor,
   type RecordItem,
   type RecordAction,
   type BoardLane,
+  type BadgeProps,
 } from '@/components/ui';
 import { formatINR, formatTaskDate, formatTaskDateTime } from '@arihant/shared';
 import { istToday, istDateOf, addIsoDays, fromIstLocalInput } from '@/lib/ist-date';
@@ -171,6 +182,8 @@ export default function TendersPage() {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [activeHudFilter, setActiveHudFilter] = useState<string | null>(null);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
+  // Phones: the filter chips fold behind one "Filters" button so the register starts near the top of the screen.
+  const [isPhoneFiltersOpen, setIsPhoneFiltersOpen] = useState(false);
 
   // Detail Modal & Sub-panels
   const [selectedTender, setSelectedTender] = useState<any | null>(null);
@@ -571,6 +584,20 @@ export default function TendersPage() {
       return;
     }
 
+    // Same numeric rules as the API: quantity ≥ 1, money never negative.
+    if (!(Number(newTender.quantity) >= 1)) {
+      setActionError('Quantity must be at least 1.');
+      return;
+    }
+    if (newTender.estimated_value_lakh !== '' && !(Number(newTender.estimated_value_lakh) >= 0)) {
+      setActionError('Estimated value cannot be negative.');
+      return;
+    }
+    if (!(Number(newTender.emd_fee) >= 0)) {
+      setActionError('EMD fee cannot be negative.');
+      return;
+    }
+
     // The deadline box is an IST wall-clock `datetime-local`; convert it as IST (never as browser/UTC time).
     const deadlineIso = fromIstLocalInput(newTender.submission_deadline);
     if (!deadlineIso) {
@@ -651,6 +678,14 @@ export default function TendersPage() {
   // Quick Action: Submit for Internal Review (§24)
   const handleQuickRequestApproval = async (tender: any) => {
     setPageNotice(null);
+    // Same rule as the API: a tender cannot go for review without an assigned salesperson.
+    if (!tender.assigned_to && !tender.assigned_person_id) {
+      setPageNotice({
+        type: 'danger',
+        text: `${tender.tender_number || tender.tender_no}: assign a salesperson (Inspect → Overview → Reassign Team) before submitting for review.`,
+      });
+      return;
+    }
     try {
       await api.post(`/tenders/${tender.id}/request-approval`, {
         remarks: 'Submitted for internal review by sales/tender team',
@@ -726,7 +761,8 @@ export default function TendersPage() {
   // Helper to open Win/Loss Outcome Modal with prefilled tender data (§26)
   const openOutcomeModal = (tender: any) => {
     setSelectedTender(tender);
-    setOutcomeResult('won');
+    // The dossier's Lifecycle cards ("Declare L1 & Won" / "Declare L2 / Lost") open this form pre-set to their verdict.
+    setOutcomeResult(tender?.preset_result === 'lost' ? 'lost' : 'won');
     setOutcomeValueLakh(
       tender.estimated_value_lakh || tender.estimated_value
         ? String(tender.estimated_value_lakh || tender.estimated_value / 100000)
@@ -757,7 +793,9 @@ export default function TendersPage() {
       setIssueTenderId(tender.id);
       setIssueResponsiblePerson(tender.assigned_to || tender.assigned_person_id || '');
     } else {
-      setIssueTenderId(tenders[0]?.id || '');
+      // Logged from the hub: no tender is pre-selected (never silently the first one) — the user picks it.
+      setSelectedTender(null);
+      setIssueTenderId('');
       setIssueResponsiblePerson('');
     }
     setNewIssueText('');
@@ -775,6 +813,14 @@ export default function TendersPage() {
 
     if (outcomeResult === 'lost' && !outcomeLossReason) {
       setActionError('Structured loss reason is mandatory for post-mortem loss analysis.');
+      return;
+    }
+    if (outcomeResult === 'lost' && outcomeLossReason === 'other' && !outcomeOtherReason.trim()) {
+      setActionError('Describe the reason in "Other Reason Notes" when the loss reason is Other.');
+      return;
+    }
+    if (outcomeResultDate && outcomeMinResultDate && outcomeResultDate < outcomeMinResultDate) {
+      setActionError(`Result date cannot be earlier than the bid closing date (${formatTaskDate(outcomeMinResultDate)}).`);
       return;
     }
 
@@ -830,7 +876,7 @@ export default function TendersPage() {
   // 8. Handle Create Portal Issue (§25)
   const handleCreateIssue = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetTenderId = selectedTender?.id || issueTenderId;
+    const targetTenderId = issueTenderId;
     if (!targetTenderId) {
       setActionError('Please select the affected tender.');
       return;
@@ -864,17 +910,47 @@ export default function TendersPage() {
   };
 
   // 9. Handle Escalate / Resolve Portal Issue (§25)
-  const handleUpdateIssueStatus = async (tenderId: string, issueId: string, status: string, resolution?: string) => {
+  const handleUpdateIssueStatus = async (tenderId: string, issueId: string, status: string, resolution?: string): Promise<string | null> => {
+    setPageNotice(null);
     try {
       await api.patch(`/tenders/${tenderId}/portal-issues/${issueId}`, {
-        resolution_status: status,
+        resolution_status: status.toUpperCase(),
         resolution: resolution || undefined,
-        escalated_to: status === 'escalated' ? 'Executive Management & GeM Desk' : undefined,
+        escalated_to: status.toUpperCase() === 'ESCALATED' ? 'Executive Management & GeM Desk' : undefined,
       });
+      setPageNotice({ type: 'success', text: `Portal issue ${status.toUpperCase() === 'RESOLVED' ? 'resolved' : 'escalated'}.` });
       await Promise.all([fetchDashboardStats(), fetchReports()]);
+      return null;
     } catch (err: any) {
-      console.error('Failed to update portal issue:', err);
+      // The API's reason (e.g. "not permitted for your role") is shown, never swallowed.
+      const message = err?.message || 'Could not update the portal issue.';
+      setPageNotice({ type: 'danger', text: message });
+      return message;
     }
+  };
+
+  // Resolve uses an in-app dialog for the resolution notes (never a blocking browser prompt).
+  const [issueToResolve, setIssueToResolve] = useState<any | null>(null);
+  const [resolutionNotes, setResolutionNotes] = useState('');
+  const [resolveError, setResolveError] = useState<string | null>(null);
+  const [isResolving, setIsResolving] = useState(false);
+  const openResolveIssue = (issue: any) => {
+    setIssueToResolve(issue);
+    setResolutionNotes('');
+    setResolveError(null);
+  };
+  const handleResolveIssue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!issueToResolve) return;
+    if (!resolutionNotes.trim()) {
+      setResolveError('Resolution notes are required.');
+      return;
+    }
+    setIsResolving(true);
+    const error = await handleUpdateIssueStatus(issueToResolve.tender_id, issueToResolve.id, 'RESOLVED', resolutionNotes.trim());
+    setIsResolving(false);
+    if (error) setResolveError(error);
+    else setIssueToResolve(null);
   };
 
   // Helper for deadline groupings
@@ -1003,8 +1079,8 @@ export default function TendersPage() {
       badge:
         dashboardStats.pending_approvals > 0 ? (
           <span className="flex h-2.5 w-2.5 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-600"></span>
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#F2B872] opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#9A3412]"></span>
           </span>
         ) : (
           <Badge variant="outline" size="sm">Dual-Control</Badge>
@@ -1027,6 +1103,15 @@ export default function TendersPage() {
 
   // View menu — first control of the filter row; same views (and role gating) as the old tab bar.
   const isSales = user?.role === 'sales';
+  // Same roles as POST /tenders/:id/outcome — regional managers follow up but do not declare the verdict.
+  const canRecordOutcome = hasRole(['management', 'tender_team', 'sales', 'admin']);
+  // A result is declared after the bid closes: the earliest valid result date is the IST day of the deadline.
+  const outcomeDeadline = selectedTender?.submission_deadline || selectedTender?.bid_closing_date;
+  const outcomeMinResultDate = outcomeDeadline ? istDateOf(outcomeDeadline) : undefined;
+  // Escalate / Resolve on portal issues: same roles as PATCH /tenders/:id/portal-issues/:issueId (not Sales).
+  const canManagePortalIssues = hasRole(['management', 'regional_manager', 'tender_team', 'admin']);
+  const isOpenIssue = (i: any) => !['RESOLVED', 'CLOSED'].includes(String(i?.resolution_status || 'OPEN').toUpperCase());
+  const openPortalIssueCount = globalPortalIssues.filter(isOpenIssue).length;
   const nonZero = (v?: number) => (v && v > 0 ? v : undefined);
   const urgentDeadlines = dashboardStats.urgent_deadlines || 0;
   const viewOptions: { id: TenderView; label: string; icon: React.ReactNode; count?: number | string; urgent?: boolean }[] = [
@@ -1047,7 +1132,8 @@ export default function TendersPage() {
       id: 'portal_issues',
       label: isSales ? 'My portal issues' : 'GeM & portal issues',
       icon: <AlertTriangle />,
-      count: nonZero(dashboardStats.open_portal_issues || globalPortalIssues.length),
+      // Always the number of unresolved issues (same rule as the API's open_portal_issues and the Open Issues card).
+      count: nonZero(globalPortalIssues.length ? openPortalIssueCount : dashboardStats.open_portal_issues),
     },
     ...(!isSales ? [{ id: 'analytics' as const, label: 'Win/loss analytics', icon: <BarChart3 />, count: `${winRate}% win` }] : []),
   ];
@@ -1056,6 +1142,7 @@ export default function TendersPage() {
       label="View"
       icon={<LayoutList />}
       neutralKeys={[]}
+      compactOnPhone
       className="shrink-0"
       options={viewOptions.map((v) => ({
         key: v.id,
@@ -1076,6 +1163,7 @@ export default function TendersPage() {
   const isListView = activeTab === 'pipeline' || activeTab === 'deadlines';
   // Category, Zone and Assignee live in the "More" panel (Category is also on the PQ / MHA cards).
   const moreActiveCount = [categoryFilter, zoneFilter, !isSales ? assignedFilter : ''].filter(Boolean).length;
+  const phoneFilterCount = [statusFilter, deadlineFilter].filter(Boolean).length + moreActiveCount;
 
   // Pipeline register: each tender as a RecordItem (priority cards + stage board).
   const stageById = new Map<string, string>(tenders.map((t) => [t.id, t.status]));
@@ -1093,15 +1181,15 @@ export default function TendersPage() {
     const isPqTender = (tender.category || '').toLowerCase().includes('pq');
     const isManagement = hasRole(['management', 'admin']);
     const open = () => openTenderDetails(tender);
-    const openAction: RecordAction = { label: 'Open dossier', icon: <Eye />, onClick: open };
 
-    let primary: RecordAction = openAction;
+    // The card itself opens the dossier (onOpen); a button only for a real next step in the lifecycle.
+    let primary: RecordAction | undefined;
     if (tender.status === 'identified') {
       primary = isManagement
-        ? { label: 'Review & authorise', icon: <ShieldCheck />, onClick: open }
+        ? { label: 'Review', icon: <ShieldCheck />, onClick: open }
         : { label: 'Submit for review', icon: <Send />, onClick: () => handleQuickRequestApproval(tender) };
     } else if (tender.status === 'awaiting_approval' && isManagement) {
-      primary = { label: 'Review decision', icon: <ShieldCheck />, onClick: open };
+      primary = { label: 'Review', icon: <ShieldCheck />, onClick: open };
     } else if (tender.status === 'under_preparation') {
       primary = {
         label: isPqTender ? 'Submit PQ' : 'Submit bid',
@@ -1115,21 +1203,23 @@ export default function TendersPage() {
           setIsTransitionOpen(true);
         },
       };
-    } else if (['submitted', 'technical_eval', 'commercial_eval'].includes(tender.status)) {
+    } else if (
+      canRecordOutcome &&
+      ['submitted', 'technical_eval', 'commercial_eval'].includes(tender.status) &&
+      // Bids open only after closing: no result can be recorded on a submitted bid before its closing time.
+      !(tender.status === 'submitted' && bidStillOpen(tender))
+    ) {
       primary = {
         label: 'Record outcome',
         icon: <Award />,
-        onClick: () => {
-          setSelectedTender(tender);
-          setOutcomeResult('won');
-          setIsOutcomeOpen(true);
-        },
+        onClick: () => openOutcomeModal(tender),
       };
     }
 
     const badges: RecordItem['badges'] = [];
-    if (tender.category === 'pq') badges.push({ label: 'PQ', tone: 'info' });
-    else if (tender.category === 'general_mha') badges.push({ label: 'General / MHA', tone: 'neutral' });
+    const categoryCode = String(tender.category || '').toLowerCase();
+    if (categoryCode === 'pq') badges.push({ label: 'PQ', tone: 'info' });
+    else if (categoryCode === 'general_mha') badges.push({ label: tenderCategoryLabel(categoryCode), tone: 'neutral' });
     if (tender.status === 'awaiting_approval' && !isManagement) badges.push({ label: 'In review', tone: 'warning' });
     if (tender.assigned_to === user?.id || tender.assigned_person_id === user?.id) badges.push({ label: 'You', tone: 'info' });
 
@@ -1146,23 +1236,147 @@ export default function TendersPage() {
         label: 'Bid closes',
         done: ['won', 'lost', 'cancelled', 'rejected_internally'].includes(tender.status),
       },
-      value: tender.estimated_value_lakh
-        ? `₹ ${tender.estimated_value_lakh} Lakh`
-        : tender.tender_value
-          ? `₹ ${(tender.tender_value / 100000).toFixed(2)} Lakh`
-          : undefined,
+      value: (() => {
+        const rupees = tenderEstimatedRupees(tender);
+        return rupees ? `₹ ${Number((rupees / 100000).toFixed(2))} Lakh` : undefined;
+      })(),
       owner: tender.tender_owner_name || tender.owner_name || 'Unassigned',
       facts: [
         { label: 'Portal', value: tender.portal || '—' },
-        { label: 'EMD', value: tender.emd_fee ? formatINR(tender.emd_fee) : 'Exempt' },
+        { label: 'EMD', value: Number(tender.emd_fee || tender.emd_amount) > 0 ? formatINR(Number(tender.emd_fee || tender.emd_amount)) : 'Exempt' },
         { label: 'Sales', value: tender.assigned_to_name || tender.assigned_person_name || 'Unassigned' },
-        { label: 'Qty', value: tender.quantity || 1 },
+        { label: 'Qty', value: Number(tender.line_items_quantity) > 0 ? Number(tender.line_items_quantity) : tender.quantity || 1 },
       ],
       primary,
-      quick: primary === openAction ? undefined : [{ label: 'Open dossier', icon: <Eye />, onClick: open }],
       onOpen: open,
     };
   });
+
+  // Pipeline register as a table (RecordViews' List view): the same rows, in the same order, as tenderRecords.
+  type TenderBadgeVariant = NonNullable<BadgeProps['variant']>;
+  const tenderStageBadge = (status?: string): TenderBadgeVariant =>
+    status === 'won' || status === 'pq_qualified'
+      ? 'success'
+      : status === 'awaiting_approval'
+        ? 'warning'
+        : status === 'under_preparation'
+          ? 'default'
+          : status === 'lost' || status === 'rejected_internally' || status === 'cancelled'
+            ? 'danger'
+            : 'outline';
+  /** The submission deadline only drives urgency while the bid is still being prepared. */
+  const tenderPreSubmission = ['identified', 'awaiting_approval', 'under_preparation', 'on_hold'];
+  const tenderList = tenders.length ? (
+    <RecordTable items={tenderRecords}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Tender / Bid No.</TableHead>
+            <TableHead>Buyer & Location</TableHead>
+            <TableHead>Category</TableHead>
+            <TableHead>Requirement & Ownership</TableHead>
+            <TableHead className="text-right">Qty & Value</TableHead>
+            <TableHead>Submission Deadline</TableHead>
+            <TableHead>Stage</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {tenders.map((tender, idx) => {
+            const record = tenderRecords[idx];
+            const deadline = tender.submission_deadline || tender.bid_closing_date;
+            // Deadline urgency (as on the reference register) only while the bid is still being prepared.
+            const deadlineAt = deadline ? new Date(deadline).getTime() : NaN;
+            const hoursLeft = tenderPreSubmission.includes(tender.status) && !Number.isNaN(deadlineAt) ? (deadlineAt - Date.now()) / 3600000 : null;
+            const location = [tender.city, tender.state].filter(Boolean).join(', ') + (tender.zone ? ` (${tender.zone})` : '');
+            const buyer = tender.department || tender.organisation_name || 'Government Buyer';
+            const requirement = tender.requirement_text || tender.product_name || 'Defence Procurement Item';
+            const owner = tender.tender_owner_name || tender.owner_name || 'Unassigned';
+            const sales = tender.assigned_to_name || tender.assigned_person_name || 'Unassigned';
+            const isMine = tender.assigned_to === user?.id || tender.assigned_person_id === user?.id;
+            const categoryLabel = tenderCategoryLabel(tender.category, tender.category_name);
+            const emd = Number(tender.emd_fee || tender.emd_amount);
+            // Estimated value first (₹ Lakh); the EMD is shown under it, or alone when no estimate is recorded.
+            const emdText = emd > 0 ? `EMD: ${formatINR(emd)}` : 'EMD: Exempt';
+            const value = record.value || emdText;
+            const qty = Number(tender.line_items_quantity) > 0 ? Number(tender.line_items_quantity) : Number(tender.quantity) || 1;
+            const nextStep = record.quick ? record.primary : undefined;
+            return (
+              <TableRow key={tender.id}>
+                <TableCell className="font-bold whitespace-nowrap">
+                  <span className="font-mono text-[#0F5E63]">{tender.tender_number || tender.tender_no}</span>
+                  {tender.portal && <div className="text-[10px] text-[#4A5568] font-normal">{tender.portal}</div>}
+                </TableCell>
+                <TableCell className="text-[#14213D] max-w-[220px]">
+                  <div className="font-semibold text-[#14213D] truncate" title={buyer}>
+                    {buyer}
+                  </div>
+                  {location && <div className="text-[10px] text-[#4A5568] truncate">{location}</div>}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {tender.category ? (
+                    <Badge variant="outline" size="sm" className="uppercase font-bold">
+                      {categoryLabel}
+                    </Badge>
+                  ) : (
+                    <span className="text-[#4A5568]">-</span>
+                  )}
+                </TableCell>
+                <TableCell className="max-w-[240px]">
+                  <div className="text-[#14213D] font-medium truncate" title={requirement}>
+                    {requirement}
+                  </div>
+                  <div className="text-[10px] text-[#4A5568] font-normal truncate" title={`Owner: ${owner} · Sales: ${sales}`}>
+                    Owner: {owner} · Sales: {sales}
+                    {isMine && <span className="ml-1 font-bold text-[#0F5E63]">(You)</span>}
+                  </div>
+                </TableCell>
+                <TableCell className="text-right font-mono font-bold text-[#0F5E63] whitespace-nowrap">
+                  {value}
+                  <div className="text-[10px] text-[#4A5568] font-normal">
+                    {record.value ? `${emdText} · ` : ''}Qty: {qty}
+                  </div>
+                </TableCell>
+                <TableCell className="font-mono whitespace-nowrap">
+                  {formatDateIN(deadline)}
+                  {hoursLeft !== null && hoursLeft < 0 ? (
+                    <Badge variant="danger" size="sm" className="mt-1 flex w-fit" hasDot>
+                      OVERDUE
+                    </Badge>
+                  ) : hoursLeft !== null && hoursLeft <= 48 ? (
+                    <Badge variant="urgent" size="sm" className="mt-1 flex w-fit">
+                      {hoursLeft <= 24 ? 'CLOSING TODAY' : `${Math.ceil(hoursLeft)}H LEFT`}
+                    </Badge>
+                  ) : hoursLeft !== null && hoursLeft <= 168 ? (
+                    <Badge variant="info" size="sm" className="mt-1 flex w-fit">
+                      {Math.ceil(hoursLeft / 24)} DAYS LEFT
+                    </Badge>
+                  ) : null}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={tenderStageBadge(tender.status)} size="sm" className="uppercase font-bold">
+                    {record.status?.label || String(tender.status || '-').replace(/_/g, ' ')}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-1.5">
+                    {nextStep && (
+                      <Button size="sm" variant="primary" className="shadow-xs text-xs" disabled={nextStep.disabled} onClick={nextStep.onClick}>
+                        {nextStep.label}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="secondary" className="shadow-xs text-xs" onClick={record.onOpen}>
+                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
 
   return (
     <PageContainer>
@@ -1181,6 +1395,7 @@ export default function TendersPage() {
                 <Button
                   variant="outline"
                   size="sm"
+                  className="hidden sm:inline-flex"
                   onClick={() => setIsImportOpen(true)}
                   leftIcon={<Upload className="h-3.5 w-3.5 text-[#4A5568]" />}
                 >
@@ -1204,7 +1419,8 @@ export default function TendersPage() {
                 }}
                 leftIcon={<Plus className="h-4 w-4" />}
               >
-                <span>Register New Tender</span>
+                <span className="sm:hidden">New</span>
+                <span className="hidden sm:inline">Register New Tender</span>
               </Button>
             )}
           </div>
@@ -1245,23 +1461,23 @@ export default function TendersPage() {
           />
           <StatCard
             label="Open Issues"
-            value={globalPortalIssues.filter((i) => ['OPEN', 'open'].includes(i.resolution_status)).length}
-            subtext="Unresolved technical glitches"
-            icon={<AlertTriangle className="h-4 w-4 text-amber-600" />}
+            value={openPortalIssueCount}
+            subtext="Unresolved (open, in progress or escalated)"
+            icon={<AlertTriangle className="h-4 w-4 text-[#9A3412]" />}
             valueColor="amber"
           />
           <StatCard
             label="Escalated"
-            value={globalPortalIssues.filter((i) => ['ESCALATED', 'escalated'].includes(i.resolution_status)).length}
+            value={globalPortalIssues.filter((i) => String(i.resolution_status || '').toUpperCase() === 'ESCALATED').length}
             subtext="Awaiting GeM Desk / Mgmt"
-            icon={<AlertOctagon className="h-4 w-4 text-rose-600" />}
+            icon={<AlertOctagon className="h-4 w-4 text-[#881337]" />}
             valueColor="rose"
           />
           <StatCard
             label="Resolved / Closed"
-            value={globalPortalIssues.filter((i) => ['RESOLVED', 'resolved', 'CLOSED', 'closed'].includes(i.resolution_status)).length}
+            value={globalPortalIssues.length - openPortalIssueCount}
             subtext="Workaround or fix applied"
-            icon={<CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+            icon={<CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />}
             valueColor="emerald"
           />
         </StatGrid>
@@ -1269,12 +1485,27 @@ export default function TendersPage() {
 
       {/* 3. One filter row on every view: View menu first, then that view's search, filters and actions. */}
       <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+        <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
           {viewMenu}
           {isListView && (
             <>
-              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+              <button
+                type="button"
+                onClick={() => {
+                  // folding the chips away also folds the "More" filters that hang off them
+                  if (isPhoneFiltersOpen) setIsMoreOpen(false);
+                  setIsPhoneFiltersOpen(!isPhoneFiltersOpen);
+                }}
+                aria-expanded={isPhoneFiltersOpen}
+                aria-controls="tender-filter-chips"
+                className={`filter-menu-btn sm:!hidden ${isPhoneFiltersOpen || phoneFilterCount > 0 ? 'filter-menu-btn--on' : ''}`}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <span>Filters</span>
+                {phoneFilterCount > 0 && <span className="filter-menu-chip">{phoneFilterCount}</span>}
+              </button>
+              <div className="relative order-last w-full min-w-0 sm:order-none sm:min-w-[200px] sm:flex-1 lg:w-auto">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
                 <input
                   type="search"
                   aria-label="Search tenders"
@@ -1283,10 +1514,13 @@ export default function TendersPage() {
                   onChange={(e) => {
                     setSearch(e.target.value);
                   }}
-                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                  className="h-10 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-sm text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15 sm:h-9 sm:text-xs"
                 />
               </div>
-              <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+              <div
+                id="tender-filter-chips"
+                className={`${isPhoneFiltersOpen ? 'flex' : 'hidden'} order-last w-full flex-wrap items-center gap-2 sm:order-none sm:flex sm:w-auto lg:flex-nowrap`}
+              >
                 <FilterMenu
                   label="Stage"
                   icon={<Layers />}
@@ -1461,8 +1695,9 @@ export default function TendersPage() {
           ) : (
             <RecordViews
               storageKey="tenders"
-              defaultView="cards"
+              defaultView="list"
               items={tenderRecords}
+              list={tenderList}
               lanes={tenderLanes}
               laneOf={tenderLaneOf}
               summary={
@@ -1531,7 +1766,7 @@ export default function TendersPage() {
         <div className="space-y-6 animate-in fade-in duration-150">
           <SectionHeader
             title="Executive Management Reporting & Analytics Suite (§27)"
-            description="Multi-tier pipeline intelligence across Classifications (Vikas's PQ vs General/MHA Matrix), Territories, Salespeople, and Post-Mortem Win/Loss Analysis"
+            description="Multi-tier pipeline intelligence across Classifications (PQ vs General / MHA), Territories, Salespeople, and Post-Mortem Win/Loss Analysis"
           />
 
           {/* Section 1: Executive KPI Command HUD (§27 Monitoring Requirements) */}
@@ -1562,7 +1797,7 @@ export default function TendersPage() {
                 <div className="text-2xl font-black text-[#0F5E63] mt-1.5">
                   {dashboardStats.pq_tenders || dashboardStats.pq_count || 0}
                 </div>
-                <p className="text-[10px] text-[#4A5568] mt-0.5">Vikas PQ classification</p>
+                <p className="text-[10px] text-[#4A5568] mt-0.5">Pre-qualification category</p>
               </Card>
 
               <Card className="p-3.5 border-[#DCD8CE] bg-white">
@@ -1615,9 +1850,9 @@ export default function TendersPage() {
               <Card className="p-3.5 border-[#DCD8CE] bg-white">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#4A5568]">Tenders Won</span>
-                  <Award className="h-4 w-4 text-emerald-600" />
+                  <Award className="h-4 w-4 text-[#0F5E63]" />
                 </div>
-                <div className="text-2xl font-black text-emerald-700 mt-1.5">
+                <div className="text-2xl font-black text-[#0B4A4E] mt-1.5">
                   {dashboardStats.tenders_won || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">L1 contracts secured</p>
@@ -1626,9 +1861,9 @@ export default function TendersPage() {
               <Card className="p-3.5 border-[#DCD8CE] bg-white">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#4A5568]">Tenders Lost</span>
-                  <XCircle className="h-4 w-4 text-rose-600" />
+                  <XCircle className="h-4 w-4 text-[#881337]" />
                 </div>
-                <div className="text-2xl font-black text-rose-600 mt-1.5">
+                <div className="text-2xl font-black text-[#881337] mt-1.5">
                   {dashboardStats.tenders_lost || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">Lost to competitor/disqualified</p>
@@ -1637,9 +1872,9 @@ export default function TendersPage() {
               <Card className="p-3.5 border-[#DCD8CE] bg-white">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#4A5568]">Pending Tenders</span>
-                  <Clock className="h-4 w-4 text-amber-600" />
+                  <Clock className="h-4 w-4 text-[#9A3412]" />
                 </div>
-                <div className="text-2xl font-black text-amber-700 mt-1.5">
+                <div className="text-2xl font-black text-[#7C2D12] mt-1.5">
                   {dashboardStats.pending_tenders || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">In flight across all stages</p>
@@ -1648,9 +1883,9 @@ export default function TendersPage() {
               <Card className="p-3.5 border-[#DCD8CE] bg-white">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#4A5568]">Conversion Win Rate</span>
-                  <TrendingUp className="h-4 w-4 text-emerald-600" />
+                  <TrendingUp className="h-4 w-4 text-[#0F5E63]" />
                 </div>
-                <div className="text-2xl font-black text-emerald-700 mt-1.5">
+                <div className="text-2xl font-black text-[#0B4A4E] mt-1.5">
                   {winLossReport.win_rate !== undefined ? `${winLossReport.win_rate}%` : `${dashboardStats.win_rate || 0}%`}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">Won / Decided bids</p>
@@ -1700,18 +1935,18 @@ export default function TendersPage() {
                       const decided = (org.won || 0) + (org.lost || 0);
                       const rate = decided > 0 ? Math.round(((org.won || 0) / decided) * 100) : 0;
                       return (
-                        <tr key={org.organisation_id} className="hover:bg-[#F8FAFC]">
+                        <tr key={org.organisation_id} className="hover:bg-[#FBFAF7]">
                           <td className="p-2.5 font-bold text-[#14213D]">{org.organisation_name}</td>
                           <td className="p-2.5 text-[#4A5568]">{org.sector || 'Defence'}</td>
                           <td className="p-2.5 text-[#4A5568]">{org.state ? `${org.city ? `${org.city}, ` : ''}${org.state}` : 'National'}</td>
                           <td className="p-2.5 text-center font-bold text-[#0F5E63]">{org.total}</td>
                           <td className="p-2.5 text-center font-semibold text-[#0F5E63]">{org.pq_count || 0}</td>
-                          <td className="p-2.5 text-center font-semibold text-gray-700">{org.general_mha_count || 0}</td>
-                          <td className="p-2.5 text-center text-amber-700 font-semibold">{org.in_preparation || 0}</td>
-                          <td className="p-2.5 text-center text-blue-700 font-semibold">{org.submitted || 0}</td>
-                          <td className="p-2.5 text-center text-emerald-700 font-bold">{org.won || 0}</td>
-                          <td className="p-2.5 text-center text-rose-600 font-semibold">{org.lost || 0}</td>
-                          <td className="p-2.5 text-right font-black text-emerald-700">
+                          <td className="p-2.5 text-center font-semibold text-[#14213D]">{org.general_mha_count || 0}</td>
+                          <td className="p-2.5 text-center text-[#7C2D12] font-semibold">{org.in_preparation || 0}</td>
+                          <td className="p-2.5 text-center text-[#0B4A4E] font-semibold">{org.submitted || 0}</td>
+                          <td className="p-2.5 text-center text-[#0B4A4E] font-bold">{org.won || 0}</td>
+                          <td className="p-2.5 text-center text-[#881337] font-semibold">{org.lost || 0}</td>
+                          <td className="p-2.5 text-right font-black text-[#0B4A4E]">
                             {decided > 0 ? `${rate}%` : 'N/A'}
                           </td>
                         </tr>
@@ -1764,17 +1999,17 @@ export default function TendersPage() {
                       const dec = (s.won || 0) + (s.lost || 0);
                       const rate = dec > 0 ? Math.round(((s.won || 0) / dec) * 100) : 0;
                       return (
-                        <tr key={s.user_id} className="hover:bg-[#F8FAFC]">
+                        <tr key={s.user_id} className="hover:bg-[#FBFAF7]">
                           <td className="p-2.5 font-bold text-[#14213D]">{s.salesperson_name}</td>
-                          <td className="p-2.5 text-[#4A5568] capitalize">{s.role?.replace(/_/g, ' ')}</td>
+                          <td className="p-2.5 text-[#4A5568]">{roleLabel(s.role)}</td>
                           <td className="p-2.5 text-center font-bold text-[#0F5E63]">{s.total || s.total_tenders || 0}</td>
                           <td className="p-2.5 text-center font-semibold text-[#0F5E63]">{s.pq_count || 0}</td>
-                          <td className="p-2.5 text-center font-semibold text-gray-700">{s.general_mha_count || 0}</td>
-                          <td className="p-2.5 text-center text-amber-700 font-semibold">{s.pending || s.pending_tenders || 0}</td>
-                          <td className="p-2.5 text-center text-blue-700 font-semibold">{s.submitted || s.submitted_tenders || 0}</td>
-                          <td className="p-2.5 text-center text-emerald-700 font-bold">{s.won || s.won_tenders || 0}</td>
-                          <td className="p-2.5 text-center text-rose-600 font-semibold">{s.lost || s.lost_tenders || 0}</td>
-                          <td className="p-2.5 text-right font-black text-emerald-700">
+                          <td className="p-2.5 text-center font-semibold text-[#14213D]">{s.general_mha_count || 0}</td>
+                          <td className="p-2.5 text-center text-[#7C2D12] font-semibold">{s.pending || s.pending_tenders || 0}</td>
+                          <td className="p-2.5 text-center text-[#0B4A4E] font-semibold">{s.submitted || s.submitted_tenders || 0}</td>
+                          <td className="p-2.5 text-center text-[#0B4A4E] font-bold">{s.won || s.won_tenders || 0}</td>
+                          <td className="p-2.5 text-center text-[#881337] font-semibold">{s.lost || s.lost_tenders || 0}</td>
+                          <td className="p-2.5 text-right font-black text-[#0B4A4E]">
                             {dec > 0 ? `${rate}%` : 'N/A'}
                           </td>
                         </tr>
@@ -1804,11 +2039,11 @@ export default function TendersPage() {
             </div>
 
             {/* Won Tenders Intelligence Grid */}
-            <div className="bg-white rounded-xl border border-emerald-200 p-4 shadow-2xs space-y-3">
+            <div className="bg-white rounded-xl border border-[#D0E5E3] p-4 shadow-2xs space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-emerald-600" />
-                  <h4 className="text-sm font-bold text-emerald-950">
+                  <CheckCircle2 className="h-5 w-5 text-[#0F5E63]" />
+                  <h4 className="text-sm font-bold text-[#0B4A4E]">
                     Won Contracts Intelligence (§26 Product, Region, Person, Value Breakdown)
                   </h4>
                 </div>
@@ -1837,7 +2072,7 @@ export default function TendersPage() {
                       <div key={prod} className="flex items-center justify-between text-xs py-1 border-b border-[#ECE9E2] last:border-none">
                         <span className="font-medium text-[#14213D] truncate max-w-[150px]">{prod}</span>
                         <div className="text-right">
-                          <span className="font-bold text-emerald-700">{data.count} Won</span>
+                          <span className="font-bold text-[#0B4A4E]">{data.count} Won</span>
                           {data.value_lakh > 0 && (
                             <span className="text-[10px] text-[#4A5568] block">₹{data.value_lakh}L</span>
                           )}
@@ -1859,7 +2094,7 @@ export default function TendersPage() {
                       <div key={reg} className="flex items-center justify-between text-xs py-1 border-b border-[#ECE9E2] last:border-none">
                         <span className="font-medium text-[#14213D]">{reg}</span>
                         <div className="text-right">
-                          <span className="font-bold text-emerald-700">{data.count} Won</span>
+                          <span className="font-bold text-[#0B4A4E]">{data.count} Won</span>
                           {data.value_lakh > 0 && (
                             <span className="text-[10px] text-[#4A5568] block">₹{data.value_lakh}L</span>
                           )}
@@ -1881,7 +2116,7 @@ export default function TendersPage() {
                       <div key={person} className="flex items-center justify-between text-xs py-1 border-b border-[#ECE9E2] last:border-none">
                         <span className="font-medium text-[#14213D] truncate max-w-[140px]">{person}</span>
                         <div className="text-right">
-                          <span className="font-bold text-emerald-700">{data.count} Won</span>
+                          <span className="font-bold text-[#0B4A4E]">{data.count} Won</span>
                           {data.value_lakh > 0 && (
                             <span className="text-[10px] text-[#4A5568] block">₹{data.value_lakh}L</span>
                           )}
@@ -1898,7 +2133,7 @@ export default function TendersPage() {
               {/* Primary Loss Cause Breakdown */}
               <div className="bg-white rounded-xl border border-[#DCD8CE] p-4 shadow-2xs space-y-3">
                 <h4 className="text-sm font-bold text-[#14213D] flex items-center gap-1.5">
-                  <XCircle className="h-4 w-4 text-rose-600" />
+                  <XCircle className="h-4 w-4 text-[#881337]" />
                   <span>Primary Loss Cause Breakdown (§26 Post-Mortem)</span>
                 </h4>
                 <p className="text-xs text-[#4A5568]">Structured primary loss categories on lost bids</p>
@@ -1923,7 +2158,7 @@ export default function TendersPage() {
                             </span>
                           </div>
                           <div className="text-right">
-                            <span className="text-sm font-black text-rose-600">{count as number}</span>
+                            <span className="text-sm font-black text-[#881337]">{count as number}</span>
                             <span className="text-[10px] text-[#4A5568] block">{pct}% of losses</span>
                           </div>
                         </div>
@@ -1995,7 +2230,7 @@ export default function TendersPage() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {categorizedDeadlines.urgent.map((t) => (
-                  <div key={t.id} className="p-3.5 rounded-xl border border-amber-300 bg-[#FBEBDD]/40 flex items-start justify-between">
+                  <div key={t.id} className="p-3.5 rounded-xl border border-[#E9C9B4] bg-[#FBEBDD]/40 flex items-start justify-between">
                     <div>
                       <div className="font-bold text-xs text-[#14213D] flex items-center gap-1.5 font-mono">
                         <span>{t.tender_number || t.tender_no}</span>
@@ -2089,6 +2324,51 @@ export default function TendersPage() {
               </div>
             )}
           </div>
+
+          {/* Group 4: Post-Submission Result Follow-Ups (§24) — submitted bids still waiting for a verdict */}
+          <div className="bg-white rounded-[14px] border border-[#DCD8CE] p-4 shadow-2xs space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Award className="h-5 w-5 text-[#0F5E63]" />
+                <h4 className="text-sm font-bold text-[#14213D]">Result Follow-Ups (Awaiting Award)</h4>
+              </div>
+              <Badge variant="info" size="sm">
+                <span className="font-mono">{categorizedDeadlines.resultFollowups.length}</span>&nbsp;Submitted
+              </Badge>
+            </div>
+            {categorizedDeadlines.resultFollowups.length === 0 ? (
+              <div className="p-4 rounded-lg bg-[#FBFAF7] border border-dashed border-[#DCD8CE] text-xs text-[#4A5568] text-center">
+                No pending result follow-ups. Every submitted bid has its outcome recorded.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {categorizedDeadlines.resultFollowups.map((t) => (
+                  <div key={t.id} className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white flex flex-col justify-between hover:border-[#0F5E63] transition-all">
+                    <div>
+                      <div className="font-bold text-xs text-[#14213D] flex items-center justify-between gap-2 font-mono">
+                        <span className="truncate">{t.tender_number || t.tender_no}</span>
+                        <Badge variant="cyber" size="sm">{STAGES.find((s) => s.key === t.status)?.label || String(t.status).replace(/_/g, ' ')}</Badge>
+                      </div>
+                      <p className="text-[11px] text-[#4A5568] mt-1 font-medium truncate">{t.department || t.organisation_name}</p>
+                      <p className="text-[10px] text-[#4A5568] mt-0.5">
+                        Closed: {formatTaskDate(t.submission_deadline || t.bid_closing_date)}
+                      </p>
+                    </div>
+                    <div className="pt-2 flex items-center justify-end gap-1.5 border-t border-[#ECE9E2] mt-2">
+                      <Button size="xs" variant="secondary" onClick={() => openTenderDetails(t)}>
+                        Inspect
+                      </Button>
+                      {canRecordOutcome && (
+                        <Button size="xs" variant="primary" leftIcon={<Award className="h-3.5 w-3.5" />} onClick={() => openOutcomeModal(t)}>
+                          Record outcome
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -2121,17 +2401,17 @@ export default function TendersPage() {
                   {globalPortalIssues.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="p-8 text-center text-xs text-[#4A5568]">
-                        <CheckCircle2 className="h-8 w-8 text-emerald-600 mx-auto mb-2" />
+                        <CheckCircle2 className="h-8 w-8 text-[#0F5E63] mx-auto mb-2" />
                         Zero external portal issues recorded. GeM & CPPP submissions operating normally.
                       </td>
                     </tr>
                   ) : (
                     globalPortalIssues.map((issue) => (
-                      <tr key={issue.id} className="hover:bg-[#F8FAFC]">
+                      <tr key={issue.id} className="hover:bg-[#FBFAF7]">
                         <td className="p-3.5 max-w-[280px]">
                           <span className="font-bold text-xs text-[#14213D] block">{issue.issue}</span>
                           {issue.escalated_to && (
-                            <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 mt-1 inline-block">
+                            <span className="text-[10px] text-[#7C2D12] bg-[#FFF8EB] px-1.5 py-0.5 rounded border border-[#E9C9B4] mt-1 inline-block">
                               Escalated to: {issue.escalated_to}
                             </span>
                           )}
@@ -2139,7 +2419,9 @@ export default function TendersPage() {
 
                         <td className="p-3.5 whitespace-nowrap">
                           <span className="font-semibold text-xs text-[#14213D] block font-mono">{issue.tender_no || 'Tender'}</span>
-                          <span className="text-[10px] text-[#4A5568] truncate block max-w-[180px]">{issue.tender_department || 'Department'}</span>
+                          <span className="text-[10px] text-[#4A5568] truncate block max-w-[180px]" title={issue.tender_department || issue.organisation_name || issue.organisation || undefined}>
+                            {issue.tender_department || issue.organisation_name || issue.organisation || '—'}
+                          </span>
                         </td>
 
                         <td className="p-3.5 whitespace-nowrap">
@@ -2166,7 +2448,7 @@ export default function TendersPage() {
                             }
                             size="sm"
                           >
-                            {issue.resolution_status?.toUpperCase()}
+                            {String(issue.resolution_status || 'OPEN').toUpperCase().replace(/_/g, ' ')}
                           </Badge>
                         </td>
 
@@ -2178,13 +2460,16 @@ export default function TendersPage() {
 
                         <td className="p-3.5 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5">
-                            {!['resolved', 'closed'].includes(issue.resolution_status?.toLowerCase()) && (
+                            {!canManagePortalIssues && isOpenIssue(issue) && (
+                              <span className="text-[10px] text-[#4A5568]">Tender Team handles escalation</span>
+                            )}
+                            {canManagePortalIssues && isOpenIssue(issue) && (
                               <>
                                 {!['escalated'].includes(issue.resolution_status?.toLowerCase()) && (
                                   <Button
                                     size="xs"
                                     variant="outline"
-                                    onClick={() => handleUpdateIssueStatus(issue.tender_id, issue.id, 'escalated')}
+                                    onClick={() => handleUpdateIssueStatus(issue.tender_id, issue.id, 'ESCALATED')}
                                   >
                                     Escalate
                                   </Button>
@@ -2192,10 +2477,7 @@ export default function TendersPage() {
                                 <Button
                                   size="xs"
                                   variant="secondary"
-                                  onClick={() => {
-                                    const res = prompt('Enter resolution description:');
-                                    if (res) handleUpdateIssueStatus(issue.tender_id, issue.id, 'resolved', res);
-                                  }}
+                                  onClick={() => openResolveIssue(issue)}
                                 >
                                   Resolve
                                 </Button>
@@ -2228,7 +2510,7 @@ export default function TendersPage() {
             onCancel={() => setIsCreateOpen(false)}
             banner={
               actionError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
                   {actionError}
                 </div>
               )
@@ -2404,6 +2686,7 @@ export default function TendersPage() {
                         label="Est. Value (₹ Lakh)"
                         type="number"
                         step="0.01"
+                        min="0"
                         value={newTender.estimated_value_lakh}
                         onChange={(e) => setNewTender({ ...newTender, estimated_value_lakh: e.target.value })}
                         placeholder="e.g. 150.00"
@@ -2453,7 +2736,7 @@ export default function TendersPage() {
                         <option value="">-- Unassigned (None) --</option>
                         {users.map((u) => (
                           <option key={u.id} value={u.id}>
-                            {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                            {userWithRole(u)}
                           </option>
                         ))}
                       </Select>
@@ -2467,7 +2750,7 @@ export default function TendersPage() {
                         <option value="">-- Same as Assigned Person --</option>
                         {users.map((u) => (
                           <option key={u.id} value={u.id}>
-                            {u.full_name} ({u.role?.replace(/_/g, ' ')})
+                            {userWithRole(u)}
                           </option>
                         ))}
                       </Select>
@@ -2498,7 +2781,7 @@ export default function TendersPage() {
       >
         <form onSubmit={handleApproveSubmit} className="space-y-4">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
@@ -2566,7 +2849,7 @@ export default function TendersPage() {
       >
         <form onSubmit={handleTransitionSubmit} className="space-y-4">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
@@ -2612,198 +2895,212 @@ export default function TendersPage() {
       <Modal
         isOpen={isOutcomeOpen}
         onClose={() => setIsOutcomeOpen(false)}
-        title="Record Final Commercial Verdict (§26 Win/Loss Post-Mortem)"
-        description="Capture deep post-bid intelligence for win rate calculation and loss pattern root cause analysis."
-        maxWidth="lg"
+        title="Record Tender Outcome (§26)"
+        description={
+          selectedTender
+            ? [selectedTender.tender_number || selectedTender.tender_no, selectedTender.department || selectedTender.organisation_name].filter(Boolean).join(' · ')
+            : 'Won or lost, with the award or loss post-mortem, on one screen.'
+        }
+        maxWidth="2xl"
       >
-        <form onSubmit={handleOutcomeSubmit}>
-          <FormSteps
-            onCancel={() => setIsOutcomeOpen(false)}
-            banner={
-              actionError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-                  {actionError}
-                </div>
-              )
-            }
-            submit={
-              <Button type="submit" isLoading={isSubmitting}>
-                Save Commercial Verdict
-              </Button>
-            }
-            steps={[
-              {
-                title: 'Verdict',
-                icon: <Award />,
-                description: 'Did we win or lose, and when was the result declared?',
-                content: (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <Select
-                      label="Final Result"
-                      value={outcomeResult}
-                      onChange={(e) => setOutcomeResult(e.target.value as any)}
-                      options={[
-                        { value: 'won', label: 'WON - Order Awarded to Arihant (Ranked L1)' },
-                        { value: 'lost', label: 'LOST - Awarded to Competitor or Disqualified' },
-                      ]}
-                    />
-                    <Input
-                      label="Result Declaration Date"
-                      type="date"
-                      required
-                      max={istToday()}
-                      value={outcomeResultDate}
-                      onChange={(e) => setOutcomeResultDate(e.target.value)}
-                    />
-                  </div>
-                ),
-              },
-              {
-                title: 'Award',
-                icon: <CheckCircle2 />,
-                description: 'What was awarded, where, to whose credit, and for how much.',
-                hidden: outcomeResult !== 'won',
-                content: (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Select
-                        label="Awarded Product (§26)"
-                        value={outcomeProductId}
-                        onChange={(e) => setOutcomeProductId(e.target.value)}
-                        options={[
-                          { value: '', label: 'Select or retain assigned product...' },
-                          ...products.map((p) => ({ value: p.id, label: p.name })),
-                        ]}
-                      />
-                      <Select
-                        label="Tender Category (§26)"
-                        value={outcomeCategory}
-                        onChange={(e) => setOutcomeCategory(e.target.value)}
-                        options={[
-                          { value: 'pq', label: 'PQ - Pre-Qualification' },
-                          { value: 'general_mha', label: 'General / MHA' },
-                          { value: 'other', label: 'Other Opportunity' },
-                        ]}
-                      />
-                      <Select
-                        label="Award Region (§26)"
-                        value={outcomeRegionId}
-                        onChange={(e) => setOutcomeRegionId(e.target.value)}
-                        options={[
-                          { value: '', label: 'Select region...' },
-                          ...regionsMaster.map((r) => ({ value: r.id, label: `${r.name} (${r.zone_name || 'Zone'})` })),
-                        ]}
-                      />
-                      <Select
-                        label="Responsible Executive (§26)"
-                        value={outcomeResponsiblePersonId}
-                        onChange={(e) => setOutcomeResponsiblePersonId(e.target.value)}
-                        options={[
-                          { value: '', label: 'Select responsible person...' },
-                          ...users.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
-                        ]}
-                      />
-                    </div>
-                    <Input
-                      label="Final Contract Award Value (₹ Lakh)"
-                      type="number"
-                      step="0.01"
-                      value={outcomeValueLakh}
-                      onChange={(e) => setOutcomeValueLakh(e.target.value)}
-                      placeholder="e.g. 145.50"
-                    />
-                  </div>
-                ),
-              },
-              {
-                title: 'Loss Reason',
-                icon: <XCircle />,
-                description: 'The main reason we lost and who won instead.',
-                hidden: outcomeResult === 'won',
-                content: (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <Select
-                      label="Primary Structured Loss Reason (§26)"
-                      required
-                      value={outcomeLossReason}
-                      onChange={(e) => setOutcomeLossReason(e.target.value)}
-                      options={[
-                        { value: 'price', label: 'Price (Competitor underquoted L1)' },
-                        { value: 'competitor', label: 'Competitor advantage / preference' },
-                        { value: 'technical', label: 'Technical rejection / QR non-compliance' },
-                        { value: 'eligibility', label: 'Eligibility / Past experience shortfall' },
-                        { value: 'documentation', label: 'Documentation / Tender error / missed certificate' },
-                        { value: 'customer_decision', label: 'Customer cancellation / retender' },
-                        { value: 'other', label: 'Other reason' },
-                      ]}
-                    />
-                    <Input
-                      label="Winning Competitor Name (if known)"
-                      value={outcomeCompetitor}
-                      onChange={(e) => setOutcomeCompetitor(e.target.value)}
-                      placeholder="e.g. Falcon Security / BEL / MKU / Zicom"
-                    />
-                  </div>
-                ),
-              },
-              {
-                title: 'Root Causes',
-                icon: <AlertTriangle />,
-                description: 'Detailed post-mortem (§26). Fill in only the factors that applied.',
-                hidden: outcomeResult === 'won',
-                content: (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input
-                        label="Technical Issue (if applicable)"
-                        value={outcomeTechnicalIssue}
-                        onChange={(e) => setOutcomeTechnicalIssue(e.target.value)}
-                        placeholder="e.g. Lab trial QR shortfall"
-                      />
-                      <Input
-                        label="Pricing Issue / L1 Gap (if applicable)"
-                        value={outcomePricingIssue}
-                        onChange={(e) => setOutcomePricingIssue(e.target.value)}
-                        placeholder="e.g. Quoted ₹14.2L vs L1 ₹13.8L"
-                      />
-                      <Input
-                        label="Eligibility Shortfall (if applicable)"
-                        value={outcomeEligibilityIssue}
-                        onChange={(e) => setOutcomeEligibilityIssue(e.target.value)}
-                        placeholder="e.g. 3-yr turnover criteria"
-                      />
-                      <Input
-                        label="Documentation Issue (if applicable)"
-                        value={outcomeDocumentationIssue}
-                        onChange={(e) => setOutcomeDocumentationIssue(e.target.value)}
-                        placeholder="e.g. Missing OEM authorization"
-                      />
-                    </div>
-                    <Input
-                      label="Other Reason Notes (if applicable)"
-                      value={outcomeOtherReason}
-                      onChange={(e) => setOutcomeOtherReason(e.target.value)}
-                      placeholder="e.g. Buyer canceled tender due to budget re-allocation"
-                    />
-                  </div>
-                ),
-              },
-              {
-                title: 'Debrief',
-                icon: <FileText />,
-                description: 'What we learned from this result, for win-rate and loss-pattern analysis.',
-                content: (
+        {/* One screen: the verdict picks which section shows (award when won, loss post-mortem when lost). */}
+        <form onSubmit={handleOutcomeSubmit} className="space-y-5">
+          {actionError && (
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
+              {actionError}
+            </div>
+          )}
+
+          <FormSection title="Verdict" icon={<Award />} description="Did we win or lose, and when was the result declared?">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Select
+                label="Final Result"
+                value={outcomeResult}
+                onChange={(e) => setOutcomeResult(e.target.value as any)}
+                options={[
+                  { value: 'won', label: 'WON - Order Awarded to Arihant (Ranked L1)' },
+                  { value: 'lost', label: 'LOST - Awarded to Competitor or Disqualified' },
+                ]}
+              />
+              <Input
+                label="Result Declaration Date"
+                type="date"
+                required
+                min={outcomeMinResultDate && outcomeMinResultDate <= istToday() ? outcomeMinResultDate : undefined}
+                max={istToday()}
+                value={outcomeResultDate}
+                onChange={(e) => setOutcomeResultDate(e.target.value)}
+                helperText={outcomeMinResultDate ? `Bid closed ${formatTaskDate(outcomeMinResultDate)} — the result cannot be dated earlier.` : undefined}
+              />
+            </div>
+          </FormSection>
+
+          {outcomeResult === 'won' ? (
+            <FormSection title="Award" icon={<CheckCircle2 />} description="What was awarded, where, to whose credit, and for how much.">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Select
+                  label="Awarded Product (§26)"
+                  value={outcomeProductId}
+                  onChange={(e) => setOutcomeProductId(e.target.value)}
+                  options={[
+                    { value: '', label: 'Select or retain assigned product...' },
+                    ...products.map((p) => ({ value: p.id, label: p.name })),
+                  ]}
+                />
+                <Select
+                  label="Tender Category (§26)"
+                  value={outcomeCategory}
+                  onChange={(e) => setOutcomeCategory(e.target.value)}
+                  options={[
+                    { value: 'pq', label: 'PQ - Pre-Qualification' },
+                    { value: 'general_mha', label: 'General / MHA' },
+                    { value: 'other', label: 'Other Opportunity' },
+                  ]}
+                />
+                <Select
+                  label="Award Region (§26)"
+                  value={outcomeRegionId}
+                  onChange={(e) => setOutcomeRegionId(e.target.value)}
+                  options={[
+                    { value: '', label: 'Select region...' },
+                    ...regionsMaster.map((r) => ({ value: r.id, label: `${r.name} (${r.zone_name || 'Zone'})` })),
+                  ]}
+                />
+                <Select
+                  label="Responsible Executive (§26)"
+                  value={outcomeResponsiblePersonId}
+                  onChange={(e) => setOutcomeResponsiblePersonId(e.target.value)}
+                  options={[
+                    { value: '', label: 'Select responsible person...' },
+                    ...users.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
+                  ]}
+                />
+                <Input
+                  label="Final Contract Award Value (₹ Lakh)"
+                  type="number"
+                  step="0.01"
+                  value={outcomeValueLakh}
+                  onChange={(e) => setOutcomeValueLakh(e.target.value)}
+                  placeholder="e.g. 145.50"
+                />
+              </div>
+            </FormSection>
+          ) : (
+            <FormSection title="Loss Post-Mortem" icon={<XCircle />} description="The main reason we lost, who won, and the factors that applied (§26).">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Select
+                  label="Primary Structured Loss Reason (§26)"
+                  required
+                  value={outcomeLossReason}
+                  onChange={(e) => setOutcomeLossReason(e.target.value)}
+                  options={[
+                    { value: 'price', label: 'Price (Competitor underquoted L1)' },
+                    { value: 'competitor', label: 'Competitor advantage / preference' },
+                    { value: 'technical', label: 'Technical rejection / QR non-compliance' },
+                    { value: 'eligibility', label: 'Eligibility / Past experience shortfall' },
+                    { value: 'documentation', label: 'Documentation / Tender error / missed certificate' },
+                    { value: 'customer_decision', label: 'Customer cancellation / retender' },
+                    { value: 'other', label: 'Other reason' },
+                  ]}
+                />
+                <Input
+                  label="Winning Competitor Name (if known)"
+                  value={outcomeCompetitor}
+                  onChange={(e) => setOutcomeCompetitor(e.target.value)}
+                  placeholder="e.g. Falcon Security / BEL / MKU / Zicom"
+                />
+                <Input
+                  label="Technical Issue (if applicable)"
+                  value={outcomeTechnicalIssue}
+                  onChange={(e) => setOutcomeTechnicalIssue(e.target.value)}
+                  placeholder="e.g. Lab trial QR shortfall"
+                />
+                <Input
+                  label="Pricing Issue / L1 Gap (if applicable)"
+                  value={outcomePricingIssue}
+                  onChange={(e) => setOutcomePricingIssue(e.target.value)}
+                  placeholder="e.g. Quoted ₹14.2L vs L1 ₹13.8L"
+                />
+                <Input
+                  label="Eligibility Shortfall (if applicable)"
+                  value={outcomeEligibilityIssue}
+                  onChange={(e) => setOutcomeEligibilityIssue(e.target.value)}
+                  placeholder="e.g. 3-yr turnover criteria"
+                />
+                <Input
+                  label="Documentation Issue (if applicable)"
+                  value={outcomeDocumentationIssue}
+                  onChange={(e) => setOutcomeDocumentationIssue(e.target.value)}
+                  placeholder="e.g. Missing OEM authorization"
+                />
+                <div className="sm:col-span-2">
                   <Input
-                    label="Outcome Intelligence Remarks"
-                    value={outcomeRemarks}
-                    onChange={(e) => setOutcomeRemarks(e.target.value)}
-                    placeholder="e.g. Debrief completed with DIG communication officer."
-                    required
+                    label="Other Reason Notes (if applicable)"
+                    value={outcomeOtherReason}
+                    onChange={(e) => setOutcomeOtherReason(e.target.value)}
+                    placeholder="e.g. Buyer canceled tender due to budget re-allocation"
                   />
-                ),
-              },
-            ]}
+                </div>
+              </div>
+            </FormSection>
+          )}
+
+          <FormSection title="Debrief" icon={<FileText />} description="What we learned from this result, for win-rate and loss-pattern analysis.">
+            <Input
+              label="Outcome Intelligence Remarks"
+              value={outcomeRemarks}
+              onChange={(e) => setOutcomeRemarks(e.target.value)}
+              placeholder="e.g. Debrief completed with DIG communication officer."
+              required
+            />
+          </FormSection>
+
+          {/* pinned to the bottom of the dialog so Save never sits below the fold on a phone */}
+          <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setIsOutcomeOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" isLoading={isSubmitting}>
+              Save Outcome
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ========================================================================= */}
+      {/* Resolve Portal Issue Modal (§25): in-app resolution notes */}
+      {/* ========================================================================= */}
+      <Modal
+        isOpen={Boolean(issueToResolve)}
+        onClose={() => setIssueToResolve(null)}
+        title="Resolve Portal Issue"
+        description={
+          issueToResolve
+            ? [issueToResolve.tender_number || issueToResolve.tender_no, issueToResolve.issue].filter(Boolean).join(' · ')
+            : undefined
+        }
+        maxWidth="md"
+      >
+        <form onSubmit={handleResolveIssue} className="space-y-4">
+          {resolveError && (
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">{resolveError}</div>
+          )}
+          <Textarea
+            label="Resolution Notes"
+            required
+            rows={3}
+            value={resolutionNotes}
+            onChange={(e) => setResolutionNotes(e.target.value)}
+            placeholder="e.g. GeM desk added the category; bid uploaded successfully. Ticket #88412 closed."
           />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setIssueToResolve(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" variant="success" isLoading={isResolving}>
+              Mark Resolved
+            </Button>
+          </div>
         </form>
       </Modal>
 
@@ -2823,24 +3120,25 @@ export default function TendersPage() {
             <span><strong>Notice:</strong> BOS records the issue only; portal functionality is outside BOS scope.</span>
           </div>
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
 
           <FormSection title="Issue" icon={<AlertOctagon />} description="Which tender, when it happened, and what went wrong.">
-            {!selectedTender && (
-              <Select
-                label="Affected Tender (§25)"
-                required
-                value={issueTenderId}
-                onChange={(e) => setIssueTenderId(e.target.value)}
-                options={tenders.map((t) => ({
+            <Select
+              label="Affected Tender (§25)"
+              required
+              value={issueTenderId}
+              onChange={(e) => setIssueTenderId(e.target.value)}
+              options={[
+                { value: '', label: 'Select the affected tender...' },
+                ...tenders.map((t) => ({
                   value: t.id,
                   label: `${t.tender_number || t.tender_no} - ${t.department || t.organisation_name || 'Tender'}`,
-                }))}
-              />
-            )}
+                })),
+              ]}
+            />
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
@@ -2928,6 +3226,16 @@ export default function TendersPage() {
           fetchDashboardStats();
           fetchReports();
         }}
+        // closes the dossier first so the outcome form is the only pop-up on screen
+        onRecordOutcome={
+          canRecordOutcome
+            ? (t) => {
+                setIsDossierOpen(false);
+                setDossierTenderId(null);
+                openOutcomeModal(t);
+              }
+            : undefined
+        }
       />
 
       {/* ========================================================================= */}

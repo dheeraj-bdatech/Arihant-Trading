@@ -1,4 +1,4 @@
-import { todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Inject,
 } from '@nestjs/common';
+import type { Transaction } from 'kysely';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
@@ -14,13 +15,35 @@ import { AppEvents } from '../../common/events/event-names.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { assertRegionScope } from '../../common/utils/scope.util.js';
 import { LeadWorkflowService } from './leads.workflow.js';
-import type { Database, AuthUser, PaginatedResult, LeadStatus, LeadCategory, LeadType } from '@arihant/shared';
+import { organisationScope } from '../organisations/organisation-scope.js';
+import {
+  cleanOrgText,
+  isOrgDuplicateError,
+  orgDedupeLockKey,
+  orgDuplicateConflict,
+  sameOrgNameAndCity,
+} from '../organisations/organisation-dedupe.js';
+import { resolveLocation } from '../organisations/india-geo.js';
+import { CLOSED_LEAD_STATUSES } from '@arihant/shared';
+import type { Database, AuthUser, PaginatedResult, LeadStatus, LeadCategory, LeadType, UserRole } from '@arihant/shared';
 import type {
   CreateLeadDto,
   UpdateLeadDto,
   ChangeLeadStatusDto,
   AssignLeadDto,
 } from './leads.dto.js';
+
+/** Roles a lead may be owned by: the field sales team and Regional Managers (QA DEF-060). */
+const LEAD_OWNER_ROLES: UserRole[] = ['sales', 'regional_manager'];
+/** Closed lead statuses as a SQL text[] parameter (see CLOSED_LEAD_STATUSES). */
+const CLOSED_STATUS_LIST: string[] = [...CLOSED_LEAD_STATUSES];
+/** Roles that may supervise a lead as its Regional Manager. */
+const LEAD_RM_ROLES: UserRole[] = ['regional_manager', 'management'];
+/** A double-submitted form arrives within this window; the second request returns the lead the first one created. */
+const DUPLICATE_SUBMIT_WINDOW_SECONDS = 30;
+
+/** Mobile number as stored: the 10-digit national number (spaces, hyphens and the +91 / 0 prefix removed). */
+const normaliseMobile = (mobile: string) => mobile.replace(/\D/g, '').slice(-10);
 
 @Injectable()
 export class LeadsService {
@@ -66,7 +89,7 @@ export class LeadsService {
       .leftJoin('regions', 'organisations.region_id', 'regions.id')
       .leftJoin('zones', 'organisations.zone_id', 'zones.id');
 
-    // Role territory scoping
+    // Role territory scoping — a Regional Manager also sees the leads of their direct reports (scope ⊇ team)
     if (user.role === 'sales') {
       baseQuery = baseQuery.where('leads.assigned_to', '=', user.id);
     } else if (user.role === 'regional_manager') {
@@ -76,6 +99,7 @@ export class LeadsService {
             eb('organisations.region_id', '=', user.region_id),
             eb('leads.regional_manager_id', '=', user.id),
             eb('leads.assigned_to', '=', user.id),
+            eb('assignee.reporting_manager_id', '=', user.id),
           ]),
         );
       }
@@ -334,6 +358,7 @@ export class LeadsService {
         'contacts.designation as contact_designation',
         'assignee.full_name as assignee_name',
         'assignee.full_name as assigned_salesperson_name',
+        'assignee.reporting_manager_id as assignee_reporting_manager_id',
         'rm.full_name as regional_manager_name',
         'regions.name as region_name',
         'zones.name as zone_name',
@@ -350,7 +375,11 @@ export class LeadsService {
     }
 
     if (user.role === 'regional_manager') {
-      if (lead.regional_manager_id !== user.id && lead.assigned_to !== user.id) {
+      if (
+        lead.regional_manager_id !== user.id &&
+        lead.assigned_to !== user.id &&
+        lead.assignee_reporting_manager_id !== user.id
+      ) {
         assertRegionScope(user, lead.region_id, lead.zone_id);
       }
     }
@@ -470,7 +499,11 @@ export class LeadsService {
       .execute();
 
     const currentStatus = (lead.lead_status || lead.status || 'new').toLowerCase();
-    const allowedTransitions = this.workflowService.getAllowedTransitions(currentStatus);
+    const allowedTransitions = this.workflowService.getAllowedTransitions(
+      currentStatus,
+      user.role,
+      await this.hasReachedCommercialStage(id),
+    );
     const lastInteraction = interactions[0];
     const nextFollowUp = followUps[0];
 
@@ -489,24 +522,169 @@ export class LeadsService {
     };
   }
 
-  async create(dto: CreateLeadDto, user: AuthUser) {
-    if (!dto.organisation_id && !dto.organisation_name?.trim()) {
-      throw new BadRequestException('Organisation ID or Organisation Name is required');
+  /**
+   * True once the lead has been through a commercial stage (proposal / tender discussion / negotiation) — recorded
+   * by changeStatus as an interaction outcome "Stage progressed from X to Y" — or has a proposal raised against it.
+   * Unlocks negotiation / conversion from the follow-up, demo and on-hold side stages (QA DEF-097).
+   */
+  private async hasReachedCommercialStage(leadId: string): Promise<boolean> {
+    const stage = await this.db
+      .selectFrom('interactions')
+      .select('id')
+      .where('lead_id', '=', leadId)
+      .where(sql<boolean>`outcome ~ ' to (proposal|tender_discussion|negotiation)$'`)
+      .executeTakeFirst();
+    if (stage) return true;
+    const proposal = await this.db
+      .selectFrom('proposals')
+      .select('id')
+      .where('lead_id', '=', leadId)
+      .where('is_deleted', '=', false)
+      .executeTakeFirst();
+    return Boolean(proposal);
+  }
+
+  /**
+   * Calendar rules for a lead's dates, all in IST (QA DEF-057, DEF-058): the last interaction cannot be in the future,
+   * and the next follow-up must be today or later and not before the last interaction.
+   */
+  private assertLeadDates(lastInteractionDate: string | null, nextFollowupDate: string | null) {
+    const today = todayInKolkata();
+    const last = calendarDay(lastInteractionDate);
+    const next = calendarDay(nextFollowupDate);
+    if (last && last > today) {
+      throw new BadRequestException('Last interaction date cannot be in the future.');
+    }
+    if (next && next < today) {
+      throw new BadRequestException('Next follow-up date cannot be in the past — choose today or a later date.');
+    }
+    if (next && last && next < last) {
+      throw new BadRequestException('Next follow-up date cannot be before the last interaction date.');
+    }
+  }
+
+  /**
+   * Who may own / supervise a new lead (QA DEF-060, DEF-100):
+   * - sales            → only themselves;
+   * - regional_manager → themselves or an active salesperson in their team / region;
+   * - management/admin → any active salesperson or Regional Manager (or themselves).
+   * The Regional Manager must be an active Regional Manager (or management); by default it is the owner's manager.
+   */
+  private async resolveLeadOwnership(dto: { assigned_to?: string; regional_manager_id?: string }, user: AuthUser) {
+    const assignedTo = dto.assigned_to || user.id;
+    if (user.role === 'sales' && assignedTo !== user.id) {
+      throw new ForbiddenException('Sales executives can register leads only in their own name.');
     }
 
-    // 1. Resolve assigned salesperson and regional manager
-    const assignedTo = dto.assigned_to || user.id;
     const assignee = await this.db
       .selectFrom('users')
-      .select(['id', 'full_name', 'reporting_manager_id', 'region_id', 'is_active'])
+      .select(['id', 'full_name', 'role', 'reporting_manager_id', 'region_id', 'is_active'])
       .where('id', '=', assignedTo)
       .executeTakeFirst();
-
-    if (!assignee) {
-      throw new BadRequestException(`Assigned salesperson with id '${assignedTo}' does not exist.`);
+    if (!assignee || !assignee.is_active) {
+      throw new BadRequestException('The selected salesperson does not exist or is inactive.');
+    }
+    if (assignee.id !== user.id && !LEAD_OWNER_ROLES.includes(assignee.role as UserRole)) {
+      throw new BadRequestException(`${assignee.full_name} is not in the sales team — a lead can be assigned only to a salesperson or Regional Manager.`);
+    }
+    if (
+      user.role === 'regional_manager' &&
+      assignee.id !== user.id &&
+      assignee.reporting_manager_id !== user.id &&
+      (!user.region_id || assignee.region_id !== user.region_id)
+    ) {
+      throw new ForbiddenException(`${assignee.full_name} is not in your team — assign the lead to one of your salespeople.`);
     }
 
     const rmId = dto.regional_manager_id || assignee.reporting_manager_id || null;
+    if (dto.regional_manager_id) {
+      const rm = await this.db
+        .selectFrom('users')
+        .select(['id', 'full_name', 'role', 'is_active'])
+        .where('id', '=', dto.regional_manager_id)
+        .executeTakeFirst();
+      if (!rm || !rm.is_active || !LEAD_RM_ROLES.includes(rm.role as UserRole)) {
+        throw new BadRequestException('The selected Regional Manager is not an active Regional Manager.');
+      }
+    }
+
+    return { assignedTo, rmId };
+  }
+
+  /**
+   * A lead registered against an EXISTING account only completes it: location / territory / sector / department
+   * that the account does not have yet are taken from the form, but values already on the account are never
+   * overwritten by the rep's entry (the account register is the source of truth, Module 1 §3.1).
+   * A city is not filled in when it would turn the account into a duplicate of another unit of the same name.
+   */
+  private async fillEmptyOrganisationFields(
+    trx: Transaction<Database>,
+    org: {
+      id: string;
+      name: string;
+      city: string | null;
+      state: string | null;
+      zone_id: string | null;
+      region_id: string | null;
+      sector: string | null;
+      department: string | null;
+    },
+    location: { city: string | null; state: string | null } | null,
+    dto: CreateLeadDto,
+  ) {
+    const updates: Record<string, unknown> = {};
+    if (location?.city && !org.city?.trim() && (!org.state || !location.state || org.state === location.state)) {
+      const clash = await trx
+        .selectFrom('organisations')
+        .select('id')
+        .where('id', '<>', org.id)
+        .where(sameOrgNameAndCity(org.name, location.city))
+        .executeTakeFirst();
+      if (!clash) updates.city = location.city;
+    }
+    if (location?.state && !org.state?.trim()) updates.state = location.state;
+    if (dto.zone_id && !org.zone_id) updates.zone_id = dto.zone_id;
+    if (dto.region_id && !org.region_id) updates.region_id = dto.region_id;
+    if (dto.sector?.trim() && !org.sector?.trim()) updates.sector = dto.sector.trim();
+    if (dto.department?.trim() && !org.department?.trim()) updates.department = dto.department.trim();
+
+    if (Object.keys(updates).length > 0) {
+      await trx
+        .updateTable('organisations')
+        .set({ ...updates, updated_at: new Date() })
+        .where('id', '=', org.id)
+        .execute();
+    }
+  }
+
+  async create(dto: CreateLeadDto, user: AuthUser) {
+    if (!dto.organisation_id && !dto.organisation_name?.trim()) {
+      throw new BadRequestException('Organisation name is required');
+    }
+
+    // A new lead starts at the beginning of the lifecycle; later stages are reached through it (QA DEF-059)
+    const requestedStatus = (dto.lead_status || dto.status || 'new').toLowerCase();
+    if (!this.workflowService.INITIAL_STATUSES.includes(requestedStatus)) {
+      throw new BadRequestException(
+        'A new lead can only be registered as New, Contacted or Qualified. Use the lifecycle actions on the lead to progress it further.',
+      );
+    }
+
+    this.assertLeadDates(dto.last_interaction_date || todayInKolkata(), dto.next_followup_date || null);
+
+    // Location: valid state, and a well-known city must sit in that state (QA DEF-099)
+    let location: { city: string | null; state: string | null } | null = null;
+    if (dto.city !== undefined || dto.state !== undefined) {
+      const resolved = resolveLocation(dto.city, dto.state);
+      if (resolved.error) {
+        throw new BadRequestException(resolved.error);
+      }
+      location = resolved;
+    }
+
+    // 1. Resolve assigned salesperson and regional manager
+    const { assignedTo, rmId } = await this.resolveLeadOwnership(dto, user);
+    const contactMobile = dto.contact_mobile?.trim() ? normaliseMobile(dto.contact_mobile) : null;
 
     // 2. Resolve primary product ID and product list
     const productIds = new Set<string>();
@@ -518,7 +696,7 @@ export class LeadsService {
     }
     const primaryProductId = dto.product_id || (productIds.size > 0 ? Array.from(productIds)[0] : null);
 
-    const leadStatus = (dto.lead_status || dto.status || 'new').toLowerCase() as LeadStatus;
+    const leadStatus = requestedStatus as LeadStatus;
     const initialStatus = leadStatus;
 
     const lastInteractionDate = dto.last_interaction_date || todayInKolkata();
@@ -526,15 +704,58 @@ export class LeadsService {
     const nextFollowupDate = dto.next_followup_date || null;
     const nextFollowupAt = nextFollowupDate ? new Date(nextFollowupDate) : null;
 
+    const valueLakh =
+      dto.value_lakh !== undefined && dto.value_lakh !== null
+        ? dto.value_lakh
+        : dto.estimated_value_lakh !== undefined && dto.estimated_value_lakh !== null
+        ? dto.estimated_value_lakh
+        : dto.estimated_value !== undefined && dto.estimated_value !== null
+        ? Number(dto.estimated_value) > 1000
+          ? Number(dto.estimated_value) / 100000
+          : Number(dto.estimated_value)
+        : null;
+
     // 3. Execute within a transactional boundary
+    let duplicateOf: string | null = null;
+    const typedOrgName = cleanOrgText(dto.organisation_name);
+    const orgCity = location?.city ?? null;
     const result = await this.db.transaction().execute(async (trx) => {
       let orgId = dto.organisation_id;
-      let orgName = dto.organisation_name?.trim() || '';
+      let orgName = typedOrgName;
+
+      // Serialise registrations for the same account so a double-clicked submit (QA DEF-012) or two people typing the
+      // same new organisation cannot create two leads / two organisations side by side.
+      const lockKey = `lead-create:${orgId || orgDedupeLockKey(orgName, orgCity)}`;
+      await sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`.execute(trx);
+
+      // The same user registering the same opportunity again within a few seconds is a repeated submit: hand back the
+      // lead the first request created instead of a second copy.
+      const recent = await trx
+        .selectFrom('leads')
+        .innerJoin('organisations', 'leads.organisation_id', 'organisations.id')
+        .select('leads.id')
+        .where('leads.assigned_to', '=', assignedTo)
+        .where(sql<boolean>`leads.created_at > now() - make_interval(secs => ${DUPLICATE_SUBMIT_WINDOW_SECONDS})`)
+        .where((eb) =>
+          orgId
+            ? eb('leads.organisation_id', '=', orgId)
+            : sameOrgNameAndCity(orgName, orgCity),
+        )
+        .where(sql<boolean>`leads.product_id is not distinct from ${primaryProductId}::uuid`)
+        .where(sql<boolean>`leads.value_lakh is not distinct from ${valueLakh}::numeric`)
+        .where(sql<boolean>`leads.next_followup_date is not distinct from ${nextFollowupDate}::date`)
+        .where(sql<boolean>`leads.remarks is not distinct from ${dto.remarks || null}::text`)
+        .orderBy('leads.created_at', 'desc')
+        .executeTakeFirst();
+      if (recent) {
+        duplicateOf = recent.id;
+        return null;
+      }
 
       if (orgId) {
         const existingOrg = await trx
           .selectFrom('organisations')
-          .select(['id', 'name', 'region_id', 'zone_id', 'city', 'state', 'sector'])
+          .selectAll()
           .where('id', '=', orgId)
           .executeTakeFirst();
 
@@ -542,56 +763,31 @@ export class LeadsService {
           throw new NotFoundException(`Organisation with id '${orgId}' not found`);
         }
         orgName = existingOrg.name;
-
-        // Optionally update missing location/sector/department fields if passed
-        const orgUpdates: any = {};
-        if (dto.city && (!existingOrg.city || existingOrg.city !== dto.city.trim())) orgUpdates.city = dto.city.trim();
-        if (dto.state && (!existingOrg.state || existingOrg.state !== dto.state.trim())) orgUpdates.state = dto.state.trim();
-        if (dto.zone_id && (!existingOrg.zone_id || existingOrg.zone_id !== dto.zone_id)) orgUpdates.zone_id = dto.zone_id;
-        if (dto.region_id && (!existingOrg.region_id || existingOrg.region_id !== dto.region_id)) orgUpdates.region_id = dto.region_id;
-        if (dto.sector && (!existingOrg.sector || existingOrg.sector !== dto.sector.trim())) orgUpdates.sector = dto.sector.trim();
-        if (dto.department && (!(existingOrg as any).department || (existingOrg as any).department !== dto.department.trim())) {
-          orgUpdates.department = dto.department.trim();
-        }
-
-        if (Object.keys(orgUpdates).length > 0) {
-          orgUpdates.updated_at = new Date();
-          await trx.updateTable('organisations').set(orgUpdates).where('id', '=', orgId).execute();
-        }
+        await this.fillEmptyOrganisationFields(trx, existingOrg, location, dto);
       } else {
-        // Find existing by name (case-insensitive deduplication) or create new
+        // Find the existing account by name + city (case / spacing-insensitive deduplication) or create a new one
         const existingOrg = await trx
           .selectFrom('organisations')
           .selectAll()
-          .where(sql<boolean>`lower(trim(name)) = lower(trim(${orgName}))`)
+          .where(sameOrgNameAndCity(orgName, orgCity))
+          .orderBy('created_at', 'asc')
           .executeTakeFirst();
 
         if (existingOrg) {
           orgId = existingOrg.id;
           orgName = existingOrg.name;
-
-          // Update missing or passed location/sector/department fields if passed
-          const orgUpdates: any = {};
-          if (dto.city && (!existingOrg.city || existingOrg.city !== dto.city.trim())) orgUpdates.city = dto.city.trim();
-          if (dto.state && (!existingOrg.state || existingOrg.state !== dto.state.trim())) orgUpdates.state = dto.state.trim();
-          if (dto.zone_id && (!existingOrg.zone_id || existingOrg.zone_id !== dto.zone_id)) orgUpdates.zone_id = dto.zone_id;
-          if (dto.region_id && (!existingOrg.region_id || existingOrg.region_id !== dto.region_id)) orgUpdates.region_id = dto.region_id;
-          if (dto.sector && (!existingOrg.sector || existingOrg.sector !== dto.sector.trim())) orgUpdates.sector = dto.sector.trim();
-          if (dto.department && (!(existingOrg as any).department || (existingOrg as any).department !== dto.department.trim())) {
-            orgUpdates.department = dto.department.trim();
-          }
-
-          if (Object.keys(orgUpdates).length > 0) {
-            orgUpdates.updated_at = new Date();
-            await trx.updateTable('organisations').set(orgUpdates).where('id', '=', orgId).execute();
-          }
+          await this.fillEmptyOrganisationFields(trx, existingOrg, location, dto);
         } else {
+          // A brand-new account must name the officer the opportunity is with (QA DEF-056)
+          if (!dto.primary_contact_id && !dto.contact_name?.trim()) {
+            throw new BadRequestException('Contact person name is required for a new organisation.');
+          }
           const newOrg = await trx
             .insertInto('organisations')
             .values({
               name: orgName,
-              city: dto.city?.trim() || null,
-              state: dto.state?.trim() || null,
+              city: location?.city || null,
+              state: location?.state || null,
               zone_id: dto.zone_id || null,
               region_id: dto.region_id || null,
               sector: dto.sector?.trim() || null,
@@ -620,7 +816,7 @@ export class LeadsService {
         }
         const contactUpdates: any = {};
         if (dto.contact_designation && contact.designation !== dto.contact_designation.trim()) contactUpdates.designation = dto.contact_designation.trim();
-        if (dto.contact_mobile && contact.mobile !== dto.contact_mobile.trim()) contactUpdates.mobile = dto.contact_mobile.trim();
+        if (contactMobile && contact.mobile !== contactMobile) contactUpdates.mobile = contactMobile;
         if (dto.contact_email && contact.email !== dto.contact_email.trim()) contactUpdates.email = dto.contact_email.trim();
         if (Object.keys(contactUpdates).length > 0) {
           await trx.updateTable('contacts').set(contactUpdates).where('id', '=', contactId).execute();
@@ -637,7 +833,7 @@ export class LeadsService {
           contactId = existingContact.id;
           const contactUpdates: any = {};
           if (dto.contact_designation && existingContact.designation !== dto.contact_designation.trim()) contactUpdates.designation = dto.contact_designation.trim();
-          if (dto.contact_mobile && existingContact.mobile !== dto.contact_mobile.trim()) contactUpdates.mobile = dto.contact_mobile.trim();
+          if (contactMobile && existingContact.mobile !== contactMobile) contactUpdates.mobile = contactMobile;
           if (dto.contact_email && existingContact.email !== dto.contact_email.trim()) contactUpdates.email = dto.contact_email.trim();
           if (Object.keys(contactUpdates).length > 0) {
             await trx.updateTable('contacts').set(contactUpdates).where('id', '=', contactId).execute();
@@ -649,7 +845,7 @@ export class LeadsService {
               organisation_id: orgId,
               full_name: dto.contact_name.trim(),
               designation: dto.contact_designation?.trim() || null,
-              mobile: dto.contact_mobile?.trim() || null,
+              mobile: contactMobile,
               email: dto.contact_email?.trim() || null,
               is_primary: true,
             })
@@ -707,16 +903,7 @@ export class LeadsService {
           qty: dto.qty || null,
           quot_price: dto.quot_price || null,
           order_price: dto.order_price || null,
-          value_lakh:
-            dto.value_lakh !== undefined && dto.value_lakh !== null
-              ? dto.value_lakh
-              : dto.estimated_value_lakh !== undefined && dto.estimated_value_lakh !== null
-              ? dto.estimated_value_lakh
-              : dto.estimated_value !== undefined && dto.estimated_value !== null
-              ? Number(dto.estimated_value) > 1000
-                ? Number(dto.estimated_value) / 100000
-                : Number(dto.estimated_value)
-              : null,
+          value_lakh: valueLakh,
           booking_month: dto.booking_month || null,
           billing_month: dto.billing_month || null,
           order_status: dto.order_status || null,
@@ -811,7 +998,15 @@ export class LeadsService {
       }
 
       return lead;
+    }).catch((err) => {
+      // Two registrations racing to create the same name + city account (QA DEF-012): a friendly 409, not raw SQL detail
+      if (isOrgDuplicateError(err)) throw orgDuplicateConflict(typedOrgName, orgCity);
+      throw err;
     });
+
+    if (!result) {
+      return this.findOne(duplicateOf!, user);
+    }
 
     this.outboxService.triggerImmediate();
 
@@ -828,6 +1023,23 @@ export class LeadsService {
 
   async update(id: string, dto: UpdateLeadDto, user: AuthUser) {
     const existing = await this.findOne(id, user);
+
+    // The stage only moves through the lifecycle (PATCH /leads/:id/status), never through a plain edit
+    const currentStatus = (existing.lead_status || existing.status || 'new').toLowerCase();
+    const editedStatus = (dto.lead_status || dto.status || '').toLowerCase();
+    if (editedStatus && editedStatus !== currentStatus) {
+      throw new BadRequestException("Use the lead's lifecycle actions to change its stage.");
+    }
+    // Ownership only changes through reassignment (PATCH /leads/:id/assign), which records the history
+    if (
+      (dto.assigned_to && dto.assigned_to !== existing.assigned_to) ||
+      (dto.regional_manager_id && dto.regional_manager_id !== existing.regional_manager_id)
+    ) {
+      throw new BadRequestException('Use Reassign to change the salesperson or Regional Manager of a lead.');
+    }
+    if (dto.next_followup_date) {
+      this.assertLeadDates(existing.last_contact_date ? calendarDay(existing.last_contact_date as any) : null, dto.next_followup_date);
+    }
 
     const { estimated_value_lakh, estimated_value, ...cleanDto } = dto;
     const resolvedValueLakh =
@@ -874,7 +1086,23 @@ export class LeadsService {
     const toStatus = dto.status.toLowerCase();
 
     // 1. Validate transition
-    this.workflowService.validateTransition(fromStatus, toStatus, user.role, dto.loss_reason);
+    this.workflowService.validateTransition(fromStatus, toStatus, user.role, dto.loss_reason, {
+      commercialStageReached: await this.hasReachedCommercialStage(id),
+      poReference: dto.po_reference,
+    });
+    // CONVERTED and legacy WON are both wins: same PO / order date / order value handling
+    const isWin = this.workflowService.isWinStatus(toStatus);
+    if (isWin && dto.order_date && calendarDay(dto.order_date)! > todayInKolkata()) {
+      throw new BadRequestException('Order date cannot be in the future.');
+    }
+    const poReference = dto.po_reference?.trim() || null;
+    const winDetails =
+      isWin
+        ? ` Won on PO / supply order ${poReference}${dto.order_date ? ` dated ${dto.order_date}` : ''}${
+            dto.order_value_lakh ? ` for ₹${dto.order_value_lakh} Lakh` : ''
+          }.`
+        : '';
+    const lossDetails = toStatus === 'lost' && dto.loss_remarks?.trim() ? ` ${dto.loss_remarks.trim()}` : '';
 
     // 2. Execute transition in transaction
     const result = await this.db.transaction().execute(async (trx) => {
@@ -884,6 +1112,10 @@ export class LeadsService {
           lead_status: toStatus as LeadStatus,
           status: toStatus,
           loss_reason: toStatus === 'lost' ? (dto.loss_reason as any) : null,
+          // Win details on the lead (Module 1 §6); the order value / date go to the interaction ledger and audit log
+          ...(isWin
+            ? { order_status: `PO Received — ${poReference}` }
+            : {}),
           last_interaction_at: new Date(),
           updated_at: new Date(),
         })
@@ -901,9 +1133,9 @@ export class LeadsService {
           type: toStatus === 'demo' ? 'demo' : toStatus === 'proposal' ? 'proposal' : 'follow_up',
           employee_id: user.id,
           occurred_on: todayInKolkata(),
-          remarks: `Status updated to ${toStatus.toUpperCase()}${dto.loss_reason ? ` (Reason: ${dto.loss_reason})` : ''}. ${dto.remarks || ''}`.trim(),
+          remarks: `Status updated to ${toStatus.toUpperCase()}${dto.loss_reason ? ` (Reason: ${dto.loss_reason})` : ''}.${lossDetails}${winDetails} ${dto.remarks || ''}`.trim(),
           outcome: `Stage progressed from ${fromStatus} to ${toStatus}`,
-          next_action: toStatus === 'converted' ? 'Initiate customer onboarding and proposal fulfillment' : null,
+          next_action: isWin ? 'Initiate customer onboarding and proposal fulfillment' : null,
         })
         .execute();
 
@@ -948,6 +1180,28 @@ export class LeadsService {
         }
       }
 
+      // A lost lead has nothing left to follow up: its pending follow-ups are cancelled (QA DEF-096)
+      if (toStatus === 'lost' || toStatus === 'dropped') {
+        const cancelled = await trx
+          .updateTable('follow_ups')
+          .set({
+            status: 'cancelled',
+            remarks: sql<string>`trim(coalesce(remarks, '') || ${`\nCancelled: lead marked ${toStatus.toUpperCase()}${dto.loss_reason ? ` (${dto.loss_reason})` : ''}`})`,
+            updated_at: new Date(),
+          })
+          .where('lead_id', '=', id)
+          .where('status', '=', 'pending')
+          .returning('id')
+          .execute();
+        if (cancelled.length > 0) {
+          await trx
+            .updateTable('leads')
+            .set({ next_followup_at: null, next_followup_date: null })
+            .where('id', '=', id)
+            .execute();
+        }
+      }
+
       // Domain Event: LeadStatusChanged
       await this.outboxService.queueEvent(trx, {
         eventType: AppEvents.LEAD_STATUS_CHANGED,
@@ -967,7 +1221,7 @@ export class LeadsService {
       });
 
       // Special Domain Events
-      if (toStatus === 'converted') {
+      if (isWin) {
         await this.outboxService.queueEvent(trx, {
           eventType: AppEvents.LEAD_CONVERTED,
           aggregateType: 'LEAD',
@@ -977,7 +1231,9 @@ export class LeadsService {
             leadId: id,
             organisationId: lead.organisation_id,
             assignedTo: lead.assigned_to,
-            valueLakh: lead.value_lakh,
+            valueLakh: dto.order_value_lakh ?? lead.value_lakh,
+            poReference,
+            orderDate: dto.order_date || null,
           },
         });
       } else if (toStatus === 'lost') {
@@ -1006,7 +1262,11 @@ export class LeadsService {
       entityId: id,
       action: 'status_change',
       previousValue: { status: fromStatus },
-      newValue: { status: toStatus, loss_reason: dto.loss_reason },
+      newValue: {
+        status: toStatus,
+        loss_reason: dto.loss_reason,
+        ...(isWin ? { po_reference: poReference, order_value_lakh: dto.order_value_lakh, order_date: dto.order_date } : {}),
+      },
     });
 
     return result;
@@ -1168,7 +1428,8 @@ export class LeadsService {
   async getDashboard(user: AuthUser) {
     let baseLeads = this.db
       .selectFrom('leads')
-      .leftJoin('organisations', 'leads.organisation_id', 'organisations.id');
+      .leftJoin('organisations', 'leads.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'leads.assigned_to', 'assignee.id');
 
     if (user.role === 'sales') {
       baseLeads = baseLeads.where('leads.assigned_to', '=', user.id);
@@ -1178,6 +1439,7 @@ export class LeadsService {
           eb('organisations.region_id', '=', user.region_id),
           eb('leads.regional_manager_id', '=', user.id),
           eb('leads.assigned_to', '=', user.id),
+          eb('assignee.reporting_manager_id', '=', user.id),
         ]),
       );
     }
@@ -1207,12 +1469,19 @@ export class LeadsService {
     // Follow-ups summary
     let followUpQuery = this.db
       .selectFrom('follow_ups')
-      .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id');
+      .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'follow_ups.assigned_to', 'assignee.id');
 
     if (user.role === 'sales') {
       followUpQuery = followUpQuery.where('follow_ups.assigned_to', '=', user.id);
     } else if (user.role === 'regional_manager' && user.region_id) {
-      followUpQuery = followUpQuery.where('organisations.region_id', '=', user.region_id);
+      followUpQuery = followUpQuery.where((eb) =>
+        eb.or([
+          eb('organisations.region_id', '=', user.region_id),
+          eb('follow_ups.assigned_to', '=', user.id),
+          eb('assignee.reporting_manager_id', '=', user.id),
+        ]),
+      );
     }
 
     const followUpStats = await followUpQuery
@@ -1224,10 +1493,11 @@ export class LeadsService {
       ])
       .executeTakeFirst();
 
-    // Customer accounts count (territorially scoped if regional manager)
+    // Customer accounts count — the same territorial scope as the Customer Register list (QA DEF-034)
     let orgQuery = this.db.selectFrom('organisations').where('organisations.id', '<>', '00000000-0000-4000-8000-0000000000a1');
-    if (user.role === 'regional_manager' && user.region_id) {
-      orgQuery = orgQuery.where('organisations.region_id', '=', user.region_id);
+    const orgScope = organisationScope(user);
+    if (orgScope) {
+      orgQuery = orgQuery.where(orgScope);
     }
     const orgStats = await orgQuery
       .select(sql<number>`count(distinct organisations.id)::int`.as('total_customers'))
@@ -1303,7 +1573,12 @@ export class LeadsService {
     };
   }
 
+  /*
+   * Executive Intelligence Reports. Sales see their own pipeline, Regional Managers their region and team, everyone
+   * else the whole country (QA DEF-052). Field names match the Reports tab (re-approached, follow-up counts …).
+   */
   async getSalespersonReport(user: AuthUser) {
+    const today = todayInKolkata();
     let query = this.db
       .selectFrom('users')
       .innerJoin('leads', 'leads.assigned_to', 'users.id')
@@ -1313,7 +1588,13 @@ export class LeadsService {
     if (user.role === 'sales') {
       query = query.where('users.id', '=', user.id);
     } else if (user.role === 'regional_manager' && user.region_id) {
-      query = query.where('users.region_id', '=', user.region_id);
+      query = query.where((eb) =>
+        eb.or([
+          eb('users.region_id', '=', user.region_id),
+          eb('users.reporting_manager_id', '=', user.id),
+          eb('users.id', '=', user.id),
+        ]),
+      );
     }
 
     const rows = await query
@@ -1325,15 +1606,17 @@ export class LeadsService {
         sql<number>`count(leads.id)::int`.as('total_leads'),
         sql<number>`count(case when coalesce(leads.lead_type, 'fresh') = 'fresh' then 1 end)::int`.as('fresh_leads'),
         sql<number>`count(case when leads.lead_type = 're_approached' then 1 end)::int`.as('re_approached_leads'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) not in ('converted', 'won', 'lost', 'dropped') then 1 end)::int`.as('active_leads'),
+        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) <> all(${CLOSED_STATUS_LIST}::text[]) then 1 end)::int`.as('active_leads'),
         sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) in ('converted', 'won') then 1 end)::int`.as('converted_leads'),
         sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) in ('lost', 'dropped') then 1 end)::int`.as('lost_leads'),
         sql<number>`coalesce(sum(leads.value_lakh), 0)::float`.as('total_pipeline_lakh'),
+        sql<number>`(select count(*)::int from follow_ups f where f.assigned_to = users.id and f.status = 'pending')`.as('pending_followups'),
+        sql<number>`(select count(*)::int from follow_ups f where f.assigned_to = users.id and f.status = 'pending' and f.due_date < ${today}::date)`.as('overdue_followups'),
       ])
       .orderBy('total_leads', 'desc')
       .execute();
 
-    return rows;
+    return rows.map((r) => ({ ...r, reapproached_leads: r.re_approached_leads }));
   }
 
   async getZoneReport(user: AuthUser) {
@@ -1341,10 +1624,20 @@ export class LeadsService {
       .selectFrom('zones')
       .innerJoin('organisations', 'organisations.zone_id', 'zones.id')
       .innerJoin('leads', 'leads.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'leads.assigned_to', 'assignee.id')
       .leftJoin('regions', 'organisations.region_id', 'regions.id');
 
-    if (user.role === 'regional_manager' && user.region_id) {
-      query = query.where('organisations.region_id', '=', user.region_id);
+    if (user.role === 'sales') {
+      query = query.where('leads.assigned_to', '=', user.id);
+    } else if (user.role === 'regional_manager' && user.region_id) {
+      query = query.where((eb) =>
+        eb.or([
+          eb('organisations.region_id', '=', user.region_id),
+          eb('leads.regional_manager_id', '=', user.id),
+          eb('leads.assigned_to', '=', user.id),
+          eb('assignee.reporting_manager_id', '=', user.id),
+        ]),
+      );
     }
 
     const rows = await query
@@ -1358,14 +1651,14 @@ export class LeadsService {
         sql<number>`count(leads.id)::int`.as('total_leads'),
         sql<number>`count(case when coalesce(leads.lead_type, 'fresh') = 'fresh' then 1 end)::int`.as('fresh_leads'),
         sql<number>`count(case when leads.lead_type = 're_approached' then 1 end)::int`.as('re_approached_leads'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) not in ('converted', 'won', 'lost', 'dropped') then 1 end)::int`.as('active_leads'),
+        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) <> all(${CLOSED_STATUS_LIST}::text[]) then 1 end)::int`.as('active_leads'),
         sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) in ('converted', 'won') then 1 end)::int`.as('converted_leads'),
         sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) in ('lost', 'dropped') then 1 end)::int`.as('lost_leads'),
       ])
       .orderBy('zones.name', 'asc')
       .execute();
 
-    return rows;
+    return rows.map((r) => ({ ...r, reapproached_leads: r.re_approached_leads }));
   }
 
   async getProductReport(user: AuthUser) {
@@ -1373,10 +1666,24 @@ export class LeadsService {
     const rows = await this.db
       .selectFrom('products')
       .leftJoin(
-        (eb) =>
-          eb
+        (eb) => {
+          let scoped = eb
             .selectFrom('leads')
             .innerJoin('organisations', 'leads.organisation_id', 'organisations.id')
+            .leftJoin('users as assignee', 'leads.assigned_to', 'assignee.id');
+          if (user.role === 'sales') {
+            scoped = scoped.where('leads.assigned_to', '=', user.id);
+          } else if (user.role === 'regional_manager' && user.region_id) {
+            scoped = scoped.where((w) =>
+              w.or([
+                w('organisations.region_id', '=', user.region_id),
+                w('leads.regional_manager_id', '=', user.id),
+                w('leads.assigned_to', '=', user.id),
+                w('assignee.reporting_manager_id', '=', user.id),
+              ]),
+            );
+          }
+          return scoped
             .select([
               'leads.id as lead_id',
               'leads.product_id as p_id',
@@ -1384,7 +1691,8 @@ export class LeadsService {
               'leads.status',
               'leads.value_lakh',
             ])
-            .as('direct_leads'),
+            .as('direct_leads');
+        },
         (join) => join.onRef('direct_leads.p_id', '=', 'products.id'),
       )
       .groupBy(['products.id', 'products.name', 'products.category'])
@@ -1392,8 +1700,9 @@ export class LeadsService {
         'products.id as product_id',
         'products.name as product_name',
         'products.category as product_category',
+        'products.category as category',
         sql<number>`count(distinct direct_leads.lead_id)::int`.as('total_leads'),
-        sql<number>`count(distinct case when lower(coalesce(direct_leads.lead_status, direct_leads.status)) not in ('converted', 'won', 'lost', 'dropped') then direct_leads.lead_id end)::int`.as('active_leads'),
+        sql<number>`count(distinct case when lower(coalesce(direct_leads.lead_status, direct_leads.status)) <> all(${CLOSED_STATUS_LIST}::text[]) then direct_leads.lead_id end)::int`.as('active_leads'),
         sql<number>`count(distinct case when lower(coalesce(direct_leads.lead_status, direct_leads.status)) in ('converted', 'won') then direct_leads.lead_id end)::int`.as('converted_leads'),
         sql<number>`coalesce(sum(direct_leads.value_lakh), 0)::float`.as('pipeline_value_lakh'),
       ])
@@ -1420,7 +1729,13 @@ export class LeadsService {
     if (user.role === 'sales') {
       baseQuery = baseQuery.where('interactions.employee_id', '=', user.id);
     } else if (user.role === 'regional_manager' && user.region_id) {
-      baseQuery = baseQuery.where('organisations.region_id', '=', user.region_id);
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          eb('organisations.region_id', '=', user.region_id),
+          eb('interactions.employee_id', '=', user.id),
+          eb('users.reporting_manager_id', '=', user.id),
+        ]),
+      );
     }
 
     if (query.from_date) {
@@ -1444,6 +1759,7 @@ export class LeadsService {
       .select([
         'interactions.type as interaction_type',
         sql<number>`count(interactions.id)::int`.as('count'),
+        sql<number>`count(interactions.id)::int`.as('total_interactions'),
       ])
       .orderBy('count', 'desc')
       .execute();

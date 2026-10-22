@@ -50,6 +50,19 @@ This document establishes the architecture, code rules, UI design system convent
 | **Radius** | Standard Card | `14px` | `rounded-[14px]` | Standard for all cards, containers |
 | **Radius** | Small Controls | `8px` | `rounded-lg` | Buttons, inputs, chips |
 | **Radius** | Badges / Pills | Full | `rounded-full` | Status badges, avatar circles |
+| **Text** | Faint / Placeholder | `#6B7280` | `text-[#6B7280]` | Timestamps, hints (AA on white; `#8A8578` fails contrast) |
+
+### Semantic Status Colours (use these — never default Tailwind palettes like `red-50`, `gray-500`, `emerald-600`, `blue-*`)
+
+| Meaning | Soft background | Border | Text / solid |
+| :--- | :--- | :--- | :--- |
+| Success / Info / Primary | `#E3EFEE` | `#D0E5E3` or `#0F5E63/30` | `#0F5E63` (hover `#0B4A4E`) |
+| Warning / Urgent | `#FFF8EB` (subtle) or `#FBEBDD` | `#E9C9B4` | `#9A3412` (strong `#7C2D12`, amber text `#A15C07`) |
+| Danger / Error | `#FCE8EC` | `#F3C7CF` | `#881337` (strong `#700F2D`) — also the inline field-error colour |
+| Neutral | `#FBFAF7` / `#ECE9E2` | `#DCD8CE` / `#C9C4B8` | `#14213D` ink, `#4A5568` muted, `#6B7280` faint |
+| Secondary accent (role chips) | `#EEF1F5` | `#DCD8CE` | `#1F2E52` |
+
+Prefer the primitives (`Badge`, `InfoCallout`, `StatCard`, `Button`) which already encode these; raw `className` colours must come from the tables above.
 
 ---
 
@@ -86,10 +99,10 @@ This document establishes the architecture, code rules, UI design system convent
 - **`ButtonGroup`**: Connected button cluster for toolbars, filters, and segmented actions.
 
 #### 5. Form Controls (`@/components/ui/Input`, `Select`, `Textarea`, `Checkbox`)
-- **`Input`**: Text input with label, helperText, error state, and brand focus ring (`focus:border-[#223FA7] focus:ring-[#223FA7]/15`).
+- **`Input`**: Text input with label, helperText, error state, and brand focus ring (`focus:border-[#0F5E63] focus:ring-[#0F5E63]/15`).
 - **`Select`**: Dropdown select with standardized styling and label/error support.
 - **`Textarea`**: Multi-line text input with standardized focus and border styling.
-- **`Checkbox`**: Branded checkbox control with label, sub-description, and executive blue focus/check indicators.
+- **`Checkbox`**: Branded checkbox control with label, sub-description, and brand teal focus/check indicators.
 
 #### 6. Navigation & Filtering (`@/components/ui/Tabs`, `FilterBar`)
 - **`Tabs`**: Standard tab navigation supporting `pills`, `segmented`, and `underline` visual variants, with item badge counters and icons.
@@ -121,4 +134,4 @@ This document establishes the architecture, code rules, UI design system convent
 Before marking any task as complete:
 1. Run `pnpm --filter @arihant/web exec tsc --noEmit` — must exit with 0 errors.
 2. Run `pnpm --filter @arihant/api exec tsc --noEmit` — must exit with 0 errors.
-3. Test views in browser to ensure all components render properly with `#F7FBFF` background and `#FFFFFF` cards.
+3. Test views in browser to ensure all components render properly with `#F6F5F1` background and `#FFFFFF` cards.

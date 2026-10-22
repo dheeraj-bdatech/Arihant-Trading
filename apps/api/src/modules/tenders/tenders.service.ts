@@ -4,6 +4,7 @@ import {
   ConflictException,
   BadRequestException,
   ForbiddenException,
+  HttpException,
   Inject,
   Logger,
 } from '@nestjs/common';
@@ -11,7 +12,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
-import { assertRegionScope, assertNotSelfApproval } from '../../common/utils/scope.util.js';
+import { assertRegionScope, checkRegionScope, assertNotSelfApproval } from '../../common/utils/scope.util.js';
+import { calendarDay } from '../../common/utils/ist-date.util.js';
 import {
   TENDER_UPCOMING_DAYS,
   TENDER_URGENT_HOURS,
@@ -67,10 +69,64 @@ import {
   CreateTenderPortalDto,
   CreateRegionMappingDto,
 } from './tenders.dto.js';
+import { teamIds } from '../dashboard/dashboard-metrics.js';
+
+/**
+ * QA DEF-037 / DEF-038: a regional manager's bids are their zone's bids plus bids owned by their field team (reps'
+ * bids that carry no zone tag). Same rule as dashboard-metrics `territoryTenders`, so the tenders screens, the RM
+ * dashboard and Zonal Command count the same bids.
+ */
+function rmTenderScope(user: AuthUser) {
+  const team = teamIds(user.id, user.zone_id ?? null);
+  // An RM without a zone has no geography — only the bids their team owns (never all-India).
+  const zone = user.zone_id ? sql`tenders.zone_id = ${user.zone_id}` : sql`false`;
+  return sql<boolean>`(${zone} or tenders.assigned_to in ${team} or tenders.owner in ${team} or tenders.tender_owner_id in ${team})`;
+}
+
+/** Stages that need the bids opened, so a submitted bid can only reach them after its closing time. */
+const BID_OPENING_TARGETS: StandardTenderStatus[] = [
+  'TECHNICAL_EVALUATION',
+  'COMMERCIAL_EVALUATION',
+  'WON',
+  'PARTIALLY_WON',
+  'LOST',
+];
 
 @Injectable()
 export class TendersService {
   private readonly logger = new Logger(TendersService.name);
+
+  /**
+   * R3: may this user open / act on this tender? Every other role keeps the shared region rule (assertRegionScope).
+   * A regional manager additionally reaches every bid their tender list shows (rmTenderScope: their zone's bids plus
+   * bids assigned to / owned by their field team), so a team member's bid tagged to another zone can be inspected and
+   * worked on instead of appearing in the list and then failing with 403.
+   */
+  private async assertTenderVisible(
+    user: AuthUser,
+    tender: { id: string; region_id?: string | null; zone_id?: string | null; assigned_to?: string | null; owner?: string | null; tender_owner_id?: string | null },
+  ): Promise<void> {
+    const scope = {
+      entityZoneId: tender.zone_id,
+      entityAssignedTo: tender.assigned_to,
+      entityOwnerId: tender.owner || tender.tender_owner_id,
+    };
+    if (user.role !== 'regional_manager') {
+      assertRegionScope(user, tender.region_id, scope);
+      return;
+    }
+    if (checkRegionScope(user, tender.region_id, scope)) return;
+    if (tender.tender_owner_id && tender.tender_owner_id === user.id) return;
+    const inList = await this.db
+      .selectFrom('tenders')
+      .select('tenders.id')
+      .where('tenders.id', '=', tender.id)
+      .where(rmTenderScope(user))
+      .executeTakeFirst();
+    if (!inList) {
+      throw new ForbiddenException('Access denied: this tender is outside your zone and your team (IDOR protection)');
+    }
+  }
 
   /** A DATE column / 'YYYY-MM-DD' / instant as its IST calendar day ('YYYY-MM-DD'). */
   private istDay(value: string | Date | null | undefined): string | null {
@@ -83,6 +139,25 @@ export class TendersService {
       return d.toISOString().slice(0, 10);
     }
     return istDateOf(d);
+  }
+
+  /**
+   * While the bid has not closed yet: its closing as IST text ('YYYY-MM-DD HH:mm', or the IST day for a date-only
+   * legacy deadline stored at UTC midnight). Null once the bid has closed or when no closing date is recorded.
+   */
+  private bidClosingBlock(tender: { submission_deadline?: any; bid_closing_date?: any }, now: Date = new Date()): string | null {
+    const raw = tender.submission_deadline || tender.bid_closing_date;
+    if (!raw) return null;
+    const closing = raw instanceof Date ? raw : new Date(raw);
+    if (Number.isNaN(closing.getTime())) return null;
+    const dateOnly =
+      closing.getUTCHours() === 0 && closing.getUTCMinutes() === 0 && closing.getUTCSeconds() === 0 && closing.getUTCMilliseconds() === 0;
+    if (dateOnly) {
+      // A date-only closing has no real time: the bid counts as closed from that IST day.
+      const closingDay = calendarDay(closing.toISOString().slice(0, 10));
+      return closingDay && todayInKolkata() < closingDay ? closingDay : null;
+    }
+    return now < closing ? this.istLabel(closing) : null;
   }
 
   /** An instant as 'YYYY-MM-DD HH:mm' IST wall clock (for notification text). */
@@ -158,6 +233,63 @@ export class TendersService {
     if (diffMs <= TENDER_URGENT_HOURS * 3600 * 1000) return 'urgent_48h';
     if (diffMs <= TENDER_UPCOMING_DAYS * 24 * 3600 * 1000) return 'upcoming_7d';
     return 'normal';
+  }
+
+  /**
+   * Next free internal reference for the current IST year: TND-YYYY-NNNNN, one above the highest reference already
+   * used that year (soft-deleted tenders included, so a reference is never reused). Computed from the table itself,
+   * so it can never collide with refs back-filled by migrations or imported rows. Callers insert inside a
+   * transaction and retry on a unique violation (two registrations racing for the same number).
+   */
+  private async nextInternalRef(executor: Kysely<Database> = this.db): Promise<string> {
+    const prefix = `TND-${todayInKolkata().slice(0, 4)}-`;
+    // The start offset MUST be cast to int: an untyped parameter makes Postgres pick substring(text FROM pattern)
+    // (a regex match), which returns e.g. "10" out of "TND-2026-01092" and re-issues an old reference.
+    const start = prefix.length + 1;
+    const res = await sql<{ n: number }>`
+      select coalesce(max(substring(internal_ref from ${start}::int)::bigint), 0)::int as n
+      from tenders
+      where internal_ref like ${`${prefix}%`}
+        and substring(internal_ref from ${start}::int) ~ '^[0-9]+$'
+    `.execute(executor);
+    const next = Number(res.rows[0]?.n || 0) + 1;
+    return `${prefix}${String(next).padStart(5, '0')}`;
+  }
+
+  /** True for a Postgres unique violation, optionally on one named constraint. */
+  private isUniqueViolation(err: any, constraint?: string): boolean {
+    if (err?.code !== '23505') return false;
+    return constraint ? String(err?.constraint || '') === constraint : true;
+  }
+
+  /**
+   * Turns raw database errors from tender writes into human messages (never the raw "Key (...)=(...)" detail):
+   * unique violations → 409, trigger validations (RAISE EXCEPTION) and constraint failures → 400.
+   */
+  private toFriendlyDbError(err: any, context = 'save the tender'): Error {
+    if (err instanceof HttpException) return err;
+    const code = err?.code;
+    const constraint = String(err?.constraint || '');
+    if (code === '23505') {
+      if (constraint.includes('internal_ref')) {
+        return new ConflictException('Could not allocate a tender reference number. Please try again.');
+      }
+      if (constraint.includes('tender_no') || constraint.includes('tender_number')) {
+        return new ConflictException('A tender with this tender number is already registered for this organisation.');
+      }
+      return new ConflictException(`Could not ${context}: a record with the same details already exists.`);
+    }
+    if (code === 'P0001' && err?.message) {
+      // Business rules enforced by the tenders integrity trigger (e.g. region/zone mismatch).
+      return new BadRequestException(String(err.message));
+    }
+    if (code === '23514') {
+      return new BadRequestException(`Could not ${context}: one of the values is not allowed.`);
+    }
+    if (code === '23503') {
+      return new BadRequestException(`Could not ${context}: a referenced record (user, product, region…) does not exist.`);
+    }
+    return err;
   }
 
   // =========================================================================
@@ -451,8 +583,8 @@ export class TendersService {
       .where('tenders.is_deleted', '=', false);
 
     // Territorial scoping
-    if (user.role === 'regional_manager' && user.zone_id) {
-      baseQuery = baseQuery.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      baseQuery = baseQuery.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
@@ -623,7 +755,7 @@ export class TendersService {
       orderQuery = orderQuery.orderBy('tenders.last_activity_at', sortDirection);
     } else if (sortField === 'estimated_value') {
       orderQuery = orderQuery.orderBy(
-        sql`coalesce(tenders.estimated_value_lakh * 100000, tenders.estimated_value, 0)`,
+        sql`coalesce(tenders.estimated_value, 0)`,
         sortDirection,
       );
     } else {
@@ -652,6 +784,7 @@ export class TendersService {
         'tenders.bidder_turnover',
         'tenders.oem_turnover',
         'tenders.emd_fee',
+        'tenders.emd_amount',
         'tenders.publish_date',
         'tenders.publication_date',
         'tenders.bid_closing_date',
@@ -687,6 +820,8 @@ export class TendersService {
         'tender_categories.requires_pq as category_requires_pq',
         'assignee.full_name as assigned_to_name',
         'owner.full_name as tender_owner_name',
+        // BOQ size for the register's "Qty & Value" column (the tenders.quantity header field is often left at 1).
+        sql<number | null>`(select sum(li.quantity) from tender_line_items li where li.tender_id = tenders.id)`.as('line_items_quantity'),
       ])
       .limit(limit)
       .offset(offset)
@@ -760,6 +895,10 @@ export class TendersService {
       tender.created_by !== user.id
     ) {
       throw new ForbiddenException('You only have access to tenders assigned to you');
+    }
+    // A regional manager's detail view is bounded by the same rule as their list (zone + team-owned bids).
+    if (user && user.role === 'regional_manager') {
+      await this.assertTenderVisible(user, tender);
     }
 
     // Parallel child queries
@@ -893,7 +1032,9 @@ export class TendersService {
     const now = new Date();
     let daysLeft: number | null = null;
     let hoursLeft: number | null = null;
-    if (deadline) {
+    // A closed tender (won, lost, cancelled …) has no live countdown: the deadline is history, not "3d left".
+    const isClosed = this.isClosedStatus(tender.status);
+    if (deadline && !isClosed) {
       const diffMs = new Date(deadline).getTime() - now.getTime();
       daysLeft = this.istDaysLeft(new Date(deadline), now);
       hoursLeft = Math.round(diffMs / (3600 * 1000));
@@ -1012,6 +1153,12 @@ export class TendersService {
       throw new BadRequestException('Cannot create a tender with a submission deadline already in the past');
     }
 
+    // 3b. Numeric fields: quantities are whole units ≥ 1, money is never negative.
+    this.assertTenderNumbers(dto);
+    if (Array.isArray(dto.line_items)) {
+      dto.line_items.forEach((li: any, i: number) => this.assertLineItemNumbers(li, `Line item ${i + 1}: `));
+    }
+
     // 4. Zone & Region validation:
     // Region without zone is rejected. Region must belong to selected zone. Empty string stored as null.
     let zoneId = dto.zone_id ? dto.zone_id.trim() || null : null;
@@ -1095,10 +1242,84 @@ export class TendersService {
       if (pRec) portalId = pRec.id;
     }
 
-    const created = await this.db.transaction().execute(async (trx) => {
+    // The internal reference is allocated inside the transaction from the highest ref in use; if a concurrent
+    // registration takes the same number first, the unique constraint rejects ours and the whole insert is retried.
+    const MAX_REF_ATTEMPTS = 3;
+    let created: any = null;
+    for (let attempt = 1; !created; attempt++) {
+      try {
+        created = await this.createTenderInTransaction(dto, user, {
+          tenderNumber,
+          orgId,
+          orgName,
+          zoneId,
+          regionId,
+          categoryId,
+          categoryCode,
+          assignedTo,
+          owner,
+          initialStatus,
+          estValue,
+          portalId,
+          publicationDate,
+          submissionDeadline,
+        });
+      } catch (err: any) {
+        if (this.isUniqueViolation(err, 'uq_tenders_internal_ref') && attempt < MAX_REF_ATTEMPTS) {
+          this.logger.warn(`Internal reference collision on tender create (attempt ${attempt}); retrying.`);
+          continue;
+        }
+        throw this.toFriendlyDbError(err, 'register the tender');
+      }
+    }
+
+    this.outboxService.triggerImmediate();
+    return this.findOne(created.id);
+  }
+
+  /** One attempt at registering a tender: the row, its line items, checklist, EMD request, history and outbox event. */
+  private async createTenderInTransaction(
+    dto: CreateTenderDto,
+    user: AuthUser,
+    p: {
+      tenderNumber: string;
+      orgId: string | null;
+      orgName: string;
+      zoneId: string | null;
+      regionId: string | null;
+      categoryId: string | null;
+      categoryCode: string;
+      assignedTo: string | null;
+      owner: string;
+      initialStatus: 'identified';
+      estValue: number | null;
+      portalId: string | null;
+      publicationDate: string | null;
+      submissionDeadline: Date;
+    },
+  ) {
+    const {
+      tenderNumber,
+      orgId,
+      orgName,
+      zoneId,
+      regionId,
+      categoryId,
+      categoryCode,
+      assignedTo,
+      owner,
+      initialStatus,
+      estValue,
+      portalId,
+      publicationDate,
+      submissionDeadline,
+    } = p;
+    return this.db.transaction().execute(async (trx) => {
+      const internalRef = await this.nextInternalRef(trx);
       const tender = await trx
         .insertInto('tenders')
         .values({
+          internal_ref: internalRef,
           tender_no: tenderNumber,
           tender_number: tenderNumber,
           tender_title: dto.tender_title || dto.requirement_text || tenderNumber,
@@ -1176,8 +1397,12 @@ export class TendersService {
               specification_summary: li.specification_summary || null,
               is_compliant: li.is_compliant || 'Not Checked',
               compliance_remarks: li.compliance_remarks || null,
-              quoted_unit_price: li.quoted_unit_price || null,
-              quoted_total: li.quoted_total || (li.quoted_unit_price ? Number(li.quoted_unit_price) * Number(li.quantity || 1) : null),
+              quoted_unit_price: li.quoted_unit_price ?? null,
+              // The total is always quantity × unit price when a price is given (never trusted from the client).
+              quoted_total:
+                li.quoted_unit_price !== undefined && li.quoted_unit_price !== null
+                  ? Number(li.quoted_unit_price) * Number(li.quantity || 1)
+                  : li.quoted_total ?? null,
             })
             .execute();
         }
@@ -1207,7 +1432,9 @@ export class TendersService {
           .values({
             tender_id: tender.id,
             instrument_type: 'EMD',
-            amount: dto.emd_amount || dto.emd_fee || 0,
+            // Instruments are never ₹0 (CHECK amount > 0, migration 035): an EMD without a figure yet is NULL for
+            // Finance to fill in. (shared types still declare amount non-null, hence the cast.)
+            amount: Number(dto.emd_amount || dto.emd_fee) > 0 ? Number(dto.emd_amount || dto.emd_fee) : null,
             mode: dto.emd_mode || 'Online',
             status: 'Requested',
             remarks: dto.emd_exemption_reason || null,
@@ -1262,13 +1489,102 @@ export class TendersService {
 
       return tender;
     });
+  }
 
-    this.outboxService.triggerImmediate();
-    return this.findOne(created.id);
+  /** True for a terminal (closed) tender stage; unknown legacy values count as open rather than throwing. */
+  private isClosedStatus(status?: string | null): boolean {
+    try {
+      return this.workflowService.isTerminal(status || 'identified');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The BOQ (line items) is locked once the tender is closed (won, lost, cancelled, rejected …): the Lifecycle tab
+   * already says a terminal tender takes no further changes. On a won tender the award columns (awarded quantity /
+   * unit price) may still be completed when `allowAwardFields` is set.
+   */
+  private assertBoqEditable(tender: { status?: string | null }, opts?: { allowAwardFields?: boolean }) {
+    if (!this.isClosedStatus(tender.status)) return;
+    const status = this.workflowService.normalizeStatus(tender.status as string);
+    if (opts?.allowAwardFields && (status === 'WON' || status === 'PARTIALLY_WON')) return;
+    throw new BadRequestException(
+      `Line items are locked: the tender is ${this.workflowService.getStatusLabel(status)} (closed). Reopen the tender to change its BOQ.`,
+    );
+  }
+
+  /** Tender-level numbers: quantity is a whole number ≥ 1; values, EMD and fees are never negative. */
+  private assertTenderNumbers(dto: {
+    quantity?: number | null;
+    estimated_value?: number | null;
+    estimated_value_lakh?: number | null;
+    emd_fee?: number | null;
+    emd_amount?: number | null;
+    tender_fee_amount?: number | null;
+    tender_value?: number | null;
+    emd_required?: boolean | null;
+  }) {
+    const num = (v: unknown) => (v === undefined || v === null || (v as any) === '' ? null : Number(v));
+    const qty = num(dto.quantity);
+    if (qty !== null && (!Number.isFinite(qty) || qty < 1 || !Number.isInteger(qty))) {
+      throw new BadRequestException('Quantity must be a whole number of at least 1.');
+    }
+    const nonNegative: [unknown, string][] = [
+      [dto.estimated_value, 'Estimated value'],
+      [dto.estimated_value_lakh, 'Estimated value (₹ Lakh)'],
+      [dto.emd_fee, 'EMD fee'],
+      [dto.emd_amount, 'EMD amount'],
+      [dto.tender_fee_amount, 'Tender fee'],
+      [dto.tender_value, 'Tender value'],
+    ];
+    for (const [v, label] of nonNegative) {
+      const n = num(v);
+      if (n !== null && (!Number.isFinite(n) || n < 0)) {
+        throw new BadRequestException(`${label} cannot be negative.`);
+      }
+    }
+    if (dto.emd_required) {
+      const emd = num(dto.emd_amount) ?? num(dto.emd_fee);
+      if (emd === null || emd <= 0) {
+        throw new BadRequestException('EMD amount must be greater than zero when EMD is required.');
+      }
+    }
+  }
+
+  /** Line-item numbers: quantity ≥ 1 (whole units); unit price and totals ≥ 0. */
+  private assertLineItemNumbers(
+    li: {
+      quantity?: number | null;
+      quoted_unit_price?: number | null;
+      quoted_total?: number | null;
+      awarded_quantity?: number | null;
+      awarded_unit_price?: number | null;
+    },
+    prefix = '',
+  ) {
+    const num = (v: unknown) => (v === undefined || v === null || (v as any) === '' ? null : Number(v));
+    const qty = num(li.quantity);
+    if (qty !== null && (!Number.isFinite(qty) || qty < 1)) {
+      throw new BadRequestException(`${prefix}Quantity must be at least 1.`);
+    }
+    const checks: [unknown, string][] = [
+      [li.quoted_unit_price, 'Quoted unit price'],
+      [li.quoted_total, 'Quoted total'],
+      [li.awarded_unit_price, 'Awarded unit price'],
+      [li.awarded_quantity, 'Awarded quantity'],
+    ];
+    for (const [v, label] of checks) {
+      const n = num(v);
+      if (n !== null && (!Number.isFinite(n) || n < 0)) {
+        throw new BadRequestException(`${prefix}${label} cannot be negative.`);
+      }
+    }
   }
 
   async update(id: string, dto: UpdateTenderDto, user: AuthUser) {
     const existing = await this.findOne(id);
+    if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     // Optimistic locking check
     if ((dto as any).expected_version !== undefined && existing.version !== (dto as any).expected_version) {
@@ -1278,6 +1594,11 @@ export class TendersService {
     if (existing.is_deleted) {
       throw new BadRequestException('Cannot update a deleted tender');
     }
+
+    this.assertTenderNumbers({
+      estimated_value: dto.estimated_value,
+      estimated_value_lakh: dto.estimated_value_lakh,
+    });
 
     const updatePayload: Record<string, any> = {
       updated_at: new Date(),
@@ -1345,11 +1666,15 @@ export class TendersService {
       updatePayload.estimated_value = Number(dto.estimated_value_lakh) * 100000;
     }
 
-    await this.db
-      .updateTable('tenders')
-      .set(updatePayload)
-      .where('id', '=', id)
-      .execute();
+    try {
+      await this.db
+        .updateTable('tenders')
+        .set(updatePayload)
+        .where('id', '=', id)
+        .execute();
+    } catch (err: any) {
+      throw this.toFriendlyDbError(err, 'update the tender');
+    }
 
     if (dto.assigned_to !== undefined || dto.assigned_person_id !== undefined || dto.tender_owner_id !== undefined || (dto as any).owner !== undefined) {
       await this.logActivity(id, 'TEAM_REASSIGNED', 'Updated tender team ownership / assignment', user.id);
@@ -1360,6 +1685,7 @@ export class TendersService {
 
   async softDelete(id: string, user: AuthUser) {
     const existing = await this.findOne(id);
+    if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
     await this.db
       .updateTable('tenders')
       .set({
@@ -1400,6 +1726,10 @@ export class TendersService {
       isRecordResultAction?: boolean;
       rejection_reason?: string;
       approval_remarks?: string | null;
+      /** Extra writes that must commit (or roll back) together with the stage change, e.g. the result snapshot. */
+      inTransaction?: (trx: Kysely<Database>) => Promise<void>;
+      /** Extra fields for the specific domain event (tender.won / tender.lost …). */
+      eventPayload?: Record<string, any>;
     },
   ) {
     const rawTarget = dto.to_status || dto.target_status;
@@ -1408,6 +1738,7 @@ export class TendersService {
     }
     const targetStatus = this.workflowService.normalizeStatus(rawTarget);
     const existing = await this.findOne(id);
+    if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
     const currentStatus = this.workflowService.normalizeStatus(existing.status);
 
     // Fetch settings for self approval check
@@ -1466,8 +1797,22 @@ export class TendersService {
       },
     );
 
-    // Document gate: enforced only when explicitly configured or requested
-    if (from !== to && (to === 'TENDER_SUBMITTED' || to === 'PQ_SUBMITTED') && (dto as any).enforce_document_readiness) {
+    // Bids are opened only after the bid closes (Module 4: submitted → technical evaluation → commercial evaluation →
+    // result). A submitted bid cannot enter evaluation or take a result before its closing time, otherwise it is
+    // stuck there: Record Result requires a result date on or after the bid closing date.
+    if (from !== to && from === 'TENDER_SUBMITTED' && BID_OPENING_TARGETS.includes(to)) {
+      const closing = this.bidClosingBlock(existing);
+      if (closing) {
+        throw new BadRequestException(
+          `Cannot move to "${this.workflowService.getStatusLabel(to)}" yet: bids are opened only after the bid closes on ${closing} IST. ` +
+            'Record the evaluation or result after the closing time (or record a corrigendum if the closing date changed).',
+        );
+      }
+    }
+
+    // Document gate (always on): a bid / PQ cannot be submitted until the mandatory checklist exists and every
+    // mandatory document is Ready. Zero documents is "not initialised", never "100% ready".
+    if (from !== to && (to === 'TENDER_SUBMITTED' || to === 'PQ_SUBMITTED')) {
       await this.assertSubmissionReadiness(existing, to);
     }
 
@@ -1563,6 +1908,27 @@ export class TendersService {
           .where('tender_id', '=', id)
           .where('status', '=', 'PENDING')
           .execute();
+      } else if (from !== to) {
+        // Any request still PENDING while the tender is not awaiting approval is stale (e.g. legacy rows on a
+        // tender that has since been won/lost): close it so it never shows as an open approval round.
+        await trx
+          .updateTable('tender_approvals')
+          .set({
+            status: 'WITHDRAWN',
+            decision: 'Withdrawn',
+            decision_reason: `Closed without a decision: tender moved to ${this.workflowService.getStatusLabel(to)}`,
+            responded_at: new Date(),
+            decided_at: new Date(),
+            updated_at: new Date(),
+          })
+          .where('tender_id', '=', id)
+          .where('status', '=', 'PENDING')
+          .execute();
+      }
+
+      // Writes that belong to this stage change (result snapshot, finance follow-ups …) commit with it.
+      if (options?.inTransaction) {
+        await options.inTransaction(trx);
       }
 
       // Write activity timeline
@@ -1576,6 +1942,9 @@ export class TendersService {
           metadata: { from, to, note: noteText },
         })
         .execute();
+
+      // The specific lifecycle event for this move (consumed by notifications, realtime and the audit trail).
+      const specificEvent = from === to ? null : this.lifecycleEventFor(from, to);
 
       // Outbox domain event
       await this.outboxService.queueEvent(trx, {
@@ -1591,12 +1960,70 @@ export class TendersService {
           note: noteText,
           tenderOwnerId: existing.tender_owner_id || existing.owner || existing.assigned_to || null,
           actorId: user.id,
+          // The decision event queued alongside (if any): the audit trail records the move once, under that event.
+          decisionEvent: specificEvent,
         },
       });
+
+      if (specificEvent) {
+        await this.outboxService.queueEvent(trx, {
+          eventType: specificEvent,
+          aggregateType: 'TENDER',
+          aggregateId: id,
+          actorId: user.id,
+          payload: {
+            tenderId: id,
+            tenderNo: existing.tender_number,
+            orgName: existing.organisation_name || existing.organisation || null,
+            fromStatus: from,
+            toStatus: to,
+            note: noteText,
+            estimatedValue: existing.estimated_value ?? null,
+            tenderOwnerId: existing.tender_owner_id || existing.owner || null,
+            assignedPersonId: existing.assigned_to || null,
+            approverId: options?.isApprovalAction ? user.id : undefined,
+            reason: to === 'REJECTED_INTERNALLY' ? dto.rejection_reason || options?.rejection_reason || null : undefined,
+            submissionDate: to === 'TENDER_SUBMITTED' ? (dto as any).submission_date || null : undefined,
+            actorId: user.id,
+            ...(options?.eventPayload || {}),
+          },
+        });
+      }
     });
 
     this.outboxService.triggerImmediate();
     return this.findOne(id);
+  }
+
+  /** Domain event name for a lifecycle move (in addition to the generic tender.status_changed). */
+  private lifecycleEventFor(from: StandardTenderStatus, to: StandardTenderStatus): string | null {
+    switch (to) {
+      case 'AWAITING_INTERNAL_APPROVAL':
+        return AppEvents.TENDER_APPROVAL_REQUESTED;
+      case 'UNDER_PREPARATION':
+        return from === 'AWAITING_INTERNAL_APPROVAL' || from === 'IDENTIFIED'
+          ? AppEvents.TENDER_APPROVED
+          : AppEvents.TENDER_PREPARATION_STARTED;
+      case 'REJECTED_INTERNALLY':
+        return AppEvents.TENDER_REJECTED;
+      case 'PQ_SUBMITTED':
+        return AppEvents.TENDER_PQ_SUBMITTED;
+      case 'PQ_QUALIFIED':
+        return AppEvents.TENDER_PQ_QUALIFIED;
+      case 'TENDER_SUBMITTED':
+        return AppEvents.TENDER_SUBMITTED;
+      case 'WON':
+      case 'PARTIALLY_WON':
+        return AppEvents.TENDER_WON;
+      case 'LOST':
+      case 'PQ_NOT_QUALIFIED':
+      case 'TECHNICALLY_DISQUALIFIED':
+        return AppEvents.TENDER_LOST;
+      case 'CANCELLED':
+        return AppEvents.TENDER_CANCELLED;
+      default:
+        return null;
+    }
   }
 
   /**
@@ -1626,6 +2053,7 @@ export class TendersService {
    */
   async holdTender(id: string, dto: HoldTenderDto, user: AuthUser) {
     const existing = await this.findOne(id);
+    if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
       throw new ConflictException('This tender was updated by someone else – refresh');
@@ -1689,6 +2117,7 @@ export class TendersService {
    */
   async resumeTender(id: string, dto: ResumeTenderDto, user: AuthUser) {
     const existing = await this.findOne(id);
+    if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
       throw new ConflictException('This tender was updated by someone else – refresh');
@@ -1826,8 +2255,17 @@ export class TendersService {
   /**
    * Deadline Change with Corrigendum Reason Logging
    */
-  async updateDeadline(id: string, dto: ChangeDeadlineDto, user: AuthUser) {
+  async updateDeadline(
+    id: string,
+    dto: ChangeDeadlineDto,
+    user: AuthUser,
+    options?: {
+      /** Extra writes that must commit (or roll back) with the deadline change, e.g. the corrigendum row. */
+      inTransaction?: (trx: Kysely<Database>, change: { oldDeadline: Date; newDeadline: Date }) => Promise<void>;
+    },
+  ) {
     const existing = await this.findOne(id);
+    if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
       throw new ConflictException('This tender was updated by someone else – refresh');
@@ -1856,6 +2294,10 @@ export class TendersService {
     const oldDeadline = existing.submission_deadline ? new Date(existing.submission_deadline) : new Date();
 
     await this.db.transaction().execute(async (trx) => {
+      if (options?.inTransaction) {
+        await options.inTransaction(trx, { oldDeadline, newDeadline });
+      }
+
       // Record change in history table
       await trx
         .insertInto('tender_deadline_changes')
@@ -1917,6 +2359,7 @@ export class TendersService {
    */
   async recordResult(id: string, dto: RecordTenderResultDto, user: AuthUser) {
     const existing = await this.findOne(id);
+    if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
       throw new ConflictException('This tender was updated by someone else – refresh');
@@ -1962,10 +2405,19 @@ export class TendersService {
       );
     }
 
+    // The result is declared after the bid was submitted AND after the bid closed (bids open only after closing),
+    // so a won/lost record can never be dated before the submission deadline it answers.
     const firstSubDayStr = istDateOf(firstSubmissionDate);
-    const minSubmissionDay = this.istDay(existing.publication_date as any) || firstSubDayStr;
-    if (resultDayStr < minSubmissionDay) {
-      throw new BadRequestException('Result date cannot be earlier than the first submission date');
+    if (resultDayStr < firstSubDayStr) {
+      throw new BadRequestException(
+        `Result date cannot be earlier than the first submission date (${firstSubDayStr}).`,
+      );
+    }
+    const closingDayStr = this.istDay((existing.submission_deadline || existing.bid_closing_date) as any);
+    if (closingDayStr && resultDayStr < closingDayStr) {
+      throw new BadRequestException(
+        `Result date cannot be earlier than the bid closing date (${closingDayStr}); results are declared after bids close.`,
+      );
     }
 
     // Rule: WON requires value > 0 when require_won_value is on
@@ -1979,6 +2431,14 @@ export class TendersService {
         if (!tenderVal || tenderVal <= 0) {
           throw new BadRequestException('Won value is required and must be greater than zero');
         }
+      }
+    }
+
+    // A PBG request raised with the win must carry its amount (instruments are never zero / negative).
+    if ((outcome === 'won' || outcome === 'partially_won') && (dto as any).pbg_required) {
+      const pbg = Number((dto as any).pbg_amount);
+      if (!Number.isFinite(pbg) || pbg <= 0) {
+        throw new BadRequestException('PBG amount must be greater than zero when a PBG is required.');
       }
     }
 
@@ -2103,7 +2563,7 @@ export class TendersService {
           .values({
             tender_id: id,
             instrument_type: 'PBG',
-            amount: (dto as any).pbg_amount || 0,
+            amount: Number((dto as any).pbg_amount),
             status: 'Requested',
             remarks: `PBG due by ${(dto as any).pbg_due_date || 'LoA deadline'}`,
           })
@@ -2159,13 +2619,37 @@ export class TendersService {
       throw new BadRequestException('A structured loss reason is mandatory when recording a lost tender');
     }
 
+    // The outcome form's reason picker uses friendly keys (price, competitor, customer_decision …); map them onto the
+    // loss_reasons master codes so a lost result is never rejected as an "unknown loss reason code".
+    const REASON_ALIASES: Record<string, string> = {
+      PRICE: 'PRICING',
+      PRICING: 'PRICING',
+      COMPETITOR: 'OTHER',
+      TECHNICAL: 'TECHNICAL',
+      ELIGIBILITY: 'ELIGIBILITY',
+      DOCUMENTATION: 'DOCUMENTATION',
+      CUSTOMER_DECISION: 'OTHER',
+      PQ_NOT_QUALIFIED: 'PQ_NOT_QUALIFIED',
+      OTHER: 'OTHER',
+    };
+    const REASON_LABELS: Record<string, string> = {
+      COMPETITOR: 'Competitor advantage / preference',
+      CUSTOMER_DECISION: 'Customer cancellation / retender',
+    };
+    const primaryKey = (lossReason || '').trim().toUpperCase();
+    const primaryCode = primaryKey ? REASON_ALIASES[primaryKey] || primaryKey : '';
+
     const reasons: string[] = [];
-    if (lossReason) reasons.push(lossReason);
+    if (primaryCode) reasons.push(primaryCode);
     if (dto.technical_issue) reasons.push('TECHNICAL');
     if (dto.pricing_issue) reasons.push('PRICING');
     if (dto.eligibility_issue) reasons.push('ELIGIBILITY');
     if (dto.documentation_issue) reasons.push('DOCUMENTATION');
     if (dto.other_reason) reasons.push('OTHER');
+    const uniqueReasons = [...new Set(reasons)];
+    // OTHER needs an explanation: the typed note, else the label of the friendly reason that mapped onto OTHER.
+    const otherText =
+      dto.other_reason?.trim() || (uniqueReasons.includes('OTHER') ? REASON_LABELS[primaryKey] || '' : '') || undefined;
 
     return this.recordResult(
       id,
@@ -2173,9 +2657,9 @@ export class TendersService {
         outcome: outcome as any,
         result_date: dto.result_date || todayInKolkata(),
         value: dto.value_lakh ? dto.value_lakh * 100000 : (dto as any).value,
-        loss_reasons: reasons,
-        loss_reason: lossReason?.toLowerCase(),
-        other_reason_text: dto.other_reason,
+        loss_reasons: uniqueReasons,
+        loss_reason: primaryCode ? primaryCode.toLowerCase() : undefined,
+        other_reason_text: otherText,
         competitor: dto.competitor,
         notes: dto.notes || dto.remarks,
         product_id: dto.product_id,
@@ -2292,18 +2776,25 @@ export class TendersService {
       .leftJoin('tenders', 'tender_portal_issues.tender_id', 'tenders.id')
       .leftJoin('users as rep', 'tender_portal_issues.reported_by', 'rep.id')
       .leftJoin('users as resp', 'tender_portal_issues.responsible_person_id', 'resp.id')
+      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
       .selectAll('tender_portal_issues')
       .select([
         'tenders.tender_no',
         'tenders.tender_number',
         'tenders.organisation',
+        'tenders.portal as tender_portal',
+        // The affected buyer: department first, then the mapped organisation / free-text buyer name.
+        sql<string | null>`coalesce(nullif(trim(tenders.department), ''), organisations.name, nullif(trim(tenders.organisation), ''))`.as(
+          'tender_department',
+        ),
+        'organisations.name as organisation_name',
         'rep.full_name as reported_by_name',
         'resp.full_name as responsible_name',
       ])
       .where('tenders.is_deleted', '=', false);
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      q = q.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      q = q.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       q = q.where((eb) =>
         eb.or([
@@ -2343,12 +2834,18 @@ export class TendersService {
       throw new BadRequestException('Portal issue description cannot be blank or empty');
     }
 
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     if (tender.is_deleted) {
       throw new BadRequestException('Cannot log portal issues against a deleted tender');
     }
+    await this.assertTenderVisible(user, tender);
 
-    const reportedDate = dto.reported_date || todayInKolkata();
+    // The incident date is an IST calendar day and cannot be in the future.
+    const reportedDate = dto.reported_date ? this.istDay(dto.reported_date) : todayInKolkata();
+    if (!reportedDate) throw new BadRequestException('Invalid reported date');
+    if (reportedDate > todayInKolkata()) {
+      throw new BadRequestException(`Reported date cannot be in the future (today is ${todayInKolkata()} IST)`);
+    }
 
     const issue = await this.db
       .insertInto('tender_portal_issues')
@@ -2360,7 +2857,7 @@ export class TendersService {
         reported_by: user.id,
         responsible_person_id: dto.responsible_person_id || tender.assigned_to || user.id,
         escalated_to: dto.escalated_to || null,
-        resolution_status: dto.resolution_status || 'OPEN',
+        resolution_status: (dto.resolution_status || 'OPEN').toUpperCase(),
         resolution: dto.resolution || null,
       })
       .returningAll()
@@ -2371,7 +2868,7 @@ export class TendersService {
       .values({
         tender_id: tenderId,
         event_type: 'PORTAL_ISSUE_LOGGED',
-        description: `Portal issue logged: "${dto.issue.trim()}"`,
+        description: `Portal issue logged: "${desc}"`,
         performed_by: user.id,
       })
       .execute();
@@ -2401,9 +2898,19 @@ export class TendersService {
       throw new NotFoundException(`Portal issue with ID "${issueId}" not found for this tender`);
     }
 
+    const tender = await this.findOne(tenderId);
+    await this.assertTenderVisible(user, tender);
+
+    // Statuses are stored upper-case (OPEN / IN_PROGRESS / ESCALATED / RESOLVED) whatever the client sends.
+    if (dto.resolution_status) dto.resolution_status = dto.resolution_status.trim().toUpperCase();
+    const currentStatus = String(existingIssue.resolution_status || '').toUpperCase();
+
     // Resolving twice check
-    if (dto.resolution_status === 'RESOLVED' && existingIssue.resolution_status === 'RESOLVED') {
+    if (dto.resolution_status === 'RESOLVED' && currentStatus === 'RESOLVED') {
       throw new BadRequestException('This portal issue has already been resolved');
+    }
+    if (dto.resolution_status === 'RESOLVED' && !dto.resolution?.trim()) {
+      throw new BadRequestException('Resolution notes are required to resolve a portal issue.');
     }
 
     const updateData: Record<string, any> = {
@@ -2426,8 +2933,8 @@ export class TendersService {
       updateData.resolution_status = dto.resolution_status;
       updateData.status = dto.resolution_status;
     }
-    if (dto.resolution) {
-      updateData.resolution = dto.resolution;
+    if (dto.resolution?.trim()) {
+      updateData.resolution = dto.resolution.trim();
       if (dto.resolution_status === 'RESOLVED' || !dto.resolution_status) {
         updateData.resolution_status = 'RESOLVED';
         updateData.status = 'RESOLVED';
@@ -2443,6 +2950,14 @@ export class TendersService {
       .returningAll()
       .executeTakeFirst();
 
+    if (updated && updated.resolution_status !== existingIssue.resolution_status) {
+      await this.logActivity(
+        tenderId,
+        'PORTAL_ISSUE_UPDATED',
+        `Portal issue "${existingIssue.issue}" marked ${String(updated.resolution_status).replace(/_/g, ' ')}`,
+        user.id,
+      );
+    }
     return updated;
   }
 
@@ -2693,8 +3208,8 @@ export class TendersService {
       .selectFrom('tenders')
       .where('tenders.is_deleted', '=', false);
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      baseQuery = baseQuery.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      baseQuery = baseQuery.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
@@ -2736,10 +3251,12 @@ export class TendersService {
       .selectFrom('tender_portal_issues')
       .leftJoin('tenders', 'tender_portal_issues.tender_id', 'tenders.id')
       .select(sql<number>`count(tender_portal_issues.id)::int`.as('count'))
-      .where('tender_portal_issues.resolution_status', 'in', ['OPEN', 'ESCALATED']);
+      // "Open" = every issue not yet resolved/closed (OPEN, IN_PROGRESS, ESCALATED) — the same rule as the hub badge.
+      .where(sql<boolean>`upper(coalesce(tender_portal_issues.resolution_status, 'OPEN')) not in ('RESOLVED', 'CLOSED')`)
+      .where('tenders.is_deleted', '=', false);
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      portalIssuesQuery = portalIssuesQuery.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      portalIssuesQuery = portalIssuesQuery.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       portalIssuesQuery = portalIssuesQuery.where((eb) =>
         eb.or([
@@ -2986,8 +3503,8 @@ export class TendersService {
       .selectFrom('tenders')
       .where('tenders.is_deleted', '=', false);
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      baseQuery = baseQuery.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      baseQuery = baseQuery.where(rmTenderScope(user));
     }
 
     const stages = await baseQuery
@@ -3052,8 +3569,8 @@ export class TendersService {
       ] as any)
       .where('tenders.is_deleted', '=', false);
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      query = query.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      query = query.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       query = query.where((eb) =>
         eb.or([
@@ -3299,8 +3816,8 @@ export class TendersService {
       .having(sql`count(tenders.id)`, '>', 0)
       .orderBy('total', 'desc');
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      query = query.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      query = query.where(rmTenderScope(user));
     }
     return query.execute();
   }
@@ -3323,8 +3840,8 @@ export class TendersService {
       .where('tenders.status', '=', 'awaiting_approval')
       .where((eb) => eb.or([eb('tenders.on_hold', '=', false), eb('tenders.on_hold', 'is', null)]));
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      q = q.where('tenders.zone_id', '=', user.zone_id);
+    if (user.role === 'regional_manager') {
+      q = q.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       q = q.where((eb) =>
         eb.or([
@@ -3654,6 +4171,8 @@ export class TendersService {
         await this.db
           .insertInto('tenders')
           .values({
+            // Allocated from the highest reference in use, so imports never collide with existing refs.
+            internal_ref: await this.nextInternalRef(),
             tender_no: item.tender_no,
             tender_number: item.tender_number,
             organisation: item.organisation,
@@ -3689,11 +4208,7 @@ export class TendersService {
 
   async getLineItems(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     const items = await this.db
       .selectFrom('tender_line_items')
@@ -3727,17 +4242,20 @@ export class TendersService {
   }
 
   async addLineItem(tenderId: string, dto: CreateTenderLineItemDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    const tender = await this.findOne(tenderId, user);
+    await this.assertTenderVisible(user, tender);
 
-    let quotedTotal = dto.quoted_total;
-    if (quotedTotal === undefined && dto.quoted_unit_price !== undefined) {
-      quotedTotal = Number(dto.quoted_unit_price) * Number(dto.quantity || 1);
+    this.assertBoqEditable(tender);
+    this.assertLineItemNumbers(dto);
+    if (dto.quantity === undefined || dto.quantity === null) {
+      throw new BadRequestException('Quantity is required (at least 1).');
     }
+
+    // Quoted total is always quantity × unit price when a price is given (never trusted from the client).
+    const quotedTotal =
+      dto.quoted_unit_price !== undefined && dto.quoted_unit_price !== null
+        ? Number(dto.quoted_unit_price) * Number(dto.quantity)
+        : dto.quoted_total;
 
     const newItem = await this.db
       .insertInto('tender_line_items')
@@ -3750,8 +4268,8 @@ export class TendersService {
         specification_summary: dto.specification_summary || null,
         is_compliant: dto.is_compliant || 'Not Checked',
         compliance_remarks: dto.compliance_remarks || null,
-        quoted_unit_price: dto.quoted_unit_price || null,
-        quoted_total: quotedTotal || null,
+        quoted_unit_price: dto.quoted_unit_price ?? null,
+        quoted_total: quotedTotal ?? null,
         awarded: dto.awarded || false,
         awarded_quantity: dto.awarded_quantity || null,
         awarded_unit_price: dto.awarded_unit_price || null,
@@ -3770,11 +4288,21 @@ export class TendersService {
 
   async updateLineItem(tenderId: string, itemId: string, dto: UpdateTenderLineItemDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
+
+    // After a win only the award columns may still be filled in; everything else on the BOQ is frozen.
+    const awardOnly = ['product_id', 'product_description', 'quantity', 'unit', 'specification_summary', 'is_compliant',
+      'compliance_remarks', 'quoted_unit_price', 'quoted_total'].every((k) => (dto as any)[k] === undefined);
+    this.assertBoqEditable(tender, { allowAwardFields: awardOnly });
+    this.assertLineItemNumbers(dto);
+
+    const current = await this.db
+      .selectFrom('tender_line_items')
+      .select(['quantity', 'quoted_unit_price'])
+      .where('id', '=', itemId)
+      .where('tender_id', '=', tenderId)
+      .executeTakeFirst();
+    if (!current) throw new NotFoundException(`Line item ${itemId} not found on tender ${tenderId}`);
 
     const updateData: any = { updated_at: new Date() };
     if (dto.product_id !== undefined) updateData.product_id = dto.product_id;
@@ -3789,6 +4317,12 @@ export class TendersService {
     if (dto.awarded !== undefined) updateData.awarded = dto.awarded;
     if (dto.awarded_quantity !== undefined) updateData.awarded_quantity = dto.awarded_quantity;
     if (dto.awarded_unit_price !== undefined) updateData.awarded_unit_price = dto.awarded_unit_price;
+    // Keep the quoted total consistent with quantity × unit price whenever either changes.
+    if (dto.quantity !== undefined || dto.quoted_unit_price !== undefined) {
+      const qty = Number(dto.quantity ?? current.quantity ?? 1);
+      const price = dto.quoted_unit_price !== undefined ? dto.quoted_unit_price : current.quoted_unit_price;
+      if (price !== null && price !== undefined) updateData.quoted_total = Number(price) * qty;
+    }
 
     const updated = await this.db
       .updateTable('tender_line_items')
@@ -3804,20 +4338,24 @@ export class TendersService {
   }
 
   async deleteLineItem(tenderId: string, itemId: string, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    const tender = await this.findOne(tenderId, user);
+    await this.assertTenderVisible(user, tender);
+    this.assertBoqEditable(tender);
 
-    await this.db
+    const deleted = await this.db
       .deleteFrom('tender_line_items')
       .where('id', '=', itemId)
       .where('tender_id', '=', tenderId)
-      .execute();
+      .returning(['id', 'product_description'])
+      .executeTakeFirst();
+    if (!deleted) throw new NotFoundException(`Line item ${itemId} not found on tender ${tenderId}`);
 
-    await this.logActivity(tenderId, 'LINE_ITEM_DELETED', `Deleted line item ${itemId}`, user.id);
+    await this.logActivity(
+      tenderId,
+      'LINE_ITEM_DELETED',
+      `Deleted line item: ${deleted.product_description || itemId}`,
+      user.id,
+    );
     return { success: true };
   }
 
@@ -3935,19 +4473,21 @@ export class TendersService {
   ) {
     if (options?.bypassDocumentGate) return;
     const r = await this.computeDocumentReadiness(tender);
-    if (!r.checklist_created || r.all_mandatory_ready) return;
+    if (r.checklist_created && r.all_mandatory_ready) return;
     const stage = to === 'PQ_SUBMITTED' ? 'PQ Submitted' : 'Tender Submitted';
+    // No checklist yet = nothing has been verified: the bid can never be submitted on an empty document list.
+    if (!r.checklist_created) {
+      throw new BadRequestException(
+        `Cannot move to "${stage}": the mandatory document checklist has not been initialised. Open the Documents tab, initialise the checklist and mark every mandatory document Ready.`,
+      );
+    }
     const prefix = `Cannot move to "${stage}": ${r.mandatory_ready} of ${r.mandatory_total} mandatory documents are Ready (${r.percentage}%).`;
     throw new BadRequestException(`${prefix} Not Ready: ${r.missing.join(', ')}.`);
   }
 
   async getDocuments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     const docs = await this.db
       .selectFrom('tender_documents')
@@ -3972,11 +4512,7 @@ export class TendersService {
 
   async addDocument(tenderId: string, dto: CreateTenderDocumentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     const doc = await this.db
       .insertInto('tender_documents')
@@ -4002,11 +4538,7 @@ export class TendersService {
 
   async updateDocument(tenderId: string, docId: string, dto: UpdateTenderDocumentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     const updateData: any = { updated_at: new Date() };
     if (dto.document_type !== undefined) updateData.document_type = dto.document_type;
@@ -4050,11 +4582,7 @@ export class TendersService {
 
   async deleteDocument(tenderId: string, docId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     await this.db
       .deleteFrom('tender_documents')
@@ -4068,11 +4596,7 @@ export class TendersService {
 
   async initChecklist(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     // Same template resolution the readiness gate uses, de-duplicated by document type.
     const { catCode, items: templates } = await this.getChecklistTemplate(
@@ -4130,45 +4654,72 @@ export class TendersService {
 
   async addCorrigendum(tenderId: string, dto: CreateTenderCorrigendumDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
-    const oldDeadline = tender.submission_deadline ? new Date(tender.submission_deadline) : new Date();
+    const corrigendumNumber = (dto.corrigendum_number || '').trim();
+    if (!corrigendumNumber) throw new BadRequestException('Corrigendum number is required');
     const newDeadline = this.parseDateTimeIST(dto.new_deadline);
     if (!newDeadline) throw new BadRequestException('Invalid new deadline date format');
 
-    const corrigendum = await this.db
-      .insertInto('tender_corrigenda')
-      .values({
-        tender_id: tenderId,
-        corrigendum_number: dto.corrigendum_number.trim(),
-        issued_date: dto.issued_date || todayInKolkata(),
-        summary: dto.summary || null,
-        old_deadline: oldDeadline,
-        new_deadline: newDeadline,
-        attachment_url: dto.attachment_url || null,
-        created_by: user.id,
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
+    // Issued date: a calendar day, not in the future (IST).
+    const issuedDay = dto.issued_date ? this.istDay(dto.issued_date) : todayInKolkata();
+    if (!issuedDay) throw new BadRequestException('Invalid corrigendum issued date');
+    if (issuedDay > todayInKolkata()) {
+      throw new BadRequestException(`Corrigendum issued date cannot be in the future (today is ${todayInKolkata()} IST)`);
+    }
 
-    // Update tender deadline
-    await this.updateDeadline(
-      tenderId,
-      {
-        new_deadline: newDeadline.toISOString(),
-        reason: `Corrigendum ${dto.corrigendum_number}: ${dto.summary || 'Deadline extended'}`,
-      },
-      user,
-    );
+    // A corrigendum number is recorded once per tender (case- and space-insensitive).
+    const duplicate = await this.db
+      .selectFrom('tender_corrigenda')
+      .select('id')
+      .where('tender_id', '=', tenderId)
+      .where(sql<boolean>`lower(trim(corrigendum_number)) = ${corrigendumNumber.toLowerCase()}`)
+      .executeTakeFirst();
+    if (duplicate) {
+      throw new ConflictException(`Corrigendum "${corrigendumNumber}" is already recorded on this tender.`);
+    }
+
+    // The corrigendum row is written inside the deadline-change transaction, after every deadline rule has passed:
+    // a rejected deadline (e.g. before the publication date) leaves no corrigendum behind.
+    let corrigendum: any = null;
+    try {
+      await this.updateDeadline(
+        tenderId,
+        {
+          new_deadline: newDeadline.toISOString(),
+          reason: `Corrigendum ${corrigendumNumber}: ${dto.summary || 'Deadline extended'}`,
+        },
+        user,
+        {
+          inTransaction: async (trx, { oldDeadline }) => {
+            corrigendum = await trx
+              .insertInto('tender_corrigenda')
+              .values({
+                tender_id: tenderId,
+                corrigendum_number: corrigendumNumber,
+                issued_date: issuedDay,
+                summary: dto.summary || null,
+                old_deadline: oldDeadline,
+                new_deadline: newDeadline,
+                attachment_url: dto.attachment_url || null,
+                created_by: user.id,
+              })
+              .returningAll()
+              .executeTakeFirstOrThrow();
+          },
+        },
+      );
+    } catch (err: any) {
+      if (this.isUniqueViolation(err)) {
+        throw new ConflictException(`Corrigendum "${corrigendumNumber}" is already recorded on this tender.`);
+      }
+      throw this.toFriendlyDbError(err, 'record the corrigendum');
+    }
 
     await this.logActivity(
       tenderId,
       'CORRIGENDUM_ISSUED',
-      `Corrigendum ${dto.corrigendum_number} recorded. Deadline updated.`,
+      `Corrigendum ${corrigendumNumber} recorded. Deadline updated.`,
       user.id,
     );
     return corrigendum;
@@ -4180,11 +4731,7 @@ export class TendersService {
 
   async getFinancialInstruments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     return this.db
       .selectFrom('tender_financial_instruments')
@@ -4198,18 +4745,19 @@ export class TendersService {
 
   async addFinancialInstrument(tenderId: string, dto: CreateTenderFinancialInstrumentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
+
+    const amount = Number(dto.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException(`${dto.instrument_type || 'Instrument'} amount must be greater than zero.`);
+    }
 
     const inst = await this.db
       .insertInto('tender_financial_instruments')
       .values({
         tender_id: tenderId,
         instrument_type: dto.instrument_type,
-        amount: dto.amount,
+        amount,
         mode: dto.mode || 'Online',
         reference_number: dto.reference_number || null,
         bank: dto.bank || null,
@@ -4238,11 +4786,11 @@ export class TendersService {
     user: AuthUser,
   ) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
+
+    if (dto.amount !== undefined && (!Number.isFinite(Number(dto.amount)) || Number(dto.amount) <= 0)) {
+      throw new BadRequestException('Instrument amount must be greater than zero.');
+    }
 
     const updateData: any = { updated_at: new Date() };
     if (dto.amount !== undefined) updateData.amount = dto.amount;
@@ -4297,6 +4845,7 @@ export class TendersService {
         'organisations.name as organisation_name',
       ])
       .where('tender_financial_instruments.instrument_type', 'in', ['EMD', 'PBG'])
+      .where((eb) => eb.or([eb('tenders.is_deleted', '=', false), eb('tenders.is_deleted', 'is', null)]))
       .orderBy('tender_financial_instruments.created_at', 'desc')
       .execute();
 
@@ -4335,11 +4884,7 @@ export class TendersService {
 
   async getComments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     return this.db
       .selectFrom('tender_comments')
@@ -4353,11 +4898,7 @@ export class TendersService {
 
   async addComment(tenderId: string, dto: CreateTenderCommentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId);
-    assertRegionScope(user, tender.region_id, {
-      entityZoneId: tender.zone_id,
-      entityAssignedTo: tender.assigned_to,
-      entityOwnerId: tender.owner || (tender as any).tender_owner_id,
-    });
+    await this.assertTenderVisible(user, tender);
 
     const mentions = Array.isArray(dto.mentions) ? dto.mentions : [];
 
@@ -4724,8 +5265,8 @@ export class TendersService {
       .where('tenders.is_deleted', '=', false)
       .where('tenders.status', 'in', nonTerminalStatuses as any);
 
-    if (user.role === 'regional_manager' && user.region_id) {
-      baseQuery = baseQuery.where('tenders.region_id', '=', user.region_id);
+    if (user.role === 'regional_manager') {
+      baseQuery = baseQuery.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
@@ -4832,8 +5373,8 @@ export class TendersService {
       ])
       .where('tenders.is_deleted', '=', false);
 
-    if (user.role === 'regional_manager' && user.region_id) {
-      q = q.where('tenders.region_id', '=', user.region_id);
+    if (user.role === 'regional_manager') {
+      q = q.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
       q = q.where((eb) =>
         eb.or([

@@ -1,9 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
+import { Kysely } from 'kysely';
 import { AppModule } from '../src/app.module';
 
 jest.setTimeout(60000);
+
+/** Today's calendar date in IST (YYYY-MM-DD) — result dates are IST calendar days and cannot be in the future. */
+const istToday = () => new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10);
+/**
+ * A bid that closes later today (23:59 IST): still open for submission now, and its result can be recorded today
+ * (a result can never be dated before the bid closing day — QA DEF-090).
+ */
+const closesTodayIST = () => `${istToday()}T23:59:00+05:30`;
 
 describe('Module 4: Tender Management E2E Test Suite', () => {
   let app: INestApplication;
@@ -18,13 +27,46 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
   let testRegionId: string;
 
   let createdTenderId: string;
+  let db: Kysely<any>;
   const uniqueTenderNo = `GEM/2026/B/${Date.now().toString().slice(-6)}`;
+
+  /**
+   * Submission gate (QA DEF-006): a bid / PQ can only be submitted once the mandatory document checklist is
+   * initialised and every mandatory document is Ready.
+   */
+  async function readyChecklist(tenderId: string) {
+    const init = await request(app.getHttpServer())
+      .post(`/api/tenders/${tenderId}/documents/init-checklist`)
+      .set('Authorization', `Bearer ${mgmtToken}`);
+    expect(init.status).toBe(201);
+    for (const doc of init.body.documents.filter((d: any) => d.is_mandatory)) {
+      const patch = await request(app.getHttpServer())
+        .patch(`/api/tenders/${tenderId}/documents/${doc.id}`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ status: 'Ready', file_name: `${doc.document_type}.pdf` });
+      expect(patch.status).toBe(200);
+    }
+  }
+
+  /**
+   * Bids are opened only after the bid closes: evaluation stages and results are blocked before the closing time.
+   * Simulate the closing having passed (yesterday) so the bid can be evaluated and its result recorded today.
+   */
+  async function closeBid(tenderId: string) {
+    const closedAt = new Date(Date.now() - 86400000);
+    await db
+      .updateTable('tenders')
+      .set({ submission_deadline: closedAt, bid_closing_date: closedAt })
+      .where('id', '=', tenderId)
+      .execute();
+  }
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
+    db = moduleFixture.get<Kysely<any>>('KYSELY_DB');
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api');
     app.useGlobalPipes(
@@ -154,7 +196,7 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
           region_id: testRegionId,
           category: 'pq',
           publication_date: '2026-09-20',
-          submission_deadline: '2026-11-15T15:00:00Z',
+          submission_deadline: closesTodayIST(),
           estimated_value: 12500000,
           assigned_person_id: salesUserId,
           remarks: 'High priority defence tender registration',
@@ -298,7 +340,19 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
       expect(res.body.message).toMatch(/cannot move tender|invalid transition/i);
     });
 
+    it('rejects PQ submission while mandatory documents are not Ready (DEF-006)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/tenders/${createdTenderId}/transitions`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ target_status: 'pq_submitted', remarks: 'No documents ready yet' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/mandatory documents are Ready|checklist has not been initialised/i);
+    });
+
     it('✓ Transitions under_preparation → pq_submitted for PQ category tender', async () => {
+      await readyChecklist(createdTenderId);
+
       const res = await request(app.getHttpServer())
         .post(`/api/tenders/${createdTenderId}/transitions`)
         .set('Authorization', `Bearer ${mgmtToken}`)
@@ -340,7 +394,18 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
       expect(new Date(res.body.submission_date).getTime()).not.toBeNaN();
     });
 
+    it('✕ Blocks submitted → technical_eval before the bid closing time (400)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/tenders/${createdTenderId}/transitions`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ target_status: 'technical_eval', remarks: 'Too early' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.message).toMatch(/bids are opened only after the bid closes/i);
+    });
+
     it('✓ Transitions submitted → technical_eval', async () => {
+      await closeBid(createdTenderId);
       const res = await request(app.getHttpServer())
         .post(`/api/tenders/${createdTenderId}/transitions`)
         .set('Authorization', `Bearer ${mgmtToken}`)
@@ -467,7 +532,7 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
           region_id: testRegionId,
           category: 'general_mha',
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-25T15:00:00Z',
+          submission_deadline: closesTodayIST(),
           estimated_value: 8500000,
           assigned_person_id: salesUserId,
           remarks: 'Second tender for post-mortem loss verification',
@@ -486,10 +551,13 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ decision: 'approved', remarks: 'Approved' });
 
-      await request(app.getHttpServer())
+      await readyChecklist(lostTenderId);
+      const submitRes = await request(app.getHttpServer())
         .post(`/api/tenders/${lostTenderId}/transitions`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ target_status: 'submitted', remarks: 'Bid submitted' });
+      expect(submitRes.status).toBe(201);
+      await closeBid(lostTenderId);
     });
 
     it('✕ Fails when recording LOST outcome without loss reason (400)', async () => {
@@ -518,7 +586,8 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
           eligibility_issue: 'Required 5-year past supply credentials in border states',
           documentation_issue: 'Missing notarized OEM compliance matrix page 4',
           other_reason: 'Preference clause exercised for local assembly unit',
-          result_date: '2026-09-22',
+          // Results are declared after the bid closes (closing day = today), never before (DEF-090).
+          result_date: istToday(),
           remarks: 'Detailed post-mortem reviewed with sales and engineering',
         });
 
@@ -539,7 +608,7 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
           region_id: testRegionId,
           responsible_person_id: salesUserId,
           category: 'pq',
-          result_date: '2026-09-21',
+          result_date: istToday(),
           remarks: 'Arihant ranked L1 in commercial bid opening',
         });
 
@@ -681,6 +750,115 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
         expect(res.body[0].pq_count).toBeDefined();
         expect(res.body[0].general_mha_count).toBeDefined();
       }
+    });
+  });
+
+  // =========================================================================
+  // Regional manager scope (R3) and one audit row per decision (R9)
+  // =========================================================================
+  describe('Regional manager team scope & audit trail', () => {
+    let rmId: string;
+    let teamBidId: string;
+    let foreignBidId: string;
+
+    beforeAll(async () => {
+      const rm = await db.selectFrom('users').select(['id', 'zone_id']).where('email', '=', 'regmgr.north@arihant.com').executeTakeFirstOrThrow();
+      rmId = rm.id;
+      // A zone (with a region) that is not the RM's own zone.
+      const other = await db
+        .selectFrom('regions')
+        .select(['regions.id as region_id', 'regions.zone_id'])
+        .where('regions.zone_id', 'is not', null)
+        .where('regions.zone_id', '!=', rm.zone_id)
+        .executeTakeFirstOrThrow();
+      // A field rep on the RM's team (dashboard teamScope: reports to the RM or based in the RM's zone).
+      const teamRep = await db
+        .selectFrom('users')
+        .select('id')
+        .where('is_active', '=', true)
+        .where('role', '=', 'sales')
+        .where((eb: any) => eb.or([eb('reporting_manager_id', '=', rm.id), eb('zone_id', '=', rm.zone_id)]))
+        .executeTakeFirstOrThrow();
+      // An active user who is nowhere near the RM's team (national tender desk).
+      const outsider = await db
+        .selectFrom('users')
+        .select('id')
+        .where('is_active', '=', true)
+        .where('role', '=', 'tender_team')
+        .executeTakeFirstOrThrow();
+
+      const mk = async (no: string, assignee: string) => {
+        const res = await request(app.getHttpServer())
+          .post('/api/tenders')
+          .set('Authorization', `Bearer ${mgmtToken}`)
+          .send({
+            tender_no: no,
+            organisation_id: testOrgId,
+            product_id: testProductId,
+            zone_id: other.zone_id,
+            region_id: other.region_id,
+            category: 'general_mha',
+            publication_date: '2026-09-01',
+            submission_deadline: closesTodayIST(),
+            estimated_value: 5000000,
+            assigned_person_id: assignee,
+            tender_owner_id: assignee,
+          });
+        expect(res.status).toBe(201);
+        return res.body.id as string;
+      };
+      const stamp = Date.now().toString().slice(-6);
+      teamBidId = await mk(`GEM/RMTEAM/${stamp}`, teamRep.id);
+      foreignBidId = await mk(`GEM/RMOUT/${stamp}`, outsider.id);
+    });
+
+    it("✓ RM can inspect a team member's bid tagged to another zone (list, detail and dossier tabs agree)", async () => {
+      const list = await request(app.getHttpServer())
+        .get('/api/tenders')
+        .query({ search: 'GEM/RMTEAM/', limit: 100 })
+        .set('Authorization', `Bearer ${rmToken}`);
+      expect(list.status).toBe(200);
+      expect(list.body.data.map((t: any) => t.id)).toContain(teamBidId);
+
+      for (const path of ['', '/line-items', '/documents', '/financial-instruments', '/comments']) {
+        const res = await request(app.getHttpServer()).get(`/api/tenders/${teamBidId}${path}`).set('Authorization', `Bearer ${rmToken}`);
+        expect([path, res.status]).toEqual([path, 200]);
+      }
+    });
+
+    it('✕ RM cannot open a bid outside their zone and team (403), and it is not in their list', async () => {
+      const list = await request(app.getHttpServer())
+        .get('/api/tenders')
+        .query({ search: 'GEM/RMOUT/', limit: 100 })
+        .set('Authorization', `Bearer ${rmToken}`);
+      expect(list.status).toBe(200);
+      expect(list.body.data.map((t: any) => t.id)).not.toContain(foreignBidId);
+
+      const detail = await request(app.getHttpServer()).get(`/api/tenders/${foreignBidId}`).set('Authorization', `Bearer ${rmToken}`);
+      expect(detail.status).toBe(403);
+      const items = await request(app.getHttpServer()).get(`/api/tenders/${foreignBidId}/line-items`).set('Authorization', `Bearer ${rmToken}`);
+      expect(items.status).toBe(403);
+      expect(rmId).toBeTruthy();
+    });
+
+    it('✓ A decision move writes one audit row (the decision), a plain stage move keeps its stage-changed row', async () => {
+      await request(app.getHttpServer())
+        .post(`/api/tenders/${teamBidId}/approval-request`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ remarks: 'Participation request' });
+      const auditRows = async () =>
+        db.selectFrom('audit_log').select(['action']).where('entity_type', '=', 'tender').where('entity_id', '=', teamBidId).execute();
+      let rows: { action: string }[] = [];
+      for (let i = 0; i < 40; i++) {
+        rows = await auditRows();
+        if (rows.some((r) => r.action === 'tender_approval_requested')) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      expect(rows.filter((r) => r.action === 'tender_approval_requested')).toHaveLength(1);
+      // Give any (wrongly) queued generic row time to land before asserting it is absent.
+      await new Promise((r) => setTimeout(r, 750));
+      rows = await auditRows();
+      expect(rows.filter((r) => r.action === 'tender_stage_changed')).toHaveLength(0);
     });
   });
 });

@@ -34,7 +34,8 @@ export class ContactsService {
         organisation_id: dto.organisation_id,
         full_name: dto.full_name.trim(),
         designation: dto.designation || null,
-        mobile: dto.mobile || null,
+        // stored as the 10-digit national number, the form the duplicate check compares against
+        mobile: dto.mobile ? dto.mobile.replace(/\D/g, '').slice(-10) : null,
         email: dto.email || null,
         is_primary: dto.is_primary || false,
       })
@@ -66,6 +67,7 @@ export class ContactsService {
       .set({
         ...dto,
         full_name: dto.full_name ? dto.full_name.trim() : undefined,
+        mobile: dto.mobile ? dto.mobile.replace(/\D/g, '').slice(-10) : undefined,
       })
       .where('id', '=', id)
       .returningAll()

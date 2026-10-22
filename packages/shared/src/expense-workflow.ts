@@ -109,6 +109,30 @@ export const EXPENSE_STATUS_LABELS: Record<ExpenseClaimStatus, string> = {
   withdrawn: 'Withdrawn',
 };
 
+/**
+ * KPI buckets for claim totals. Every status belongs to exactly one bucket, so the bucket amounts always add up to
+ * the overall "total claimed" — stat cards built from them can never disagree arithmetically.
+ */
+export type ExpenseStageBucket = 'draft' | 'manager' | 'clarification' | 'accounts' | 'settled' | 'closed';
+
+export const EXPENSE_STAGE_BUCKETS: Record<ExpenseStageBucket, ExpenseClaimStatus[]> = {
+  draft: ['draft'],
+  manager: ['submitted'],
+  clarification: ['clarification_required'],
+  accounts: ['manager_approved', 'accounts_review', 'accounts_approved'],
+  settled: ['processed'],
+  closed: ['rejected', 'withdrawn'],
+};
+
+export const EXPENSE_STAGE_BUCKET_LABELS: Record<ExpenseStageBucket, string> = {
+  draft: 'Draft',
+  manager: 'Stage 1 · Manager review',
+  clarification: 'Clarification',
+  accounts: 'Stage 2 · Accounts',
+  settled: 'Settled (paid)',
+  closed: 'Rejected / withdrawn',
+};
+
 export const EXPENSE_ITEM_STATUS_LABELS: Record<ExpenseItemStatus, string> = {
   pending: 'Pending',
   approved: 'Approved',

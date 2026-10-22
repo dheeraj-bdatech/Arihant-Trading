@@ -62,7 +62,7 @@ export function ProductDossierModal({ product, onClose }: ProductDossierModalPro
                 <ShieldCheck className="w-4 h-4" /> MHA QR Approved
               </span>
             )}
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-medium">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3] text-xs font-medium">
               <Activity className="w-3.5 h-3.5" /> {product.readiness}% Operational
             </span>
           </div>
@@ -156,7 +156,7 @@ export function ProductDossierModal({ product, onClose }: ProductDossierModalPro
         {/* Modal Footer Actions */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-[#ECE9E2]">
           <div className="text-[11px] text-[#4A5568] flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+            <ShieldCheck className="w-4 h-4 text-[#0F5E63]" />
             <span>Official ATC Defence Brochure Release v2026</span>
           </div>
 

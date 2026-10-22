@@ -6,6 +6,7 @@ import { calendarDay, isoDaysBetween } from '../../common/utils/ist-date.util.js
 import { OutboxService } from '../../common/outbox/outbox.service.js';
 import { AppEvents } from '../../common/events/event-names.js';
 import type { Database } from '@arihant/shared';
+import { proposalDisplayNo } from './proposals.workflow.js';
 
 @Injectable()
 export class ProposalsSchedulerService {
@@ -89,7 +90,7 @@ export class ProposalsSchedulerService {
           businessDate,
           {
             proposalId: p.id,
-            proposalNo: p.proposal_no || p.proposal_number,
+            proposalNo: proposalDisplayNo(p),
             followUpOwnerId: p.follow_up_owner_id || p.followup_owner_id,
             dueDate: businessDate,
           },
@@ -125,7 +126,7 @@ export class ProposalsSchedulerService {
           businessDate,
           {
             proposalId: p.id,
-            proposalNo: p.proposal_no || p.proposal_number,
+            proposalNo: proposalDisplayNo(p),
             followUpOwnerId: p.follow_up_owner_id || p.followup_owner_id,
             daysOverdue,
             dueDate: nextDateStr,
@@ -152,7 +153,7 @@ export class ProposalsSchedulerService {
             businessDate,
             {
               proposalId: p.id,
-              proposalNo: p.proposal_no || p.proposal_number,
+              proposalNo: proposalDisplayNo(p),
               followUpOwnerId: ownerId,
               managerId,
               daysOverdue,
@@ -185,7 +186,7 @@ export class ProposalsSchedulerService {
             businessDate,
             {
               proposalId: p.id,
-              proposalNo: p.proposal_no || p.proposal_number,
+              proposalNo: proposalDisplayNo(p),
               responsibleId: p.responsible_person_id || p.responsible_id,
               requiredDate: p.required_date,
               daysLate: Math.abs(diffDays),
@@ -200,7 +201,7 @@ export class ProposalsSchedulerService {
             businessDate,
             {
               proposalId: p.id,
-              proposalNo: p.proposal_no || p.proposal_number,
+              proposalNo: proposalDisplayNo(p),
               responsibleId: p.responsible_person_id || p.responsible_id,
               requiredDate: p.required_date,
               daysLeft: diffDays,
@@ -243,7 +244,7 @@ export class ProposalsSchedulerService {
             businessDate,
             {
               proposalId: p.id,
-              proposalNo: p.proposal_no || p.proposal_number,
+              proposalNo: proposalDisplayNo(p),
               status,
               lastActivityAt: lastActive.toISOString(),
               daysInactive,
@@ -268,7 +269,7 @@ export class ProposalsSchedulerService {
           businessDate,
           {
             proposalId: p.id,
-            proposalNo: p.proposal_no || p.proposal_number,
+            proposalNo: proposalDisplayNo(p),
             responsibleId: p.responsible_person_id || p.responsible_id,
           },
         );
@@ -288,7 +289,7 @@ export class ProposalsSchedulerService {
             businessDate,
             {
               proposalId: p.id,
-              proposalNo: p.proposal_no || p.proposal_number,
+              proposalNo: proposalDisplayNo(p),
               followUpOwnerId: p.follow_up_owner_id || p.followup_owner_id,
               sentDate: p.sent_date,
               daysSinceSent,
@@ -324,7 +325,7 @@ export class ProposalsSchedulerService {
             .where('id', '=', p.id)
             .execute();
 
-          this.logger.warn(`Proposal ${p.proposal_no || p.proposal_number} flagged for inactive owner reassignment.`);
+          this.logger.warn(`Proposal ${proposalDisplayNo(p)} flagged for inactive owner reassignment.`);
         }
       }
 

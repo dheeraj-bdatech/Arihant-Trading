@@ -5,9 +5,20 @@ import {
   Injectable,
 } from '@nestjs/common';
 import type { AuthUser, ProposalStatus, UserRole } from '@arihant/shared';
-import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { calendarDay, isoDaysBetween, todayInKolkata } from '../../common/utils/ist-date.util.js';
 
 export const TERMINAL_PROPOSAL_STATUSES: ProposalStatus[] = ['CONVERTED', 'LOST', 'CLOSED'];
+
+/** The proposal number every screen, notification and task shows (PROP-2026-1076); PRP-… is the internal canonical id. */
+export function proposalDisplayNo(p: { proposal_number?: string | null; proposal_no?: string | null } | null | undefined): string {
+  return p?.proposal_number || p?.proposal_no || '';
+}
+
+/** True when the proposal carries a commercial value (₹ quoted amount above zero). */
+export function hasQuotedValue(p: { quoted_value?: unknown } | null | undefined): boolean {
+  const n = Number(p?.quoted_value);
+  return Number.isFinite(n) && n > 0;
+}
 
 export interface TransitionContext {
   comment?: string;
@@ -98,6 +109,57 @@ export class ProposalsWorkflowService {
   };
 
   /**
+   * True when the user is a party to the proposal: the person who requested or created it, the responsible
+   * proposal person, or the follow-up owner.
+   */
+  isParty(proposal: any, user: AuthUser): boolean {
+    const uid = user?.id;
+    if (!uid) return false;
+    return [
+      proposal.requested_by_id,
+      proposal.requested_by,
+      proposal.created_by_id,
+      proposal.created_by,
+      proposal.responsible_person_id,
+      proposal.responsible_id,
+      proposal.follow_up_owner_id,
+      proposal.followup_owner_id,
+    ].includes(uid);
+  }
+
+  /**
+   * Who may edit or progress a proposal (RBAC):
+   *  - management / admin: every proposal;
+   *  - regional manager: every proposal in their scope (row visibility is enforced when the proposal is loaded);
+   *  - sales / tender team and everyone else: only proposals they requested, created, are responsible for or own
+   *    the follow-up of. Seeing a colleague's proposal in the region does not make it theirs to change.
+   */
+  canActOn(proposal: any, user: AuthUser): boolean {
+    const role = (user?.role || '').toLowerCase();
+    if (role === 'admin' || role === 'management' || role === 'regional_manager') return true;
+    return this.isParty(proposal, user);
+  }
+
+  /** Throws 403 with a human explanation when `canActOn` is false. */
+  assertCanAct(proposal: any, user: AuthUser): void {
+    if (this.canActOn(proposal, user)) return;
+    const no = proposalDisplayNo(proposal) || 'this proposal';
+    const owner = proposal.responsible_name || proposal.requested_by_name;
+    throw new ForbiddenException({
+      message:
+        `You can only change proposals you requested or are responsible for. ${no} belongs to ` +
+        `${owner || 'another salesperson'}; ask them, your regional manager or management to make this change.`,
+    });
+  }
+
+  /** Days since the proposal reached its terminal outcome, on IST calendar days. */
+  private daysSinceOutcome(proposal: any, now: Date): number | null {
+    const outcomeDay = calendarDay(proposal.outcome_date) || calendarDay(proposal.updated_at);
+    if (!outcomeDay) return null;
+    return isoDaysBetween(outcomeDay, todayInKolkata(now));
+  }
+
+  /**
    * Calculates allowed target transitions for a proposal tailored to the given user and settings
    */
   getAllowedTransitions(
@@ -122,17 +184,15 @@ export class ProposalsWorkflowService {
     if (this.isTerminal(current)) {
       if (!isAdminOrMgmt) return [];
       const windowDays = settings?.reopen_window_days ?? 30;
-      const outcomeDateStr = proposal.outcome_date || proposal.updated_at;
-      if (outcomeDateStr) {
-        const outcomeDate = new Date(outcomeDateStr);
-        const now = new Date();
-        const diffDays = Math.floor((now.getTime() - outcomeDate.getTime()) / (1000 * 60 * 60 * 24));
-        if (diffDays <= windowDays) {
-          return ['REQUESTED'];
-        }
+      const diffDays = this.daysSinceOutcome(proposal, new Date());
+      if (diffDays !== null && diffDays <= windowDays) {
+        return ['REQUESTED'];
       }
       return [];
     }
+
+    // Sales / tender users only progress proposals they are a party to (DEF-008)
+    if (!this.canActOn(proposal, user)) return [];
 
     const potential = this.transitionsMap[current] || [];
     const allowed: ProposalStatus[] = [];
@@ -227,6 +287,7 @@ export class ProposalsWorkflowService {
     const responsibleId = proposal.responsible_person_id || proposal.responsible_id;
     const role = (user.role || '').toLowerCase();
     const isAdminOrMgmt = role === 'admin' || role === 'management';
+    const proposalNo = proposalDisplayNo(proposal) || 'This proposal';
 
     // E19: Action on terminal status
     if (this.isTerminal(current)) {
@@ -241,25 +302,24 @@ export class ProposalsWorkflowService {
           throw new BadRequestException('A reason is mandatory when reopening a proposal');
         }
         const windowDays = settings?.reopen_window_days ?? 30;
-        const outcomeDateStr = proposal.outcome_date || proposal.updated_at;
-        if (outcomeDateStr) {
-          const outcomeDate = new Date(outcomeDateStr);
-          const diffDays = Math.floor((now.getTime() - outcomeDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (diffDays > windowDays) {
-            throw new ConflictException({
-              message: `Cannot reopen proposal outside the ${windowDays}-day reopen window. Create a new linked proposal instead.`,
-              allowed_transitions: [],
-            });
-          }
+        const diffDays = this.daysSinceOutcome(proposal, now);
+        if (diffDays !== null && diffDays > windowDays) {
+          throw new ConflictException({
+            message: `Cannot reopen proposal outside the ${windowDays}-day reopen window. Create a new linked proposal instead.`,
+            allowed_transitions: [],
+          });
         }
         return { targetStatus: 'REQUESTED' };
       }
 
       throw new ConflictException({
-        message: `Proposal is in terminal status ${current} and cannot transition to ${target}`,
+        message: `${proposalNo} is ${current} and read-only; it cannot move to ${target}. Management or admin can reopen it.`,
         allowed_transitions: allowed,
       });
     }
+
+    // DEF-008: sales / tender users may only progress proposals they requested or are responsible for (403).
+    this.assertCanAct(proposal, user);
 
     // Check transition allowed list
     if (!allowed.includes(target)) {
@@ -308,6 +368,19 @@ export class ProposalsWorkflowService {
       });
     }
 
+    // DEF-029: a proposal cannot go to review, be approved or be fast-tracked to the customer without a quoted value.
+    const needsCommercialValue =
+      target === 'READY_FOR_REVIEW' ||
+      target === 'APPROVED' ||
+      (target === 'SENT_TO_CUSTOMER' && (current === 'UNDER_PREPARATION' || current === 'READY_FOR_REVIEW'));
+    if (needsCommercialValue && !hasQuotedValue(proposal)) {
+      throw new BadRequestException(
+        target === 'APPROVED'
+          ? `${proposalNo} has no quoted value. Pricing must be entered (Edit → Commercial terms) before it can be approved.`
+          : `Enter the quoted value (₹) for ${proposalNo} (Edit → Commercial terms) before submitting it for review.`,
+      );
+    }
+
     // Validate transition specific required data (E28, E29, etc.)
     if (target === 'CLOSED') {
       if (!context?.closure_reason_code?.trim() || !context?.closure_reason_text?.trim()) {
@@ -316,6 +389,10 @@ export class ProposalsWorkflowService {
     } else if (target === 'LOST') {
       if (!context?.lost_reason_code?.trim() || !context?.lost_reason_text?.trim()) {
         throw new BadRequestException('Lost reason code and lost explanation are mandatory when marking a proposal as lost');
+      }
+      const lostDay = calendarDay(context?.outcome_date);
+      if (lostDay && lostDay > today) {
+        throw new BadRequestException(`Outcome date cannot be in the future (today is ${today} IST)`);
       }
     } else if (target === 'CONVERTED') {
       if (!context?.outcome_date) {
@@ -354,7 +431,7 @@ export class ProposalsWorkflowService {
         throw new BadRequestException(`Sent date cannot be earlier than the proposal request date (${requestDay})`);
       }
       if (!context.email_references || context.email_references.length === 0 || !context.email_references[0]?.trim()) {
-        throw new BadRequestException('At least one email reference or dispatched communication reference is required');
+        throw new BadRequestException('Enter the email or dispatch reference the quote was sent under.');
       }
       if (!context.follow_up_owner_id) {
         throw new BadRequestException('A follow-up owner must be assigned when sending to customer');

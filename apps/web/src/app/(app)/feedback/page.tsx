@@ -337,7 +337,7 @@ export default function UIUXFeedbackPage() {
               <CardContent>
                 {submitted ? (
                   <div className="py-12 text-center flex flex-col items-center justify-center gap-3">
-                    <CheckCircle2 className="w-12 h-12 text-emerald-600 animate-in zoom-in-75 duration-200" />
+                    <CheckCircle2 className="w-12 h-12 text-[#0F5E63] animate-in zoom-in-75 duration-200" />
                     <h3 className="font-serif font-bold text-lg text-[#14213D]">Feedback Recorded!</h3>
                     <p className="text-sm text-[#4A5568] max-w-sm">
                       Your field ergonomics critique has been saved to the audit log. Switching to feedback records...
@@ -381,8 +381,8 @@ export default function UIUXFeedbackPage() {
                             <Star
                               className={`w-6 h-6 ${
                                 star <= (hoverRating || rating)
-                                  ? 'text-amber-500 fill-amber-500'
-                                  : 'text-gray-300'
+                                  ? 'text-[#A15C07] fill-[#A15C07]'
+                                  : 'text-[#C9C4B8]'
                               }`}
                             />
                           </button>
@@ -662,9 +662,9 @@ export default function UIUXFeedbackPage() {
                         {item.moduleName}
                       </span>
                     </div>
-                    <div className="flex items-center gap-0.5 text-amber-500">
+                    <div className="flex items-center gap-0.5 text-[#A15C07]">
                       {Array.from({ length: item.rating }).map((_, i) => (
-                        <Star key={i} className="w-3.5 h-3.5 fill-amber-500" />
+                        <Star key={i} className="w-3.5 h-3.5 fill-[#A15C07]" />
                       ))}
                     </div>
                   </div>
@@ -695,7 +695,7 @@ export default function UIUXFeedbackPage() {
                     <button
                       type="button"
                       onClick={() => handleDelete(item.id)}
-                      className="text-red-600 hover:text-red-700 p-1 cursor-pointer"
+                      className="text-[#881337] hover:text-[#700F2D] p-1 cursor-pointer"
                       title="Delete record"
                     >
                       <Trash2 className="w-3.5 h-3.5" />

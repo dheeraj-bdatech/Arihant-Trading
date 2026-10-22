@@ -15,12 +15,23 @@ export class NotificationsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('unreadOnly') unreadOnly?: string,
+    @Query('status') status?: string,
+    @Query('category') category?: string,
+    @Query('search') search?: string,
   ) {
     return this.notifService.findAll(user.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       unreadOnly: unreadOnly === 'true',
+      status,
+      category,
+      search,
     });
+  }
+
+  @Get('summary')
+  async getSummary(@CurrentUser() user: AuthUser) {
+    return this.notifService.getSummary(user.id);
   }
 
   @Get('unread-count')

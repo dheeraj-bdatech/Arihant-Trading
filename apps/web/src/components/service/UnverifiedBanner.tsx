@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { ShieldQuestion, Link2, Phone, Mail, User } from 'lucide-react';
-import { Button } from '@/components/ui';
+import { Button, formatDateIN } from '@/components/ui';
 
 /** Dossier banner for a public-portal ticket whose customer has not been matched to a real organisation yet. */
 export const UnverifiedBanner: React.FC<{ ticket: any; canLink: boolean; onLink: () => void }> = ({ ticket, canLink, onLink }) => {
@@ -55,7 +55,7 @@ export const UnverifiedBanner: React.FC<{ ticket: any; canLink: boolean; onLink:
           </p>
           {i.preferred_visit_date && (
             <p>
-              <span className="text-[#4A5568]">Preferred visit:</span> {new Date(i.preferred_visit_date).toLocaleDateString('en-IN')}
+              <span className="text-[#4A5568]">Preferred visit:</span> {formatDateIN(i.preferred_visit_date)}
             </p>
           )}
           {i.site_access_notes && (

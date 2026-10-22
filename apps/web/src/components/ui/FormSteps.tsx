@@ -49,6 +49,11 @@ export interface FormStepsProps {
   stepTitles?: string[];
   /** While saving: Cancel / Back are disabled so the dialog cannot be left mid-request. */
   busy?: boolean;
+  /**
+   * Custom check for one page (0-based) when the user presses Next, replacing the native `required` tooltip.
+   * Forms that report their errors inline under each field pass this; return false to stay on the page.
+   */
+  validateStep?: (page: number) => boolean;
   className?: string;
 }
 
@@ -83,7 +88,7 @@ function toPages(visible: FormStep[], max: number, titles?: string[]): StepPage[
   return pages;
 }
 
-export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, onCancel, banner, maxSteps = 3, stepTitles, busy, className }) => {
+export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, onCancel, banner, maxSteps = 3, stepTitles, busy, validateStep, className }) => {
   const steps = toPages(
     allSteps.filter((s) => !s.hidden),
     maxSteps,
@@ -134,14 +139,22 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
     if (body) body.scrollTop = 0;
   };
 
-  /** Native validity of the fields in one section; reports the first problem in place. */
+  /** Validity of one section (the caller's validateStep, else native); reports the first problem in place. */
   const validate = (i: number) => {
+    if (validateStep) return validateStep(i);
     const panel = panels.current[i];
     if (!panel) return true;
     const fields = Array.from(panel.querySelectorAll<HTMLInputElement>(FIELDS));
     const bad = fields.find((f) => !f.checkValidity());
     if (bad) {
       bad.reportValidity();
+      return false;
+    }
+    // An inline error the form already shows on this step (e.g. "End time must be after the start time") also
+    // keeps the user here, instead of surfacing only when the final submit is pressed.
+    const shown = panel.querySelector(FIELD_ERROR);
+    if (shown) {
+      shown.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
       return false;
     }
     return true;
@@ -286,10 +299,12 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
               Back
             </Button>
           )}
+          {/* Distinct keys: React must not reuse the clicked "Next" <button> as the submit button, or its type flips
+              to "submit" during the click and the form is submitted before the last step is shown. */}
           {isLast ? (
-            submit
+            <React.Fragment key="submit">{submit}</React.Fragment>
           ) : (
-            <Button type="button" rightIcon={<ArrowRight className="h-4 w-4" />} onClick={() => go(current + 1)}>
+            <Button key="next" type="button" rightIcon={<ArrowRight className="h-4 w-4" />} onClick={() => go(current + 1)}>
               <span className="sm:hidden">Next</span>
               <span className="hidden sm:inline">Next: {stepTitles ? steps[current + 1]?.title : steps[current + 1]?.parts[0]?.title}</span>
             </Button>

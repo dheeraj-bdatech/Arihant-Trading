@@ -566,7 +566,7 @@ export interface TenderFinancialInstrumentsTable {
   id: Generated<string>;
   tender_id: string;
   instrument_type: string;
-  amount: Generated<number>;
+  amount: number | null; // nullable since migration 035 (0 / unknown amounts are NULL, never negative)
   mode: Generated<string>;
   reference_number: string | null;
   bank: string | null;
@@ -929,6 +929,13 @@ export interface ProposalsTable {
   source?: Generated<string>;
   external_ref?: string | null;
   row_version?: Generated<number>;
+  // Commercial terms (migration 027). numeric columns are read back as strings by node-postgres.
+  quoted_value?: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  quantity?: number | null;
+  margin_percent?: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  validity_date?: string | null;
+  payment_terms?: string | null;
+  delivery_terms?: string | null;
   remarks: string | null;
   created_by: string | null;
   updated_by: string | null;
@@ -1845,6 +1852,8 @@ export interface DeliveriesTable {
   delivery_location: string;
   assigned_to: string | null;
   tender_id: string | null;
+  /** Converted proposal (customer PO) this dispatch fulfils — migration 033. */
+  proposal_id: string | null;
   order_reference: string | null;
   status: Generated<DeliveryStatus>;
   installation_required: Generated<boolean>;

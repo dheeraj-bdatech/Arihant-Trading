@@ -34,26 +34,27 @@ export class LeadsController {
     return this.leadsService.getDashboard(user);
   }
 
+  // Executive Intelligence Reports — sales get their own data (scoped in the service, QA DEF-052)
   @Get('reports/salesperson')
-  @Roles('management', 'regional_manager', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'admin')
   async getSalespersonReport(@CurrentUser() user: AuthUser) {
     return this.leadsService.getSalespersonReport(user);
   }
 
   @Get('reports/zones')
-  @Roles('management', 'regional_manager', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'admin')
   async getZoneReport(@CurrentUser() user: AuthUser) {
     return this.leadsService.getZoneReport(user);
   }
 
   @Get('reports/products')
-  @Roles('management', 'regional_manager', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'admin')
   async getProductReport(@CurrentUser() user: AuthUser) {
     return this.leadsService.getProductReport(user);
   }
 
   @Get('reports/interactions')
-  @Roles('management', 'regional_manager', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'admin')
   async getInteractionReport(
     @Query('from_date') fromDate?: string,
     @Query('to_date') toDate?: string,

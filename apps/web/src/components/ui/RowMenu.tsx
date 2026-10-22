@@ -26,7 +26,11 @@ export const RowMenu: React.FC<{ items: RowMenuItem[]; label?: string; buttonLab
     const onDoc = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest('.row-menu__panel') && !btn.current?.contains(e.target as Node)) close();
     };
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault(); // closes only this menu, not an enclosing Modal
+      close();
+    };
     document.addEventListener('mousedown', onDoc, true);
     document.addEventListener('keydown', onKey, true);
     document.addEventListener('scroll', close, true);

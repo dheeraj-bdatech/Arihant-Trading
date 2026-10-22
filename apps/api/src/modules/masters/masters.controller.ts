@@ -13,6 +13,8 @@ import { MastersService } from './masters.service.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
+import { CurrentUser } from '../../common/auth/current-user.decorator.js';
+import type { AuthUser } from '@arihant/shared';
 
 @Controller('masters')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -26,14 +28,14 @@ export class MastersController {
 
   @Post('zones')
   @Roles('admin')
-  async createZone(@Body() body: { code: string; name: string }) {
-    return this.mastersService.createZone(body);
+  async createZone(@Body() body: { code?: string; name?: string }, @CurrentUser() user: AuthUser) {
+    return this.mastersService.createZone(body, user.id);
   }
 
   @Patch('zones/:id')
   @Roles('admin')
-  async updateZone(@Param('id') id: string, @Body() body: { code?: string; name?: string }) {
-    return this.mastersService.updateZone(id, body);
+  async updateZone(@Param('id') id: string, @Body() body: { code?: string; name?: string }, @CurrentUser() user: AuthUser) {
+    return this.mastersService.updateZone(id, body, user.id);
   }
 
   @Delete('zones/:id')
@@ -49,14 +51,14 @@ export class MastersController {
 
   @Post('regions')
   @Roles('admin')
-  async createRegion(@Body() body: { name: string; zone_id?: string }) {
-    return this.mastersService.createRegion(body);
+  async createRegion(@Body() body: { name?: string; zone_id?: string }, @CurrentUser() user: AuthUser) {
+    return this.mastersService.createRegion(body, user.id);
   }
 
   @Patch('regions/:id')
   @Roles('admin')
-  async updateRegion(@Param('id') id: string, @Body() body: { name?: string; zone_id?: string }) {
-    return this.mastersService.updateRegion(id, body);
+  async updateRegion(@Param('id') id: string, @Body() body: { name?: string; zone_id?: string; active?: boolean }, @CurrentUser() user: AuthUser) {
+    return this.mastersService.updateRegion(id, body, user.id);
   }
 
   @Delete('regions/:id')
@@ -95,14 +97,14 @@ export class MastersController {
 
   @Post('products')
   @Roles('admin')
-  async createProduct(@Body() body: any) {
-    return this.mastersService.createProduct(body);
+  async createProduct(@Body() body: any, @CurrentUser() user: AuthUser) {
+    return this.mastersService.createProduct(body ?? {}, user.id);
   }
 
   @Patch('products/:id')
   @Roles('admin')
-  async updateProduct(@Param('id') id: string, @Body() body: any) {
-    return this.mastersService.updateProduct(id, body);
+  async updateProduct(@Param('id') id: string, @Body() body: any, @CurrentUser() user: AuthUser) {
+    return this.mastersService.updateProduct(id, body ?? {}, user.id);
   }
 
   // --- Role Permissions Matrix ---

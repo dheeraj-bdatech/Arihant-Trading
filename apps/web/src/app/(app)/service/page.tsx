@@ -32,6 +32,7 @@ import {
   Ban,
   Search,
   Layers,
+  ChevronRight,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -57,10 +58,19 @@ import {
   PageLoader,
   FilterMenu,
   RecordViews,
+  RecordTable,
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
+  formatDateIN,
+  daysFromToday,
   toneFor,
+  type BadgeProps,
   type RecordItem,
-  ScrollStrip,
-} from '@/components/ui';
+  ScrollStrip, formatDateTimeIN } from '@/components/ui';
 import type { ServicePriority, WarrantyStatus, ComplaintSource } from '@arihant/shared';
 import { allowedNextServiceStatuses, normalizeServiceStatus, type ServiceStatus } from '@arihant/shared';
 import {
@@ -154,6 +164,22 @@ const WORKLOAD_BADGE: Record<string, 'success' | 'info' | 'warning' | 'urgent' |
   'OVERDUE RISK': 'urgent',
 };
 
+/* Register table (list view) badge tones */
+type BadgeVariant = NonNullable<BadgeProps['variant']>;
+const ticketStatusBadge = (status?: string | null): BadgeVariant => {
+  const s = normalizeServiceStatus(status);
+  if (['resolved', 'report_submitted', 'closed'].includes(s)) return 'success';
+  if (['awaiting_part', 'awaiting_customer', 'on_hold', 'revisit_required', 'reopened'].includes(s)) return 'warning';
+  if (['received', 'created', 'assigned', 'visit_scheduled', 'in_progress'].includes(s)) return 'default';
+  if (s === 'escalated') return 'danger';
+  return 'outline';
+};
+const priorityBadge = (p?: string | null): BadgeVariant => (p === 'critical' || p === 'high' ? 'danger' : p === 'medium' ? 'warning' : 'default');
+const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
+
+/** Roles that may add a customer to the organisation master (POST /organisations). */
+const CAN_CREATE_ORG = ['management', 'regional_manager', 'sales', 'tender_team', 'admin'];
+
 type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link'; ticket: any; target?: ServiceStatus };
 
 export default function ServicePage() {
@@ -214,11 +240,12 @@ export default function ServicePage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'overview' | 'visits' | 'reports' | 'parts' | 'comments' | 'history' | 'linked'>('overview');
 
-  // Engineers the current user may pick: everyone for managers, only themselves for an engineer
-  const engineers: Engineer[] = useMemo(() => {
-    const list = serviceEngineers.map((u: any) => ({ id: u.id as string, name: (u.full_name || u.email) as string }));
-    return role === 'service_team' ? list.filter((e) => e.id === userId) : list;
-  }, [serviceEngineers, role, userId]);
+  // Engineers the current user may dispatch, as the API decides (GET /service/engineers): managers everyone in
+  // scope, a chief service engineer his depot team, a field engineer only himself.
+  const engineers: Engineer[] = useMemo(
+    () => serviceEngineers.map((u: any) => ({ id: u.id as string, name: (u.full_name || u.email) as string })),
+    [serviceEngineers],
+  );
   const engineerNames = useMemo(() => Object.fromEntries(serviceEngineers.map((u: any) => [u.id, u.full_name || u.email])), [serviceEngineers]);
 
   useEffect(() => {
@@ -226,25 +253,26 @@ export default function ServicePage() {
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  // Fetch tickets & stats
+  // Fetch tickets & stats — both with the same filters, so the KPI tiles count exactly what the list shows.
   const fetchData = useCallback(async () => {
     try {
       setLoadError(null);
+      const filters = {
+        priority: priorityFilter !== 'all' ? priorityFilter : undefined,
+        complaint_source: sourceFilter !== 'all' ? sourceFilter : undefined,
+        unassigned: unassignedFilter ? 'true' : undefined,
+        overdue: overdueFilter ? 'true' : undefined,
+        repeat: repeatFilter ? 'true' : undefined,
+        unverified: unverifiedFilter ? 'true' : undefined,
+        search: debouncedSearch || undefined,
+      };
       const [ticketsRes, statsRes] = await Promise.all([
-        api.get('/service/tickets', {
-          priority: priorityFilter !== 'all' ? priorityFilter : undefined,
-          complaint_source: sourceFilter !== 'all' ? sourceFilter : undefined,
-          unassigned: unassignedFilter ? 'true' : undefined,
-          overdue: overdueFilter ? 'true' : undefined,
-          repeat: repeatFilter ? 'true' : undefined,
-          unverified: unverifiedFilter ? 'true' : undefined,
-          search: debouncedSearch || undefined,
-          limit: 100,
-        }),
-        api.get('/service/stats').catch(() => null),
+        api.get('/service/tickets', { ...filters, limit: 100 }),
+        api.get('/service/stats', filters).catch(() => null),
       ]);
       setTickets(ticketsRes.data || []);
-      if (statsRes) setStats(statsRes);
+      // No stats (endpoint failed): drop stale numbers so the tiles fall back to counts over the loaded list.
+      setStats(statsRes || null);
     } catch (err) {
       console.error('Failed to load service tickets:', err);
       setLoadError(errMsg(err, 'Failed to load service tickets.'));
@@ -264,11 +292,13 @@ export default function ServicePage() {
       .then((res) => setOrganisations(res.data || []))
       .catch(() => {});
 
-    api
-      .get('/users', { role: 'service_team', limit: 100 })
-      .then((res) => setServiceEngineers((res.data || []).filter((u: any) => u.is_active !== false)))
-      .catch(() => {});
-  }, []);
+    if (['management', 'regional_manager', 'service_team', 'admin'].includes(role)) {
+      api
+        .get('/service/engineers')
+        .then((res: any) => setServiceEngineers(Array.isArray(res) ? res : res?.data || []))
+        .catch(() => setServiceEngineers([]));
+    }
+  }, [role]);
 
   // Pipeline tabs (§32) are client-side over the filtered list
   const matchesTab = useCallback((tab: string, status: string) => {
@@ -416,7 +446,8 @@ export default function ServicePage() {
         }
         if (target === 'reopened' && !['management', 'admin'].includes(role)) continue;
         if (status === 'escalated' && !isManager) continue; // only managers de-escalate
-        if (target === 'assigned' && role === 'service_team' && t.assigned_to) continue; // engineers can only self-assign an unassigned ticket
+        // a field engineer can only self-assign an unassigned ticket; a chief service engineer (team > 1) can reassign
+        if (target === 'assigned' && role === 'service_team' && t.assigned_to && engineers.length <= 1) continue;
         if (target === 'cancelled' && role === 'service_team' && t.assigned_to && t.assigned_to !== userId) continue;
         let label = ACTION_LABEL[target] || statusLabel(target);
         if (status === 'escalated' && target !== 'cancelled') label = `De-escalate: ${statusLabel(target)}`;
@@ -433,7 +464,7 @@ export default function ServicePage() {
       }
       return out.sort((a, b) => actionRank(a) - actionRank(b));
     },
-    [role, userId],
+    [role, userId, engineers.length],
   );
 
   const runAction = async (t: any, a: TicketAction) => {
@@ -463,21 +494,33 @@ export default function ServicePage() {
     setIsSubmitting(true);
 
     try {
+      if (newTicket.received_date && newTicket.received_date > istToday()) {
+        throw new Error('Date received cannot be in the future.');
+      }
+      const typedName = newTicket.organisation_name.trim();
       let orgId = newTicket.organisation_id;
+      let claimedName: string | undefined;
       if (!orgId) {
-        if (!newTicket.organisation_name.trim()) {
-          throw new Error('Please enter or select a customer organisation.');
+        if (!typedName) throw new Error('Please enter or select a customer organisation.');
+        // Picked by name but not from the list: match it case-insensitively before treating it as new.
+        const match = organisations.find((o) => String(o.name).trim().toLowerCase() === typedName.toLowerCase());
+        if (match) orgId = match.id;
+        else if (CAN_CREATE_ORG.includes(role)) {
+          const orgRes = await api.post('/organisations', {
+            name: typedName,
+            city: newTicket.city.trim() || 'New Delhi',
+            state: 'North Zone',
+          });
+          orgId = orgRes.id;
+        } else {
+          // Service desk cannot add customers to the master: log it as an unverified customer, linked later.
+          claimedName = typedName;
         }
-        const orgRes = await api.post('/organisations', {
-          name: newTicket.organisation_name.trim(),
-          city: newTicket.city.trim() || 'New Delhi',
-          state: 'North Zone',
-        });
-        orgId = orgRes.id;
       }
 
       await api.post('/service/tickets', {
-        organisation_id: orgId,
+        organisation_id: orgId || undefined,
+        claimed_organisation_name: claimedName,
         ticket_no: newTicket.ticket_no.trim() || undefined,
         equipment_serial: newTicket.serial_no || undefined,
         location: newTicket.location || newTicket.city || undefined,
@@ -547,7 +590,7 @@ export default function ServicePage() {
   /** Same rule as the dossier: open, clock running, resolution deadline passed. */
   const slaBreached = (t: any) => !isFinished(t.status) && !isSlaPaused(t) && !!t.sla_resolution_due_at && new Date(t.sla_resolution_due_at).getTime() < Date.now();
   const breachedCount = displayedTickets.filter(slaBreached).length;
-  const fmtDay = (v: unknown) => (v ? new Date(v as string).toLocaleDateString('en-IN') : '—');
+  const fmtDay = (v: unknown) => (v ? formatDateIN(v as string) : '—');
 
   const recordItems: RecordItem[] = displayedTickets.map((t) => {
     const done = isFinished(t.status);
@@ -591,6 +634,91 @@ export default function ServicePage() {
       onOpen: () => handleOpenDetail(t),
     };
   });
+
+  // recordItems is displayedTickets mapped 1:1, so row i and recordItems[i] are the same ticket
+  const ticketList = displayedTickets.length ? (
+    <RecordTable items={recordItems}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Ticket Ref</TableHead>
+            <TableHead>Customer & Site</TableHead>
+            <TableHead>Complaint</TableHead>
+            <TableHead>Priority</TableHead>
+            <TableHead>Engineer</TableHead>
+            <TableHead>SLA Due</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {displayedTickets.map((t, i) => {
+            const primary = recordItems[i]?.primary;
+            const open = !isFinished(t.status);
+            const breached = slaBreached(t);
+            const paused = open && isSlaPaused(t);
+            const daysLeft = open && !breached && !paused ? daysFromToday(t.sla_resolution_due_at) : null;
+            const unverified = isUnverified(t);
+            const customer = unverified ? t.claimed_organisation_name : t.organisation_name || 'Client Agency / Command Station';
+            const site = [unverified && 'Unverified customer', t.location || t.city, t.equipment_serial && `S/N ${t.equipment_serial}`].filter(Boolean).join(' · ');
+            return (
+              <TableRow key={t.id}>
+                <TableCell className="font-bold whitespace-nowrap">
+                  <span className="font-mono text-[#0F5E63]">{t.ticket_no || '-'}</span>
+                </TableCell>
+                <TableCell className="font-bold text-[#14213D]">
+                  {customer}
+                  {site && <div className="text-[10px] text-[#4A5568] font-normal">{site}</div>}
+                </TableCell>
+                <TableCell className="text-[#4A5568] max-w-[240px] truncate" title={t.complaint || undefined}>
+                  {t.complaint || 'No complaint text'}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {t.priority ? (
+                    <Badge variant={priorityBadge(t.priority)} size="sm" className="uppercase font-bold">
+                      {upperLabel(t.priority)}
+                    </Badge>
+                  ) : (
+                    <span className="text-[#4A5568]">-</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-[#4A5568] whitespace-nowrap">{t.assignee_name || 'Unassigned'}</TableCell>
+                <TableCell className="font-mono whitespace-nowrap">
+                  {formatDateIN(t.sla_resolution_due_at)}
+                  {breached ? (
+                    <div className="text-[10px] font-bold text-[#881337]">SLA BREACHED</div>
+                  ) : paused ? (
+                    <div className="text-[10px] font-bold text-[#4A5568]">SLA PAUSED</div>
+                  ) : (
+                    daysLeft !== null &&
+                    daysLeft >= 0 &&
+                    daysLeft <= 7 && <div className="text-[10px] font-bold text-[#881337]">{daysLeft === 0 ? 'DUE TODAY' : `${daysLeft} DAYS LEFT`}</div>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={ticketStatusBadge(t.status)} size="sm" className="uppercase font-bold">
+                    {upperLabel(statusLabel(t.status))}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right whitespace-nowrap">
+                  <div className="inline-flex items-center gap-2">
+                    {primary && (
+                      <Button size="sm" variant="primary" className="shadow-xs text-xs" disabled={primary.disabled} onClick={primary.onClick}>
+                        {primary.label}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="secondary" className="shadow-xs text-xs" onClick={() => handleOpenDetail(t)}>
+                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
 
   return (
     <PageContainer>
@@ -674,14 +802,14 @@ export default function ServicePage() {
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
             <input
               type="search"
               aria-label="Search service tickets"
               placeholder="Search ticket ref, customer, complaint, serial…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
           {/* phones: the menus wrap onto two lines, so each menu's list opens under the whole row
@@ -752,7 +880,7 @@ export default function ServicePage() {
       </Card>
 
       {(loadError || cardError) && (
-        <div role="alert" className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+        <div role="alert" className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
           {loadError || cardError}
         </div>
       )}
@@ -772,7 +900,8 @@ export default function ServicePage() {
           lanes={lanes}
           laneOf={laneOf}
           storageKey="service"
-          defaultView="board"
+          defaultView="list"
+          list={ticketList}
           hideEmptyLanes={activeTab !== 'all'}
           empty="No tickets match the current filters."
           summary={
@@ -797,7 +926,7 @@ export default function ServicePage() {
             onCancel={() => setIsLogTicketOpen(false)}
             banner={
               actionError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
                   {actionError}
                 </div>
               )
@@ -820,7 +949,7 @@ export default function ServicePage() {
                       <Input
                         label="Ticket Ref"
                         placeholder="Auto: TCK-YYYY-NNNNNN"
-                        helperText="Leave blank to use the next number"
+                        helperText="Leave blank for the next TCK number, or enter the customer's own reference"
                         value={newTicket.ticket_no}
                         onChange={(e) => setNewTicket({ ...newTicket, ticket_no: e.target.value })}
                       />
@@ -828,6 +957,7 @@ export default function ServicePage() {
                         label="Date Received"
                         type="date"
                         required
+                        max={istToday()}
                         value={newTicket.received_date}
                         onChange={(e) => setNewTicket({ ...newTicket, received_date: e.target.value })}
                       />
@@ -862,8 +992,8 @@ export default function ServicePage() {
 
                     {/* Dynamic Source Origin Guidance Note */}
                     {newTicket.complaint_source === 'Demo Team' && (
-                      <div className="p-2.5 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900 flex items-center gap-2">
-                        <Flame className="h-4 w-4 shrink-0 text-purple-600" />
+                      <div className="p-2.5 rounded-lg bg-[#EEF1F5] border border-[#DCD8CE] text-xs text-[#14213D] flex items-center gap-2">
+                        <Flame className="h-4 w-4 shrink-0 text-[#1F2E52]" />
                         <span>
                           <strong>Demo Team Field Intake:</strong> Tagged for demo trials. Use this if demo equipment broke down during a client demonstration trial, or if an on-site customer requested servicing for an existing machine during your demo visit.
                         </span>
@@ -896,7 +1026,7 @@ export default function ServicePage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                        Client Agency / Organisation <span className="text-red-500">*</span>
+                        Client Agency / Organisation <span className="text-[#881337]">*</span>
                       </label>
                       <input
                         list="org-list"
@@ -915,6 +1045,14 @@ export default function ServicePage() {
                         className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
                         required
                       />
+                      {!newTicket.organisation_id && newTicket.organisation_name.trim().length > 2 &&
+                        !organisations.some((o) => String(o.name).trim().toLowerCase() === newTicket.organisation_name.trim().toLowerCase()) && (
+                          <p className="mt-1 text-[11px] text-[#9A3412]">
+                            {CAN_CREATE_ORG.includes(role)
+                              ? 'Not in the customer master — it will be added as a new customer.'
+                              : 'Not in the customer master — the ticket is logged as an unverified customer; link it to the right organisation once it is added.'}
+                          </p>
+                        )}
                       <datalist id="org-list">
                         {organisations.map((org) => (
                           <option key={org.id} value={org.name}>
@@ -1133,7 +1271,7 @@ export default function ServicePage() {
                   </div>
                   <div>
                     <span className="text-[#4A5568] block text-[10px]">Planned Visit</span>
-                    <span className="font-semibold text-[#14213D]">{st.planned_visit_date ? new Date(st.planned_visit_date).toLocaleDateString('en-IN') : 'Not Scheduled'}</span>
+                    <span className="font-semibold text-[#14213D]">{st.planned_visit_date ? formatDateIN(st.planned_visit_date) : 'Not Scheduled'}</span>
                   </div>
                   <div>
                     <span className="text-[#4A5568] block text-[10px]">Status reason</span>
@@ -1218,11 +1356,11 @@ export default function ServicePage() {
                       <div className="text-[#4A5568] space-y-1">
                         <p><strong>Category:</strong> {st.problem_category || 'Breakdown'}</p>
                         <p><strong>Location:</strong> {st.location || st.city || 'Standard Facility'}</p>
-                        <p><strong>Received:</strong> {st.received_date ? new Date(st.received_date).toLocaleDateString('en-IN') : '—'}</p>
+                        <p><strong>Received:</strong> {st.received_date ? formatDateIN(st.received_date) : '—'}</p>
                         <p><strong>Customer:</strong> {unverified ? `${st.claimed_organisation_name} (unverified)` : st.organisation_name}</p>
                         {st.contact_name && <p><strong>Contact:</strong> {st.contact_name}{st.contact_mobile ? ` · ${st.contact_mobile}` : ''}</p>}
                         {st.complaint_source === 'Demo Team' && (
-                          <p className="text-[11px] font-semibold text-purple-700 bg-purple-50 p-1.5 rounded mt-1 border border-purple-200">Flagged by Demo Team during a field trial or live demonstration</p>
+                          <p className="text-[11px] font-semibold text-[#14213D] bg-[#EEF1F5] p-1.5 rounded mt-1 border border-[#DCD8CE]">Flagged by Demo Team during a field trial or live demonstration</p>
                         )}
                         {st.complaint_source === 'Official Letter' && (
                           <p className="text-[11px] font-semibold text-[#7C2D12] bg-[#FBEBDD] p-1.5 rounded mt-1 border border-[#9A3412]/20">Official government written notice on record</p>
@@ -1236,8 +1374,8 @@ export default function ServicePage() {
                         <p><strong>Coverage:</strong> {st.warranty_status_snapshot || st.warranty_status || 'Under Warranty'}</p>
                         <p><strong>Is chargeable:</strong> {st.is_chargeable ? 'Yes (billable spares / labour)' : 'No (covered FOC)'}</p>
                         <p><strong>Billing status:</strong> {st.billing_status || 'Not chargeable'}</p>
-                        <p><strong>Resolved:</strong> {st.resolved_at ? new Date(st.resolved_at).toLocaleString('en-IN') : '—'}</p>
-                        <p><strong>Closed:</strong> {st.closed_at ? new Date(st.closed_at).toLocaleString('en-IN') : '—'}</p>
+                        <p><strong>Resolved:</strong> {st.resolved_at ? formatDateTimeIN(st.resolved_at) : '—'}</p>
+                        <p><strong>Closed:</strong> {st.closed_at ? formatDateTimeIN(st.closed_at) : '—'}</p>
                       </div>
                     </div>
                   </div>

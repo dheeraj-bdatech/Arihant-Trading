@@ -75,7 +75,9 @@ export const Modal: React.FC<ModalProps> = ({
     updateBodyOverflow();
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      // An open dropdown / menu inside the dialog already consumed this Escape (it calls preventDefault):
+      // close just that, never the whole form with the user's input in it.
+      if (e.key === 'Escape' && !e.defaultPrevented) {
         const top = activeModalStack[activeModalStack.length - 1];
         if (top && top.id === modalId) {
           e.stopPropagation();

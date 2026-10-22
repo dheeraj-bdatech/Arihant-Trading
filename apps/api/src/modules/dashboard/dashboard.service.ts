@@ -4,94 +4,60 @@ import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import type { Database, AuthUser, DashboardMetricsDto } from '@arihant/shared';
 import { claimScopeFilter } from '../expense-management/expense-scope.js';
+import {
+  DashboardMetricsService,
+  LEAD_ACTIVE,
+  TENDER_AWAITING_APPROVAL,
+  TENDER_DEADLINE,
+  TENDER_ROW,
+  tenderClosingWithin,
+  tenderScopeFor,
+  teamScope,
+  territoryLeads,
+  territoryTenders,
+  territoryVisits,
+  type Territory,
+} from './dashboard-metrics.js';
 
 @Injectable()
 export class DashboardService {
-  constructor(@Inject(KYSELY_DB) private readonly db: Kysely<Database>) {}
+  constructor(
+    @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
+    private readonly metrics: DashboardMetricsService,
+  ) {}
+
+  /** Sidebar badges: the same live / closing figures the dashboards show for this user's scope. */
+  async getNavCounts(user: AuthUser) {
+    const t = await this.metrics.tenderSummary(tenderScopeFor(user));
+    return { tendersLive: t.live, tendersClosing7d: t.closing7d, tendersAwaitingApproval: t.awaitingApproval, tendersTotal: t.total };
+  }
 
   async getMetrics(user: AuthUser): Promise<DashboardMetricsDto> {
-    const now = new Date();
-    const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const today = todayInKolkata(now);
+    const today = todayInKolkata(new Date());
 
-    // 1. Tenders metrics
-    let tenderQuery = this.db.selectFrom('tenders');
-    if (user.role === 'regional_manager' && user.zone_id) {
-      tenderQuery = tenderQuery.where('zone_id', '=', user.zone_id);
-    }
+    // 1. Tenders metrics — shared definitions (dashboard-metrics.ts): closing = still being chased, deadline ahead.
+    const tenderSummary = await this.metrics.tenderSummary(tenderScopeFor(user));
+    // 2. Leads metrics — active pipeline excludes converted / won / lost / dropped, same as the Leads page KPI.
+    const leadScope =
+      user.role === 'sales'
+        ? sql`l.assigned_to = ${user.id}`
+        : user.role === 'regional_manager'
+          ? territoryLeads({ zoneId: user.zone_id ?? null, managerId: user.id })
+          : sql`true`;
+    const pipeline = await this.metrics.leadPipeline(leadScope, today);
+    const leadCats = await sql<{ category: string; c: number }>`
+      select l.category, count(*)::int as c from leads l left join organisations o on o.id = l.organisation_id
+      where ${leadScope} and ${LEAD_ACTIVE} group by l.category`.execute(this.db);
+    const cat = (k: string) => leadCats.rows.find((r) => r.category === k)?.c ?? 0;
 
-    const [
-      tenderTotal,
-      tenderClosingSoon,
-      tenderUnderPrep,
-      tenderAwaitingApproval,
-      tenderWon,
-      tenderLost,
-    ] = await Promise.all([
-      tenderQuery.select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
-      tenderQuery
-        .select(sql<number>`count(id)::int`.as('c'))
-        .where('status', 'not in', ['won', 'lost', 'cancelled'])
-        .where('bid_closing_date', 'is not', null)
-        .where('bid_closing_date', '<=', sevenDaysFromNow.toISOString())
-        .where('bid_closing_date', '>=', now.toISOString())
-        .executeTakeFirst(),
-      tenderQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'under_preparation').executeTakeFirst(),
-      tenderQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'awaiting_approval').executeTakeFirst(),
-      tenderQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'won').executeTakeFirst(),
-      tenderQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'lost').executeTakeFirst(),
-    ]);
-
-    // 2. Leads metrics
-    let leadQuery = this.db.selectFrom('leads');
-    if (user.role === 'sales') {
-      leadQuery = leadQuery.where('assigned_to', '=', user.id);
-    } else if (user.role === 'regional_manager' && user.region_id) {
-      leadQuery = leadQuery.where('regional_manager_id', '=', user.id);
-    }
-
-    const [
-      leadTotal,
-      leadActive,
-      leadExpected,
-      leadFollowUp,
-      leadValue,
-    ] = await Promise.all([
-      leadQuery.select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
-      leadQuery.select(sql<number>`count(id)::int`.as('c')).where('category', '=', 'active').executeTakeFirst(),
-      leadQuery.select(sql<number>`count(id)::int`.as('c')).where('category', '=', 'expected').executeTakeFirst(),
-      leadQuery.select(sql<number>`count(id)::int`.as('c')).where('category', '=', 'follow_up').executeTakeFirst(),
-      leadQuery.select(sql<number>`coalesce(sum(value_lakh), 0)::float`.as('val')).executeTakeFirst(),
-    ]);
-
-    // 3. Tasks metrics
-    let taskQuery = this.db.selectFrom('tasks').where('status', '<>', 'cancelled');
-    if (['sales', 'demo_team', 'service_team', 'tender_team'].includes(user.role)) {
-      taskQuery = taskQuery.where('assigned_to', '=', user.id);
-    } else if (user.role === 'regional_manager') {
-      taskQuery = taskQuery.where((eb) =>
-        eb.or([
-          eb('assigned_to', '=', user.id),
-          eb('reporting_manager_id', '=', user.id),
-        ]),
-      );
-    }
-
-    const [
-      taskTotal,
-      taskPending,
-      taskBlocked,
-      taskOverdue,
-    ] = await Promise.all([
-      taskQuery.select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
-      taskQuery.select(sql<number>`count(id)::int`.as('c')).where('status', 'in', ['not_started', 'in_progress']).executeTakeFirst(),
-      taskQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'blocked').executeTakeFirst(),
-      // Module 8: OVERDUE is derived (deadline passed, work open, no accepted blocker) — never stored.
-      taskQuery
-        .select(sql<number>`count(id)::int`.as('c'))
-        .where(sql<boolean>`deadline < now() and (status in ('not_started', 'in_progress') or (status = 'blocked' and not exists (select 1 from task_blockers b where b.task_id = tasks.id and b.status = 'accepted')))`)
-        .executeTakeFirst(),
-    ]);
+    // 3. Tasks metrics — open ⊇ overdue (dashboard-metrics.ts)
+    const taskScope =
+      ['sales', 'demo_team', 'service_team', 'tender_team'].includes(user.role)
+        ? sql`k.assigned_to = ${user.id}`
+        : user.role === 'regional_manager'
+          ? sql`(k.assigned_to = ${user.id} or k.reporting_manager_id = ${user.id})`
+          : sql`true`;
+    const tasks = await this.metrics.taskFigures(taskScope);
 
     // 4. Expenses metrics (Module 9 claims, same role scope as the expense screens)
     const expQuery = this.db
@@ -164,37 +130,32 @@ export class DashboardService {
     // 9. Recent critical exceptions (for management command center)
     const recentExceptions: any[] = [];
 
-    // Tenders closing soon
-    const urgentTenders = await this.db
-      .selectFrom('tenders')
-      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
-      .select(['tenders.id', 'tenders.tender_no', 'tenders.bid_closing_date', 'organisations.name as org_name'])
-      .where('status', 'not in', ['won', 'lost', 'cancelled'])
-      .where('bid_closing_date', 'is not', null)
-      .where('bid_closing_date', '<=', sevenDaysFromNow.toISOString())
-      .where('bid_closing_date', '>=', now.toISOString())
-      .limit(3)
-      .execute();
+    // Tenders closing soon (still being chased — won / lost / submitted bids are never deadline alerts)
+    const urgentTenders = await sql<{ id: string; tender_no: string | null; deadline: Date | string }>`
+      select t.id, t.tender_no, ${TENDER_DEADLINE} as deadline
+      from tenders t where ${TENDER_ROW} and ${tenderScopeFor(user)} and ${tenderClosingWithin(7 * 24)}
+      order by ${TENDER_DEADLINE} asc limit 3`.execute(this.db);
 
-    for (const ut of urgentTenders) {
+    for (const ut of urgentTenders.rows) {
       recentExceptions.push({
         id: `tend-${ut.id}`,
         type: 'tender_deadline',
         title: `Tender ${ut.tender_no} Closes Soon`,
-        description: `Bid closing deadline: ${new Date(ut.bid_closing_date!).toLocaleDateString('en-IN')}`,
+        description: `Bid closing deadline: ${new Date(ut.deadline).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}`,
         entityId: ut.id,
         severity: 'critical',
-        timestamp: ut.bid_closing_date,
+        timestamp: new Date(ut.deadline).toISOString(),
       });
     }
 
-    // Blocked tasks
+    // Blocked tasks — timestamp is when the blocker was raised, not "now"
     const blockedTasks = await this.db
       .selectFrom('tasks')
       .innerJoin('task_blockers', 'tasks.id', 'task_blockers.task_id')
-      .select(['tasks.id', 'tasks.title', 'task_blockers.blocker_type', 'task_blockers.description'])
+      .select(['tasks.id', 'tasks.title', 'task_blockers.blocker_type', 'task_blockers.description', 'task_blockers.created_at'])
       .where('tasks.status', '=', 'blocked')
       .where('task_blockers.status', 'in', ['pending_review', 'accepted'])
+      .orderBy('task_blockers.created_at', 'desc')
       .limit(2)
       .execute();
 
@@ -206,19 +167,17 @@ export class DashboardService {
         description: `${bt.blocker_type}: ${bt.description}`,
         entityId: bt.id,
         severity: 'warning',
-        timestamp: new Date().toISOString(),
+        timestamp: bt.created_at ? new Date(bt.created_at as any).toISOString() : null,
       });
     }
 
-    // Tenders awaiting approval
-    const approvalTenders = await this.db
-      .selectFrom('tenders')
-      .select(['id', 'tender_no', 'department'])
-      .where('status', '=', 'awaiting_approval')
-      .limit(2)
-      .execute();
+    // Tenders awaiting approval — timestamp is when approval was last requested (row updated_at)
+    const approvalTenders = await sql<{ id: string; tender_no: string | null; department: string | null; updated_at: Date | null }>`
+      select t.id, t.tender_no, t.department, t.updated_at from tenders t
+      where ${TENDER_ROW} and ${TENDER_AWAITING_APPROVAL} and ${tenderScopeFor(user)}
+      order by t.updated_at desc limit 2`.execute(this.db);
 
-    for (const at of approvalTenders) {
+    for (const at of approvalTenders.rows) {
       recentExceptions.push({
         id: `appr-${at.id}`,
         type: 'tender_approval',
@@ -226,31 +185,32 @@ export class DashboardService {
         description: `Participation approval requested for ${at.department || 'Government Buyer'}`,
         entityId: at.id,
         severity: 'warning',
-        timestamp: new Date().toISOString(),
+        timestamp: at.updated_at ? new Date(at.updated_at).toISOString() : null,
       });
     }
 
     return {
       tendersCount: {
-        total: tenderTotal?.c || 0,
-        closingSoon: tenderClosingSoon?.c || 0,
-        underPreparation: tenderUnderPrep?.c || 0,
-        awaitingApproval: tenderAwaitingApproval?.c || 0,
-        won: tenderWon?.c || 0,
-        lost: tenderLost?.c || 0,
+        total: tenderSummary.total,
+        closingSoon: tenderSummary.closing7d,
+        underPreparation: tenderSummary.underPreparation,
+        awaitingApproval: tenderSummary.awaitingApproval,
+        won: tenderSummary.won,
+        lost: tenderSummary.lost,
       },
       leadsCount: {
-        total: leadTotal?.c || 0,
-        active: leadActive?.c || 0,
-        expected: leadExpected?.c || 0,
-        followUp: leadFollowUp?.c || 0,
-        totalValueLakh: Math.round((leadValue?.val || 0) * 100) / 100,
+        total: pipeline.total,
+        active: pipeline.active,
+        expected: cat('expected'),
+        followUp: cat('follow_up'),
+        totalValueLakh: pipeline.lakh,
       },
       tasksCount: {
-        total: taskTotal?.c || 0,
-        pending: taskPending?.c || 0,
-        blocked: taskBlocked?.c || 0,
-        overdue: taskOverdue?.c || 0,
+        total: tasks.total,
+        // open work (not started / in progress / blocked) — always ≥ overdue
+        pending: tasks.open,
+        blocked: tasks.blocked,
+        overdue: tasks.overdue,
       },
       expensesCount: {
         pendingManager: expPendingManager?.c || 0,
@@ -286,345 +246,153 @@ export class DashboardService {
     };
   }
 
+  /**
+   * Zonal Command (GET /dashboard/regional-performance). Every figure comes from DashboardMetricsService over the
+   * zone's Territory — for a regional manager the same territory their home screen (GET /dashboard/workspace) uses,
+   * so zone pipeline, field visits, bids and each rep's pipeline match across both screens.
+   */
   async getRegionalPerformance(user: AuthUser, query?: { zone_id?: string; region_id?: string }) {
-    const now = new Date();
-    const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const today = todayInKolkata(now);
+    const today = todayInKolkata();
 
-    // 1. Resolve Available Zones and Target Zone
-    const availableZones = await this.db
-      .selectFrom('zones')
-      .select(['id', 'code', 'name'])
-      .orderBy('name', 'asc')
-      .execute();
+    // 1. Resolve available zones and the target zone (management / admin may pick; an RM is locked to their zone)
+    const availableZones = await this.db.selectFrom('zones').select(['id', 'code', 'name']).orderBy('name', 'asc').execute();
+    const canPick = user.role === 'management' || user.role === 'admin';
+    let targetZoneId: string | null = user.zone_id ?? null;
+    if (canPick && query?.zone_id) targetZoneId = query.zone_id;
+    if (!targetZoneId && canPick && availableZones.length > 0) targetZoneId = availableZones[0].id;
 
-    let targetZoneId = user.zone_id;
-    if (user.role === 'management' || user.role === 'admin') {
-      if (query?.zone_id) {
-        targetZoneId = query.zone_id;
-      }
-    }
+    const currentZone = availableZones.find((z) => z.id === targetZoneId) ?? (canPick ? availableZones[0] : undefined) ?? null;
+    const activeZoneId = currentZone?.id ?? null;
 
-    if (!targetZoneId && availableZones.length > 0) {
-      targetZoneId = availableZones[0].id;
-    }
-
-    const currentZone = availableZones.find((z) => z.id === targetZoneId) || availableZones[0];
-    const activeZoneId = currentZone?.id;
-
-    // Load regions in this zone
     const regionsInZone = activeZoneId
+      ? await this.db.selectFrom('regions').select(['id', 'name']).where('zone_id', '=', activeZoneId).orderBy('name', 'asc').execute()
+      : [];
+    // a region filter only applies when it belongs to the zone in view
+    const regionId = query?.region_id && regionsInZone.some((r) => r.id === query.region_id) ? query.region_id : null;
+
+    const managerId = user.role === 'regional_manager' ? user.id : null;
+    const territory: Territory = { zoneId: activeZoneId, regionId, managerId };
+    const leadScope = territoryLeads(territory);
+    const visitScope = territoryVisits(territory);
+    const tenderScope = territoryTenders(territory);
+
+    const [pipeline, leadCats, visitSummary, tenderSummary, team] = await Promise.all([
+      this.metrics.leadPipeline(leadScope, today),
+      sql<{ category: string; c: number }>`
+        select l.category, count(*)::int as c from leads l left join organisations o on o.id = l.organisation_id
+        where ${leadScope} and ${LEAD_ACTIVE} group by l.category`.execute(this.db),
+      this.metrics.visitSummary(visitScope, today),
+      this.metrics.tenderSummary(tenderScope),
+      this.metrics.teamFigures(teamScope(managerId, activeZoneId), today),
+    ]);
+    const cat = (...keys: string[]) => leadCats.rows.filter((r) => keys.includes(r.category)).reduce((a, r) => a + Number(r.c || 0), 0);
+
+    const recentLeads = await sql<Record<string, any>>`
+      select l.id, o.name as organisation_name, o.city as city, pr.name as product_name, l.category, l.probability, l.channel,
+             l.value_lakh, l.next_followup_date, l.status, rep.full_name as assigned_rep_name
+      from leads l left join organisations o on o.id = l.organisation_id
+      left join users rep on rep.id = l.assigned_to left join products pr on pr.id = l.product_id
+      where ${leadScope} and ${LEAD_ACTIVE}
+      order by l.created_at desc limit 10`.execute(this.db);
+
+    const recentVisits = await sql<Record<string, any>>`
+      select v.id, v.organisation_id, o.name as organisation_name, v.location, v.planned_date, v.purpose, v.status, v.remarks,
+             v.assigned_by_manager, rep.full_name as assigned_rep_name
+      from visits v left join organisations o on o.id = v.organisation_id left join users rep on rep.id = v.assigned_to
+      where ${visitScope}
+      order by v.planned_date desc limit 10`.execute(this.db);
+
+    const regionalTendersList = await sql<Record<string, any>>`
+      select t.id, t.tender_no, t.department, t.city, t.state, t.category, t.requirement_text, t.quantity, t.emd_fee,
+             ${TENDER_DEADLINE} as bid_closing_date, t.status
+      from tenders t where ${TENDER_ROW} and ${tenderScope}
+      order by ${TENDER_DEADLINE} asc nulls last limit 1000`.execute(this.db);
+
+    // 5. Team accountability: figures from teamFigures; pending blockers listed per rep
+    const blockers = team.length
       ? await this.db
-          .selectFrom('regions')
-          .select(['id', 'name'])
-          .where('zone_id', '=', activeZoneId)
-          .orderBy('name', 'asc')
+          .selectFrom('task_blockers')
+          .innerJoin('tasks', 'task_blockers.task_id', 'tasks.id')
+          .select([
+            'task_blockers.id',
+            'task_blockers.raised_by',
+            'task_blockers.blocker_type',
+            'task_blockers.description',
+            'task_blockers.created_at',
+            'tasks.title as task_title',
+          ])
+          .where('task_blockers.raised_by', 'in', team.map((m) => m.id))
+          .where('task_blockers.status', '=', 'pending_review')
           .execute()
       : [];
 
-    // 2. Regional Sales & Leads Pipeline
-    let leadsQuery = this.db
-      .selectFrom('leads')
-      .innerJoin('organisations', 'leads.organisation_id', 'organisations.id');
-
-    if (activeZoneId) {
-      leadsQuery = leadsQuery.where('organisations.zone_id', '=', activeZoneId);
-    }
-    if (query?.region_id) {
-      leadsQuery = leadsQuery.where('organisations.region_id', '=', query.region_id);
-    }
-
-    const [
-      leadsTotalRes,
-      leadsActiveRes,
-      leadsExpectedRes,
-      leadsFollowUpRes,
-      leadsValueRes,
-      highProbValRes,
-      medProbValRes,
-      lowProbValRes,
-    ] = await Promise.all([
-      leadsQuery.select(sql<number>`count(leads.id)::int`.as('c')).executeTakeFirst(),
-      leadsQuery.select(sql<number>`count(leads.id)::int`.as('c')).where('leads.category', '=', 'active').executeTakeFirst(),
-      leadsQuery.select(sql<number>`count(leads.id)::int`.as('c')).where('leads.category', '=', 'expected').executeTakeFirst(),
-      leadsQuery.select(sql<number>`count(leads.id)::int`.as('c')).where('leads.category', 'in', ['follow_up', 'new_lead']).executeTakeFirst(),
-      leadsQuery.select(sql<number>`coalesce(sum(leads.value_lakh), 0)::float`.as('v')).executeTakeFirst(),
-      leadsQuery.select(sql<number>`coalesce(sum(leads.value_lakh), 0)::float`.as('v')).where('leads.probability', '=', 'high').executeTakeFirst(),
-      leadsQuery.select(sql<number>`coalesce(sum(leads.value_lakh), 0)::float`.as('v')).where('leads.probability', '=', 'medium').executeTakeFirst(),
-      leadsQuery.select(sql<number>`coalesce(sum(leads.value_lakh), 0)::float`.as('v')).where('leads.probability', '=', 'low').executeTakeFirst(),
-    ]);
-
-    const recentLeads = await leadsQuery
-      .leftJoin('users as rep', 'leads.assigned_to', 'rep.id')
-      .leftJoin('products', 'leads.product_id', 'products.id')
-      .select([
-        'leads.id',
-        'organisations.name as organisation_name',
-        'organisations.city as city',
-        'products.name as product_name',
-        'leads.category',
-        'leads.probability',
-        'leads.channel',
-        'leads.value_lakh',
-        'leads.next_followup_date',
-        'leads.status',
-        'rep.full_name as assigned_rep_name',
-      ])
-      .orderBy('leads.created_at', 'desc')
-      .limit(10)
-      .execute();
-
-    // 3. Regional Visits & Tour Planning
-    let visitsQuery = this.db
-      .selectFrom('visits')
-      .innerJoin('organisations', 'visits.organisation_id', 'organisations.id');
-
-    if (activeZoneId) {
-      visitsQuery = visitsQuery.where('organisations.zone_id', '=', activeZoneId);
-    }
-    if (query?.region_id) {
-      visitsQuery = visitsQuery.where('organisations.region_id', '=', query.region_id);
-    }
-
-    const [
-      visitsTotalRes,
-      visitsPlannedRes,
-      visitsCompletedRes,
-      visitsCancelledRes,
-      visitsRescheduledRes,
-      visitsInterventionRes,
-    ] = await Promise.all([
-      visitsQuery.select(sql<number>`count(visits.id)::int`.as('c')).executeTakeFirst(),
-      visitsQuery.select(sql<number>`count(visits.id)::int`.as('c')).where('visits.status', '=', 'planned').executeTakeFirst(),
-      visitsQuery.select(sql<number>`count(visits.id)::int`.as('c')).where('visits.status', '=', 'completed').executeTakeFirst(),
-      visitsQuery.select(sql<number>`count(visits.id)::int`.as('c')).where('visits.status', '=', 'cancelled').executeTakeFirst(),
-      visitsQuery.select(sql<number>`count(visits.id)::int`.as('c')).where('visits.status', '=', 'rescheduled').executeTakeFirst(),
-      visitsQuery.select(sql<number>`count(visits.id)::int`.as('c')).where('visits.assigned_by_manager', 'is not', null).executeTakeFirst(),
-    ]);
-
-    const recentVisits = await visitsQuery
-      .leftJoin('users as rep', 'visits.assigned_to', 'rep.id')
-      .select([
-        'visits.id',
-        'organisations.name as organisation_name',
-        'visits.location',
-        'visits.planned_date',
-        'visits.purpose',
-        'visits.status',
-        'visits.remarks',
-        'visits.assigned_by_manager',
-        'rep.full_name as assigned_rep_name',
-      ])
-      .orderBy('visits.planned_date', 'desc')
-      .limit(10)
-      .execute();
-
-    const totalVisits = visitsTotalRes?.c || 0;
-    const completedVisits = visitsCompletedRes?.c || 0;
-    const visitCompletionRate = totalVisits > 0 ? Math.round((completedVisits / totalVisits) * 100) : 0;
-
-    // 4. Regional Tender Pipeline
-    let tendersQuery = this.db.selectFrom('tenders');
-    if (activeZoneId) {
-      tendersQuery = tendersQuery.where('zone_id', '=', activeZoneId);
-    }
-    if (query?.region_id) {
-      tendersQuery = tendersQuery.where('region_id', '=', query.region_id);
-    }
-
-    const [
-      tendersTotalRes,
-      tendersClosingSoonRes,
-      tendersAwaitingRes,
-      tendersUnderPrepRes,
-      tendersWonRes,
-      tendersLostRes,
-    ] = await Promise.all([
-      tendersQuery.select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
-      tendersQuery
-        .select(sql<number>`count(id)::int`.as('c'))
-        .where('status', 'not in', ['won', 'lost', 'cancelled'])
-        .where('bid_closing_date', 'is not', null)
-        .where('bid_closing_date', '<=', sevenDaysFromNow.toISOString())
-        .where('bid_closing_date', '>=', now.toISOString())
-        .executeTakeFirst(),
-      tendersQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'awaiting_approval').executeTakeFirst(),
-      tendersQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'under_preparation').executeTakeFirst(),
-      tendersQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'won').executeTakeFirst(),
-      tendersQuery.select(sql<number>`count(id)::int`.as('c')).where('status', '=', 'lost').executeTakeFirst(),
-    ]);
-
-    const regionalTendersList = await tendersQuery
-      .select([
-        'id',
-        'tender_no',
-        'department',
-        'city',
-        'state',
-        'category',
-        'requirement_text',
-        'quantity',
-        'emd_fee',
-        'bid_closing_date',
-        'status',
-      ])
-      .orderBy('bid_closing_date', 'asc')
-      .limit(1000)
-      .execute();
-
-    // 5. Regional Employee Performance & Accountability
-    let teamQuery = this.db
-      .selectFrom('users')
-      .leftJoin('regions', 'users.region_id', 'regions.id')
-      .where('users.is_active', '=', true)
-      .where('users.role', 'in', ['sales', 'demo_team', 'service_team']);
-
-    if (user.role === 'regional_manager') {
-      teamQuery = teamQuery.where((eb) =>
-        eb.or([
-          eb('users.reporting_manager_id', '=', user.id),
-          eb('users.zone_id', '=', activeZoneId),
-        ]),
-      );
-    } else if (activeZoneId) {
-      teamQuery = teamQuery.where('users.zone_id', '=', activeZoneId);
-    }
-
-    const teamMembers = await teamQuery
-      .select([
-        'users.id',
-        'users.full_name',
-        'users.email',
-        'users.phone',
-        'users.role',
-        'regions.name as region_name',
-      ])
-      .orderBy('users.full_name', 'asc')
-      .execute();
-
-    const employeePerformance = await Promise.all(
-      teamMembers.map(async (emp) => {
-        const [
-          tasksTotal,
-          tasksCompleted,
-          tasksOverdue,
-          tasksBlocked,
-          empVisitsTotal,
-          empVisitsCompleted,
-          empLeadsTotal,
-          empLeadsVal,
-          activeBlockers,
-        ] = await Promise.all([
-          this.db.selectFrom('tasks').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).where('status', '<>', 'cancelled').executeTakeFirst(),
-          this.db.selectFrom('tasks').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).where('status', '=', 'completed').executeTakeFirst(),
-          this.db
-            .selectFrom('tasks')
-            .select(sql<number>`count(id)::int`.as('c'))
-            .where('assigned_to', '=', emp.id)
-            .where(sql<boolean>`deadline < now() and (status in ('not_started', 'in_progress') or (status = 'blocked' and not exists (select 1 from task_blockers b where b.task_id = tasks.id and b.status = 'accepted')))`)
-            .executeTakeFirst(),
-          this.db.selectFrom('tasks').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).where('status', '=', 'blocked').executeTakeFirst(),
-          this.db.selectFrom('visits').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).executeTakeFirst(),
-          this.db.selectFrom('visits').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).where('status', '=', 'completed').executeTakeFirst(),
-          this.db.selectFrom('leads').select(sql<number>`count(id)::int`.as('c')).where('assigned_to', '=', emp.id).executeTakeFirst(),
-          this.db.selectFrom('leads').select(sql<number>`coalesce(sum(value_lakh), 0)::float`.as('v')).where('assigned_to', '=', emp.id).executeTakeFirst(),
-          this.db
-            .selectFrom('task_blockers')
-            .innerJoin('tasks', 'task_blockers.task_id', 'tasks.id')
-            .select([
-              'task_blockers.id',
-              'task_blockers.blocker_type',
-              'task_blockers.description',
-              'task_blockers.created_at',
-              'tasks.title as task_title',
-            ])
-            .where('task_blockers.raised_by', '=', emp.id)
-            .where('task_blockers.status', '=', 'pending_review')
-            .execute(),
-        ]);
-
-        const totalT = tasksTotal?.c || 0;
-        const compT = tasksCompleted?.c || 0;
-        const overdueT = tasksOverdue?.c || 0;
-        const blockedT = tasksBlocked?.c || 0;
-        const rate = totalT > 0 ? Math.round((compT / totalT) * 100) : 100;
-
-        let rating: 'Excellent' | 'Good' | 'Needs Attention' | 'Critical' = 'Good';
-        if (rate >= 80 && overdueT === 0) {
-          rating = 'Excellent';
-        } else if (rate >= 65 && overdueT <= 1) {
-          rating = 'Good';
-        } else if (overdueT <= 2) {
-          rating = 'Needs Attention';
-        } else {
-          rating = 'Critical';
-        }
-
-        return {
-          id: emp.id,
-          full_name: emp.full_name,
-          email: emp.email,
-          phone: emp.phone,
-          role: emp.role,
-          region_name: emp.region_name || 'Territory Core',
-          tasks: {
-            total: totalT,
-            completed: compT,
-            overdue: overdueT,
-            blocked: blockedT,
-            completionRate: rate,
-          },
-          visits: {
-            total: empVisitsTotal?.c || 0,
-            completed: empVisitsCompleted?.c || 0,
-          },
-          leads: {
-            total: empLeadsTotal?.c || 0,
-            valueLakh: Math.round((empLeadsVal?.v || 0) * 100) / 100,
-          },
-          activeBlockers,
-          complianceRating: rating,
-          evidenceNote: `${compT}/${totalT} milestones delivered (${rate}%). ${overdueT} overdue deadlines, ${activeBlockers.length} active blockers.`,
-        };
-      }),
-    );
+    const teamPerformance = team.map((emp) => {
+      const activeBlockers = blockers.filter((b) => b.raised_by === emp.id).map(({ raised_by: _r, ...b }) => b);
+      const totalT = emp.tasksTotal;
+      const compT = emp.tasksCompleted;
+      const overdueT = emp.tasksOverdue;
+      const rate = totalT > 0 ? Math.round((compT / totalT) * 100) : 100;
+      let rating: 'Excellent' | 'Good' | 'Needs Attention' | 'Critical';
+      if (rate >= 80 && overdueT === 0) rating = 'Excellent';
+      else if (rate >= 65 && overdueT <= 1) rating = 'Good';
+      else if (overdueT <= 2) rating = 'Needs Attention';
+      else rating = 'Critical';
+      return {
+        id: emp.id,
+        full_name: emp.full_name,
+        email: emp.email,
+        phone: emp.phone,
+        role: emp.role,
+        region_name: emp.region_name || 'Territory Core',
+        tasks: { total: totalT, completed: compT, open: emp.tasksOpen, overdue: overdueT, blocked: emp.tasksBlocked, completionRate: rate },
+        visits: { total: emp.visitsTotal, completed: emp.visitsCompleted, completed30d: emp.visitsCompleted30d },
+        // pipeline = active leads only (same as the rep's own "My pipeline")
+        leads: { total: emp.leadsTotal, active: emp.leadsActive, valueLakh: emp.pipelineLakh },
+        activeBlockers,
+        complianceRating: rating,
+        evidenceNote: `${compT}/${totalT} milestones delivered (${rate}%). ${overdueT} overdue deadlines, ${activeBlockers.length} active blockers.`,
+      };
+    });
 
     return {
       zone: currentZone,
       availableZones,
       regionsInZone,
       sales: {
-        totalLeads: leadsTotalRes?.c || 0,
-        activeCount: leadsActiveRes?.c || 0,
-        expectedCount: leadsExpectedRes?.c || 0,
-        followUpCount: leadsFollowUpRes?.c || 0,
-        totalPipelineValueLakh: Math.round((leadsValueRes?.v || 0) * 100) / 100,
-        highProbValueLakh: Math.round((highProbValRes?.v || 0) * 100) / 100,
-        medProbValueLakh: Math.round((medProbValRes?.v || 0) * 100) / 100,
-        lowProbValueLakh: Math.round((lowProbValRes?.v || 0) * 100) / 100,
-        recentLeads,
+        totalLeads: pipeline.total,
+        activeCount: pipeline.active,
+        expectedCount: cat('expected'),
+        followUpCount: cat('follow_up', 'new_lead'),
+        totalPipelineValueLakh: pipeline.lakh,
+        highProbValueLakh: pipeline.highLakh,
+        medProbValueLakh: pipeline.mediumLakh,
+        lowProbValueLakh: pipeline.lowLakh,
+        followupsOverdue: pipeline.followupsOverdue,
+        recentLeads: recentLeads.rows,
       },
       visits: {
-        total: totalVisits,
-        planned: visitsPlannedRes?.c || 0,
-        completed: completedVisits,
-        cancelled: visitsCancelledRes?.c || 0,
-        rescheduled: visitsRescheduledRes?.c || 0,
-        interventionCount: visitsInterventionRes?.c || 0,
-        completionRate: visitCompletionRate,
-        recentVisits,
+        total: visitSummary.total,
+        // still to be made: planned, modified or rescheduled, today or later
+        planned: visitSummary.upcoming,
+        completed: visitSummary.completed,
+        completed30d: visitSummary.completed30d,
+        cancelled: visitSummary.cancelled,
+        rescheduled: visitSummary.rescheduled,
+        interventionCount: visitSummary.withManagerDirective,
+        completionRate: visitSummary.completionRate,
+        recentVisits: recentVisits.rows,
       },
       tenders: {
-        total: tendersTotalRes?.c || 0,
-        closingSoon: tendersClosingSoonRes?.c || 0,
-        awaitingApproval: tendersAwaitingRes?.c || 0,
-        underPreparation: tendersUnderPrepRes?.c || 0,
-        won: tendersWonRes?.c || 0,
-        lost: tendersLostRes?.c || 0,
-        regionalTendersList,
+        total: tenderSummary.total,
+        live: tenderSummary.live,
+        closingSoon: tenderSummary.closing7d,
+        awaitingApproval: tenderSummary.awaitingApproval,
+        underPreparation: tenderSummary.underPreparation,
+        won: tenderSummary.won,
+        lost: tenderSummary.lost,
+        regionalTendersList: regionalTendersList.rows,
       },
-      teamPerformance: employeePerformance,
+      teamPerformance,
     };
   }
 }
-

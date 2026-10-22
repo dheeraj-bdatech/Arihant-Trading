@@ -96,7 +96,7 @@ export const TileInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttri
   <input
     ref={ref}
     className={twMerge(
-      'field-tile-control mt-0.5 block h-7 w-full min-w-0 bg-transparent text-[15px] leading-7 font-semibold text-[#14213D] outline-none placeholder:font-normal placeholder:text-[#8A8578] read-only:cursor-default',
+      'field-tile-control mt-0.5 block h-7 w-full min-w-0 bg-transparent text-[15px] leading-7 font-semibold text-[#14213D] outline-none placeholder:font-normal placeholder:text-[#6B7280] read-only:cursor-default',
       className,
     )}
     {...props}
@@ -109,7 +109,7 @@ export const TileTextarea = React.forwardRef<HTMLTextAreaElement, React.Textarea
   <textarea
     ref={ref}
     className={twMerge(
-      'field-tile-control mt-0.5 block w-full resize-none bg-transparent text-sm text-[#14213D] outline-none placeholder:text-[#8A8578]',
+      'field-tile-control mt-0.5 block w-full resize-none bg-transparent text-sm text-[#14213D] outline-none placeholder:text-[#6B7280]',
       className,
     )}
     {...props}

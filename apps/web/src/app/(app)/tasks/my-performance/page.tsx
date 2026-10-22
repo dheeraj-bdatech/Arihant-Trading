@@ -183,7 +183,7 @@ function MyPerformance() {
                 {[errors.from, errors.to || rangeError].filter(Boolean).join(' ')}
               </span>
             ) : (
-              <span className="text-[11px] text-[#8A8578]">Calendar days in IST.</span>
+              <span className="text-[11px] text-[#6B7280]">Calendar days in IST.</span>
             )}
           </div>
         )}
@@ -217,7 +217,7 @@ function MyPerformance() {
             {reviews === null ? (
               <PageLoader rows={2} label="Loading reviews" />
             ) : reviews.length === 0 ? (
-              <p className="text-sm text-[#8A8578]">No submitted reviews yet.</p>
+              <p className="text-sm text-[#6B7280]">No submitted reviews yet.</p>
             ) : (
               <div className="space-y-3">
                 {reviews.map((r) => (

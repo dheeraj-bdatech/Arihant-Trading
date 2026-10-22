@@ -231,7 +231,7 @@ const TREND_SERIES = DELAY_SERIES.filter((s) => s.key !== 'open_overdue') as { k
 
 /** Weekly stacked columns of tasks completed: on time / late excused / late unexcused (IST weeks, Monday start). */
 const WeeklyTrend: React.FC<{ trend: TrendPoint[] }> = ({ trend }) => {
-  if (!trend.length) return <p className="text-xs text-[#8A8578] py-6 text-center">No tasks were completed in this period.</p>;
+  if (!trend.length) return <p className="text-xs text-[#6B7280] py-6 text-center">No tasks were completed in this period.</p>;
   const H = 120;
   const totals = trend.map((w) => w.on_time + w.late_excused + w.late_unexcused);
   const max = Math.max(1, ...totals);
@@ -278,7 +278,7 @@ const WeeklyTrend: React.FC<{ trend: TrendPoint[] }> = ({ trend }) => {
             </li>
           ))}
         </ul>
-        <p className="mt-1 text-[11px] text-[#8A8578]">Columns are weeks starting Monday (DD-MM), by IST completion date.</p>
+        <p className="mt-1 text-[11px] text-[#6B7280]">Columns are weeks starting Monday (DD-MM), by IST completion date.</p>
       </figcaption>
     </figure>
   );
@@ -286,7 +286,7 @@ const WeeklyTrend: React.FC<{ trend: TrendPoint[] }> = ({ trend }) => {
 
 // ------------------------------------------------------------------ small pieces
 const CountCell: React.FC<{ value: number; href?: string | null; risk?: boolean; label: string }> = ({ value, href, risk, label }) => {
-  if (!value) return <span className="font-mono tabular-nums text-[#8A8578]">0</span>;
+  if (!value) return <span className="font-mono tabular-nums text-[#6B7280]">0</span>;
   const cls = `font-mono tabular-nums font-semibold ${risk ? 'text-[#9A3412]' : 'text-[#14213D]'}`;
   return href ? (
     <Link href={href} className={`${cls} underline decoration-[#C9C4B8] underline-offset-2 hover:text-[#0F5E63] hover:decoration-[#0F5E63]`} aria-label={`${value} — ${label}`}>
@@ -513,13 +513,13 @@ function Accountability() {
       return (
         <span className="font-mono tabular-nums">
           <span className="font-semibold text-[#14213D]">{pct(e.on_time_pct)}</span>
-          <span className="block text-[10px] text-[#8A8578]">
+          <span className="block text-[10px] text-[#6B7280]">
             {e.completed}/{e.assigned} done
           </span>
         </span>
       );
     }
-    if (c.key === 'unexcused_delay_days') return <span className={`font-mono tabular-nums ${e.unexcused_delay_days ? 'font-semibold text-[#9A3412]' : 'text-[#8A8578]'}`}>{e.unexcused_delay_days} d</span>;
+    if (c.key === 'unexcused_delay_days') return <span className={`font-mono tabular-nums ${e.unexcused_delay_days ? 'font-semibold text-[#9A3412]' : 'text-[#6B7280]'}`}>{e.unexcused_delay_days} d</span>;
     if (c.key === 'incomplete_work' && e.incomplete_work) {
       return (
         <button type="button" onClick={() => showFlag('rework')} className="font-mono tabular-nums font-semibold text-[#14213D] underline decoration-[#C9C4B8] underline-offset-2 hover:text-[#0F5E63]" aria-label={`${e.incomplete_work} — incomplete work for ${e.name}; show flagged rework`}>
@@ -570,14 +570,14 @@ function Accountability() {
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
             <TaskViewMenu />
             <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
               <input
                 type="search"
                 aria-label="Search employees"
                 placeholder="Search employee, role, department…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
               />
             </div>
             <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -655,7 +655,7 @@ function Accountability() {
                   {rangeError}
                 </span>
               ) : (
-                <span className="text-[11px] text-[#8A8578]">Calendar days in IST.</span>
+                <span className="text-[11px] text-[#6B7280]">Calendar days in IST.</span>
               )}
             </div>
           )}
@@ -841,7 +841,7 @@ function Accountability() {
                     update = no progress update for {s.no_update_days.critical} / {s.no_update_days.high} / {s.no_update_days.medium} / {s.no_update_days.low} days (critical / high / medium / low priority).
                   </p>
                   {flags === null ? (
-                    <p className="text-sm text-[#8A8578]">Flagged items are not available right now.</p>
+                    <p className="text-sm text-[#6B7280]">Flagged items are not available right now.</p>
                   ) : (
                     <Card padding="sm" className="space-y-3">
                       <Tabs variant="pills" size="sm" activeTab={activeFlag} onChange={(id) => set({ flag: id }, { resetPage: false })} tabs={flagTabs.map((f) => ({ id: f.id, label: f.label, count: f.count, badgeVariant: f.count ? 'warning' : undefined }))} />
@@ -875,7 +875,7 @@ function Accountability() {
 // ------------------------------------------------------------------ flags list
 const FlagList: React.FC<{ kind: FlagKey; flags: Flags; windowDays: number; knownIds: Set<string>; onEmployee: (id: string) => void }> = ({ kind, flags, windowDays, knownIds, onEmployee }) => {
   const rows = flags[kind] || [];
-  if (!rows.length) return <p className="py-4 text-center text-sm text-[#8A8578]">Nothing flagged here.</p>;
+  if (!rows.length) return <p className="py-4 text-center text-sm text-[#6B7280]">Nothing flagged here.</p>;
   const item = 'flex flex-col gap-1 px-3 py-2.5 sm:flex-row sm:items-center sm:gap-3';
   const taskTitle = (id: string, number: string, title: string) => (
     <Link href={`/tasks/${id}`} className="min-w-0 flex-1 group">
@@ -1042,7 +1042,7 @@ const EmployeeDrawer: React.FC<{
               ))}
             </ul>
           ) : (
-            <p className="text-xs text-[#8A8578]">No accepted blockers in the period.</p>
+            <p className="text-xs text-[#6B7280]">No accepted blockers in the period.</p>
           )}
         </section>
 

@@ -1,18 +1,22 @@
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
+import { istDay } from './ist-date';
 
-const tomorrow = () => new Date(Date.now() + 86400000).toISOString().split('T')[0];
+export { istDay };
 
 /**
  * Walks a ticket along the legal spec path until it reaches `target`.
- * received → assigned → visit_scheduled → in_progress → resolved (resolved needs rectification text).
+ * received → assigned → visit_scheduled → in_progress.
+ *
+ * The visit is scheduled for today (IST): work may only start on/after the scheduled visit day.
+ * A ticket is resolved by filing the service report (`fileReport`), never by a status note alone.
  */
 export async function advanceTicket(
   app: INestApplication,
   ticketId: string,
   mgmtToken: string,
   engineerId: string,
-  target: 'assigned' | 'visit_scheduled' | 'in_progress' | 'resolved',
+  target: 'assigned' | 'visit_scheduled' | 'in_progress',
 ) {
   const get = async () =>
     (await request(app.getHttpServer()).get(`/api/service/tickets/${ticketId}`).set('Authorization', `Bearer ${mgmtToken}`)).body;
@@ -22,17 +26,25 @@ export async function advanceTicket(
   };
 
   let t = await get();
-  const order = ['received', 'assigned', 'visit_scheduled', 'in_progress', 'resolved'];
+  const order = ['received', 'assigned', 'visit_scheduled', 'in_progress'];
   const rank = (s: string) => order.indexOf(s === 'created' || s === 'new' ? 'received' : s);
 
   if (rank(t.status) < 1 && rank(target) >= 1) await patch({ status: 'assigned', assigned_to: engineerId });
   t = await get();
-  if (rank(t.status) < 2 && rank(target) >= 2) await patch({ status: 'visit_scheduled', planned_visit_date: tomorrow() });
+  if (rank(t.status) < 2 && rank(target) >= 2) await patch({ status: 'visit_scheduled', planned_visit_date: istDay(0) });
   t = await get();
   if (rank(t.status) < 3 && rank(target) >= 3) await patch({ status: 'in_progress' });
-  t = await get();
-  if (rank(t.status) < 4 && rank(target) >= 4) await patch({ status: 'resolved', remarks: 'Rectified the fault and verified on site' });
   return get();
+}
+
+/** Files a service report (engineer or admin token); a complete report moves the ticket to report_submitted. */
+export async function fileReport(app: INestApplication, ticketId: string, token: string, over: Record<string, any> = {}) {
+  const r = await request(app.getHttpServer())
+    .post(`/api/service/tickets/${ticketId}/report`)
+    .set('Authorization', `Bearer ${token}`)
+    .send(validReport(over));
+  if (r.status !== 201) throw new Error(`report failed: ${r.status} ${JSON.stringify(r.body)}`);
+  return r.body;
 }
 
 /** A fully valid report body; override fields per test. */

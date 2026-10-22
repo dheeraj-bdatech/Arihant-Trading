@@ -128,8 +128,8 @@ export function TenderCalendarView({
         };
       case 'query_deadline':
         return {
-          bg: 'bg-amber-50 text-amber-800 border border-amber-200',
-          dot: 'bg-amber-600',
+          bg: 'bg-[#FFF8EB] text-[#7C2D12] border border-[#E9C9B4]',
+          dot: 'bg-[#9A3412]',
           label: 'Query Due',
         };
       case 'technical_opening':
@@ -141,8 +141,8 @@ export function TenderCalendarView({
         };
       default:
         return {
-          bg: 'bg-slate-100 text-slate-700 border border-slate-200',
-          dot: 'bg-slate-500',
+          bg: 'bg-[#ECE9E2] text-[#14213D] border border-[#DCD8CE]',
+          dot: 'bg-[#6B7280]',
           label: 'Event',
         };
     }
@@ -244,7 +244,7 @@ export function TenderCalendarView({
           <span className="text-[#4A5568]">Pre-Bid Conference</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-600" />
+          <span className="w-2.5 h-2.5 rounded-full bg-[#9A3412]" />
           <span className="text-[#4A5568]">Query Deadline</span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -273,7 +273,7 @@ export function TenderCalendarView({
             {Array.from({ length: startingDayIndex }).map((_, idx) => (
               <div
                 key={`empty-${idx}`}
-                className="min-h-[110px] bg-[#F6F5F1]/40 p-2 text-slate-300"
+                className="min-h-[110px] bg-[#F6F5F1]/40 p-2 text-[#C9C4B8]"
               />
             ))}
 

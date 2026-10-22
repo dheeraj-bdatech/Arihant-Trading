@@ -26,6 +26,12 @@ export class DashboardController {
     return this.workspaceService.getWorkspace(user);
   }
 
+  /** Sidebar badge figures (tender live / closing counts) in the caller's scope — same definitions as the dashboards. */
+  @Get('nav-counts')
+  async getNavCounts(@CurrentUser() user: AuthUser) {
+    return this.dashboardService.getNavCounts(user);
+  }
+
   @Get('regional-performance')
   @UseGuards(RolesGuard)
   @Roles('regional_manager', 'management', 'admin')

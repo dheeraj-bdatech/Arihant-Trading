@@ -57,7 +57,7 @@ const LIMIT = 5;
 const day = (v: unknown) => {
   if (!v) return '';
   const d = new Date(v as string);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 };
 const join = (...parts: unknown[]) => parts.filter((p) => p !== null && p !== undefined && p !== '').join(' · ');
 const rowsOf = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : Array.isArray(res?.tickets) ? res.tickets : []);
@@ -161,7 +161,7 @@ const SECTIONS: Record<RelatedSection, SectionDef> = {
           viewAll: '/proposals',
           rows: r.map((p) => ({
             id: p.id,
-            title: join(p.proposal_no || p.proposal_number, p.product_name),
+            title: join(p.proposal_number || p.proposal_no, p.product_name),
             meta: join(p.responsible_name, day(p.request_date || p.created_at)),
             status: p.status,
             href: `/proposals?open=${p.id}`,

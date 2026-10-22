@@ -361,7 +361,7 @@ export default function ServiceRequestPage() {
         </div>
         <div data-field="urgency">
           <fieldset>
-            <legend className="mb-1.5 block text-xs font-semibold text-[#14213D]">How urgent is it?<span className="ml-0.5 text-red-500">*</span></legend>
+            <legend className="mb-1.5 block text-xs font-semibold text-[#14213D]">How urgent is it?<span className="ml-0.5 text-[#881337]">*</span></legend>
             <div className="grid gap-2">
               {meta.urgencies.map((u) => {
                 const hrs = urgencyHours(u.value);

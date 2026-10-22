@@ -4,6 +4,8 @@ import React, { useEffect, useId, useState } from 'react';
 import Link from 'next/link';
 import { ArrowRight, ArrowUpRight, ChevronRight, Flame, Info, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { CountUp } from '@/components/ui';
+import { useAuth } from '@/lib/auth-context';
+import { canOpen } from '@/lib/route-access';
 import './command-deck.css';
 
 /* ------------------------------------------------------------------ tones -- */
@@ -34,34 +36,17 @@ export interface HeroStat {
   tone: Tone;
 }
 export const HeroBanner: React.FC<{
-  /** The desk this dashboard is for, e.g. "Bid desk" (default "Command dashboard"). */
-  eyebrow?: string;
   greeting: string;
   name: string;
-  roleLabel: string;
-  zone?: string;
-  dateLabel: string;
-  summary: string;
   stats: HeroStat[];
   ctaHref: string;
   ctaLabel: string;
-}> = ({ eyebrow = 'Command dashboard', greeting, name, roleLabel, zone, dateLabel, summary, stats, ctaHref, ctaLabel }) => (
+}> = ({ greeting, name, stats, ctaHref, ctaLabel }) => (
   <section className="dx-hero dx-rise">
     <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-      <div className="min-w-0">
-        <span className="dx-hero__eyebrow">
-          <span className="dx-hero__live" aria-hidden /> {eyebrow}
-        </span>
-        <h1 className="dx-hero__title">
-          {greeting}, <em>{name}</em>
-        </h1>
-        <p className="dx-hero__sub">{summary}</p>
-        <div className="dx-hero__meta">
-          <span className="dx-pill">{roleLabel}</span>
-          {zone && <span className="dx-pill">{zone}</span>}
-          <span className="dx-pill font-mono">{dateLabel}</span>
-        </div>
-      </div>
+      <h1 className="dx-hero__title min-w-0">
+        {greeting}, <em>{name}</em>
+      </h1>
       <div className="flex flex-col gap-3 lg:items-end">
         <div className="dx-hero__stats">
           {stats.map((s) => (
@@ -164,16 +149,28 @@ const SEV = {
   info: { Icon: Info, tone: 'teal' as Tone, label: 'Info' },
 } as const;
 
-export function timeAgo(iso?: string): string {
+/** Real relative time from the record's own timestamp: "5m ago", "3h ago", "4d ago", then the IST date. */
+export function timeAgo(iso?: string | null): string {
   if (!iso) return '';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms)) return '';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const ms = Date.now() - t;
+  if (ms < 0) {
+    // a future timestamp (clock skew or a scheduled item) — never pretend it happened "just now"
+    const ahead = Math.round(-ms / 60000);
+    if (ahead < 1) return 'now';
+    if (ahead < 60) return `in ${ahead}m`;
+    if (ahead < 1440) return `in ${Math.round(ahead / 60)}h`;
+    return `in ${Math.round(ahead / 1440)}d`;
+  }
   const m = Math.floor(ms / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(t).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 }
 
 type AttentionFilter = 'all' | AttentionItem['severity'];
@@ -334,9 +331,13 @@ export interface QuickAction {
   icon: React.ReactNode;
 }
 const ACTION_TONES: Tone[] = ['teal', 'red', 'ink', 'ochre'];
-export const QuickActions: React.FC<{ actions: QuickAction[] }> = ({ actions }) => (
+/** Only actions the signed-in role may open are offered (same rule as the page guard) — never a link to a 403. */
+export const QuickActions: React.FC<{ actions: QuickAction[] }> = ({ actions }) => {
+  const { user } = useAuth();
+  const allowed = actions.filter((a) => canOpen(user?.role, a.href));
+  return (
   <div className="dx-qa">
-    {actions.map((a, i) => (
+    {allowed.map((a, i) => (
       <Link key={a.label} href={a.href} className="dx-qa__row dx-slide" data-tone={ACTION_TONES[i % ACTION_TONES.length]} style={{ animationDelay: `${i * 55}ms` }}>
         <span className="dx-qa__ic">{a.icon}</span>
         <span className="min-w-0">
@@ -347,7 +348,8 @@ export const QuickActions: React.FC<{ actions: QuickAction[] }> = ({ actions }) 
       </Link>
     ))}
   </div>
-);
+  );
+};
 
 /* --------------------------------------------------------------- timeline -- */
 export interface TimelineItem {

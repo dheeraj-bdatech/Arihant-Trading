@@ -407,6 +407,33 @@ export function receiptRequired(category: Pick<CategoryRule, 'receipt_required_a
   return amount >= Number(category.receipt_required_above);
 }
 
+/** Anomalies a reviewer must see on a line at every approval stage. */
+export type ExpenseLineAnomaly = 'future_dated' | 'receipt_missing';
+
+export interface AnomalyLine {
+  id: string;
+  purpose?: string | null;
+  expense_date: unknown;
+  category_details?: unknown;
+  amount: unknown;
+  /** Category threshold (0 = always, null = never). */
+  receipt_required_above: unknown;
+  attachment_count: number;
+}
+
+/**
+ * Flags a line for reviewers: dated after today (IST; expense date or hotel check-in/out) or missing a receipt its
+ * category requires at this amount. Submission already refuses both, so at the approval stages they only show up on
+ * claims that slipped through earlier (legacy imports, a category threshold raised after submission).
+ */
+export function lineAnomalies(line: AnomalyLine, today: string): ExpenseLineAnomaly[] {
+  const out: ExpenseLineAnomaly[] = [];
+  if (Object.keys(futureDateErrors([line], today)).length) out.push('future_dated');
+  const threshold = line.receipt_required_above === null || line.receipt_required_above === undefined ? null : Number(line.receipt_required_above);
+  if (receiptRequired({ receipt_required_above: threshold }, Number(line.amount)) && line.attachment_count === 0) out.push('receipt_missing');
+  return out;
+}
+
 /** Magic-byte sniffing so a renamed .exe cannot pass as a receipt. */
 export function sniffMime(buf: Buffer): string | null {
   if (buf.length >= 5 && buf.subarray(0, 5).toString('ascii') === '%PDF-') return 'application/pdf';

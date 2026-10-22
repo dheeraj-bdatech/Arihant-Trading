@@ -25,6 +25,8 @@ import {
   Sparkles,
   Award,
   LayoutList,
+  MapPin,
+  ChevronRight,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -44,13 +46,23 @@ import {
   PageHeader,
   StatCard,
   StatGrid, PageLoader,
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
+  RecordTable,
   RecordViews,
+  formatDateIN,
+  daysFromToday,
   rowDetails,
   toneFor,
+  type BadgeProps,
   type BoardLane,
   type RecordItem,
   type RecordTone } from '@/components/ui';
-import { formatLakh, formatINR, TENDER_STATUSES } from '@arihant/shared';
+import { formatLakh, formatINR, TENDER_STATUSES, isClosedLeadStatus } from '@arihant/shared';
 import { NewTaskButton } from '../tasks/_lib/NewTaskModal';
 
 const formatLeadCategory = (category?: string) => {
@@ -109,13 +121,25 @@ const LEAD_LANES: BoardLane[] = [
   { key: 'expected', label: 'Expected', tone: 'warning' },
   { key: 'other', label: 'Other', tone: 'neutral' },
 ];
-const LEAD_CLOSED = ['converted', 'won', 'lost', 'dropped'];
 const VISIT_STATUSES = ['planned', 'modified', 'rescheduled', 'completed', 'not_completed', 'cancelled'];
 const VISIT_LANES: BoardLane[] = [...VISIT_STATUSES, 'other'].map((k) => ({ key: k, label: pretty(k), tone: toneFor(k) }));
 const VISIT_DONE = ['completed', 'not_completed', 'cancelled'];
 const TENDER_LANES: BoardLane[] = [...TENDER_STATUSES, 'other'].map((k) => ({ key: k, label: pretty(k), tone: toneFor(k) }));
 /** Bid closing date only drives urgency while the bid is still being prepared. */
 const TENDER_PRE_SUBMISSION = ['identified', 'awaiting_approval', 'under_preparation', 'on_hold'];
+
+type BadgeVariant = NonNullable<BadgeProps['variant']>;
+const RATING_BADGE: Record<string, BadgeVariant> = { Excellent: 'success', Good: 'default', 'Needs Attention': 'warning' };
+const ratingBadge = (rating: string): BadgeVariant => RATING_BADGE[rating] ?? 'danger';
+const categoryBadge = (category?: string): BadgeVariant => {
+  const tone = getCategoryTone(category);
+  return tone === 'neutral' ? 'default' : tone;
+};
+const probabilityBadge = (p?: string): BadgeVariant => (p === 'high' ? 'success' : p === 'medium' ? 'warning' : 'default');
+const visitBadge = (status?: string): BadgeVariant => (status === 'completed' ? 'success' : status === 'planned' ? 'default' : 'warning');
+const tenderBadge = (status?: string): BadgeVariant =>
+  status === 'won' ? 'success' : status === 'awaiting_approval' ? 'warning' : status === 'under_preparation' ? 'default' : 'outline';
+const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
 
 export default function RegionalPage() {
   const { user, hasRole } = useAuth();
@@ -191,7 +215,7 @@ export default function RegionalPage() {
   if (!hasRole(['regional_manager', 'management', 'admin'])) {
     return (
       <div className="p-12 text-center text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl space-y-3 shadow-xs">
-        <ShieldAlert className="h-12 w-12 text-red-500 mx-auto" />
+        <ShieldAlert className="h-12 w-12 text-[#881337] mx-auto" />
         <h2 className="text-lg font-bold text-[#14213D]">Access Restricted</h2>
         <p className="text-xs">
           Only Regional Managers, Executive Management, and System Administrators have permission to access the Regional Command Hub.
@@ -216,9 +240,12 @@ export default function RegionalPage() {
     setIsEvidenceModalOpen(true);
   };
 
-  // Rep scorecard: worst compliance first, so the cards lead with who needs attention.
+  // Rep scorecard: worst compliance first, so the list leads with who needs attention.
+  const team = [...filteredTeam].sort(
+    (a, b) => TEAM_LANES.findIndex((l) => l.key === a.complianceRating) - TEAM_LANES.findIndex((l) => l.key === b.complianceRating),
+  );
   const teamRegister = register(
-    [...filteredTeam].sort((a, b) => TEAM_LANES.findIndex((l) => l.key === a.complianceRating) - TEAM_LANES.findIndex((l) => l.key === b.complianceRating)),
+    team,
     (emp: any): RecordItem => ({
       key: emp.id,
       code: emp.role.replace('_', ' ').toUpperCase(),
@@ -242,6 +269,79 @@ export default function RegionalPage() {
     (emp: any) => emp.complianceRating,
   );
 
+  const teamList = team.length ? (
+    <RecordTable items={teamRegister.items}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Representative</TableHead>
+            <TableHead>Role & Region</TableHead>
+            <TableHead className="text-center">Milestones (Done/Total)</TableHead>
+            <TableHead className="text-center">Overdue</TableHead>
+            <TableHead className="text-center">Visits Done</TableHead>
+            <TableHead className="text-right">Pipeline (₹ L)</TableHead>
+            <TableHead className="text-center">Active Blockers</TableHead>
+            <TableHead className="text-center">Compliance</TableHead>
+            <TableHead className="text-right">Evidence</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {team.map((emp: any) => (
+            <TableRow key={emp.id}>
+              <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
+                {emp.full_name}
+                <div className="text-[10px] text-[#4A5568] font-mono font-normal">{emp.email}</div>
+              </TableCell>
+              <TableCell className="whitespace-nowrap">
+                <span className="font-semibold text-[#14213D] text-xs">{emp.role.replace('_', ' ').toUpperCase()}</span>
+                <div className="text-[10px] text-[#4A5568]">{emp.region_name}</div>
+              </TableCell>
+              <TableCell className="text-center whitespace-nowrap">
+                <span className="font-mono font-bold text-[#14213D]">
+                  {emp.tasks.completed} / {emp.tasks.total}
+                </span>
+                <div className="text-[10px] text-[#4A5568]">{emp.tasks.completionRate}%</div>
+              </TableCell>
+              <TableCell className="text-center whitespace-nowrap">
+                {emp.tasks.overdue > 0 ? (
+                  <span className="text-[11px] font-bold text-[#881337] bg-[#FCE8EC] px-2 py-0.5 rounded">{emp.tasks.overdue}</span>
+                ) : (
+                  <span className="text-[11px] text-[#0B4A4E] font-medium">0</span>
+                )}
+              </TableCell>
+              <TableCell className="text-center font-mono font-bold text-[#14213D] whitespace-nowrap">
+                {emp.visits.completed} / {emp.visits.total}
+              </TableCell>
+              <TableCell className="text-right font-mono font-bold text-[#0F5E63] whitespace-nowrap">
+                {formatLakh(emp.leads.valueLakh || 0)}
+              </TableCell>
+              <TableCell className="text-center whitespace-nowrap">
+                {emp.activeBlockers.length > 0 ? (
+                  <span className="px-2 py-0.5 rounded-full bg-[#FBEBDD] text-[#7C2D12] font-bold text-[10px]">
+                    {emp.activeBlockers.length} BLOCKED
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-[#4A5568]">None</span>
+                )}
+              </TableCell>
+              <TableCell className="text-center whitespace-nowrap">
+                <Badge variant={ratingBadge(emp.complianceRating)} size="sm">
+                  {emp.complianceRating.toUpperCase()}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-right whitespace-nowrap">
+                <Button size="sm" variant="secondary" onClick={() => openEvidence(emp)} className="shadow-xs text-xs text-[#0F5E63]">
+                  <span>Inspect</span>
+                  <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
+
   const leadRegister = register(
     data?.sales?.recentLeads ?? [],
     (ld: any): RecordItem => ({
@@ -252,7 +352,7 @@ export default function RegionalPage() {
       badges: ld.probability
         ? [{ label: `${ld.probability} probability`, tone: ld.probability === 'high' ? 'success' : ld.probability === 'medium' ? 'warning' : 'neutral' }]
         : [],
-      due: { date: ld.next_followup_date, label: 'Follow-up', done: LEAD_CLOSED.includes(String(ld.status || '').toLowerCase()) },
+      due: { date: ld.next_followup_date, label: 'Follow-up', done: isClosedLeadStatus(ld.status) },
       value: formatLakh(ld.value_lakh || 0),
       owner: ld.assigned_rep_name || 'Territory Rep',
       facts: [
@@ -266,6 +366,53 @@ export default function RegionalPage() {
       return LEAD_LANES.some((l) => l.key === k) ? k : 'other';
     },
   );
+
+  const leads: any[] = data?.sales?.recentLeads ?? [];
+  const leadList = leads.length ? (
+    <RecordTable items={leadRegister.items}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Organisation & City</TableHead>
+            <TableHead>Product Category</TableHead>
+            <TableHead>Category</TableHead>
+            <TableHead>Probability</TableHead>
+            <TableHead className="text-right">Value (₹ Lakh)</TableHead>
+            <TableHead>Territory Rep</TableHead>
+            <TableHead>Follow-Up Due</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {leads.map((ld: any) => (
+            <TableRow key={ld.id}>
+              <TableCell className="font-bold text-[#14213D]">
+                {ld.organisation_name}
+                <div className="text-[10px] text-[#4A5568] font-normal">{ld.city || 'North Zone'}</div>
+              </TableCell>
+              <TableCell className="text-[#14213D]">{ld.product_name || 'Security Scanning Hardware'}</TableCell>
+              <TableCell>
+                <Badge variant={categoryBadge(ld.category)} size="sm" className="font-semibold">
+                  {formatLeadCategory(ld.category)}
+                </Badge>
+              </TableCell>
+              <TableCell>
+                {ld.probability ? (
+                  <Badge variant={probabilityBadge(ld.probability)} size="sm" className="uppercase font-bold">
+                    {ld.probability}
+                  </Badge>
+                ) : (
+                  <span className="text-[#4A5568]">-</span>
+                )}
+              </TableCell>
+              <TableCell className="text-right font-mono font-bold text-[#0F5E63]">{formatLakh(ld.value_lakh || 0)}</TableCell>
+              <TableCell className="text-[#4A5568]">{ld.assigned_rep_name || 'Territory Rep'}</TableCell>
+              <TableCell className="font-mono text-[#4A5568]">{formatDateIN(ld.next_followup_date)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
 
   const visitRegister = register(
     data?.visits?.recentVisits ?? [],
@@ -286,9 +433,60 @@ export default function RegionalPage() {
     (v: any) => (VISIT_STATUSES.includes(v.status) ? v.status : 'other'),
   );
 
+  const visits: any[] = data?.visits?.recentVisits ?? [];
+  const visitList = visits.length ? (
+    <RecordTable items={visitRegister.items}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Planned Date</TableHead>
+            <TableHead>Organisation & Location</TableHead>
+            <TableHead>Purpose</TableHead>
+            <TableHead>Field Rep</TableHead>
+            <TableHead>Tour Status</TableHead>
+            <TableHead>Manager Directive</TableHead>
+            <TableHead className="text-right">Intervention</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {visits.map((v: any) => (
+            <TableRow key={v.id}>
+              <TableCell className="font-mono font-bold text-[#14213D] whitespace-nowrap">{formatDateIN(v.planned_date)}</TableCell>
+              <TableCell className="font-bold text-[#14213D]">
+                {v.organisation_name}
+                <div className="text-[10px] text-[#4A5568] font-normal flex items-center gap-1">
+                  <MapPin className="h-3 w-3 text-[#0F5E63]" />
+                  <span>{v.location || 'Client HQ'}</span>
+                </div>
+              </TableCell>
+              <TableCell className="text-[#14213D] max-w-[200px] truncate" title={v.purpose || undefined}>
+                {v.purpose || 'Technical brief'}
+              </TableCell>
+              <TableCell className="text-[#4A5568] whitespace-nowrap">{v.assigned_rep_name || 'Territory Rep'}</TableCell>
+              <TableCell className="whitespace-nowrap">
+                <Badge variant={visitBadge(v.status)} size="sm" className="uppercase font-bold">
+                  {upperLabel(v.status)}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-[#4A5568] max-w-[180px] truncate" title={v.remarks || undefined}>
+                {v.remarks ? <span className="text-[#14213D] font-medium">{v.remarks}</span> : <span className="text-[#7D92B5]">None attached</span>}
+              </TableCell>
+              <TableCell className="text-right whitespace-nowrap">
+                <Button size="sm" variant="ghost" onClick={() => handleOpenIntervention(v)} className="text-xs text-[#0F5E63] hover:bg-[#E3EFEE]">
+                  + Add Stop / Also Meet
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
+
+  // grows by TENDER_PAGE_SIZE as the register scrolls (infinite scroll over the loaded list)
+  const tenders: any[] = (data?.tenders?.regionalTendersList ?? []).slice(0, tenderPage * TENDER_PAGE_SIZE);
   const tenderRegister = register(
-    // grows by TENDER_PAGE_SIZE as the register scrolls (infinite scroll over the loaded list)
-    (data?.tenders?.regionalTendersList ?? []).slice(0, tenderPage * TENDER_PAGE_SIZE),
+    tenders,
     (t: any): RecordItem => ({
       key: t.id,
       code: t.tender_no,
@@ -306,6 +504,70 @@ export default function RegionalPage() {
     }),
     (t: any) => ((TENDER_STATUSES as string[]).includes(t.status) ? t.status : 'other'),
   );
+
+  const tenderList = tenders.length ? (
+    <RecordTable items={tenderRegister.items}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Tender Reference No.</TableHead>
+            <TableHead>Department / Buyer</TableHead>
+            <TableHead>Requirement Details</TableHead>
+            <TableHead>Category</TableHead>
+            <TableHead>Bid Closing Date</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className="text-right">Inspect</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {tenders.map((t: any) => {
+            const daysLeft = TENDER_PRE_SUBMISSION.includes(t.status) ? daysFromToday(t.bid_closing_date) : null;
+            return (
+              <TableRow key={t.id}>
+                <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
+                  <span className="font-mono text-[#0F5E63]">{t.tender_no}</span>
+                </TableCell>
+                <TableCell className="text-[#14213D]">
+                  <div className="font-semibold text-[#14213D]">{t.department || 'Government Buyer'}</div>
+                  <div className="text-[10px] text-[#4A5568]">{[t.city, t.state].filter(Boolean).join(', ')}</div>
+                </TableCell>
+                <TableCell className="text-[#4A5568] max-w-[240px] truncate" title={t.requirement_text || undefined}>
+                  {t.requirement_text || '-'}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {t.category ? (
+                    <Badge variant="outline" size="sm" className="uppercase font-bold">
+                      {upperLabel(t.category)}
+                    </Badge>
+                  ) : (
+                    <span className="text-[#4A5568]">-</span>
+                  )}
+                </TableCell>
+                <TableCell className="font-mono whitespace-nowrap">
+                  {formatDateIN(t.bid_closing_date)}
+                  {daysLeft !== null && daysLeft >= 0 && daysLeft <= 7 && (
+                    <div className="text-[10px] font-bold text-[#881337]">{daysLeft === 0 ? 'CLOSING TODAY' : `${daysLeft} DAYS LEFT`}</div>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={tenderBadge(t.status)} size="sm" className="uppercase font-bold">
+                    {upperLabel(t.status)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right whitespace-nowrap">
+                  <Link href={`/tenders?highlight=${t.id}`}>
+                    <Button size="sm" variant="secondary" className="shadow-xs text-xs">
+                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </Link>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
 
   if (isLoading && !data) {
     return (
@@ -403,14 +665,14 @@ export default function RegionalPage() {
           {activeTab === 'team' && (
             <>
               <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
                 <input
                   type="search"
                   aria-label="Search representatives"
                   placeholder="Search rep by name, territory, email…"
                   value={searchEmployee}
                   onChange={(e) => setSearchEmployee(e.target.value)}
-                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                 />
               </div>
               {searchEmployee && (
@@ -434,6 +696,8 @@ export default function RegionalPage() {
           </h2>
           <RecordViews
             storageKey="regional-team"
+            defaultView="list"
+            list={teamList}
             items={teamRegister.items}
             lanes={TEAM_LANES}
             laneOf={teamRegister.laneOf}
@@ -462,7 +726,7 @@ export default function RegionalPage() {
               <span className="text-[10px] text-[#4A5568] font-bold uppercase block">
                 High Probability Value
               </span>
-              <span className="text-xl font-extrabold text-emerald-700">
+              <span className="text-xl font-extrabold text-[#0B4A4E]">
                 {formatLakh(data?.sales?.highProbValueLakh || 0)}
               </span>
               <span className="text-[11px] text-[#4A5568] block mt-1">Confirmed Procurement Stage</span>
@@ -482,7 +746,7 @@ export default function RegionalPage() {
               <span className="text-[10px] text-[#4A5568] font-bold uppercase block">
                 Expected / Follow-Up Pipeline
               </span>
-              <span className="text-xl font-extrabold text-amber-700">
+              <span className="text-xl font-extrabold text-[#7C2D12]">
                 {formatLakh(data?.sales?.lowProbValueLakh || 0)}
               </span>
               <span className="text-[11px] text-[#4A5568] block mt-1">Initial Engagement & Calls</span>
@@ -493,10 +757,10 @@ export default function RegionalPage() {
             <div className="p-4 bg-[#FBFAF7] flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-[#14213D]">
-                  Active Territory Opportunities in {zoneName} Zone ({data?.sales?.total || 0})
+                  Active Territory Opportunities in {zoneName} Zone ({data?.sales?.totalLeads || 0})
                 </span>
                 <p className="text-[11px] text-[#4A5568]">
-                  Live sales pipeline value: <strong>{formatLakh(data?.sales?.pipelineValueLakh || 0)}</strong> across key security accounts.
+                  Live sales pipeline value: <strong>{formatLakh(data?.sales?.totalPipelineValueLakh || 0)}</strong> across key security accounts.
                 </p>
               </div>
               <Link href="/leads">
@@ -509,6 +773,8 @@ export default function RegionalPage() {
 
           <RecordViews
             storageKey="regional-leads"
+            defaultView="list"
+            list={leadList}
             items={leadRegister.items}
             lanes={LEAD_LANES}
             laneOf={leadRegister.laneOf}
@@ -541,6 +807,8 @@ export default function RegionalPage() {
 
           <RecordViews
             storageKey="regional-visits"
+            defaultView="list"
+            list={visitList}
             items={visitRegister.items}
             lanes={VISIT_LANES}
             laneOf={visitRegister.laneOf}
@@ -577,6 +845,8 @@ export default function RegionalPage() {
             return (
               <RecordViews
                 storageKey="regional-tenders"
+                defaultView="list"
+                list={tenderList}
                 items={tenderRegister.items}
                 lanes={TENDER_LANES}
                 laneOf={tenderRegister.laneOf}
@@ -612,15 +882,7 @@ export default function RegionalPage() {
                 <span className="text-[11px] text-[#4A5568] font-mono break-all">{selectedEmployee.email} &bull; {selectedEmployee.role}</span>
               </div>
               <Badge
-                variant={
-                  selectedEmployee.complianceRating === 'Excellent'
-                    ? 'success'
-                    : selectedEmployee.complianceRating === 'Good'
-                    ? 'default'
-                    : selectedEmployee.complianceRating === 'Needs Attention'
-                    ? 'warning'
-                    : 'danger'
-                }
+                variant={ratingBadge(selectedEmployee.complianceRating)}
                 size="md"
               >
                 {selectedEmployee.complianceRating.toUpperCase()}
@@ -636,11 +898,11 @@ export default function RegionalPage() {
               </div>
               <div className="p-3 rounded-lg bg-white border border-[#DCD8CE] text-center">
                 <span className="text-[10px] text-[#4A5568] uppercase font-bold block">Overdue</span>
-                <span className="text-base font-extrabold text-red-600">{selectedEmployee.tasks.overdue}</span>
+                <span className="text-base font-extrabold text-[#881337]">{selectedEmployee.tasks.overdue}</span>
               </div>
               <div className="p-3 rounded-lg bg-white border border-[#DCD8CE] text-center">
                 <span className="text-[10px] text-[#4A5568] uppercase font-bold block">Visits Completed</span>
-                <span className="text-base font-extrabold text-emerald-700">{selectedEmployee.visits.completed}</span>
+                <span className="text-base font-extrabold text-[#0B4A4E]">{selectedEmployee.visits.completed}</span>
               </div>
               <div className="p-3 rounded-lg bg-white border border-[#DCD8CE] text-center">
                 <span className="text-[10px] text-[#4A5568] uppercase font-bold block">Pipeline (₹ L)</span>
@@ -657,21 +919,21 @@ export default function RegionalPage() {
               ) : (
                 <div className="space-y-2 max-h-40 overflow-y-auto">
                   {selectedEmployee.activeBlockers.map((b: any) => (
-                    <div key={b.id} className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-950">
+                    <div key={b.id} className="p-2.5 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12]">
                       <div className="font-bold flex items-center justify-between">
                         <span>{b.task_title || 'Assigned Task'}</span>
                         <Badge variant="warning" size="sm">{b.blocker_type}</Badge>
                       </div>
-                      <p className="text-[11px] text-amber-800 mt-1">{b.description}</p>
+                      <p className="text-[11px] text-[#7C2D12] mt-1">{b.description}</p>
                     </div>
                   ))}
                 </div>
               )}
             </div>
 
-            <div className="p-3 rounded-lg bg-gray-50 border border-gray-200 text-[11px] text-gray-700">
+            <div className="p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-[11px] text-[#14213D]">
               <strong>Evidence Summary:</strong> {selectedEmployee.evidenceNote}
-              <div className="mt-1 text-[10px] text-gray-500">
+              <div className="mt-1 text-[10px] text-[#4A5568]">
                 Notice: In accordance with corporate governance rules, performance evaluations and compensation adjustments remain the sole prerogative of Executive Management.
               </div>
             </div>
@@ -695,7 +957,7 @@ export default function RegionalPage() {
       >
         <form onSubmit={handleSaveIntervention} className="space-y-4 text-xs">
           {actionError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
               {actionError}
             </div>
           )}
@@ -704,7 +966,7 @@ export default function RegionalPage() {
             <div className="p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-1">
               <div className="font-bold text-[#14213D]">{selectedVisit.organisation_name}</div>
               <div className="text-[11px] text-[#4A5568]">
-                Planned Date: {new Date(selectedVisit.planned_date).toLocaleDateString('en-IN')} &bull; Rep: {selectedVisit.assigned_rep_name}
+                Planned Date: {formatDateIN(selectedVisit.planned_date)} &bull; Rep: {selectedVisit.assigned_rep_name}
               </div>
             </div>
           )}
@@ -719,7 +981,7 @@ export default function RegionalPage() {
               value={interventionInstructions}
               onChange={(e) => setInterventionInstructions(e.target.value)}
               placeholder="Specify the person to meet, additional enquiry, or critical quotation discussion..."
-              className="w-full rounded-lg border border-[#DCD8CE] bg-white p-2.5 text-xs text-[#14213D] focus:border-[#3770E3] focus:outline-none shadow-xs"
+              className="w-full rounded-lg border border-[#DCD8CE] bg-white p-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none shadow-xs"
             />
           </div>
 

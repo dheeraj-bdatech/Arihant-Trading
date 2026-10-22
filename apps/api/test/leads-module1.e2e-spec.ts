@@ -375,7 +375,7 @@ describe('Module 1: Lead & Customer Management E2E Test Suite', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.message).toContain('Invalid status transition');
+      expect(res.body.message).toContain('cannot move from QUALIFIED to CONVERTED');
     });
 
     it('✓ Rejects transition to lost without a mandatory loss reason', async () => {
@@ -405,18 +405,35 @@ describe('Module 1: Lead & Customer Management E2E Test Suite', () => {
       expect(res.body.loss_reason).toBe('competitor');
     });
 
-    it('✓ Progresses lead to converted via follow_up stage', async () => {
-      // Move freshLeadId: qualified -> follow_up -> converted
-      await request(app.getHttpServer())
+    it('✓ Progresses lead to converted via proposal and follow_up stages', async () => {
+      // DEF-097: conversion comes only after a commercial stage (proposal / tender discussion / negotiation), so a
+      // follow-up straight after qualification cannot convert. Walk qualified -> proposal -> follow_up -> converted.
+      const propRes = await request(app.getHttpServer())
+        .patch(`/api/leads/${freshLeadId}/status`)
+        .set('Authorization', `Bearer ${salesToken}`)
+        .send({ status: 'proposal', remarks: 'Commercial proposal shared' });
+      expect(propRes.status).toBe(200);
+
+      const fuRes = await request(app.getHttpServer())
         .patch(`/api/leads/${freshLeadId}/status`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({ status: 'follow_up', remarks: 'Final commercial alignment' });
+      expect(fuRes.status).toBe(200);
+
+      // Converting without the PO / supply order reference is rejected
+      const noPo = await request(app.getHttpServer())
+        .patch(`/api/leads/${freshLeadId}/status`)
+        .set('Authorization', `Bearer ${salesToken}`)
+        .send({ status: 'converted', remarks: 'Purchase order issued! ₹45.5 Lakh won.' });
+      expect(noPo.status).toBe(400);
+      expect(noPo.body.message).toContain('purchase / supply order reference');
 
       const convRes = await request(app.getHttpServer())
         .patch(`/api/leads/${freshLeadId}/status`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
           status: 'converted',
+          po_reference: 'PO/DEL/2026/0451',
           remarks: 'Purchase order issued! ₹45.5 Lakh won.',
         });
 

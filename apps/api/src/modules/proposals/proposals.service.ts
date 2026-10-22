@@ -20,8 +20,10 @@ import {
   type AuthUser,
   type PaginatedResult,
   type ProposalStatus,
+  formatISTDate,
+  CLOSED_LEAD_STATUSES,
 } from '@arihant/shared';
-import { ProposalsWorkflowService, type ProposalSettingsConfig } from './proposals.workflow.js';
+import { ProposalsWorkflowService, proposalDisplayNo, hasQuotedValue, TERMINAL_PROPOSAL_STATUSES, type ProposalSettingsConfig } from './proposals.workflow.js';
 import { AppEvents } from '../../common/events/event-names.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
 import { ProposalTimelineProjection } from './consumers/timeline.projection.js';
@@ -49,6 +51,29 @@ import {
   ProposalSettingsDto,
   ImportProposalSheetDto,
 } from './proposals.dto.js';
+
+/** Human status names for server messages. */
+const PROPOSAL_STATUS_TEXT: Record<string, string> = {
+  REQUESTED: 'Proposal Requested',
+  PROPOSAL_REQUESTED: 'Proposal Requested',
+  UNDER_PREPARATION: 'Under Preparation',
+  READY_FOR_REVIEW: 'Ready for Review',
+  APPROVED: 'Approved',
+  SENT_TO_CUSTOMER: 'Sent to Customer',
+  FOLLOW_UP_REQUIRED: 'Follow-up Required',
+  CONVERTED: 'Converted',
+  LOST: 'Lost',
+  CLOSED: 'Closed',
+};
+
+/** v1.0 → v1.1, v2.3 → v2.4; anything unparseable restarts at v<major>.1 (DEF-080). */
+function nextMinorVersion(version: string | null | undefined, major: number | null | undefined): string {
+  const m = /^v?(\d+)\.(\d+)$/i.exec(String(version || '').trim());
+  if (m) return `v${Number(m[1])}.${Number(m[2]) + 1}`;
+  return `v${Math.max(1, Number(major) || 1)}.1`;
+}
+
+/** Lead stages that are finished — a proposal is never auto-linked to these (DEF-081). */
 
 export const DEFAULT_PROPOSAL_SETTINGS = {
   id: 1,
@@ -469,16 +494,24 @@ export class ProposalsService {
         'proposals.closure_reason_code',
         'proposals.closure_reason_text',
         'proposals.conversion_reference',
+        'proposals.converted_to',
         'proposals.last_activity_at',
         'proposals.follow_up_count',
         'proposals.postpone_count',
         'proposals.owner_inactive_flag',
         'proposals.row_version',
         'proposals.remarks',
+        'proposals.created_by',
+        'proposals.created_by_id',
+        'proposals.quoted_value',
+        'proposals.quantity',
+        'proposals.margin_percent',
+        'proposals.validity_date',
         'proposals.created_at',
         'proposals.updated_at',
         'organisations.name as organisation_name',
         'organisations.city as organisation_city',
+        'organisations.state as organisation_state',
         'products.name as product_name',
         'requested_user.full_name as requested_by_name',
         'responsible_user.full_name as responsible_name',
@@ -493,6 +526,8 @@ export class ProposalsService {
     const enriched = items.map((p) => ({
       ...p,
       proposal_no: p.proposal_no || p.proposal_number,
+      is_terminal: this.workflowService.isTerminal(p.status),
+      can_edit: !this.workflowService.isTerminal(p.status) && this.workflowService.canActOn(p, user),
       allowed_transitions: this.workflowService.getAllowedTransitions(p, user, settings),
     }));
 
@@ -547,8 +582,10 @@ export class ProposalsService {
       .select([
         'organisations.name as organisation_name',
         'organisations.city as organisation_city',
+        'organisations.state as organisation_state',
         'organisations.region_id as organisation_region_id',
         'products.name as product_name',
+        'products.category as product_category',
         'requested_user.full_name as requested_by_name',
         'responsible_user.full_name as responsible_name',
         'followup_user.full_name as followup_owner_name',
@@ -670,18 +707,127 @@ export class ProposalsService {
       .orderBy('occurred_at', 'desc')
       .execute();
 
+    // DEF-081: the source lead / opportunity, so the detail view can link back to it.
+    const lead = proposal.lead_id
+      ? await this.db
+          .selectFrom('leads')
+          .leftJoin('products as lp', 'lp.id', 'leads.product_id')
+          .select(['leads.id', 'leads.lead_status', 'leads.status', 'leads.created_at', 'lp.name as product_name'])
+          .where('leads.id', '=', proposal.lead_id)
+          .executeTakeFirst()
+      : null;
+
+    const isTerminal = this.workflowService.isTerminal(proposal.status);
     return {
       ...proposal,
       proposal_no: proposal.proposal_no || proposal.proposal_number,
       products,
       versions,
-      followups,
+      followups: followups.map((f) => this.toFollowupEntry(f)),
       timeline,
-      history,
+      history: history.map((h) => this.toHistoryEntry(h)),
+      lead: lead ? { ...lead, label: this.leadLabel(lead) } : null,
+      // DEF-008 / DEF-080: what the viewer may do. Terminal proposals are read-only; only parties to the proposal,
+      // regional managers (in scope) and management / admin may edit or progress it.
+      is_terminal: isTerminal,
+      can_edit: Boolean(user) && !isTerminal && this.workflowService.canActOn(proposal, user!),
       allowed_transitions: user
         ? this.workflowService.getAllowedTransitions(proposal, user, settings)
         : [],
     };
+  }
+
+  /** A status-history row as the Activity History tab shows it (DEF-007): when, who, from → to, why. */
+  private toHistoryEntry(h: any) {
+    const from = h.from_status ? this.workflowService.normalizeStatus(h.from_status) : null;
+    const to = h.to_status ? this.workflowService.normalizeStatus(h.to_status) : null;
+    const created = !from || (from === to && to === 'REQUESTED');
+    return {
+      ...h,
+      action: created ? 'CREATED' : 'STATUS_CHANGE',
+      from_status: created ? null : h.from_status,
+      created_at: h.occurred_at,
+      performed_by_name: h.actor_name || null,
+      from_normalized: created ? null : from,
+      to_normalized: to,
+    };
+  }
+
+  /** A follow-up row with the field names the register screens use (date, remarks, outcome, logged by). */
+  private toFollowupEntry(f: any) {
+    return {
+      ...f,
+      followup_date: f.contact_date,
+      remarks: f.summary,
+      outcome: f.response,
+      owner_name: f.logged_by_name || null,
+      next_followup_date: f.next_follow_up_date,
+    };
+  }
+
+  private leadLabel(lead: { created_at?: any; product_name?: string | null; lead_status?: string | null; status?: string | null }) {
+    // Readable for the picker: "BP Morcha — New · opened 20 Oct 2026" (no raw status codes or ISO dates).
+    const raw = String(lead.lead_status || lead.status || '').replace(/_/g, ' ').trim();
+    const stage = raw ? raw.replace(/\b\w/g, (c) => c.toUpperCase()) : '';
+    const opened = lead.created_at ? formatISTDate(lead.created_at) : '';
+    return [lead.product_name || 'Lead', stage && `— ${stage}`, opened && opened !== '—' && `· opened ${opened}`]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  /**
+   * Open leads of a customer that a new / edited proposal can be linked to (DEF-081). Scoped like the lead register:
+   * management / admin see all, a regional manager their region, everyone else the leads assigned to them.
+   */
+  async lookupLeads(customerId: string, user: AuthUser): Promise<any[]> {
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!customerId || !UUID_REGEX.test(customerId)) return [];
+    let q = this.db
+      .selectFrom('leads')
+      .innerJoin('organisations as o', 'o.id', 'leads.organisation_id')
+      .leftJoin('products as lp', 'lp.id', 'leads.product_id')
+      .leftJoin('users as owner', 'owner.id', 'leads.assigned_to')
+      .select([
+        'leads.id',
+        'leads.lead_status',
+        'leads.status',
+        'leads.product_id',
+        'leads.created_at',
+        'lp.name as product_name',
+        'owner.full_name as assigned_to_name',
+      ])
+      .where('leads.organisation_id', '=', customerId)
+      .where('leads.lead_status', 'not in', CLOSED_LEAD_STATUSES as any)
+      .orderBy('leads.created_at', 'desc')
+      .limit(50);
+    const role = (user.role || '').toLowerCase();
+    if (role === 'regional_manager' && user.region_id) {
+      q = q.where((eb) => eb.or([eb('o.region_id', '=', user.region_id!), eb('leads.assigned_to', '=', user.id)]));
+    } else if (role !== 'admin' && role !== 'management') {
+      q = q.where((eb) =>
+        eb.or([eb('leads.assigned_to', '=', user.id), ...(user.region_id ? [eb('o.region_id', '=', user.region_id)] : [])]),
+      );
+    }
+    const rows = await q.execute();
+    return rows.map((r) => ({ ...r, label: this.leadLabel(r) }));
+  }
+
+  /**
+   * Validates a lead link: the lead must exist, belong to the proposal's customer and still be open (DEF-081).
+   * Returns null when no lead is given.
+   */
+  private async resolveLeadLink(leadId: string | null | undefined, customerId: string): Promise<string | null> {
+    if (!leadId) return null;
+    const lead = await this.db
+      .selectFrom('leads')
+      .select(['id', 'organisation_id', 'lead_status'])
+      .where('id', '=', leadId)
+      .executeTakeFirst();
+    if (!lead) throw new BadRequestException('The selected lead was not found');
+    if (lead.organisation_id !== customerId) {
+      throw new BadRequestException('The selected lead belongs to a different customer than this proposal');
+    }
+    return lead.id;
   }
 
   /**
@@ -840,22 +986,50 @@ export class ProposalsService {
 
     if (duplicateMatch && !dto.duplicate_override_reason && !dto.related_proposal_id) {
       throw new ConflictException({
-        message: `Possible duplicate proposal detected with number ${duplicateMatch.proposal_no || duplicateMatch.proposal_number}. Provide duplicate_override_reason or link as related_proposal_id.`,
+        message: `Possible duplicate proposal detected with number ${duplicateMatch.proposal_number || duplicateMatch.proposal_no}. Enter a reason to create a separate quote anyway, or open the existing proposal.`,
         duplicate_detected: true,
         existing_proposal_id: duplicateMatch.id,
-        existing_proposal_no: duplicateMatch.proposal_no || duplicateMatch.proposal_number,
+        existing_proposal_no: proposalDisplayNo(duplicateMatch),
       });
     }
 
-    // E9: Concurrency-safe number generation
-    const seqResult = await sql<{ next_num: string }>`SELECT nextval('proposal_canonical_seq')::text as next_num`.execute(this.db);
-    const seqNum = seqResult.rows[0]?.next_num || `${Date.now().toString().slice(-4)}`;
+    // DEF-081: link the source lead. An explicit choice must be an open lead of the same customer; when none is given
+    // and the customer has exactly one open lead, that lead is linked automatically.
+    let leadId = await this.resolveLeadLink(dto.lead_id, customerId);
+    if (!leadId && dto.lead_id === undefined) {
+      const openLeads = await this.db
+        .selectFrom('leads')
+        .select('id')
+        .where('organisation_id', '=', customerId)
+        .where('lead_status', 'not in', CLOSED_LEAD_STATUSES as any)
+        .limit(2)
+        .execute();
+      if (openLeads.length === 1) leadId = openLeads[0].id;
+    }
+
     const year = Number(todayInKolkata().slice(0, 4));
-    const canonicalNo = `PRP-${year}-${seqNum.padStart(5, '0')}`;
-    const legacyNumber = `PROP-${year}-${seqNum.padStart(4, '0')}`;
+    let canonicalNo = '';
+    let legacyNumber = '';
 
     // Execute atomic transaction: proposal + products + version + outbox
     const createdId = await this.db.transaction().execute(async (trx) => {
+      // E9 / DEF-083: gap-free, concurrency-safe numbering. A Postgres sequence burns a number whenever a save fails
+      // after nextval(); instead the next number is taken inside this transaction under an advisory lock, so a rejected
+      // or rolled-back save never consumes one (PROP-2026-1076 → 1077, never skipping).
+      await sql`SELECT pg_advisory_xact_lock(hashtext('proposals.proposal_number'))`.execute(trx);
+      const maxRes = await sql<{ max_num: number | null }>`
+        SELECT GREATEST(
+          COALESCE(MAX(NULLIF(substring(proposal_number from '([0-9]+)$'), '')::bigint), 0),
+          COALESCE(MAX(NULLIF(substring(proposal_no from '([0-9]+)$'), '')::bigint), 0)
+        )::bigint AS max_num
+        FROM proposals`.execute(trx);
+      const nextNum = Math.max(Number(maxRes.rows[0]?.max_num || 0) + 1, 1001);
+      // Keep the legacy sequence ahead so imports / defaults that still call nextval() cannot collide.
+      await sql`SELECT setval('proposal_canonical_seq', GREATEST(${nextNum}::bigint, (SELECT last_value FROM proposal_canonical_seq)))`.execute(trx);
+      const seqNum = String(nextNum);
+      canonicalNo = `PRP-${year}-${seqNum.padStart(5, '0')}`;
+      legacyNumber = `PROP-${year}-${seqNum.padStart(4, '0')}`;
+
       const sanitizedRemarks = this.sanitizeText(dto.remarks);
       const emailRef = this.sanitizeText(dto.email_reference || dto.reference);
 
@@ -870,7 +1044,7 @@ export class ProposalsService {
           proposal_number: legacyNumber,
           customer_id: customerId,
           organisation_id: customerId,
-          lead_id: dto.lead_id || null,
+          lead_id: leadId,
           product_id: primaryProduct.product_id,
           sector_id: sectorId || null,
           sector,
@@ -886,7 +1060,15 @@ export class ProposalsService {
           required_date: requiredDate,
           sent_date: cleanSentDate,
           current_version: 1,
-          version: dto.version || 'v1.0',
+          // DEF-080: the version is maintained by the server, never free text.
+          version: 'v1.0',
+          // DEF-029: commercial terms of the quote (recorded, not generated).
+          quoted_value: dto.quoted_value ?? null,
+          quantity: dto.quantity ?? null,
+          margin_percent: dto.margin_percent ?? null,
+          validity_date: calendarDay(dto.validity_date) ?? null,
+          payment_terms: this.sanitizeText(dto.payment_terms),
+          delivery_terms: this.sanitizeText(dto.delivery_terms),
           email_reference: emailRef,
           reference: emailRef,
           status: 'PROPOSAL_REQUESTED',
@@ -954,7 +1136,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: inserted.id,
-          proposalNo: canonicalNo,
+          proposalNo: legacyNumber,
           customerId,
           primaryProductId: primaryProduct.product_id,
           requestedById,
@@ -973,7 +1155,7 @@ export class ProposalsService {
           actorId: user.id,
           payload: {
             proposalId: inserted.id,
-            proposalNo: canonicalNo,
+            proposalNo: legacyNumber,
             oldResponsibleId: null,
             newResponsibleId: responsiblePersonId,
             reason: 'Assigned upon proposal creation',
@@ -1027,25 +1209,16 @@ export class ProposalsService {
       });
     }
 
-    // E31: Editing terminal proposal is restricted
+    // E31 / DEF-080: converted, lost and closed proposals are read-only. Management / admin reopen them to make changes.
     if (this.workflowService.isTerminal(existing.status)) {
-      if (dto.remarks && !dto.customer_id && !dto.product_id && !dto.sector_id) {
-        // Appending remarks is allowed
-        const updatedRemarks = existing.remarks
-          ? `${existing.remarks}\n[Note by ${user.email}]: ${dto.remarks}`
-          : dto.remarks;
-        await this.db
-          .updateTable('proposals')
-          .set({ remarks: updatedRemarks, updated_at: new Date() })
-          .where('id', '=', id)
-          .execute();
-        return this.findOne(id, user);
-      }
       throw new ConflictException({
-        message: 'Terminal proposal cannot be modified except for remarks appending.',
+        message: `${proposalDisplayNo(existing) || 'This proposal'} is ${this.workflowService.normalizeStatus(existing.status)} and read-only. Management or admin can reopen it within the reopen window to make changes.`,
         allowed_transitions: existing.allowed_transitions,
       });
     }
+
+    // DEF-008: only parties to the proposal, regional managers in scope and management / admin may edit it.
+    this.workflowService.assertCanAct(existing, user);
 
     // E32: Changing customer after proposal has been dispatched is blocked
     const isDispatched = ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'sent', 'followup_required'].includes(
@@ -1072,14 +1245,70 @@ export class ProposalsService {
       }
     }
 
-    // E23: Material edit after approval invalidates approval
+    // DEF-029: commercial terms. Only fields present in the request change; '' / null clears an optional one.
+    const commercial: Record<string, unknown> = {};
+    if (dto.quoted_value !== undefined) commercial.quoted_value = dto.quoted_value;
+    if (dto.quantity !== undefined) commercial.quantity = dto.quantity;
+    if (dto.margin_percent !== undefined) commercial.margin_percent = dto.margin_percent;
+    if (dto.validity_date !== undefined) commercial.validity_date = calendarDay(dto.validity_date);
+    if (dto.payment_terms !== undefined) commercial.payment_terms = this.sanitizeText(dto.payment_terms);
+    if (dto.delivery_terms !== undefined) commercial.delivery_terms = this.sanitizeText(dto.delivery_terms);
+    const sameNumber = (a: unknown, b: unknown) =>
+      (a === null || a === undefined || a === '' ? null : Number(a)) === (b === null || b === undefined || b === '' ? null : Number(b));
+    const commercialChanged =
+      ('quoted_value' in commercial && !sameNumber(commercial.quoted_value, existing.quoted_value)) ||
+      ('quantity' in commercial && !sameNumber(commercial.quantity, existing.quantity)) ||
+      ('margin_percent' in commercial && !sameNumber(commercial.margin_percent, existing.margin_percent)) ||
+      ('validity_date' in commercial && commercial.validity_date !== calendarDay(existing.validity_date as any)) ||
+      ('payment_terms' in commercial && (commercial.payment_terms ?? null) !== (existing.payment_terms ?? null)) ||
+      ('delivery_terms' in commercial && (commercial.delivery_terms ?? null) !== (existing.delivery_terms ?? null));
+    const quoteValueChanged =
+      ('quoted_value' in commercial && !sameNumber(commercial.quoted_value, existing.quoted_value)) ||
+      ('quantity' in commercial && !sameNumber(commercial.quantity, existing.quantity)) ||
+      ('margin_percent' in commercial && !sameNumber(commercial.margin_percent, existing.margin_percent));
+    // A quote in review or later must keep a quoted value (approval depends on it).
+    const statusNow = this.workflowService.normalizeStatus(existing.status);
+    if (
+      'quoted_value' in commercial &&
+      !hasQuotedValue({ quoted_value: commercial.quoted_value }) &&
+      ['READY_FOR_REVIEW', 'APPROVED', 'SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(statusNow)
+    ) {
+      throw new BadRequestException(`The quoted value (₹) cannot be removed once ${proposalDisplayNo(existing)} has been submitted for review`);
+    }
+
+    // DEF-081: lead link ('' / null unlinks; must belong to the proposal's customer).
+    const custForLead = newCustId || existing.customer_id || existing.organisation_id;
+    const leadChanged = dto.lead_id !== undefined && (dto.lead_id || null) !== (existing.lead_id || null);
+    const newLeadId = leadChanged ? await this.resolveLeadLink(dto.lead_id, custForLead) : existing.lead_id;
+
+    // E23: Material edit after approval invalidates approval (customer, product or the quoted price / quantity / margin)
     let shouldInvalidateApproval = false;
-    if (this.workflowService.normalizeStatus(existing.status) === 'APPROVED') {
+    if (statusNow === 'APPROVED') {
       const isCustChanged = newCustId && newCustId !== existing.customer_id;
       const isProductChanged = dto.product_id && dto.product_id !== existing.product_id;
-      if (isCustChanged || isProductChanged) {
+      if (isCustChanged || isProductChanged || quoteValueChanged) {
         shouldInvalidateApproval = true;
       }
+    }
+
+    // DEF-080: any content change bumps the minor version (v1.0 → v1.1); a customer revision starts v2.0.
+    const responsibleNew = dto.responsible_person_id || dto.responsible_id;
+    const ownerNew = dto.follow_up_owner_id || dto.followup_owner_id;
+    const refNew = dto.email_reference || dto.reference ? this.sanitizeText(dto.email_reference || dto.reference) : undefined;
+    const contentChanged =
+      commercialChanged ||
+      leadChanged ||
+      Boolean(newCustId && newCustId !== existing.customer_id && newCustId !== existing.organisation_id) ||
+      Boolean(dto.product_id && dto.product_id !== existing.product_id) ||
+      Boolean(dto.sector && dto.sector !== existing.sector) ||
+      requiredDayChanged ||
+      (dto.remarks !== undefined && (this.sanitizeText(dto.remarks) ?? null) !== (existing.remarks ?? null)) ||
+      (refNew !== undefined && refNew !== (existing.reference ?? existing.email_reference ?? null));
+    const ownersChanged =
+      Boolean(responsibleNew && responsibleNew !== (existing.responsible_person_id || existing.responsible_id)) ||
+      Boolean(ownerNew && ownerNew !== (existing.follow_up_owner_id || existing.followup_owner_id));
+    if (!contentChanged && !ownersChanged) {
+      return existing;
     }
 
     await this.db.transaction().execute(async (trx) => {
@@ -1092,7 +1321,9 @@ export class ProposalsService {
         updated_by: user.id,
       };
 
-      if ((dto as any).version) updateData.version = (dto as any).version;
+      if (contentChanged) updateData.version = nextMinorVersion(existing.version, existing.current_version);
+      Object.assign(updateData, commercial);
+      if (leadChanged) updateData.lead_id = newLeadId;
       if (newCustId) {
         updateData.customer_id = newCustId;
         updateData.organisation_id = newCustId;
@@ -1111,7 +1342,7 @@ export class ProposalsService {
         updateData.followup_owner_id = oId;
       }
       if (dto.required_date) updateData.required_date = dto.required_date;
-      if (dto.remarks) updateData.remarks = this.sanitizeText(dto.remarks);
+      if (dto.remarks !== undefined) updateData.remarks = this.sanitizeText(dto.remarks);
       if (dto.email_reference || dto.reference) {
         const ref = this.sanitizeText(dto.email_reference || dto.reference);
         updateData.email_reference = ref;
@@ -1147,7 +1378,9 @@ export class ProposalsService {
           actorId: user.id,
           payload: {
             proposalId: id,
-            invalidationReason: 'Material edit (customer or product changed)',
+            invalidationReason: quoteValueChanged
+              ? 'Material edit (quoted price, quantity or margin changed)'
+              : 'Material edit (customer or product changed)',
             revertedToStatus: 'READY_FOR_REVIEW',
           },
         });
@@ -1267,7 +1500,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           changeSummary: dto.change_summary,
           documentLinks: dto.document_links,
         },
@@ -1320,7 +1553,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           approvedById: user.id,
           responsiblePersonId: proposal.responsible_person_id || proposal.responsible_id,
           requestedById: proposal.requested_by_id || proposal.requested_by,
@@ -1380,7 +1613,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           comment: dto.comment,
           reviewCycleCount: cycleCount,
           responsiblePersonId: proposal.responsible_person_id || proposal.responsible_id,
@@ -1530,7 +1763,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           sentDate: dto.sent_date,
           sentLate: isSentLate,
           followUpOwnerId: dto.follow_up_owner_id,
@@ -1617,7 +1850,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           sentDate: dto.sent_date,
           sentLate: isSentLate,
           isFastTrack: true,
@@ -1702,7 +1935,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           newVersionNo: nextVer,
           revisionReason: dto.revision_reason,
           responsiblePersonId: proposal.responsible_person_id || proposal.responsible_id,
@@ -1728,6 +1961,10 @@ export class ProposalsService {
       { outcome_date: dto.outcome_date },
       settings,
     );
+    // QA DEF-070: a won quote records the order it was won on — the dispatch is raised against that PO.
+    if (!dto.conversion_reference?.trim() && !dto.converted_to?.trim()) {
+      throw new BadRequestException('Enter the purchase / supply order or GeM contract number this proposal was won on.');
+    }
 
     await this.db.transaction().execute(async (trx) => {
       await trx
@@ -1767,7 +2004,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           outcomeDate: dto.outcome_date,
           conversionReference: dto.conversion_reference,
           customerId: proposal.customer_id || proposal.organisation_id,
@@ -1843,7 +2080,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           outcomeDate,
           lostReasonCode: dto.lost_reason_code,
           lostReasonText: dto.lost_reason_text,
@@ -1916,7 +2153,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           outcomeDate,
           closureReasonCode: dto.closure_reason_code,
           closureReasonText: dto.closure_reason_text,
@@ -1978,7 +2215,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           previousStatus: proposal.status,
           reopenedToStatus: targetStatus,
           reopenReason: dto.reopen_reason,
@@ -2000,8 +2237,11 @@ export class ProposalsService {
     // Proposal must be dispatched or active in follow-up
     const currentStatus = this.workflowService.normalizeStatus(proposal.status);
     if (!['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(currentStatus)) {
-      throw new BadRequestException('Follow-ups can only be logged on proposals sent to customers');
+      throw new BadRequestException(
+        `Follow-ups can only be logged on proposals sent to customers. ${proposalDisplayNo(proposal)} is ${PROPOSAL_STATUS_TEXT[currentStatus] || currentStatus}.`,
+      );
     }
+    this.workflowService.assertCanAct(proposal, user);
 
     // IST calendar days — the UTC clock is still on yesterday between 00:00 and 05:30 IST.
     const today = todayInKolkata();
@@ -2048,7 +2288,7 @@ export class ProposalsService {
     let fuRecord: any;
     await this.db.transaction().execute(async (trx) => {
       const mode = dto.mode || 'Call';
-      const response = dto.response || 'Neutral';
+      const response = this.sanitizeText(dto.response || dto.outcome) || 'Neutral';
 
       // Insert into proposal_follow_ups
       fuRecord = await trx
@@ -2115,7 +2355,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           followUpId: fuRecord.id,
           contactDate,
           mode,
@@ -2156,6 +2396,11 @@ export class ProposalsService {
   async postponeFollowup(id: string, dto: PostponeFollowUpDto, user: AuthUser): Promise<any> {
     const proposal = await this.findOne(id, user);
     const settings = await this.getSettings();
+    const statusNow = this.workflowService.normalizeStatus(proposal.status);
+    if (!['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(statusNow)) {
+      throw new BadRequestException('Follow-ups can only be rescheduled on proposals sent to customers');
+    }
+    this.workflowService.assertCanAct(proposal, user);
 
     const today = todayInKolkata();
     if ((calendarDay(dto.new_follow_up_date) || '') < today) {
@@ -2201,7 +2446,7 @@ export class ProposalsService {
         actorId: user.id,
         payload: {
           proposalId: id,
-          proposalNo: proposal.proposal_no || proposal.proposal_number,
+          proposalNo: proposalDisplayNo(proposal),
           postponeReason: dto.postpone_reason,
           postponeCount,
           newDate: dto.new_follow_up_date,
@@ -2248,7 +2493,7 @@ export class ProposalsService {
           actorId: user.id,
           payload: {
             proposalId: id,
-            proposalNo: proposal.proposal_no || proposal.proposal_number,
+            proposalNo: proposalDisplayNo(proposal),
             oldResponsibleId: oldRespId,
             newResponsibleId: dto.responsible_person_id,
             reason: dto.reason,
@@ -2264,7 +2509,7 @@ export class ProposalsService {
           actorId: user.id,
           payload: {
             proposalId: id,
-            proposalNo: proposal.proposal_no || proposal.proposal_number,
+            proposalNo: proposalDisplayNo(proposal),
             oldOwnerId,
             newOwnerId: dto.follow_up_owner_id,
             reason: dto.reason,
@@ -2314,6 +2559,10 @@ export class ProposalsService {
    */
   async createVersion(id: string, dto: CreateProposalVersionDto, user: AuthUser): Promise<any> {
     const proposal = await this.findOne(id, user);
+    if (this.workflowService.isTerminal(proposal.status)) {
+      throw new ConflictException(`${proposalDisplayNo(proposal)} is read-only; reopen it before creating a new version`);
+    }
+    this.workflowService.assertCanAct(proposal, user);
     const nextVer = (proposal.current_version || 1) + 1;
 
     await this.db.transaction().execute(async (trx) => {
@@ -2390,7 +2639,7 @@ export class ProposalsService {
         aggregateType: 'Proposal',
         aggregateId: id,
         actorId: user.id,
-        payload: { proposalId: id, proposalNo: proposal.proposal_no || proposal.proposal_number },
+        payload: { proposalId: id, proposalNo: proposalDisplayNo(proposal) },
       });
     });
 
@@ -2968,7 +3217,7 @@ export class ProposalsService {
               suppressNotifications: true,
               payload: {
                 proposalId: inserted.id,
-                proposalNo: canonicalNo,
+                proposalNo: legacyNumber,
                 externalRef: item.external_ref,
                 source: 'import',
               },
@@ -3061,6 +3310,14 @@ export class ProposalsService {
 
     switch (target) {
       case 'UNDER_PREPARATION':
+        // The same target means different things by stage: start work, request changes (reviewer), revise an approved
+        // quote internally, or rework after the customer asked for a revision.
+        if (current === 'READY_FOR_REVIEW') return this.requestChanges(id, { comment: dto.remarks || '' }, user);
+        if (current === 'APPROVED') return this.reviseInternal(id, { reason: dto.remarks || 'Internal revision before dispatch' }, user);
+        if (current === 'SENT_TO_CUSTOMER' || current === 'FOLLOW_UP_REQUIRED') {
+          if (!dto.remarks?.trim()) throw new BadRequestException('Describe the revision the customer asked for');
+          return this.requestRevision(id, { revision_reason: dto.remarks }, user);
+        }
         return this.startPreparation(id, {}, user);
       case 'READY_FOR_REVIEW':
         return this.submitForReview(id, { change_summary: dto.remarks }, user);
@@ -3071,8 +3328,9 @@ export class ProposalsService {
           id,
           {
             sent_date: calendarDay(dto.sent_date) || todayInKolkata(),
-            email_references: [dto.reference || 'Dispatch'],
-            follow_up_owner_id: user.id,
+            // No invented placeholder: the workflow rejects a send without a real email / dispatch reference.
+            email_references: [dto.reference || proposal.reference || proposal.email_reference].filter(Boolean),
+            follow_up_owner_id: proposal.follow_up_owner_id || proposal.followup_owner_id || user.id,
             next_follow_up_date:
               calendarDay(dto.next_followup) || addIsoDays(todayInKolkata(), 3),
           },
@@ -3113,38 +3371,28 @@ export class ProposalsService {
     }
   }
 
-  async getFollowups(id: string): Promise<any> {
-    return this.db
-      .selectFrom('proposal_follow_ups')
-      .selectAll()
-      .where('proposal_id', '=', id)
-      .orderBy('contact_date', 'desc')
-      .execute();
+  /** Follow-ups of a proposal the user can see (row scope enforced by findOne), newest first. */
+  async getFollowups(id: string, user?: AuthUser): Promise<any> {
+    const proposal = await this.findOne(id, user);
+    return proposal.followups;
   }
 
-  async getHistory(id: string): Promise<any> {
+  /**
+   * Activity history (DEF-007): each status change with its time, the user who made it, from → to and the reason.
+   * Row scope is enforced by findOne. Oldest first, like a timeline.
+   */
+  async getHistory(id: string, user?: AuthUser): Promise<any> {
+    const proposal = await this.findOne(id, user);
+    return [...proposal.history].reverse();
+  }
+
+  async getVersions(id: string, user: AuthUser): Promise<any> {
     const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
     if (!id || typeof id !== 'string' || !UUID_REGEX.test(id.trim())) {
       throw new NotFoundException(`Proposal with ID ${id} not found`);
     }
-
-    const list = await this.db
-      .selectFrom('proposal_status_history')
-      .selectAll()
-      .where('proposal_id', '=', id)
-      .orderBy('occurred_at', 'asc')
-      .execute();
-    return list.map((h: any) => ({
-      ...h,
-      action: !h.from_status || (h.from_status === 'REQUESTED' && h.to_status === 'REQUESTED') ? 'CREATED' : 'STATUS_CHANGE',
-    }));
-  }
-
-  async getVersions(id: string): Promise<any> {
-    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-    if (!id || typeof id !== 'string' || !UUID_REGEX.test(id.trim())) {
-      throw new NotFoundException(`Proposal with ID ${id} not found`);
-    }
+    // Review R4: same row visibility as the proposal itself (versions carry quoted value and margin).
+    await this.findOne(id, user);
 
     return this.db
       .selectFrom('proposal_versions')
@@ -3154,11 +3402,13 @@ export class ProposalsService {
       .execute();
   }
 
-  async getActivity(id: string): Promise<any> {
+  async getActivity(id: string, user: AuthUser): Promise<any> {
     const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
     if (!id || typeof id !== 'string' || !UUID_REGEX.test(id.trim())) {
       throw new NotFoundException(`Proposal with ID ${id} not found`);
     }
+    // Review R4: same row visibility as the proposal itself (versions carry quoted value and margin).
+    await this.findOne(id, user);
 
     return this.db
       .selectFrom('proposal_timeline')
@@ -3185,8 +3435,18 @@ export class ProposalsService {
     if (dto.postpone_reason) {
       return this.postponeFollowup(id, dto, user);
     }
-    const nextDate = dto.next_follow_up_date || dto.nextFollowUp || dto.next_followup;
+    const nextDate = calendarDay(dto.next_follow_up_date || dto.nextFollowUp || dto.next_followup);
     const ownerId = dto.follow_up_owner_id || dto.followUpOwner || dto.followup_owner_id;
+
+    // Row scope + RBAC + lifecycle, like every other proposal mutation.
+    const proposal = await this.findOne(id, user);
+    if (this.workflowService.isTerminal(proposal.status)) {
+      throw new ConflictException(`${proposalDisplayNo(proposal)} is read-only; its follow-up schedule cannot change`);
+    }
+    this.workflowService.assertCanAct(proposal, user);
+    if (nextDate && nextDate < todayInKolkata()) {
+      throw new BadRequestException('Next follow-up date cannot be in the past');
+    }
 
     await this.db
       .updateTable('proposals')

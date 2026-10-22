@@ -32,6 +32,7 @@ import {
   FileCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { formatTaskDate } from '@arihant/shared';
 
 interface FinanceEmdViewProps {
   currentUser: any;
@@ -193,11 +194,11 @@ export function FinanceEmdView({
             <span className="text-[11px] font-bold text-[#4A5568] uppercase tracking-wider">
               Aging &gt; 30 Days
             </span>
-            <span className="p-1.5 rounded-lg bg-rose-50 text-rose-600">
+            <span className="p-1.5 rounded-lg bg-[#FCE8EC] text-[#881337]">
               <AlertTriangle className="w-4 h-4" />
             </span>
           </div>
-          <div className="mt-2 text-2xl font-serif font-bold font-mono text-rose-700">
+          <div className="mt-2 text-2xl font-serif font-bold font-mono text-[#700F2D]">
             {
               (data?.refund_due_items || []).filter(
                 (i) => i.days_pending > 30,
@@ -205,7 +206,7 @@ export function FinanceEmdView({
             }{' '}
             Items
           </div>
-          <p className="mt-1 text-[11px] text-rose-600 font-medium">
+          <p className="mt-1 text-[11px] text-[#881337] font-medium">
             Requires immediate buyer escalation
           </p>
         </Card>
@@ -215,7 +216,7 @@ export function FinanceEmdView({
             <span className="text-[11px] font-bold text-[#4A5568] uppercase tracking-wider">
               Active PBGs
             </span>
-            <span className="p-1.5 rounded-lg bg-slate-100 text-[#14213D]">
+            <span className="p-1.5 rounded-lg bg-[#ECE9E2] text-[#14213D]">
               <FileCheck className="w-4 h-4" />
             </span>
           </div>
@@ -269,7 +270,7 @@ export function FinanceEmdView({
             onClick={() => setFilterType('all')}
             className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
               filterType === 'all'
-                ? 'bg-slate-700 text-white shadow-sm'
+                ? 'bg-[#14213D] text-white shadow-sm'
                 : 'text-[#4A5568] hover:text-[#14213D]'
             }`}
           >
@@ -388,17 +389,17 @@ export function FinanceEmdView({
                       {inst.status === 'Refund Due' ? (
                         <span
                           className={`font-semibold ${
-                            daysPending > 30 ? 'text-rose-700' : 'text-amber-700'
+                            daysPending > 30 ? 'text-[#700F2D]' : 'text-[#7C2D12]'
                           }`}
                         >
                           {daysPending} days pending
                         </span>
                       ) : inst.expiry_date ? (
                         <span className="font-mono text-[#4A5568]">
-                          Exp: {inst.expiry_date}
+                          Exp: {formatTaskDate(inst.expiry_date)}
                         </span>
                       ) : (
-                        <span className="text-slate-400">—</span>
+                        <span className="text-[#6B7280]">—</span>
                       )}
                     </TableCell>
 

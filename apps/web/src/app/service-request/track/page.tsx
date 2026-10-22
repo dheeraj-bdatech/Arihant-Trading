@@ -6,7 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { Button, Card, Input, Textarea, InfoCallout, Badge } from '@/components/ui';
 import { Spinner } from '@/components/ui/Spinner';
-import { DeadlineChip } from '@/components/tender/Countdown';
+import { describeDeadline, useNow } from '@/components/tender/Countdown';
 import { apiMessages, fmtDate, fmtDateTime } from '../shared';
 
 interface Tracked {
@@ -27,6 +27,33 @@ interface Tracked {
   work_summary?: { problem?: string; action?: string; submitted_at?: string } | null;
   can_comment: boolean;
   can_give_feedback: boolean;
+  server_time?: string;
+}
+
+const CHIP_TONE: Record<string, string> = {
+  overdue: 'bg-[#ECE9E2] text-[#4A5568] border-[#C9C4B8]',
+  urgent: 'bg-[#9A3412] text-white border-transparent',
+  soon: 'bg-[#FBEBDD] text-[#7C2D12] border-[#F2B872]',
+  ok: 'bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/30',
+};
+
+/**
+ * Live "due in" chip + "by <date>" for one deadline. The countdown runs on the server's clock (offset measured
+ * when the data loaded), so it always agrees with the target date printed beside it, whatever the device clock says.
+ */
+function DueIn({ deadline, clockOffsetMs }: { deadline?: string | null; clockOffsetMs: number }) {
+  const now = useNow(1000) + clockOffsetMs;
+  const info = describeDeadline(deadline, now);
+  if (!deadline || !info) return null;
+  return (
+    <>
+      <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-bold tabular-nums ${CHIP_TONE[info.tone]}`}>
+        <span className="h-1.5 w-1.5 rounded-full bg-current" />
+        {info.tone === 'overdue' ? 'DUE NOW' : info.label}
+      </span>
+      <span className="text-xs text-[#4A5568]">by {fmtDateTime(deadline)} IST</span>
+    </>
+  );
 }
 
 const NOT_FOUND = 'We could not find a request with that reference and tracking code. Please check both and try again.';
@@ -102,9 +129,14 @@ function TrackView({ reference, token }: { reference: string; token: string }) {
   const [state, setState] = useState<'loading' | 'ok' | 'notfound' | 'limited' | 'error'>('loading');
   const q = useRef({ ref: reference, token });
 
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
   const load = useCallback(async (silent: boolean) => {
     try {
+      const sentAt = Date.now();
       const d = await api.get<Tracked>('/public/service-requests/track', q.current);
+      const server = d?.server_time ? new Date(d.server_time).getTime() : NaN;
+      // server clock minus device clock (mid-point of the request), used by every countdown on the page
+      if (!Number.isNaN(server)) setClockOffsetMs(server - (sentAt + Date.now()) / 2);
       setData(d);
       setState('ok');
     } catch (err: any) {
@@ -141,10 +173,10 @@ function TrackView({ reference, token }: { reference: string; token: string }) {
     );
   }
 
-  return <Details data={data} reference={reference} token={token} reload={() => load(true)} />;
+  return <Details data={data} reference={reference} token={token} reload={() => load(true)} clockOffsetMs={clockOffsetMs} />;
 }
 
-function Details({ data, reference, token, reload }: { data: Tracked; reference: string; token: string; reload: () => void }) {
+function Details({ data, reference, token, reload, clockOffsetMs }: { data: Tracked; reference: string; token: string; reload: () => void; clockOffsetMs: number }) {
   const sla = data.sla || {};
   const showResponse = sla.response_due_at && !sla.first_response_at;
   const showResolution = sla.resolution_due_at && !data.is_closed;
@@ -184,8 +216,11 @@ function Details({ data, reference, token, reload }: { data: Tracked; reference:
               <div>
                 <p className="text-xs text-[#4A5568]">First response due in</p>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                  {sla.paused ? <Badge variant="warning" size="sm">Paused</Badge> : <DeadlineChip deadline={sla.response_due_at} />}
-                  <span className="text-xs text-[#4A5568]">by {fmtDateTime(sla.response_due_at)}</span>
+                  {sla.paused ? (
+                    <Badge variant="warning" size="sm">Paused</Badge>
+                  ) : (
+                    <DueIn deadline={sla.response_due_at} clockOffsetMs={clockOffsetMs} />
+                  )}
                 </div>
               </div>
             )}
@@ -193,8 +228,11 @@ function Details({ data, reference, token, reload }: { data: Tracked; reference:
               <div>
                 <p className="text-xs text-[#4A5568]">Target resolution in</p>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                  {sla.paused ? <Badge variant="warning" size="sm">Paused</Badge> : <DeadlineChip deadline={sla.resolution_due_at} />}
-                  <span className="text-xs text-[#4A5568]">by {fmtDateTime(sla.resolution_due_at)}</span>
+                  {sla.paused ? (
+                    <Badge variant="warning" size="sm">Paused</Badge>
+                  ) : (
+                    <DueIn deadline={sla.resolution_due_at} clockOffsetMs={clockOffsetMs} />
+                  )}
                 </div>
               </div>
             )}

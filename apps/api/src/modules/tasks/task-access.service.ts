@@ -10,6 +10,14 @@ import { Kysely, sql, type ExpressionBuilder } from 'kysely';
 import type { AuthUser, Database, TaskActorKind } from '@arihant/shared';
 import { TASK_DB } from './task-db.js';
 import { TaskMastersService, isAdminLike, type TaskSettings } from './task-masters.service.js';
+import { teamIds as fieldTeamIds, teamScope as fieldTeamScope } from '../dashboard/dashboard-metrics.js';
+
+/**
+ * A regional manager's field team — the same set the RM dashboard and Zonal Command use (dashboard-metrics
+ * `teamScope`): active sales / demo / service users reporting to the RM or based in the RM's zone. National roles
+ * (tender team, accounts, management…) are never part of it, whatever region they sit in.
+ */
+const isRm = (user: AuthUser) => user.role === 'regional_manager';
 
 export interface TaskAuthorityRow {
   id: string;
@@ -55,20 +63,38 @@ export class TaskAccessService {
         sql<boolean>`exists (select 1 from task_blockers b where b.task_id = t.id and b.dependency_user_id = ${user.id})`,
         sql<boolean>`exists (select 1 from task_assignment_history h where h.task_id = t.id and h.from_user_id = ${user.id})`,
       ];
-      if (user.role === 'regional_manager' && user.region_id) ors.push(eb('emp.region_id', '=', user.region_id));
+      if (isRm(user)) ors.push(eb('t.assigned_to', 'in', fieldTeamIds(user.id, user.zone_id ?? null) as any));
       return eb.or(ors);
     };
   }
 
-  /** Employees whose work this user manages (team scope for dashboards/evidence). */
+  /**
+   * Employees whose work this user manages (team scope for assignment, dashboards and evidence): the reporting
+   * line, department members for a department head and — for a regional manager — their field team (dashboard
+   * `teamScope`: active field staff reporting to them or based in their zone; RBAC: regional managers run their zone,
+   * DEF-036). Management / admin are never anyone's "team".
+   */
   async teamIds(user: AuthUser, s: TaskSettings): Promise<string[]> {
     const depth = s.allow_indirect_reports ? 10 : 1;
+    const fieldTeam = isRm(user)
+      ? sql`union select u.id from users u where ${fieldTeamScope(user.id, user.zone_id ?? null)} and u.id <> ${user.id}`
+      : sql``;
     const rows = await sql<{ id: string }>`
       select user_subordinate_ids(${user.id}, ${depth}) as id
       union
       select u.id from users u join departments d on d.id = u.department_id where d.head_user_id = ${user.id} and u.id <> ${user.id}
+      ${fieldTeam}
     `.execute(this.db);
     return rows.rows.map((r) => r.id);
+  }
+
+  /** True when `assigneeId` is on the regional manager's field team (dashboard `teamScope`; DEF-036 / DEF-075). */
+  private async isRegionalReport(user: AuthUser, assigneeId: string): Promise<boolean> {
+    if (!isRm(user) || assigneeId === user.id) return false;
+    const res = await sql<{ id: string }>`
+      select u.id from users u where u.id = ${assigneeId}::uuid and ${fieldTeamScope(user.id, user.zone_id ?? null)}
+    `.execute(this.db);
+    return res.rows.length > 0;
   }
 
   async managerChain(userId: string): Promise<{ id: string; depth: number; is_active: boolean }[]> {
@@ -122,6 +148,8 @@ export class TaskAccessService {
     const s = await this.masters.settings();
     const chain = await this.managerChain(task.assigned_to);
     if (chain.some((c) => c.id === user.id && (s.allow_indirect_reports || c.depth === 1))) return true;
+    // A regional manager manages the work of their field team (assign, review blockers, extend, close).
+    if (await this.isRegionalReport(user, task.assigned_to)) return true;
     const head = await this.db
       .selectFrom('departments')
       .select('id')

@@ -3,6 +3,21 @@ import { Kysely, sql, type RawBuilder } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { addIsoDays, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import type { AuthUser, Database, DashboardWorkspaceDto, WorkspaceItem, WorkspaceTone } from '@arihant/shared';
+import {
+  DashboardMetricsService,
+  LEAD_ACTIVE,
+  LEAD_VALUE,
+  TENDER_AWAITING_APPROVAL,
+  TENDER_CHASING,
+  TENDER_DEADLINE,
+  TENDER_DONE,
+  TENDER_ROW,
+  VISIT_OPEN,
+  teamScope,
+  tenderScopeFor,
+  territoryLeads,
+  territoryVisits,
+} from './dashboard-metrics.js';
 
 /**
  * GET /dashboard/workspace — each role's own home screen (Blueprint §5 role matrix, §34 service KPIs,
@@ -20,24 +35,29 @@ const num = (v: unknown) => {
 const iso = (v: unknown): string | null => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
 const human = (s: unknown) => String(s ?? '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 
-/** Tender states that no longer have a bid deadline to chase. */
-const TENDER_DONE = ['won', 'lost', 'cancelled', 'not_submitted', 'rejected_internally', 'partially_won', 'technically_disqualified', 'pq_not_qualified'];
+// Pipeline, tender, visit and task definitions live in dashboard-metrics.ts — the same ones Zonal Command uses.
 const TENDER_EVAL = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'reverse_auction'];
-/** A deadline is only something to chase until the bid is in: done tenders plus bids already submitted. */
-const TENDER_NOT_CHASING = [...TENDER_DONE, 'submitted', 'technical_eval', 'commercial_eval', 'reverse_auction'];
 const TICKET_DONE = ['resolved', 'report_submitted', 'closed', 'cancelled'];
-const LEAD_DONE = ['won', 'lost', 'converted'];
 const PROPOSAL_DONE = ['CONVERTED', 'CLOSED', 'LOST'];
 const DEMO_DONE = ['completed', 'cancelled'];
 const RESERVATION_DONE = ['rejected', 'cancelled', 'released', 'returned', 'completed'];
 const FIELD_ROLES = ['sales', 'demo_team', 'service_team'];
 
-const DEADLINE = sql`coalesce(t.submission_deadline, t.bid_closing_date)`;
-const TENDER_LIVE = sql`coalesce(t.is_deleted, false) = false`;
+const DEADLINE = TENDER_DEADLINE;
+const TENDER_LIVE = TENDER_ROW;
 const TICKET_OPEN = sql`s.deleted_at is null and s.status <> all(${TICKET_DONE}::text[])`;
-const LEAD_OPEN = sql`coalesce(l.lead_status, '') <> all(${LEAD_DONE}::text[])`;
-/** Matches Module 8: overdue = deadline passed, work open, no accepted blocker. */
-const TASK_OVERDUE = sql`k.deadline < now() and (k.status in ('not_started', 'in_progress') or (k.status = 'blocked' and not exists (select 1 from task_blockers b where b.task_id = k.id and b.status = 'accepted')))`;
+const LEAD_OPEN = LEAD_ACTIVE;
+
+/** Deep links open the record itself (each list page reads ?open= / ?highlight= via useOpenParam). */
+const link = {
+  tender: (id: string) => `/tenders?highlight=${id}`,
+  ticket: (id: string) => `/service?open=${id}`,
+  lead: (id: string) => `/leads?open=${id}`,
+  proposal: (id: string) => `/proposals?open=${id}`,
+  demo: (id: string) => `/demos?open=${id}`,
+  /** Visits have no single-record view; the customer's visit history is the closest record. */
+  visitsAt: (orgId: string | null | undefined) => (orgId ? `/visits?customer=${orgId}` : '/visits'),
+};
 
 const ticketTone = (priority: string, due: unknown): WorkspaceTone => {
   if (due && new Date(String(due)).getTime() < Date.now()) return 'critical';
@@ -55,7 +75,10 @@ const deadlineTone = (date: unknown): WorkspaceTone => {
 
 @Injectable()
 export class DashboardWorkspaceService {
-  constructor(@Inject(KYSELY_DB) private readonly db: Kysely<Database>) {}
+  constructor(
+    @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
+    private readonly metrics: DashboardMetricsService,
+  ) {}
 
   async getWorkspace(user: AuthUser): Promise<DashboardWorkspaceDto> {
     const build: Record<string, (u: AuthUser) => Promise<Section>> = {
@@ -91,7 +114,7 @@ export class DashboardWorkspaceService {
     const list = await this.rows(sql`
       select t.id, t.tender_no, t.status, t.emd_fee, coalesce(o.name, t.department) as buyer, ${DEADLINE} as deadline
       from tenders t left join organisations o on o.id = t.organisation_id
-      where ${TENDER_LIVE} and t.status <> all(${TENDER_NOT_CHASING}::text[]) and ${scope}
+      where ${TENDER_LIVE} and ${TENDER_CHASING} and ${scope}
         and ${DEADLINE} between now() and now() + make_interval(days => ${days})
       order by ${DEADLINE} asc limit ${limit}`);
     return list.map((r) => ({
@@ -102,16 +125,12 @@ export class DashboardWorkspaceService {
       status: human(r.status),
       tone: deadlineTone(r.deadline),
       amount: r.emd_fee == null ? null : num(r.emd_fee),
-      href: `/tenders?tender=${r.id}`,
+      href: link.tender(r.id),
     }));
   }
 
   private tenderScope(user: AuthUser): RawBuilder<unknown> {
-    if (user.role === 'regional_manager' && user.zone_id) return sql`t.zone_id = ${user.zone_id}`;
-    if (user.role === 'sales') {
-      return sql`(t.assigned_to = ${user.id} or t.owner = ${user.id} or t.tender_owner_id = ${user.id} or t.created_by = ${user.id})`;
-    }
-    return sql`true`;
+    return tenderScopeFor(user);
   }
 
   private async blockers(scope: RawBuilder<unknown>, limit: number): Promise<WorkspaceItem[]> {
@@ -136,13 +155,7 @@ export class DashboardWorkspaceService {
     const today = todayInKolkata();
     const weekEnd = addIsoDays(today, 6);
     const [tenders, demos, conflicts, tickets, claims, blockers, leads, zones, closing, urgent, blockerList] = await Promise.all([
-      this.one(sql`
-        select count(*) filter (where t.status <> all(${TENDER_NOT_CHASING}::text[]) and ${DEADLINE} between now() and now() + interval '48 hours')::int as closing48,
-               count(*) filter (where t.status <> all(${TENDER_NOT_CHASING}::text[]) and ${DEADLINE} between now() and now() + interval '7 days')::int as closing7,
-               count(*) filter (where t.status = 'awaiting_approval')::int as awaiting,
-               count(*) filter (where t.status = 'won')::int as won,
-               count(*) filter (where t.status = 'lost')::int as lost
-        from tenders t where ${TENDER_LIVE}`),
+      this.metrics.tenderSummary(sql`true`),
       this.one(sql`
         select count(*) filter (where coalesce(d.confirmed_date, d.requested_date) between ${today}::date and ${weekEnd}::date and d.status <> all(${DEMO_DONE}::text[]))::int as week,
                count(*) filter (where d.status in ('requested', 'under_planning'))::int as pending
@@ -163,10 +176,10 @@ export class DashboardWorkspaceService {
         select count(*)::int as c, coalesce(sum(c.total_claimed), 0)::float as amt
         from expense_claims c where c.deleted_at is null and c.status in ('submitted', 'manager_approved', 'accounts_review', 'accounts_approved')`),
       this.one(sql`select count(*)::int as c from task_blockers b where b.status = 'pending_review'`),
-      this.one(sql`select count(*)::int as c, coalesce(sum(l.value_lakh), 0)::float as lakh from leads l where ${LEAD_OPEN}`),
+      this.metrics.leadPipeline(sql`true`, today),
       this.rows(sql`
         select z.id, z.name,
-               coalesce((select sum(l.value_lakh) from leads l join organisations o on o.id = l.organisation_id where o.zone_id = z.id and ${LEAD_OPEN}), 0)::float as lakh,
+               coalesce((select sum(${LEAD_VALUE}) from leads l join organisations o on o.id = l.organisation_id where o.zone_id = z.id and ${LEAD_OPEN}), 0)::float as lakh,
                (select count(*) from tenders t where t.zone_id = z.id and ${TENDER_LIVE} and t.status <> all(${TENDER_DONE}::text[]))::int as open_tenders
         from zones z order by lakh desc`),
       this.closingTenders(sql`true`, 7, 6),
@@ -181,11 +194,13 @@ export class DashboardWorkspaceService {
     return {
       scopeLabel: 'All India',
       numbers: {
-        tendersClosing48h: num(tenders.closing48),
-        tendersClosing7d: num(tenders.closing7),
-        tendersAwaitingApproval: num(tenders.awaiting),
-        tendersWon: num(tenders.won),
-        tendersLost: num(tenders.lost),
+        tendersClosing48h: tenders.closing48h,
+        tendersClosing7d: tenders.closing7d,
+        tendersAwaitingApproval: tenders.awaitingApproval,
+        tendersWon: tenders.won,
+        tendersLost: tenders.lost,
+        tendersLive: tenders.live,
+        tendersTotal: tenders.total,
         demosThisWeek: num(demos.week),
         demosPending: num(demos.pending),
         depotConflicts: num(conflicts.c),
@@ -195,8 +210,8 @@ export class DashboardWorkspaceService {
         expenseBatches: num(claims.c),
         expenseAmount: num(claims.amt),
         criticalBlockers: num(blockers.c),
-        pipelineLakh: num(leads.lakh),
-        openLeads: num(leads.c),
+        pipelineLakh: leads.lakh,
+        openLeads: leads.active,
       },
       lists: {
         closing,
@@ -208,7 +223,7 @@ export class DashboardWorkspaceService {
           status: human(r.status),
           tone: ticketTone(r.priority, r.sla_resolution_due_at),
           meta: human(r.priority),
-          href: `/service?ticket=${r.id}`,
+          href: link.ticket(r.id),
         })),
         blockers: blockerList,
       },
@@ -223,48 +238,32 @@ export class DashboardWorkspaceService {
     const today = todayInKolkata();
     const weekEnd = addIsoDays(today, 6);
     const zone = user.zone_id ?? null;
-    const team = sql`(u.reporting_manager_id = ${user.id} or (${zone}::uuid is not null and u.zone_id = ${zone}::uuid and u.role in ('sales', 'demo_team', 'service_team')))`;
-    const inTeam = (col: RawBuilder<unknown>) => sql`${col} in (select u.id from users u where u.is_active and ${team})`;
-    const zoneOrg = sql`(${zone}::uuid is not null and o.zone_id = ${zone}::uuid)`;
+    // Same territory Zonal Command uses for this manager (GET /dashboard/regional-performance without a region).
+    const territory = { zoneId: zone, managerId: user.id };
+    const leadScope = territoryLeads(territory);
+    const visitScope = territoryVisits(territory);
     const myClaims = sql`c.deleted_at is null and c.status = 'submitted' and (c.manager_id = ${user.id} or emp.reporting_manager_id = ${user.id})`;
 
-    const [stage1, blockers, visits, leads, tenders, approvals, blockerList, agenda, scorecard, zoneLabel] = await Promise.all([
+    const [stage1, blockers, visits, leads, tenders, approvals, blockerList, agenda, team, zoneLabel] = await Promise.all([
       this.one(sql`select count(*)::int as c, coalesce(sum(c.total_claimed), 0)::float as amt from expense_claims c join users emp on emp.id = c.employee_id where ${myClaims}`),
       this.one(sql`select count(*)::int as c from task_blockers b join tasks k on k.id = b.task_id where b.status = 'pending_review' and (k.reporting_manager_id = ${user.id} or k.assigned_by = ${user.id})`),
-      this.one(sql`
-        select count(*) filter (where v.planned_date = ${today}::date)::int as today,
-               count(*) filter (where v.planned_date between ${today}::date and ${weekEnd}::date)::int as week,
-               count(*) filter (where v.status = 'completed' and v.planned_date >= ${today}::date - 30)::int as done30
-        from visits v join organisations o on o.id = v.organisation_id
-        where v.status <> 'cancelled' and (${zoneOrg} or ${inTeam(sql`v.assigned_to`)})`),
-      this.one(sql`
-        select count(*)::int as c, coalesce(sum(l.value_lakh), 0)::float as lakh,
-               count(*) filter (where l.next_followup_date < ${today}::date)::int as overdue
-        from leads l join organisations o on o.id = l.organisation_id
-        where ${LEAD_OPEN} and (${zoneOrg} or l.regional_manager_id = ${user.id})`),
-      this.one(sql`
-        select count(*) filter (where ${DEADLINE} between now() and now() + interval '7 days')::int as closing7
-        from tenders t where ${TENDER_LIVE} and t.status <> all(${TENDER_NOT_CHASING}::text[]) and ${this.tenderScope(user)}`),
+      this.metrics.visitSummary(visitScope, today),
+      this.metrics.leadPipeline(leadScope, today),
+      this.metrics.tenderSummary(tenderScopeFor(user)),
       this.rows(sql`
         select c.id, c.claim_number, c.title, c.total_claimed, c.submitted_at, emp.full_name
         from expense_claims c join users emp on emp.id = c.employee_id where ${myClaims}
         order by c.submitted_at asc nulls last limit 6`),
       this.blockers(sql`(k.reporting_manager_id = ${user.id} or k.assigned_by = ${user.id})`, 5),
       this.rows(sql`
-        select v.id, v.planned_date::text as day, v.start_time, v.purpose, v.status, o.name as org, rep.full_name as rep
-        from visits v join organisations o on o.id = v.organisation_id left join users rep on rep.id = v.assigned_to
-        where v.status <> 'cancelled' and v.planned_date between ${today}::date and ${weekEnd}::date and (${zoneOrg} or ${inTeam(sql`v.assigned_to`)})
+        select v.id, v.organisation_id, v.planned_date::text as day, v.start_time, v.purpose, v.status, o.name as org, rep.full_name as rep
+        from visits v left join organisations o on o.id = v.organisation_id left join users rep on rep.id = v.assigned_to
+        where v.status = any(${VISIT_OPEN}::text[]) and v.planned_date between ${today}::date and ${weekEnd}::date and ${visitScope}
         order by v.planned_date asc, v.start_time asc nulls last limit 8`),
-      this.rows(sql`
-        select u.id, u.full_name, u.role,
-               (select count(*) from tasks k where k.assigned_to = u.id and k.status in ('not_started', 'in_progress', 'blocked'))::int as open_tasks,
-               (select count(*) from tasks k where k.assigned_to = u.id and ${TASK_OVERDUE})::int as overdue,
-               (select count(*) from visits v where v.assigned_to = u.id and v.status = 'completed' and v.planned_date >= ${today}::date - 30)::int as visits_done,
-               coalesce((select sum(l.value_lakh) from leads l where l.assigned_to = u.id and ${LEAD_OPEN}), 0)::float as lakh
-        from users u where u.is_active and ${team}
-        order by lakh desc, u.full_name asc limit 10`),
+      this.metrics.teamFigures(teamScope(user.id, zone), today),
       this.zoneName(zone),
     ]);
+    const scorecard = [...team].sort((a, b) => b.pipelineLakh - a.pipelineLakh || a.full_name.localeCompare(b.full_name)).slice(0, 10);
 
     return {
       scopeLabel: zoneLabel ? `${zoneLabel} Zone` : 'Your team',
@@ -272,14 +271,20 @@ export class DashboardWorkspaceService {
         stage1Pending: num(stage1.c),
         stage1Amount: num(stage1.amt),
         blockersToReview: num(blockers.c),
-        visitsToday: num(visits.today),
-        visitsWeek: num(visits.week),
-        visitsDone30d: num(visits.done30),
-        pipelineLakh: num(leads.lakh),
-        openLeads: num(leads.c),
-        followupsOverdue: num(leads.overdue),
-        tendersClosing7d: num(tenders.closing7),
-        teamSize: scorecard.length,
+        visitsToday: visits.today,
+        visitsWeek: visits.week,
+        visitsDone30d: visits.completed30d,
+        visitsCompleted: visits.completed,
+        visitsTotal: visits.total,
+        visitsUpcoming: visits.upcoming,
+        pipelineLakh: leads.lakh,
+        openLeads: leads.active,
+        followupsOverdue: leads.followupsOverdue,
+        tendersClosing7d: tenders.closing7d,
+        tendersLive: tenders.live,
+        tendersWon: tenders.won,
+        tendersLost: tenders.lost,
+        teamSize: team.length,
       },
       lists: {
         approvals: approvals.map((r) => ({
@@ -300,14 +305,14 @@ export class DashboardWorkspaceService {
           status: human(r.status),
           meta: [r.rep, r.start_time].filter(Boolean).join(' · ') || null,
           tone: r.day === today ? 'info' : 'neutral',
-          href: '/visits',
+          href: link.visitsAt(r.organisation_id),
         })),
         team: scorecard.map((r) => ({
           id: r.id,
           title: r.full_name,
           subtitle: human(r.role),
-          tone: num(r.overdue) > 2 ? 'critical' : num(r.overdue) > 0 ? 'warning' : 'success',
-          figures: { openTasks: num(r.open_tasks), overdue: num(r.overdue), visitsDone: num(r.visits_done), pipelineLakh: num(r.lakh) },
+          tone: r.tasksOverdue > 2 ? 'critical' : r.tasksOverdue > 0 ? 'warning' : 'success',
+          figures: { openTasks: r.tasksOpen, overdue: r.tasksOverdue, visitsDone: r.visitsCompleted30d, pipelineLakh: r.pipelineLakh },
           href: '/regional',
         })),
       },
@@ -323,15 +328,9 @@ export class DashboardWorkspaceService {
     const myProposal = sql`(p.requested_by = ${me} or p.requested_by_id = ${me} or p.responsible_id = ${me} or p.responsible_person_id = ${me} or p.followup_owner_id = ${me} or p.follow_up_owner_id = ${me})`;
     const proposalOpen = sql`p.is_deleted = false and upper(p.status) <> all(${PROPOSAL_DONE}::text[])`;
 
-    const [visits, leads, proposals, demos, claims, bids, agenda, followups, proposalList, demoList, funnel] = await Promise.all([
-      this.one(sql`
-        select count(*) filter (where v.planned_date = ${today}::date)::int as today,
-               count(*) filter (where v.planned_date between ${today}::date and ${weekEnd}::date)::int as week
-        from visits v where v.assigned_to = ${me} and v.status in ('planned', 'modified', 'rescheduled')`),
-      this.one(sql`
-        select count(*)::int as c, coalesce(sum(l.value_lakh), 0)::float as lakh,
-               count(*) filter (where l.next_followup_date <= ${today}::date)::int as due
-        from leads l where l.assigned_to = ${me} and ${LEAD_OPEN}`),
+    const [visits, leads, proposals, demos, claims, bids, agenda, followups, proposalList, demoList, funnel, tasks, tenders] = await Promise.all([
+      this.metrics.visitSummary(sql`v.assigned_to = ${me}`, today),
+      this.metrics.leadPipeline(sql`l.assigned_to = ${me}`, today),
       this.one(sql`select count(*)::int as c from proposals p where ${proposalOpen} and ${myProposal}`),
       this.one(sql`select count(*)::int as c from demos d where d.requested_by = ${me} and d.status <> all(${DEMO_DONE}::text[])`),
       this.one(sql`
@@ -342,9 +341,9 @@ export class DashboardWorkspaceService {
         from expense_claims c where c.deleted_at is null and c.employee_id = ${me}`),
       this.closingTenders(this.tenderScope(user), 7, 4),
       this.rows(sql`
-        select v.id, v.planned_date::text as day, v.start_time, v.purpose, v.status, v.location, o.name as org
-        from visits v join organisations o on o.id = v.organisation_id
-        where v.assigned_to = ${me} and v.status in ('planned', 'modified', 'rescheduled') and v.planned_date between ${today}::date and ${weekEnd}::date
+        select v.id, v.organisation_id, v.planned_date::text as day, v.start_time, v.purpose, v.status, v.location, o.name as org
+        from visits v left join organisations o on o.id = v.organisation_id
+        where v.assigned_to = ${me} and v.status = any(${VISIT_OPEN}::text[]) and v.planned_date between ${today}::date and ${weekEnd}::date
         order by v.planned_date asc, v.start_time asc nulls last limit 8`),
       this.rows(sql`
         select l.id, l.next_followup_date::text as day, l.value_lakh, o.name as org, pr.name as product
@@ -361,24 +360,38 @@ export class DashboardWorkspaceService {
         where d.requested_by = ${me} and d.status <> all(${DEMO_DONE}::text[])
         order by coalesce(d.confirmed_date, d.requested_date) asc nulls last limit 4`),
       this.rows(sql`select l.category, count(*)::int as c from leads l where l.assigned_to = ${me} and ${LEAD_OPEN} group by l.category`),
+      this.metrics.taskFigures(sql`k.assigned_to = ${me}`),
+      this.metrics.tenderSummary(this.tenderScope(user)),
     ]);
 
     const byCat = Object.fromEntries(funnel.map((r) => [r.category, num(r.c)]));
+    const FUNNEL = ['new_lead', 'follow_up', 'active', 'expected'];
+    // leads whose category is outside the four funnel stages still count, so the funnel always sums to "open leads"
+    const otherCat = funnel.filter((r) => !FUNNEL.includes(r.category)).reduce((a, r) => a + num(r.c), 0);
     return {
       scopeLabel: 'Your accounts',
       numbers: {
-        visitsToday: num(visits.today),
-        visitsWeek: num(visits.week),
-        followupsDue: num(leads.due),
-        pipelineLakh: num(leads.lakh),
-        openLeads: num(leads.c),
+        visitsToday: visits.today,
+        visitsWeek: visits.week,
+        visitsUpcoming: visits.upcoming,
+        visitsCompleted: visits.completed,
+        visitsTotal: visits.total,
+        followupsDue: leads.followupsDue,
+        pipelineLakh: leads.lakh,
+        openLeads: leads.active,
+        totalLeads: leads.total,
+        tasksOpen: tasks.open,
+        tasksOverdue: tasks.overdue,
+        tasksBlocked: tasks.blocked,
+        tendersWon: tenders.won,
+        tendersLost: tenders.lost,
         proposalsOpen: num(proposals.c),
         demosOpen: num(demos.c),
         claimsLive: num(claims.live),
         claimsAmount: num(claims.amt),
         claimsDraft: num(claims.drafts),
         claimsClarify: num(claims.clarify),
-        bidsClosing: bids.length,
+        bidsClosing: tenders.closing7d,
       },
       lists: {
         agenda: agenda.map((r) => ({
@@ -389,7 +402,7 @@ export class DashboardWorkspaceService {
           meta: [r.start_time, r.location].filter(Boolean).join(' · ') || null,
           status: human(r.status),
           tone: r.day === today ? 'info' : 'neutral',
-          href: '/visits',
+          href: link.visitsAt(r.organisation_id),
         })),
         followups: followups.map((r) => ({
           id: r.id,
@@ -398,7 +411,7 @@ export class DashboardWorkspaceService {
           date: r.day,
           amount: r.value_lakh == null ? null : num(r.value_lakh) * 100000,
           tone: r.day < today ? 'critical' : r.day === today ? 'warning' : 'info',
-          href: `/leads?lead=${r.id}`,
+          href: link.lead(r.id),
         })),
         proposals: proposalList.map((r) => ({
           id: r.id,
@@ -407,7 +420,7 @@ export class DashboardWorkspaceService {
           date: r.day,
           status: human(r.status),
           tone: r.day && r.day < today ? 'critical' : 'info',
-          href: '/proposals',
+          href: link.proposal(r.id),
         })),
         demos: demoList.map((r) => ({
           id: r.id,
@@ -416,7 +429,7 @@ export class DashboardWorkspaceService {
           date: r.day,
           status: human(r.status),
           tone: 'info',
-          href: '/demos',
+          href: link.demo(r.id),
         })),
         bids,
       },
@@ -426,6 +439,7 @@ export class DashboardWorkspaceService {
           { key: 'follow_up', label: 'Follow-up', value: byCat.follow_up ?? 0 },
           { key: 'active', label: 'Active', value: byCat.active ?? 0 },
           { key: 'expected', label: 'Expected', value: byCat.expected ?? 0 },
+          ...(otherCat ? [{ key: 'other', label: 'Uncategorised', value: otherCat }] : []),
         ],
       },
     };
@@ -433,23 +447,18 @@ export class DashboardWorkspaceService {
 
   /* ------------------------------------------------------------- tender team -- */
   private async tender(_user: AuthUser): Promise<Section> {
-    const [counts, deadlines, approvals, evaluation] = await Promise.all([
+    const [summary, counts, deadlines, approvals, evaluation] = await Promise.all([
+      this.metrics.tenderSummary(sql`true`),
       this.one(sql`
-        select count(*) filter (where t.status <> all(${TENDER_NOT_CHASING}::text[]) and ${DEADLINE} between now() and now() + interval '48 hours')::int as closing48,
-               count(*) filter (where t.status <> all(${TENDER_NOT_CHASING}::text[]) and ${DEADLINE} between now() and now() + interval '7 days')::int as closing7,
-               count(*) filter (where t.status = 'identified')::int as identified,
-               count(*) filter (where t.status = 'awaiting_approval')::int as awaiting,
-               count(*) filter (where t.status = 'under_preparation')::int as preparing,
+        select count(*) filter (where t.status = 'identified')::int as identified,
                count(*) filter (where t.status = any(${TENDER_EVAL}::text[]))::int as evaluating,
-               count(*) filter (where t.status = 'won')::int as won,
-               count(*) filter (where t.status = 'lost')::int as lost,
                coalesce(sum(t.emd_fee) filter (where t.status in ('under_preparation', 'submitted', 'pq_submitted', 'pq_qualified', 'technical_eval', 'commercial_eval', 'reverse_auction')), 0)::float as emd
         from tenders t where ${TENDER_LIVE}`),
       this.closingTenders(sql`t.status in ('identified', 'awaiting_approval', 'under_preparation')`, 30, 8),
       this.rows(sql`
         select t.id, t.tender_no, coalesce(o.name, t.department) as buyer, ${DEADLINE} as deadline, t.estimated_value
         from tenders t left join organisations o on o.id = t.organisation_id
-        where ${TENDER_LIVE} and t.status = 'awaiting_approval' order by ${DEADLINE} asc nulls last limit 5`),
+        where ${TENDER_LIVE} and ${TENDER_AWAITING_APPROVAL} order by ${DEADLINE} asc nulls last limit 5`),
       this.rows(sql`
         select t.id, t.tender_no, t.status, coalesce(o.name, t.department) as buyer, t.updated_at
         from tenders t left join organisations o on o.id = t.organisation_id
@@ -458,14 +467,16 @@ export class DashboardWorkspaceService {
     return {
       scopeLabel: 'National GeM & state portals',
       numbers: {
-        closing48h: num(counts.closing48),
-        closing7d: num(counts.closing7),
+        closing48h: summary.closing48h,
+        closing7d: summary.closing7d,
         identified: num(counts.identified),
-        awaitingApproval: num(counts.awaiting),
-        underPreparation: num(counts.preparing),
+        awaitingApproval: summary.awaitingApproval,
+        underPreparation: summary.underPreparation,
         inEvaluation: num(counts.evaluating),
-        won: num(counts.won),
-        lost: num(counts.lost),
+        won: summary.won,
+        lost: summary.lost,
+        live: summary.live,
+        total: summary.total,
         emdAtStake: num(counts.emd),
       },
       lists: {
@@ -477,7 +488,7 @@ export class DashboardWorkspaceService {
           date: iso(r.deadline),
           amount: r.estimated_value == null ? null : num(r.estimated_value),
           tone: deadlineTone(r.deadline),
-          href: `/tenders?tender=${r.id}`,
+          href: link.tender(r.id),
         })),
         evaluation: evaluation.map((r) => ({
           id: r.id,
@@ -486,17 +497,17 @@ export class DashboardWorkspaceService {
           date: iso(r.updated_at),
           status: human(r.status),
           tone: 'info',
-          href: `/tenders?tender=${r.id}`,
+          href: link.tender(r.id),
         })),
       },
       bars: {
         stages: [
           { key: 'identified', label: 'Identified', value: num(counts.identified) },
-          { key: 'awaiting_approval', label: 'Awaiting approval', value: num(counts.awaiting) },
-          { key: 'under_preparation', label: 'Preparing bid', value: num(counts.preparing) },
+          { key: 'awaiting_approval', label: 'Awaiting approval', value: summary.awaitingApproval },
+          { key: 'under_preparation', label: 'Preparing bid', value: summary.underPreparation },
           { key: 'evaluation', label: 'Submitted / in evaluation', value: num(counts.evaluating) },
-          { key: 'won', label: 'Won', value: num(counts.won) },
-          { key: 'lost', label: 'Lost', value: num(counts.lost) },
+          { key: 'won', label: 'Won', value: summary.won },
+          { key: 'lost', label: 'Lost', value: summary.lost },
         ],
       },
     };
@@ -569,7 +580,7 @@ export class DashboardWorkspaceService {
           status: human(r.status),
           meta: r.engineer ? `Engineer: ${r.engineer}` : 'No engineer yet',
           tone: r.engineer ? (r.day === today ? 'info' : 'neutral') : 'warning',
-          href: '/demos',
+          href: link.demo(r.id),
         })),
         requests: requests.map((r) => ({
           id: r.id,
@@ -579,7 +590,7 @@ export class DashboardWorkspaceService {
           amount: r.value == null ? null : num(r.value),
           status: human(r.status),
           tone: r.day && r.day < today ? 'critical' : 'warning',
-          href: '/demos',
+          href: link.demo(r.id),
         })),
         outcomes: outcomes.map((r) => ({
           id: r.id,
@@ -587,7 +598,7 @@ export class DashboardWorkspaceService {
           subtitle: r.demo_no,
           date: r.day,
           tone: 'warning',
-          href: '/demos',
+          href: link.demo(r.id),
         })),
       },
       bars: {
@@ -659,7 +670,7 @@ export class DashboardWorkspaceService {
           status: human(r.status),
           meta: [human(r.priority), r.location].filter(Boolean).join(' · ') || null,
           tone: ticketTone(r.priority, r.sla_resolution_due_at),
-          href: `/service?ticket=${r.id}`,
+          href: link.ticket(r.id),
         })),
         unassigned: unassigned.map((r) => ({
           id: r.id,
@@ -668,7 +679,7 @@ export class DashboardWorkspaceService {
           date: iso(r.created_at),
           status: human(r.status),
           tone: r.priority === 'critical' ? 'critical' : r.priority === 'high' ? 'warning' : 'info',
-          href: `/service?ticket=${r.id}`,
+          href: link.ticket(r.id),
         })),
       },
       bars: {
@@ -754,7 +765,8 @@ export class DashboardWorkspaceService {
                (select count(*) from regions)::int as regions, (select count(*) from demo_equipment)::int as equipment`),
       this.one(sql`
         select count(*) filter (where a.created_at >= now() - interval '24 hours')::int as day,
-               count(*) filter (where a.created_at >= now() - interval '7 days')::int as week
+               count(*) filter (where a.created_at >= now() - interval '7 days')::int as week,
+               count(*)::int as total
         from audit_log a`),
       this.one(sql`select count(*)::int as c from dead_letter_events where replayed_at is null`),
       this.rows(sql`select u.role, count(*)::int as c from users u where u.is_active group by u.role order by c desc`),
@@ -776,6 +788,7 @@ export class DashboardWorkspaceService {
         equipment: num(masters.equipment),
         audit24h: num(audit.day),
         audit7d: num(audit.week),
+        auditTotal: num(audit.total),
         deadLetters: num(dead.c),
       },
       lists: {
@@ -786,7 +799,7 @@ export class DashboardWorkspaceService {
           date: iso(r.created_at),
           meta: r.full_name || 'System',
           tone: /(delete|reject|cancel|deactivat)/i.test(r.action) ? 'warning' : 'neutral',
-          href: '/admin',
+          href: '/admin?tab=audit',
         })),
         newUsers: newUsers.map((r) => ({
           id: r.id,
@@ -795,7 +808,7 @@ export class DashboardWorkspaceService {
           date: iso(r.created_at),
           status: human(r.role),
           tone: r.is_active ? 'success' : 'neutral',
-          href: '/admin',
+          href: `/admin?tab=users&open=${r.id}`,
         })),
       },
       bars: {

@@ -3,7 +3,7 @@
 import { fromIstLocalInput } from '@/lib/ist-date';
 import React, { useState } from 'react';
 import { MapPin, LogOut } from 'lucide-react';
-import { Button, Badge, Input, Select, Textarea } from '@/components/ui';
+import { Button, Badge, Input, Select, Textarea, formatDateTimeIN } from '@/components/ui';
 import { api } from '@/lib/api';
 import { errMsg } from './serviceHelpers';
 import { isAssignedEngineer } from './serviceHelpers';
@@ -96,13 +96,13 @@ const VisitCard: React.FC<{ visit: any; ticket: any; canWork: boolean; closed: b
       </div>
       <div className="grid grid-cols-1 gap-2 text-xs text-[#4A5568] sm:grid-cols-3">
         <div>
-          Scheduled: <strong className="text-[#14213D]">{v.scheduled_start ? new Date(v.scheduled_start).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'TBD'}</strong>
+          Scheduled: <strong className="text-[#14213D]">{v.scheduled_start ? formatDateTimeIN(v.scheduled_start) : 'TBD'}</strong>
         </div>
         <div>
-          Check-in: <strong className="text-[#14213D]">{checkedIn ? new Date(v.actual_check_in).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Pending'}</strong>
+          Check-in: <strong className="text-[#14213D]">{checkedIn ? formatDateTimeIN(v.actual_check_in) : 'Pending'}</strong>
         </div>
         <div>
-          Check-out: <strong className="text-[#14213D]">{checkedOut ? new Date(v.actual_check_out).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Pending'}</strong>
+          Check-out: <strong className="text-[#14213D]">{checkedOut ? formatDateTimeIN(v.actual_check_out) : 'Pending'}</strong>
         </div>
       </div>
       {checkedIn && v.check_in_lat != null && (
@@ -113,7 +113,7 @@ const VisitCard: React.FC<{ visit: any; ticket: any; canWork: boolean; closed: b
       {v.notes && <p className="rounded border border-[#ECE9E2] bg-[#FBFAF7] p-2 text-xs text-[#14213D]">{v.notes}</p>}
 
       {error && (
-        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+        <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">
           {error}
         </div>
       )}
@@ -216,7 +216,7 @@ export const VisitsTab: React.FC<Props> = ({ ticket, role, userId, onChanged }) 
         <form onSubmit={schedule} className="space-y-3 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] p-3 sm:p-3.5">
           <h6 className="font-serif text-xs font-bold text-[#14213D]">Add a visit slot</h6>
           {error && (
-            <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+            <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">
               {error}
             </div>
           )}

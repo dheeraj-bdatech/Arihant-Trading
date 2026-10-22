@@ -1,6 +1,6 @@
 import { Controller, Post, Get, Body, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
-import { LoginDto } from './auth.dto.js';
+import { DemoLoginDto, LoginDto } from './auth.dto.js';
 import { Public } from '../../common/auth/public.decorator.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -15,6 +15,13 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async login(@Body() loginDto: LoginDto): Promise<LoginResponseDto> {
     return this.authService.login(loginDto);
+  }
+
+  @Public()
+  @Post('demo-login')
+  @HttpCode(HttpStatus.OK)
+  async demoLogin(@Body() dto: DemoLoginDto): Promise<LoginResponseDto> {
+    return this.authService.demoLogin(dto);
   }
 
   @UseGuards(JwtAuthGuard)

@@ -1,12 +1,22 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
+import { Kysely } from 'kysely';
 import { AppModule } from '../src/app.module';
 
 jest.setTimeout(60000);
 
+/** Today's calendar date in IST (YYYY-MM-DD) — result dates are IST calendar days and cannot be in the future. */
+const istToday = () => new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10);
+/**
+ * A bid that closes later today (23:59 IST): still open for submission now, and its result can be recorded today
+ * (a result can never be dated before the bid closing day — QA DEF-090).
+ */
+const closesTodayIST = () => `${istToday()}T23:59:00+05:30`;
+
 describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
   let app: INestApplication;
+  let db: Kysely<any>;
   let adminToken: string;
   let mgmtToken: string;
   let rmToken: string;
@@ -23,6 +33,24 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
   let enterpriseTenderId: string;
   let lineItemId: string;
   let documentId: string;
+
+  /**
+   * Submission gate (QA DEF-006): a bid / PQ can only be submitted once the mandatory document checklist is
+   * initialised and every mandatory document is Ready. Initialising is idempotent (existing rows are kept).
+   */
+  async function readyChecklist(tenderId: string) {
+    const init = await request(app.getHttpServer())
+      .post(`/api/tenders/${tenderId}/documents/init-checklist`)
+      .set('Authorization', `Bearer ${mgmtToken}`);
+    expect(init.status).toBe(201);
+    for (const doc of init.body.documents.filter((d: any) => d.is_mandatory && d.status !== 'Ready')) {
+      const patch = await request(app.getHttpServer())
+        .patch(`/api/tenders/${tenderId}/documents/${doc.id}`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ status: 'Ready', file_name: `${doc.document_type}.pdf` });
+      expect(patch.status).toBe(200);
+    }
+  }
   const uniqueTenderNo = `DEF/ENT/2026/${Date.now().toString().slice(-6)}`;
 
   beforeAll(async () => {
@@ -30,6 +58,7 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
       imports: [AppModule],
     }).compile();
 
+    db = moduleFixture.get<Kysely<any>>('KYSELY_DB');
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api');
     app.useGlobalPipes(
@@ -461,11 +490,13 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ decision: 'approved', remarks: 'Approved for PQ submission' });
 
-      // 3. Move to PQ_SUBMITTED
-      await request(app.getHttpServer())
+      // 3. Move to PQ_SUBMITTED (every mandatory document Ready first — DEF-006)
+      await readyChecklist(enterpriseTenderId);
+      const pqSubRes = await request(app.getHttpServer())
         .post(`/api/tenders/${enterpriseTenderId}/transitions`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ target_status: 'pq_submitted', remarks: 'Submitted to DRDO portal' });
+      expect(pqSubRes.status).toBe(201);
 
       // 4. Move to PQ_QUALIFIED
       await request(app.getHttpServer())
@@ -500,7 +531,7 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
           organisation_id: testOrgId,
           product_id: testProductId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-30T15:00:00Z',
+          submission_deadline: closesTodayIST(),
           estimated_value: 20000000,
           category: 'other',
           assigned_person_id: salesUserId,
@@ -516,10 +547,20 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
         .post(`/api/tenders/${wonTenderId}/approve`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ decision: 'approved' });
-      await request(app.getHttpServer())
+      await readyChecklist(wonTenderId);
+      const submitRes = await request(app.getHttpServer())
         .post(`/api/tenders/${wonTenderId}/transitions`)
         .set('Authorization', `Bearer ${mgmtToken}`)
-        .send({ target_status: 'submitted', submission_date: '2026-09-10' });
+        .send({ target_status: 'submitted', submission_date: istToday() });
+      expect(submitRes.status).toBe(201);
+
+      // Bids are opened (and results declared) only after the bid closes: simulate the closing having passed.
+      const closedAt = new Date(Date.now() - 86400000);
+      await db
+        .updateTable('tenders')
+        .set({ submission_deadline: closedAt, bid_closing_date: closedAt })
+        .where('id', '=', wonTenderId)
+        .execute();
 
       // Record Won Outcome
       const resultRes = await request(app.getHttpServer())
@@ -527,7 +568,8 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           outcome: 'won',
-          result_date: new Date().toISOString().split('T')[0],
+          // IST calendar day (the UTC date is still "yesterday" before 05:30 IST).
+          result_date: istToday(),
           value: 19500000,
           awarded_value: 19500000,
           po_number: 'PO-MHA-99441',

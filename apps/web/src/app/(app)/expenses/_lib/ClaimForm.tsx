@@ -1184,7 +1184,7 @@ const ItemEditor: React.FC<{
               required
               readOnly={autoAmount}
               error={errors.amount}
-              hint={cat.max_amount_per_item ? `Limit ${formatExpenseAmount(cat.max_amount_per_item)}${cat.cap_is_hard ? ' (hard cap)' : ' — add a remark if above'}` : undefined}
+              hint={amountHint(cat)}
             >
               <div className="flex items-baseline gap-1">
                 <span className="font-mono text-[15px] text-[#4A5568]">₹</span>
@@ -1394,7 +1394,7 @@ const ItemCard: React.FC<{
             <button
               type="button"
               aria-label={`Remove ${a.file_name}`}
-              className="-my-1 -mr-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-[#8A8578] hover:text-[#881337] sm:m-0 sm:inline-block sm:h-auto sm:w-auto"
+              className="-my-1 -mr-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-[#6B7280] hover:text-[#881337] sm:m-0 sm:inline-block sm:h-auto sm:w-auto"
               onClick={() => onRemoveAttachment(a)}
             >
               <X className="h-3.5 w-3.5" />
@@ -1404,7 +1404,7 @@ const ItemCard: React.FC<{
         {item.receipt_missing ? (
           <Badge variant="urgent" size="sm" className="gap-1"><Paperclip className="h-3 w-3" /> Receipt required</Badge>
         ) : (
-          item.attachments.length === 0 && <span className="hidden text-[11px] text-[#8A8578] sm:inline">Drop a receipt here (optional)</span>
+          item.attachments.length === 0 && <span className="hidden text-[11px] text-[#6B7280] sm:inline">Drop a receipt here (optional)</span>
         )}
         <input ref={fileRef} type="file" accept={ACCEPT} multiple className="hidden" onChange={(e) => e.target.files && onUpload(e.target.files)} />
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => e.target.files && onUpload(e.target.files)} />
@@ -1437,3 +1437,14 @@ const ItemCard: React.FC<{
     </div>
   );
 };
+
+/** Amount-field hint: the category's per-line cap and when a receipt becomes mandatory (the server enforces both). */
+function amountHint(cat: { max_amount_per_item: number | null; cap_is_hard: boolean; receipt_required_above: number | null }): string | undefined {
+  const parts: string[] = [];
+  if (cat.max_amount_per_item) parts.push(`Limit ${formatExpenseAmount(cat.max_amount_per_item)}${cat.cap_is_hard ? ' (hard cap)' : ' — add a remark if above'}`);
+  if (cat.receipt_required_above !== null && cat.receipt_required_above !== undefined) {
+    const t = Number(cat.receipt_required_above);
+    parts.push(t <= 0 ? 'Receipt required' : `Receipt required from ${formatExpenseAmount(t)}`);
+  }
+  return parts.length ? parts.join(' · ') : undefined;
+}

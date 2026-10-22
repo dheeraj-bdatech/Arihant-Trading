@@ -5,22 +5,27 @@
  *
  *  - RecordCards   priority cards: deadline chip + one big next-step button, most urgent first
  *  - StageBoard    columns per stage; on phones one stage at a time behind big stage buttons
- *  - RecordViews   both, behind a Cards | Board toggle remembered per page, in one card that
- *                  scrolls on its own and loads the next page near the end (infinite scroll)
+ *  - RecordList    the task module's list: a table from tablet up, compact cards on phones
+ *  - RecordViews   all three, behind a List | Cards | Board toggle remembered per page, in one card
+ *                  that scrolls on its own and loads the next page near the end (infinite scroll)
  *
  * Cards show the first two `facts`; the board shows title, owner and value only.
  *
  * Every page maps its rows to one RecordItem shape. Touch targets are 44px, and 56px on phones
- * ("glove mode", see `.rec` in theme.css). Status is always text + colour, never colour alone.
+ * ("glove mode", see `.rec` in theme.css). Status is always text + colour, never colour alone, in the
+ * shared Badge colours (same as the task module).
  */
 import React, { useMemo, useState } from 'react';
 import { twMerge } from 'tailwind-merge';
-import { ArrowRight, Columns3, LayoutGrid } from 'lucide-react';
+import { ArrowRight, ChevronDown, Columns3, LayoutGrid, List } from 'lucide-react';
 import { istDateOf, istToday } from '@/lib/ist-date';
 import { formatINR, formatLakh } from '@arihant/shared';
+import { Badge, type BadgeProps } from './Badge';
+import { Button, IconButton } from './Button';
 import { Card } from './Card';
 import { Modal } from './Modal';
 import { Spinner } from './Spinner';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './Table';
 
 export type RecordTone = 'danger' | 'warning' | 'success' | 'info' | 'neutral';
 
@@ -62,19 +67,23 @@ export interface RecordItem {
 }
 
 // ------------------------------------------------------------------ helpers
-const TONE: Record<RecordTone, string> = {
-  danger: 'bg-[#FCE8EC] text-[#881337] border-[#881337]/25',
-  warning: 'bg-[#FFF4E0] text-[#A15C07] border-[#A15C07]/25',
-  success: 'bg-[#E3F3EA] text-[#1F7A55] border-[#1F7A55]/25',
-  info: 'bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/25',
-  neutral: 'bg-[#FBFAF7] text-[#4A5568] border-[#DCD8CE]',
+/** Chip tone → shared Badge variant; `urgent` (solid terracotta) is for overdue dates only. */
+type ChipTone = RecordTone | 'urgent';
+const VARIANT: Record<ChipTone, NonNullable<BadgeProps['variant']>> = {
+  danger: 'danger',
+  warning: 'warning',
+  success: 'success',
+  info: 'info',
+  neutral: 'default',
+  urgent: 'urgent',
 };
+// Badge dot colours, for the board's column headers.
 const DOT: Record<RecordTone, string> = {
   danger: 'bg-[#881337]',
-  warning: 'bg-[#A15C07]',
-  success: 'bg-[#1F7A55]',
+  warning: 'bg-[#9A3412]',
+  success: 'bg-[#0F5E63]',
   info: 'bg-[#0F5E63]',
-  neutral: 'bg-[#8A8578]',
+  neutral: 'bg-[#4A5568]',
 };
 
 /** Maps a free-text status to a tone: closed/won → success, lost/breached → danger, waiting → warning… */
@@ -109,20 +118,22 @@ const fullDate = (date: string | Date | null | undefined) => {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 };
 
-function dueChip(due: RecordItem['due']): { text: string; tone: RecordTone } | null {
+function dueChip(due: RecordItem['due']): { text: string; tone: ChipTone } | null {
   if (!due?.date) return null;
   const n = daysFromToday(due.date);
   if (n === null) return null;
   if (due.done) return { text: shortDate(due.date), tone: 'neutral' };
-  if (n < 0) return { text: `${-n}d overdue`, tone: 'danger' };
+  if (n < 0) return { text: `${-n}d overdue`, tone: 'urgent' };
   if (n === 0) return { text: 'Today', tone: 'danger' };
   if (n === 1) return { text: 'Tomorrow', tone: 'warning' };
   if (n <= 3) return { text: `In ${n} days`, tone: 'warning' };
   return { text: shortDate(due.date), tone: 'neutral' };
 }
 
-const Chip: React.FC<{ tone: RecordTone; children: React.ReactNode; className?: string }> = ({ tone, children, className }) => (
-  <span className={twMerge('inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11.5px] font-semibold', TONE[tone], className)}>{children}</span>
+const Chip: React.FC<{ tone: ChipTone; children: React.ReactNode; className?: string }> = ({ tone, children, className }) => (
+  <Badge variant={VARIANT[tone]} size="sm" className={twMerge('whitespace-nowrap', className)}>
+    {children}
+  </Badge>
 );
 
 const DueChip: React.FC<{ item: RecordItem }> = ({ item }) => {
@@ -326,6 +337,231 @@ export const RecordCards: React.FC<{ items: RecordItem[]; empty?: React.ReactNod
   );
 };
 
+// ------------------------------------------------------------------ 1b. list (task-module layout)
+/** Facts as one muted line under the title ("Portal GeM · EMD ₹ 41,000"), like the task context line. */
+const contextLine = (item: RecordItem) =>
+  [item.subtitle, ...(item.facts ?? []).map((f) => `${f.label} ${textOf(f.value) || '—'}`)].filter(Boolean).join(' · ');
+
+/** Date plus a relative hint ("3d overdue", "in 2 days"), terracotta once it is due — like DueText on tasks. */
+const DueCell: React.FC<{ item: RecordItem }> = ({ item }) => {
+  if (!item.due?.date) return <span className="text-xs text-[#6B7280]">No date</span>;
+  const n = daysFromToday(item.due.date);
+  const hint = item.due.done || n === null ? null : n < 0 ? `${-n}d overdue` : n === 0 ? 'Due today' : n === 1 ? 'Tomorrow' : `In ${n} days`;
+  return (
+    <span className="inline-flex flex-col leading-tight">
+      <span className="font-mono text-xs tabular-nums text-[#14213D]">{fullDate(item.due.date)}</span>
+      {hint && <span className={twMerge('text-[11px] font-medium', n !== null && n <= 0 ? 'text-[#9A3412]' : 'text-[#4A5568]')}>{hint}</span>}
+    </span>
+  );
+};
+
+const isOverdue = (item: RecordItem) => !item.due?.done && (daysFromToday(item.due?.date ?? null) ?? 0) < 0;
+
+const BadgeRow: React.FC<{ item: RecordItem }> = ({ item }) =>
+  item.badges?.length ? (
+    <>
+      {item.badges.map((b) => (
+        <Chip key={b.label} tone={b.tone}>
+          {b.label}
+        </Chip>
+      ))}
+    </>
+  ) : null;
+
+const ListRow: React.FC<{ item: RecordItem; show: { owner: boolean; due: boolean; value: boolean; actions: boolean } }> = ({ item, show }) => {
+  const open = useOpen(item);
+  const context = contextLine(item);
+  return (
+    <TableRow className={open ? 'cursor-pointer' : undefined} onClick={open}>
+      {/* Widths are capped on inner wrappers: auto table layout ignores max-width on cells. */}
+      <TableCell>
+        <div className="min-w-0 max-w-[310px]">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {item.code && item.code !== item.title && <span className="font-mono text-xs font-semibold text-[#0F5E63]">{item.code}</span>}
+            <BadgeRow item={item} />
+          </div>
+          <div className="truncate font-medium text-[#14213D]" title={item.title}>
+            {item.title}
+          </div>
+          {context && (
+            <div className="truncate text-[11px] text-[#4A5568]" title={context}>
+              {context}
+            </div>
+          )}
+        </div>
+      </TableCell>
+      {show.owner && (
+        <TableCell>
+          <div className="min-w-0 max-w-[160px] truncate text-xs font-medium text-[#14213D]" title={item.owner}>
+            {item.owner || 'Unassigned'}
+          </div>
+        </TableCell>
+      )}
+      <TableCell>{item.status && <Chip tone={item.status.tone}>{item.status.label}</Chip>}</TableCell>
+      {show.due && (
+        <TableCell className="whitespace-nowrap">
+          <div className="w-32">
+            <DueCell item={item} />
+          </div>
+        </TableCell>
+      )}
+      {show.value && <TableCell className="whitespace-nowrap text-right font-mono text-xs font-semibold text-[#14213D]">{item.value || '—'}</TableCell>}
+      {show.actions && (
+        <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+          <div className="flex justify-end gap-1">
+            {item.quick?.map((a) => (
+              <IconButton key={a.label} icon={a.icon ?? <ArrowRight />} aria-label={a.label} title={a.label} size="sm" variant="secondary" disabled={a.disabled} onClick={a.onClick} />
+            ))}
+            {item.primary && (
+              <Button size="xs" disabled={item.primary.disabled} onClick={item.primary.onClick} rightIcon={<ArrowRight className="h-3.5 w-3.5" />}>
+                {item.primary.label}
+              </Button>
+            )}
+          </div>
+        </TableCell>
+      )}
+    </TableRow>
+  );
+};
+
+/** Phones: one card per record — code + badges, title, context, status, date and owner, then the actions. */
+const ListCard: React.FC<{ item: RecordItem }> = ({ item }) => {
+  const open = useOpen(item);
+  const context = contextLine(item);
+  return (
+    <Card
+      className={twMerge('space-y-2.5 p-4', isOverdue(item) && 'border-l-[3px] border-l-[#9A3412]', open && 'cursor-pointer')}
+      onClick={open}
+      role={open ? 'button' : undefined}
+      tabIndex={open ? 0 : undefined}
+      aria-haspopup={open ? 'dialog' : undefined}
+      onKeyDown={(e) => {
+        if (open && (e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+          e.preventDefault();
+          open();
+        }
+      }}
+    >
+      <div className="min-w-0">
+        <div className="flex items-start justify-between gap-2">
+          {item.code && item.code !== item.title ? <span className="min-w-0 break-all font-mono text-xs font-semibold text-[#0F5E63]">{item.code}</span> : <span />}
+          <span className="flex shrink-0 flex-wrap justify-end gap-1">
+            <BadgeRow item={item} />
+          </span>
+        </div>
+        <div className="mt-0.5 line-clamp-2 font-medium text-[#14213D]">{item.title}</div>
+        {context && <div className="truncate text-[11px] text-[#4A5568]">{context}</div>}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        {item.status && <Chip tone={item.status.tone}>{item.status.label}</Chip>}
+        {item.value && <span className="ml-auto font-mono text-sm font-semibold text-[#14213D]">{item.value}</span>}
+      </div>
+      <div className="flex items-end justify-between gap-3">
+        <DueCell item={item} />
+        {item.owner && <span className="min-w-0 truncate text-right text-xs text-[#4A5568]">{item.owner}</span>}
+      </div>
+      {item.extra}
+      {(item.primary || item.quick?.length) && (
+        <div className="flex flex-wrap gap-2 pt-1" onClick={(e) => e.stopPropagation()}>
+          <Quick actions={item.quick} />
+          <Primary action={item.primary} />
+        </div>
+      )}
+    </Card>
+  );
+};
+
+/** The task module's list layout for any register: table from tablet up (most urgent first), cards on phones. */
+export const RecordList: React.FC<{ items: RecordItem[]; empty?: React.ReactNode; sort?: boolean }> = ({ items, empty, sort = true }) => {
+  const list = useMemo(() => (sort ? [...items].sort(byUrgency) : items), [items, sort]);
+  if (!list.length) return <Empty>{empty}</Empty>;
+  // Columns only for what this register actually has.
+  const show = {
+    owner: list.some((i) => i.owner),
+    due: list.some((i) => i.due?.date),
+    value: list.some((i) => i.value),
+    actions: list.some((i) => i.primary || i.quick?.length),
+  };
+  const dueLabel = list.find((i) => i.due?.label)?.due?.label || 'Due';
+
+  return (
+    <>
+      <div className="hidden md:block">
+        <Table className="[&_td]:px-3 [&_th]:px-3">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Record</TableHead>
+              {show.owner && <TableHead>Owner</TableHead>}
+              <TableHead>Status</TableHead>
+              {show.due && <TableHead>{dueLabel}</TableHead>}
+              {show.value && <TableHead className="text-right">Value</TableHead>}
+              {show.actions && <TableHead className="text-right">Actions</TableHead>}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {list.map((i) => (
+              <ListRow key={i.key} item={i} show={show} />
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <ul className="space-y-3 md:hidden">
+        {list.map((i) => (
+          <li key={i.key}>
+            <ListCard item={i} />
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+};
+
+/**
+ * DD/MM/YYYY in IST (zero-padded) — the app's one date format for tables, cards and details ('-' when there is no
+ * date). Never call toLocaleDateString() directly: without a locale + timeZone it shows the browser's order and day.
+ */
+export const formatDateIN = (date: string | number | Date | null | undefined) => {
+  if (date === null || date === undefined || date === '') return '-';
+  const d = typeof date === 'number' ? new Date(date) : asDate(date);
+  return Number.isNaN(d.getTime())
+    ? '-'
+    : d.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata' });
+};
+
+/** DD/MM/YYYY, hh:mm am/pm in IST — for timestamps (audit rows, activity, notifications). */
+export const formatDateTimeIN = (date: string | number | Date | null | undefined) => {
+  if (date === null || date === undefined || date === '') return '-';
+  const d = typeof date === 'number' ? new Date(date) : asDate(date);
+  return Number.isNaN(d.getTime())
+    ? '-'
+    : d.toLocaleString('en-IN', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata',
+      });
+};
+
+/**
+ * A page's own register table as RecordViews' `list`: the table from tablet up, the list's phone cards
+ * below that. `items` are the same records as the table rows, in the same order.
+ */
+export const RecordTable: React.FC<{ items: RecordItem[]; children: React.ReactNode }> = ({ items, children }) => (
+  <>
+    <div className="hidden md:block">{children}</div>
+    <ul className="space-y-3 md:hidden">
+      {items.map((i) => (
+        <li key={i.key}>
+          <ListCard item={i} />
+        </li>
+      ))}
+    </ul>
+  </>
+);
+
 // ------------------------------------------------------------------ 2. stage board
 export interface BoardLane {
   key: string;
@@ -453,7 +689,7 @@ export const StageBoard: React.FC<{
               {list.map((i) => (
                 <MiniCard key={i.key} item={i} />
               ))}
-              {!list.length && <p className="px-1 pb-2 text-xs italic text-[#8A8578]">Empty</p>}
+              {!list.length && <p className="px-1 pb-2 text-xs italic text-[#6B7280]">Empty</p>}
             </section>
           );
         })}
@@ -471,28 +707,42 @@ const textOf = (node: React.ReactNode): string => {
   return '';
 };
 
+/** "All details" rows shown before the "Show all" toggle — keeps the pop-up to about half a phone screen. */
+const DETAILS_PREVIEW = 6;
+
 /**
  * Everything about one record: status chips, the key numbers, every fact, `details` (all fields)
  * and the same actions as the card. An action closes the pop-up first so its own form is on top.
  */
 export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => void }> = ({ item, onClose }) => {
   const closeThen = (a: RecordAction): RecordAction => ({ ...a, onClick: () => (onClose(), a.onClick?.()) });
+  const [showAll, setShowAll] = useState(false);
+  React.useEffect(() => setShowAll(false), [item]);
   // Raw rows often carry the same value twice (tender_no + tender_number, publish_date + publication_date)
-  // or repeat the heading; on a phone every repeat is another screen of scrolling.
+  // or repeat what the header already shows (title, code, subtitle, status, badges); on a phone every
+  // repeat is another screen of scrolling.
   const details = useMemo(() => {
     if (!item?.details?.length) return [];
-    const shown = new Set([item.title, item.code].filter(Boolean).map((t) => String(t).trim().toLowerCase()));
+    const shown = new Set(
+      [item.title, item.code, item.subtitle, item.status?.label, ...(item.badges ?? []).map((b) => b.label)]
+        .filter(Boolean)
+        .map((t) => String(t).trim().toLowerCase()),
+    );
+    const tiles = new Set((item.facts ?? []).map((f) => `${f.label}|${textOf(f.value)}`.trim().toLowerCase()));
     const seen = new Map<string, string>();
     return item.details.filter((d) => {
       const v = textOf(d.value).trim().toLowerCase();
       if (!v) return true;
-      if (shown.has(v)) return false;
-      const stem = d.label.toLowerCase().split(/\s+/)[0];
+      if (shown.has(v) || tiles.has(`${d.label}|${v}`.toLowerCase())) return false;
+      // same value under a near-same label: publish/publication date, assigned/assignee name
+      const stem = d.label.toLowerCase().split(/\s+/)[0].slice(0, 5);
       if (seen.get(v) === stem) return false;
       seen.set(v, stem);
       return true;
     });
   }, [item]);
+  const visibleDetails = showAll ? details : details.slice(0, DETAILS_PREVIEW);
+  const hiddenCount = details.length - DETAILS_PREVIEW;
   const summary = item
     ? ([
         item.value && { label: 'Value', value: <span className="font-mono">{item.value}</span> },
@@ -518,7 +768,8 @@ export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => v
           </div>
           {item.extra}
           {summary.length > 0 && (
-            <dl className="grid grid-flow-row-dense grid-cols-2 gap-2 sm:grid-cols-3">
+            // `!` beats the ui-kit `.grid { gap: 16px }` in globals.css, which loads after Tailwind's utilities
+            <dl className="grid grid-flow-row-dense grid-cols-2 !gap-2 sm:grid-cols-3">
               {summary.map((f) => (
                 <div
                   key={f.label}
@@ -538,8 +789,8 @@ export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => v
             <section aria-label="All details">
               <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#4A5568]">All details</h3>
               {/* label · value on one row (two columns of rows on wider screens); a long value drops under its label */}
-              <dl className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
-                {details.map((d) => {
+              <dl id="record-all-details" className="grid grid-cols-1 !gap-x-6 !gap-y-0 sm:grid-cols-2">
+                {visibleDetails.map((d) => {
                   const long = textOf(d.value).length > 30;
                   return (
                     <div key={d.label} className={twMerge('min-w-0 border-b border-[#ECE9E2] py-2', !long && 'flex items-baseline justify-between gap-3')}>
@@ -549,6 +800,18 @@ export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => v
                   );
                 })}
               </dl>
+              {hiddenCount > 0 && (
+                <button
+                  type="button"
+                  aria-expanded={showAll}
+                  aria-controls="record-all-details"
+                  onClick={() => setShowAll((v) => !v)}
+                  className="rec-tap mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-[10px] border border-[#C9C4B8] bg-white px-4 text-[13px] font-semibold text-[#0F5E63] hover:border-[#0F5E63]"
+                >
+                  {showAll ? 'Show less' : 'Show more'}
+                  <ChevronDown className={twMerge('h-4 w-4 transition-transform', showAll && 'rotate-180')} />
+                </button>
+              )}
             </section>
           ) : null}
           {(item.primary || item.quick?.length) && (
@@ -565,12 +828,12 @@ export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => v
 };
 
 // ------------------------------------------------------------------ view switcher
-export type RecordView = 'cards' | 'board';
+export type RecordView = 'list' | 'cards' | 'board';
 
 const readView = (key: string, fallback: RecordView): RecordView => {
   try {
     const v = localStorage.getItem(`records-view:${key}`);
-    return v === 'cards' || v === 'board' ? v : fallback;
+    return v === 'list' || v === 'cards' || v === 'board' ? v : fallback;
   } catch {
     return fallback;
   }
@@ -621,11 +884,25 @@ const LoadMore: React.FC<{
   );
 };
 
+/** True below the `md` breakpoint (768px), tracking resizes. False during SSR and the first client render. */
+function useIsPhone(): boolean {
+  const [phone, setPhone] = useState(false);
+  React.useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const update = () => setPhone(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+  return phone;
+}
+
 /**
- * One register, two ways to look at it: priority cards (most urgent first) or a stage board, in one
- * card that scrolls on its own (both ways for the board) and pulls the next page as the reader nears
- * the end (`onLoadMore` + `hasMore`, see useInfiniteList). The choice of view is remembered per page
- * (`storageKey`) in this browser.
+ * One register, three ways to look at it: list rows, priority cards (both most urgent first) or a
+ * stage board, in one card that scrolls on its own (both ways for the board) and pulls the next page
+ * as the reader nears the end (`onLoadMore` + `hasMore`, see useInfiniteList). A page may pass `list`
+ * (its own table of the same records) in place of the built-in rows. The choice of view is remembered
+ * per page (`storageKey`) in this browser.
  */
 export const RecordViews: React.FC<{
   items: RecordItem[];
@@ -643,9 +920,15 @@ export const RecordViews: React.FC<{
   onLoadMore?: () => void;
   hasMore?: boolean;
   loadingMore?: boolean;
-}> = ({ items, lanes, laneOf, storageKey, defaultView = 'cards', empty, hideEmptyLanes, title, summary, onLoadMore, hasMore, loadingMore }) => {
+  /** The page's own table of the same records, shown in place of the built-in List rows. */
+  list?: React.ReactNode;
+}> = ({ items, lanes, laneOf, storageKey, defaultView = 'cards', empty, hideEmptyLanes, title, summary, onLoadMore, hasMore, loadingMore, list }) => {
   const [view, setView] = useState<RecordView>(defaultView);
   const [peek, setPeek] = useState<RecordItem | null>(null);
+  // Phones get one layout — the compact list cards (the List view's phone form). Fact boxes and a stage board do
+  // not fit a 375px screen, so the view switch is hidden there and any remembered choice shows as the list.
+  const isPhone = useIsPhone();
+  const shown: RecordView = isPhone ? 'list' : view;
   const scroller = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => setView(readView(storageKey, defaultView)), [storageKey, defaultView]);
   const choose = (v: RecordView) => {
@@ -658,6 +941,7 @@ export const RecordViews: React.FC<{
     }
   };
   const opts: { key: RecordView; label: string; icon: React.ReactNode }[] = [
+    { key: 'list', label: 'List', icon: <List className="h-3.5 w-3.5" /> },
     { key: 'cards', label: 'Cards', icon: <LayoutGrid className="h-3.5 w-3.5" /> },
     { key: 'board', label: 'Board', icon: <Columns3 className="h-3.5 w-3.5" /> },
   ];
@@ -670,7 +954,7 @@ export const RecordViews: React.FC<{
             {title && <h2 className="font-serif text-sm font-bold text-[#14213D]">{title}</h2>}
             {summary && <div className="text-[13px] text-[#4A5568]">{summary}</div>}
           </div>
-          <div role="radiogroup" aria-label="View" className="inline-flex rounded-[10px] border border-[#C9C4B8] bg-white p-0.5">
+          <div role="radiogroup" aria-label="View" className="hidden rounded-[10px] border border-[#C9C4B8] bg-white p-0.5 md:inline-flex">
             {opts.map((o) => {
               const on = view === o.key;
               return (
@@ -695,7 +979,9 @@ export const RecordViews: React.FC<{
         {/* 7.25rem ≈ top bar (4rem) + this card's compact header: scrolled to the end of the page, the card runs
             down to the bottom edge of the screen (pages have no bottom padding) */}
         <div ref={scroller} className="custom-scrollbar bg-[#FBFAF7] p-3 sm:p-4 md:max-h-[max(420px,calc(100dvh-7.25rem))] md:overflow-auto">
-          {view === 'cards' ? (
+          {shown === 'list' ? (
+            list ?? <RecordList items={items} empty={empty} />
+          ) : shown === 'cards' ? (
             <RecordCards items={items} empty={empty} />
           ) : (
             <StageBoard items={items} lanes={lanes} laneOf={laneOf} empty={empty} hideEmptyLanes={hideEmptyLanes} />

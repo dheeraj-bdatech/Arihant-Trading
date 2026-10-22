@@ -45,10 +45,10 @@
 - **`Stack` / `VStack` / `HStack`**: Standard flex container with token-based `gap` (`none`, `xs`, `sm`, `md`, `lg`, `xl`, `2xl`) and direction.
 - **`Grid`**: Standard CSS grid container with column presets (`cols={1..6}`) and gaps.
 - **`Spacer`**: Explicit vertical or horizontal spacing component (`size="xs" | "sm" | "md" | "lg" | "xl" | "2xl"`).
-- **`Divider`**: Standard `#D6E3F5` line with optional centered label.
+- **`Divider`**: Standard `#DCD8CE` line with optional centered label.
 
 ### Surfaces & Cards
-- **`Card`**: Standard surface with border `#D6E3F5` and `rounded-xl`.
+- **`Card`**: Standard surface with border `#DCD8CE` and `rounded-xl`.
   - Subcomponents: `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter`, `CardAction`.
   - Props: `variant` (`default`, `flat`, `tinted`, `interactive`, `danger`, `warning`, `success`), `selected`, `padding` (`none`, `xs`, `sm`, `md`, `lg`).
 - **`Surface`**: Universal container box with token-mapped background, border, and radius.
@@ -58,7 +58,7 @@
 - **`Heading`**: Standard semantic headings `h1`–`h6` with `#1A1A1A` text color.
 - **`Text`**: Standard body typography with predefined sizes and color tokens (`default`, `muted`, `primary`, `success`, `danger`, `warning`).
 - **`Label`**: Form field label with optional `required` indicator.
-- **`Kbd`**: Keyboard shortcut pill badge (`border-[#D6E3F5]`, `bg-[#F8FAFC]`).
+- **`Kbd`**: Keyboard shortcut pill badge (`border-[#DCD8CE]`, `bg-[#FBFAF7]`).
 
 ### Buttons & Actions
 - **`Button`**: Standard button with variants (`primary`, `secondary`, `outline`, `ghost`, `danger`, `success`, `cyber`), sizes (`xs`, `sm`, `md`, `lg`, `icon`), `isLoading`, `leftIcon`, `rightIcon`, and `fullWidth`.
@@ -66,7 +66,7 @@
 - **`ButtonGroup`**: Connected cluster of buttons for segmented controls.
 
 ### Form Inputs
-- **`Input`**: Standard input field with label, helperText, and `#223FA7` focus ring.
+- **`Input`**: Standard input field with label, helperText, and `#0F5E63` focus ring.
 - **`Select`**: Standard dropdown field.
 - **`Textarea`**: Standard multiline text input.
 - **`Checkbox`**: Branded checkbox with label and optional description.

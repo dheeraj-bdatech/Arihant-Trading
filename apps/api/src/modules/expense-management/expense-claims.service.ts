@@ -12,6 +12,7 @@ import { EXPENSE_DB } from './expense-db.js';
 import {
   EXPENSE_EDITABLE_STATUSES,
   EXPENSE_INACTIVE_FOR_DUPLICATES,
+  EXPENSE_STAGE_BUCKETS,
   EXPENSE_STATUS_LABELS,
   allowedExpenseActions,
   findExpenseTransition,
@@ -21,6 +22,7 @@ import {
   type Database,
   type ExpenseClaimAction,
   type ExpenseClaimStatus,
+  type ExpenseStageBucket,
 } from '@arihant/shared';
 import { EXPENSE_CONFIG, type ExpenseConfig } from './expense.config.js';
 import { claimScopeFilter, isAdminLike } from './expense-scope.js';
@@ -33,6 +35,7 @@ import {
 import {
   ExpenseValidationException,
   addDays,
+  lineAnomalies,
   readText,
   receiptRequired,
   TEXT_LIMITS,
@@ -603,22 +606,30 @@ export class ExpenseClaimsService {
       .orderBy('h.id')
       .execute();
 
-    const lateCutoff = addDays(todayInKolkata(), -this.config.lateSubmissionDays);
+    const today = todayInKolkata();
+    const lateCutoff = addDays(today, -this.config.lateSubmissionDays);
+    const lines = items.map((i) => {
+      const its = attachments.filter((a) => a.item_id === i.id);
+      const needsReceipt = receiptRequired({ receipt_required_above: money(i.receipt_required_above) }, Number(i.amount));
+      const anomalies = lineAnomalies({ ...i, attachment_count: its.length }, today);
+      return {
+        ...serializeItem(i),
+        attachments: its,
+        receipt_required: needsReceipt,
+        receipt_missing: anomalies.includes('receipt_missing'),
+        // Dated after today (IST): submission, approval and payment are all refused until it is corrected.
+        future_dated: anomalies.includes('future_dated'),
+        is_late: i.expense_date < lateCutoff || Boolean(i.late_submission_reason),
+        duplicate_flag: (Boolean(i.duplicate_confirmed_at) || its.some((a) => a.duplicate_of_attachment_id)),
+      };
+    });
     return {
       ...serializeClaim(claim),
       allowed_actions: this.allowedActions(claim, user),
-      items: items.map((i) => {
-        const its = attachments.filter((a) => a.item_id === i.id);
-        const needsReceipt = receiptRequired({ receipt_required_above: money(i.receipt_required_above) }, Number(i.amount));
-        return {
-          ...serializeItem(i),
-          attachments: its,
-          receipt_required: needsReceipt,
-          receipt_missing: needsReceipt && its.length === 0,
-          is_late: i.expense_date < lateCutoff || Boolean(i.late_submission_reason),
-          duplicate_flag: (Boolean(i.duplicate_confirmed_at) || its.some((a) => a.duplicate_of_attachment_id)),
-        };
-      }),
+      // Same counts as the list rows, so queue chips and the detail page agree.
+      future_dated_lines: lines.filter((l) => l.future_dated).length,
+      receipt_missing_lines: lines.filter((l) => l.receipt_missing).length,
+      items: lines,
       history,
     };
   }
@@ -648,13 +659,25 @@ export class ExpenseClaimsService {
       );
     }
 
+    // Stage buckets partition the statuses, so the bucket amounts always add up to total_claimed (KPI cards).
+    const bucketKeys = Object.keys(EXPENSE_STAGE_BUCKETS) as ExpenseStageBucket[];
     const totals = await base
       .select([
         sql<number>`count(c.id)::int`.as('count'),
         sql<string>`coalesce(sum(c.total_claimed), 0)`.as('total_claimed'),
         sql<string>`coalesce(sum(c.total_approved), 0)`.as('total_approved'),
+        sql<string>`coalesce(sum(c.total_approved) filter (where c.status = 'processed'), 0)`.as('paid_amount'),
+        ...bucketKeys.flatMap((b) => [
+          sql<number>`(count(c.id) filter (where c.status in (${sql.join(EXPENSE_STAGE_BUCKETS[b])})))::int`.as(`${b}_count`),
+          sql<string>`coalesce(sum(c.total_claimed) filter (where c.status in (${sql.join(EXPENSE_STAGE_BUCKETS[b])})), 0)`.as(`${b}_amount`),
+        ]),
       ])
       .executeTakeFirst();
+    const t = (totals || {}) as Record<string, unknown>;
+    const buckets = Object.fromEntries(
+      bucketKeys.map((b) => [b, { count: Number(t[`${b}_count`] || 0), amount: Number(t[`${b}_amount`] || 0) }]),
+    ) as Record<ExpenseStageBucket, { count: number; amount: number }>;
+    const today = todayInKolkata();
 
     const rows = await base
       .select([
@@ -687,6 +710,14 @@ export class ExpenseClaimsService {
         't.trip_date',
         't.base_location as trip_location',
         sql<number>`(select count(*)::int from expense_items i where i.claim_id = c.id and i.deleted_at is null)`.as('item_count'),
+        // Reviewer flags (same rules as lineAnomalies): lines dated after today in IST, and lines missing a receipt
+        // their category requires at that amount. Hotel dates are ISO strings, so text comparison is date order.
+        sql<number>`(select count(*)::int from expense_items i where i.claim_id = c.id and i.deleted_at is null
+          and (i.expense_date > ${today}::date or (i.category_details->>'check_in') > ${today} or (i.category_details->>'check_out') > ${today}))`.as('future_dated_lines'),
+        sql<number>`(select count(*)::int from expense_items i join expense_categories cat on cat.id = i.category_id
+          where i.claim_id = c.id and i.deleted_at is null and cat.receipt_required_above is not null
+            and i.amount >= cat.receipt_required_above
+            and not exists (select 1 from expense_attachments a where a.item_id = i.id and a.deleted_at is null))`.as('receipt_missing_lines'),
       ])
       .orderBy(`c.${f.sort_by}` as any, f.sort_dir)
       .orderBy('c.id')
@@ -705,6 +736,10 @@ export class ExpenseClaimsService {
         count: total,
         total_claimed: Number(totals?.total_claimed || 0),
         total_approved: Number(totals?.total_approved || 0),
+        /** Approved amount actually paid out (processed claims). */
+        paid_amount: Number(t.paid_amount || 0),
+        /** Claim count and claimed amount per stage; amounts sum to total_claimed. */
+        buckets,
       },
     };
   }

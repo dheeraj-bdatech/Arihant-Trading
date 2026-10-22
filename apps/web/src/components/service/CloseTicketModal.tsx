@@ -64,7 +64,7 @@ export const CloseTicketModal: React.FC<Props> = ({ ticket, role, onClose, onDon
     <Modal isOpen onClose={onClose} title="Sign off & close ticket" description={`${ticket.ticket_no} · ${ticket.organisation_name || ''}`} maxWidth="md" zIndex={80}>
       <form onSubmit={submit} className="space-y-4">
         {error && (
-          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-3 text-xs text-[#700F2D]">
             {error}
           </div>
         )}

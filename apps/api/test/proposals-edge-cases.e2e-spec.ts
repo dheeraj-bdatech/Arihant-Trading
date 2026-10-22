@@ -538,6 +538,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           required_date: '2026-09-20',
           responsible_person_id: salesUserId,
           duplicate_override_reason: 'Group C base proposal',
+          quoted_value: 450000, // DEF-029: a quoted value is required before review / approval
         });
       propId = res.body.id;
     });
@@ -712,6 +713,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           required_date: '2026-10-10',
           responsible_person_id: salesUserId,
           duplicate_override_reason: 'E27 zero follow-up test',
+          quoted_value: 450000, // DEF-029: a quoted value is required before review / approval
         });
       const pId = pRes.body.id;
 
@@ -820,7 +822,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
       expect(reopenRes.body.status).toBe('SENT_TO_CUSTOMER');
     });
 
-    it('E31: Editing terminal proposal is read-only except remarks appending', async () => {
+    it('E31: Editing terminal proposal is read-only (remarks included, DEF-080)', async () => {
       // Close proposal
       await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/close`)
@@ -837,13 +839,13 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .send({ required_date: '2026-12-01' });
       expect(editBlocked.status).toBe(409);
 
-      // Appending remarks -> allowed
+      // DEF-080: terminal proposals are fully read-only (remarks too); management / admin reopen them to make changes
       const appendRemarks = await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({ remarks: 'Historical archive note' });
-      expect(appendRemarks.status).toBe(200);
-      expect(appendRemarks.body.remarks).toContain('Historical archive note');
+      expect(appendRemarks.status).toBe(409);
+      expect(appendRemarks.body.message).toContain('read-only');
     });
 
     it('E32: Changing customer after proposal has been sent is blocked', async () => {
@@ -945,6 +947,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           required_date: '2026-10-10',
           responsible_person_id: salesUserId,
           duplicate_override_reason: 'Group D base proposal',
+          quoted_value: 450000, // DEF-029: a quoted value is required before review / approval
         });
       sentPropId = res.body.id;
 

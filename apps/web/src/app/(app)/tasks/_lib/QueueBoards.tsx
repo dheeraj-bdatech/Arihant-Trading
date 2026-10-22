@@ -154,12 +154,12 @@ const QueueColumn: React.FC<{
         {count === 0 && !target && (
           <li className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-[10px] border border-dashed border-[#DCD8CE] p-4 text-center">
             <Icon className="h-5 w-5 text-[#C9C4B8]" aria-hidden />
-            <span className="text-[11px] text-[#8A8578]">{col.empty}</span>
+            <span className="text-[11px] text-[#6B7280]">{col.empty}</span>
           </li>
         )}
         {children}
       </ul>
-      {footnote && <p className="border-t border-[#ECE9E2] px-3 py-2 text-[11px] text-[#8A8578]">{footnote}</p>}
+      {footnote && <p className="border-t border-[#ECE9E2] px-3 py-2 text-[11px] text-[#6B7280]">{footnote}</p>}
     </section>
   );
 };

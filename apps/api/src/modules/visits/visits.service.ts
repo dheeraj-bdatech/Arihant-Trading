@@ -28,6 +28,17 @@ import type {
   AddVisitToTripDto,
 } from './visits.dto.js';
 
+/** Visit statuses that still expect the field report (the meeting has not been reported or called off). */
+const REPORT_PENDING_STATUSES = ['planned', 'modified', 'rescheduled'] as const;
+
+/** A calendar value (DATE column, ISO instant or 'YYYY-MM-DD') as DD/MM/YYYY for user-facing messages. */
+function dmy(value: unknown): string {
+  const day = calendarDay(value as any);
+  if (!day) return String(value ?? '');
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+}
+
 @Injectable()
 export class VisitsService {
   private readonly logger = new Logger(VisitsService.name);
@@ -106,8 +117,50 @@ export class VisitsService {
     if (parts.length < 2) return null;
     const hours = parseInt(parts[0], 10);
     const mins = parseInt(parts[1], 10);
-    if (isNaN(hours) || isNaN(mins)) return null;
+    if (isNaN(hours) || isNaN(mins) || hours < 0 || hours > 23 || mins < 0 || mins > 59) return null;
     return hours * 60 + mins;
+  }
+
+  // -------------------------------------------------------------
+  // HELPER: A visit's time window must be valid and end after it starts
+  // -------------------------------------------------------------
+  private assertTimeRange(startTime?: string | null, endTime?: string | null) {
+    const start = this.timeToMinutes(startTime || undefined);
+    const end = this.timeToMinutes(endTime || undefined);
+    if (startTime && start === null) {
+      throw new BadRequestException({ code: 'INVALID_START_TIME', message: `Start time "${startTime}" is not a valid time (HH:MM).` });
+    }
+    if (endTime && end === null) {
+      throw new BadRequestException({ code: 'INVALID_END_TIME', message: `End time "${endTime}" is not a valid time (HH:MM).` });
+    }
+    if (start !== null && end !== null && end <= start) {
+      throw new BadRequestException({
+        code: 'INVALID_TIME_RANGE',
+        message: `End time (${endTime}) must be after the start time (${startTime}).`,
+      });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // HELPER: Field plans (visits, tour programs) cannot be made for a day that has passed (IST)
+  // -------------------------------------------------------------
+  private assertNotPastDate(date: unknown, message: string) {
+    if ((calendarDay(date as any) || '') < todayInKolkata()) {
+      throw new BadRequestException({ code: 'PAST_DATE_NOT_ALLOWED', message });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // HELPER: A visit can only be reported (met / not met) on or after its planned day (IST)
+  // -------------------------------------------------------------
+  private assertVisitDayReached(plannedDate: unknown) {
+    const visitDay = calendarDay(plannedDate as any) || '';
+    if (visitDay > todayInKolkata()) {
+      throw new BadRequestException({
+        code: 'REPORT_BEFORE_VISIT_DATE',
+        message: `This visit is planned for ${dmy(visitDay)}. The post-visit report can be submitted on or after that date.`,
+      });
+    }
   }
 
   // -------------------------------------------------------------
@@ -152,7 +205,7 @@ export class VisitsService {
 
       // 1. Same organization: strictly reject duplicate visit to same organization on same date
       if (params.organisationId && v.organisation_id === params.organisationId) {
-        conflicts.push(`${staffLabel} already has a visit scheduled for ${v.organisation_name} on ${params.plannedDate}.`);
+        conflicts.push(`${staffLabel} already has a visit scheduled for ${v.organisation_name} on ${dmy(params.plannedDate)}.`);
       }
 
       // 2. Direct Time Overlap Check for the same staff member
@@ -252,7 +305,12 @@ export class VisitsService {
       }
     }
 
-    if (query.status) {
+    if (query.status === 'overdue') {
+      // Pseudo-status: the visit day has passed (IST) and the visit is still open — its report is overdue.
+      baseQuery = baseQuery
+        .where('visits.status', 'in', [...REPORT_PENDING_STATUSES])
+        .where('visits.planned_date', '<', todayInKolkata());
+    } else if (query.status) {
       baseQuery = baseQuery.where('visits.status', '=', query.status as any);
     }
 
@@ -360,7 +418,15 @@ export class VisitsService {
       .offset(offset)
       .execute();
 
-    return buildPaginatedResult(visits, total, page, limit);
+    return buildPaginatedResult(visits.map((v) => ({ ...v, report_overdue: this.isReportOverdue(v) })), total, page, limit);
+  }
+
+  /** The visit day has passed (IST) but the visit is still planned / modified / rescheduled: its report is overdue. */
+  private isReportOverdue(v: { status?: string | null; planned_date?: unknown }): boolean {
+    return (
+      (REPORT_PENDING_STATUSES as readonly string[]).includes(String(v.status)) &&
+      (calendarDay(v.planned_date as any) || '') < todayInKolkata()
+    );
   }
 
   // -------------------------------------------------------------
@@ -429,8 +495,12 @@ export class VisitsService {
 
     return {
       ...visit,
+      report_overdue: this.isReportOverdue(visit),
       updates,
       linked_demo: linkedDemo || null,
+      linked_demo_id: linkedDemo?.id || null,
+      linked_demo_no: linkedDemo?.demo_no || null,
+      linked_demo_status: linkedDemo?.status || null,
     };
   }
 
@@ -438,14 +508,9 @@ export class VisitsService {
   // CREATE VISIT (1-week advance validation, conflict check)
   // -------------------------------------------------------------
   async create(dto: CreateVisitDto, user: AuthUser) {
-    // 1. Date validation: do not allow normal visits in the past
-    const today = todayInKolkata();
-    if ((calendarDay(dto.planned_date) || '') < today) {
-      throw new BadRequestException({
-        code: 'PAST_DATE_NOT_ALLOWED',
-        message: 'Cannot schedule a field visit for a past date.',
-      });
-    }
+    // 1. Date validation: do not allow normal visits in the past; the time window must end after it starts
+    this.assertNotPastDate(dto.planned_date, 'Cannot schedule a field visit for a past date.');
+    this.assertTimeRange(dto.start_time, dto.end_time);
 
     if (dto.demo_required && dto.demo_assigned_to) {
       const specialist = await this.db
@@ -662,6 +727,14 @@ export class VisitsService {
       });
     }
 
+    if (dto.planned_date && calendarDay(dto.planned_date) !== calendarDay(existing.planned_date as any)) {
+      this.assertNotPastDate(dto.planned_date, 'A field visit cannot be moved to a past date.');
+    }
+    this.assertTimeRange(
+      dto.start_time !== undefined ? dto.start_time : existing.start_time,
+      dto.end_time !== undefined ? dto.end_time : existing.end_time,
+    );
+
     const updatePayload: any = {
       version: existing.version + 1,
     };
@@ -745,6 +818,7 @@ export class VisitsService {
         message: 'Rescheduled date must be today or a future date.',
       });
     }
+    this.assertTimeRange(dto.start_time || existing.start_time, dto.end_time || existing.end_time);
 
     // Check conflict on new date
     const conflictResult = await this.checkConflicts({
@@ -940,6 +1014,9 @@ export class VisitsService {
 
     const existing = await this.findOne(id, user);
     this.assertEmployeeAccess(existing, user);
+    if (dto.status === 'completed' || dto.status === 'not_completed') {
+      this.assertVisitDayReached(existing.planned_date);
+    }
 
     const updated = await this.db
       .updateTable('visits')
@@ -973,6 +1050,13 @@ export class VisitsService {
     let createdAlsoMeetVisit: any = null;
 
     if (dto.organisation_id) {
+      // The additional meeting is planned on the base visit's day, so that day must still be ahead (IST).
+      this.assertNotPastDate(
+        existing.planned_date,
+        `This visit's date (${dmy(existing.planned_date)}) has passed. An also-meet visit can only be added to a current or upcoming visit.`,
+      );
+      this.assertTimeRange(dto.start_time || '14:30', dto.end_time || '16:00');
+
       // Manager is assigning an additional prospect/customer in the same area
       const org = await this.db
         .selectFrom('organisations')
@@ -1115,6 +1199,15 @@ export class VisitsService {
     const existing = await this.findOne(id, user);
 
     const isMeetingCompleted = dto.met_completed !== false; // default true
+
+    // 0. A cancelled visit has nothing to report, and a visit cannot be reported before its day (IST).
+    if (existing.status === 'cancelled') {
+      throw new BadRequestException({
+        code: 'CANNOT_REPORT_CANCELLED_VISIT',
+        message: 'This visit was cancelled, so it cannot have a post-visit report.',
+      });
+    }
+    this.assertVisitDayReached(existing.planned_date);
 
     // 1. Validation rules
     if (isMeetingCompleted) {
@@ -1394,7 +1487,12 @@ export class VisitsService {
       const loc = `%${query.location.toLowerCase()}%`;
       baseQuery = baseQuery.where(sql<boolean>`lower(visits.location) like ${loc}`);
     }
-    if (query.status) {
+    if (query.status === 'overdue') {
+      // Pseudo-status: visit day passed (IST) with the report still pending.
+      baseQuery = baseQuery
+        .where('visits.status', 'in', [...REPORT_PENDING_STATUSES])
+        .where('visits.planned_date', '<', today);
+    } else if (query.status) {
       baseQuery = baseQuery.where('visits.status', '=', query.status as any);
     }
     if (query.dateFrom) {
@@ -1446,16 +1544,18 @@ export class VisitsService {
       .orderBy('visits.start_time', 'asc')
       .execute();
 
-    // Group visits into Today, Tomorrow, Next 7 Days, Later
+    // Group visits into Today, Tomorrow, Next 7 Days, Later (+ past, and the past ones still awaiting a report)
     const grouped = {
       today: [] as any[],
       tomorrow: [] as any[],
       next_7_days: [] as any[],
       later: [] as any[],
       past: [] as any[],
+      overdue: [] as any[],
     };
 
-    for (const v of allVisits) {
+    for (const raw of allVisits) {
+      const v = { ...raw, report_overdue: this.isReportOverdue(raw) };
       // planned_date is a DATE column (a Date object here): compare as an IST 'YYYY-MM-DD' string.
       const vDate = calendarDay(v.planned_date as any) || '';
       if (vDate === today) {
@@ -1468,8 +1568,11 @@ export class VisitsService {
         grouped.later.push(v);
       } else {
         grouped.past.push(v);
+        if (v.report_overdue) grouped.overdue.push(v);
       }
     }
+    // Most overdue first.
+    grouped.overdue.sort((a, b) => (calendarDay(a.planned_date as any) || '').localeCompare(calendarDay(b.planned_date as any) || ''));
 
     return {
       summary: {
@@ -1478,6 +1581,7 @@ export class VisitsService {
         tomorrowCount: grouped.tomorrow.length,
         next7DaysCount: grouped.next_7_days.length,
         laterCount: grouped.later.length,
+        overdueCount: grouped.overdue.length,
       },
       grouped,
     };
@@ -1487,6 +1591,8 @@ export class VisitsService {
   // TRIPS: Create Trip
   // -------------------------------------------------------------
   async createTrip(dto: CreateTripDto, user: AuthUser) {
+    // Same rule as single visits: a tour program is planned for today or later (IST).
+    this.assertNotPastDate(dto.trip_date, 'Cannot schedule a tour program for a past date.');
     const employeeId = dto.employee_id || user.id;
 
     const trip = await this.db
@@ -1641,6 +1747,13 @@ export class VisitsService {
         message: 'Cannot add activities to an already cancelled trip.',
       });
     }
+
+    // The added visit is planned on the trip's day, so that day must still be ahead (IST).
+    this.assertNotPastDate(
+      trip.trip_date,
+      `This tour program's date (${dmy(trip.trip_date)}) has passed. Customer visits can only be added to a current or upcoming trip.`,
+    );
+    this.assertTimeRange(dto.start_time, dto.end_time);
 
     // 1. Check Organisation
     const org = await this.db

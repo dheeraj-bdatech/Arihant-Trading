@@ -1,11 +1,25 @@
 import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
-import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject, BadRequestException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
-import type { Database, PaginatedResult } from '@arihant/shared';
+import { isClosedLeadStatus, type AuthUser, type Database, type PaginatedResult } from '@arihant/shared';
 import type { CreateOrganisationDto, UpdateOrganisationDto } from './organisations.dto.js';
+import { organisationScope } from './organisation-scope.js';
+import { resolveLocation } from './india-geo.js';
+import { cleanOrgText, isOrgDuplicateError, orgDuplicateConflict, sameOrgNameAndCity } from './organisation-dedupe.js';
+
+export { normalisedOrgName } from './organisation-dedupe.js';
+
+/**
+ * Current account owner (QA DEF-093): the salesperson of the most recently updated *active* lead; only when the
+ * account has no active lead does the owner of its latest lead stand in.
+ */
+function currentOwnerLead<T extends { lead_status?: string | null; status?: string | null }>(leads: T[]): T | undefined {
+  const active = leads.find((l) => !isClosedLeadStatus(l.lead_status || l.status || 'new'));
+  return active || leads[0];
+}
 
 @Injectable()
 export class OrganisationsService {
@@ -14,14 +28,17 @@ export class OrganisationsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  async findAll(query: {
-    page?: number;
-    limit?: number;
-    search?: string;
-    sector?: string;
-    zone_id?: string;
-    region_id?: string;
-  }): Promise<PaginatedResult<any>> {
+  async findAll(
+    query: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      sector?: string;
+      zone_id?: string;
+      region_id?: string;
+    },
+    user?: AuthUser,
+  ): Promise<PaginatedResult<any>> {
     const { page, limit, offset } = getPaginationParams(query);
 
     let baseQuery = this.db
@@ -30,6 +47,12 @@ export class OrganisationsService {
       .leftJoin('regions', 'organisations.region_id', 'regions.id')
       // the "Unverified Portal Customer" placeholder is plumbing, not a customer
       .where('organisations.id', '<>', '00000000-0000-4000-8000-0000000000a1');
+
+    // Territorial scoping — Sales / Regional Manager see their own customer register (see organisation-scope.ts)
+    const scope = user ? organisationScope(user) : null;
+    if (scope) {
+      baseQuery = baseQuery.where(scope);
+    }
 
     if (query.search) {
       const s = `%${query.search.toLowerCase()}%`;
@@ -107,13 +130,14 @@ export class OrganisationsService {
           'users.full_name as assigned_salesperson_name',
         ])
         .where('leads.organisation_id', 'in', orgIds)
+        .orderBy('leads.updated_at', 'desc')
         .orderBy('leads.created_at', 'desc')
         .execute();
     }
 
     const enrichedOrgs = orgs.map((org) => {
       const primaryContact = primaryContacts.find((c) => c.organisation_id === org.id);
-      const latestLead = leadSummaries.find((l) => l.organisation_id === org.id);
+      const latestLead = currentOwnerLead(leadSummaries.filter((l) => l.organisation_id === org.id));
       return {
         ...org,
         primary_contact: primaryContact || null,
@@ -301,7 +325,10 @@ export class OrganisationsService {
         : null;
 
     // 10. Current vs Previous Salesperson
-    const currentSalesperson = leads[0]?.assignee_name || (org as any).created_by_name || 'Unassigned';
+    const ownerLead = currentOwnerLead(
+      [...leads].sort((a, b) => new Date(b.updated_at as any).getTime() - new Date(a.updated_at as any).getTime()),
+    );
+    const currentSalesperson = ownerLead?.assignee_name || (org as any).created_by_name || 'Unassigned';
 
     // 11. Follow-up history metrics
     const today = todayInKolkata();
@@ -405,8 +432,9 @@ export class OrganisationsService {
     }
 
     // 3. Match by phone/mobile in contacts
-    if (params.phone && params.phone.trim()) {
-      const cleanPhone = params.phone.trim();
+    // compare the 10-digit national number so '+91 98110 00000' finds '9811000000'
+    const cleanPhone = (params.phone || '').replace(/\D/g, '').slice(-10);
+    if (cleanPhone.length === 10) {
       const phoneMatches = await this.db
         .selectFrom('contacts')
         .innerJoin('organisations', 'contacts.organisation_id', 'organisations.id')
@@ -419,7 +447,7 @@ export class OrganisationsService {
           'contacts.full_name as contact_name',
           'contacts.mobile as contact_mobile',
         ])
-        .where('contacts.mobile', '=', cleanPhone)
+        .where(sql<boolean>`right(regexp_replace(coalesce(contacts.mobile, ''), '[^0-9]', '', 'g'), 10) = ${cleanPhone}`)
         .limit(5)
         .execute();
 
@@ -449,40 +477,54 @@ export class OrganisationsService {
   }
 
   async create(dto: CreateOrganisationDto, actorId: string) {
-    const name = dto.name.trim();
+    const name = cleanOrgText(dto.name);
+    if (!name) {
+      throw new BadRequestException('Organisation name is required');
+    }
+    const location = resolveLocation(dto.city, dto.state);
+    if (location.error) {
+      throw new BadRequestException(location.error);
+    }
 
-    // B2G Deduplication (§6, §7): return existing organisation if name and city match
-    const existing = await this.db
-      .selectFrom('organisations')
-      .selectAll()
-      .where(sql`lower(trim(name))`, '=', name.toLowerCase())
-      .where((eb) => {
-        if (dto.city) {
-          return eb(sql`lower(trim(coalesce(city, '')))`, '=', dto.city.trim().toLowerCase());
-        }
-        return eb.val(true);
-      })
-      .executeTakeFirst();
+    // B2G Deduplication (Module 1 §3.1, QA DEF-051): one organisation per name + city — the same account typed with a
+    // different case or spacing returns the existing record; a unit of the same body in another city is its own account.
+    const findExisting = () =>
+      this.db
+        .selectFrom('organisations')
+        .selectAll()
+        .where(sameOrgNameAndCity(name, location.city))
+        .orderBy('created_at', 'asc')
+        .executeTakeFirst();
 
+    const existing = await findExisting();
     if (existing) {
       return existing;
     }
 
-    const org = await this.db
-      .insertInto('organisations')
-      .values({
-        name,
-        sector: dto.sector || null,
-        is_govt: dto.is_govt !== undefined ? dto.is_govt : true,
-        city: dto.city || null,
-        state: dto.state || null,
-        address: dto.address || null,
-        zone_id: dto.zone_id || null,
-        region_id: dto.region_id || null,
-        created_by: actorId,
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
+    let org;
+    try {
+      org = await this.db
+        .insertInto('organisations')
+        .values({
+          name,
+          sector: dto.sector || null,
+          is_govt: dto.is_govt !== undefined ? dto.is_govt : true,
+          city: location.city,
+          state: location.state,
+          address: dto.address || null,
+          zone_id: dto.zone_id || null,
+          region_id: dto.region_id || null,
+          created_by: actorId,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    } catch (err) {
+      if (!isOrgDuplicateError(err)) throw err;
+      // A concurrent create won the race: hand back the account it created
+      const winner = await findExisting();
+      if (winner) return winner;
+      throw orgDuplicateConflict(name, location.city);
+    }
 
     this.eventEmitter.emit('audit.log', {
       actorId,
@@ -498,15 +540,53 @@ export class OrganisationsService {
   async update(id: string, dto: UpdateOrganisationDto, actorId: string) {
     const existing = await this.findOne(id);
 
-    const updated = await this.db
-      .updateTable('organisations')
-      .set({
-        ...dto,
-        name: dto.name ? dto.name.trim() : undefined,
-      })
-      .where('id', '=', id)
-      .returningAll()
-      .executeTakeFirstOrThrow();
+    if (dto.name !== undefined && !dto.name.trim()) {
+      throw new BadRequestException('Organisation name is required');
+    }
+    let city: string | null | undefined;
+    let state: string | null | undefined;
+    if (dto.city !== undefined || dto.state !== undefined) {
+      const location = resolveLocation(dto.city ?? existing.city, dto.state ?? existing.state);
+      if (location.error) {
+        throw new BadRequestException(location.error);
+      }
+      city = location.city;
+      state = location.state;
+    }
+
+    // Renaming / relocating onto another account's name + city would create a duplicate (QA DEF-051)
+    const nextName = dto.name !== undefined ? cleanOrgText(dto.name) : existing.name;
+    const nextCity = city !== undefined ? city : existing.city;
+    if (dto.name !== undefined || city !== undefined) {
+      const clash = await this.db
+        .selectFrom('organisations')
+        .select('id')
+        .where('id', '<>', id)
+        .where(sameOrgNameAndCity(nextName, nextCity))
+        .executeTakeFirst();
+      if (clash) {
+        throw orgDuplicateConflict(nextName, nextCity);
+      }
+    }
+
+    let updated;
+    try {
+      updated = await this.db
+        .updateTable('organisations')
+        .set({
+          ...dto,
+          name: dto.name !== undefined ? nextName : undefined,
+          city,
+          state,
+          updated_at: new Date(),
+        })
+        .where('id', '=', id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    } catch (err) {
+      if (isOrgDuplicateError(err)) throw orgDuplicateConflict(nextName, nextCity);
+      throw err;
+    }
 
     this.eventEmitter.emit('audit.log', {
       actorId,

@@ -131,8 +131,8 @@ export default function ProductsPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/90 backdrop-blur-md border border-[#DCD8CE] px-4 py-2.5 rounded-xl shadow-xs">
           <div className="flex items-center gap-2.5">
             <span className="flex h-2.5 w-2.5 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#0F5E63] opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#0F5E63]"></span>
             </span>
             <span className="text-xs font-serif font-bold text-[#14213D] uppercase tracking-wider">
               {BROCHURE_STATS.headquarters.split(',')[0]} · Central Command Studio
@@ -242,14 +242,14 @@ export default function ProductsPage() {
             <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
               <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
                 <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
                   <input
                     type="search"
                     aria-label="Search deployments"
                     placeholder="Search mission ID, equipment, officer, site…"
                     value={deploySearch}
                     onChange={(e) => setDeploySearch(e.target.value)}
-                    className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                    className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                   />
                 </div>
                 <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -324,7 +324,7 @@ export default function ProductsPage() {
                         </TableCell>
                         <TableCell className="px-3 py-3">
                           <div className="flex min-w-0 items-center gap-2">
-                            <span className="flex h-3 w-4 shrink-0 items-center justify-center rounded-sm bg-emerald-700 text-[8px] font-bold text-white">IN</span>
+                            <span className="flex h-3 w-4 shrink-0 items-center justify-center rounded-sm bg-[#0B4A4E] text-[8px] font-bold text-white">IN</span>
                             <span className="truncate font-medium text-[#14213D]" title={row.assignedTo}>{row.assignedTo}</span>
                           </div>
                         </TableCell>

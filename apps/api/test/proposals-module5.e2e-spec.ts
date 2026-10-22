@@ -327,16 +327,22 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
     });
 
     it('✓ Updates follow-up schedule via PATCH /api/proposals/:id/follow-up', async () => {
+      const d = new Date(Date.now() + 5.5 * 3600000);
+      d.setUTCDate(d.getUTCDate() + 10);
+      const nextFollowUpDay = d.toISOString().slice(0, 10);
       const res = await request(app.getHttpServer())
         .patch(`/api/proposals/${createdId}/follow-up`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          next_follow_up_date: '2026-10-15',
+          // Follow-up dates cannot be in the past (IST), so the date is computed from today.
+          next_follow_up_date: nextFollowUpDay,
           follow_up_owner_id: salesUserId,
         });
 
       expect(res.status).toBe(200);
-      expect(String(res.body.next_follow_up_date || res.body.next_followup)).toContain('2026-10-1');
+      // Stored as a calendar day; compare on the IST calendar (the API may serialise it as an instant).
+      const stored = new Date(res.body.next_follow_up_date || res.body.next_followup);
+      expect(new Date(stored.getTime() + 5.5 * 3600000).toISOString().slice(0, 10)).toBe(nextFollowUpDay);
     });
   });
 
@@ -359,6 +365,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
           required_date: '2026-09-29',
           reference: 'WORKFLOW-CYCLE-TEST',
           duplicate_override_reason: 'Testing workflow lifecycle',
+          quoted_value: 325000, // DEF-029: review / approval require a quoted value
         });
       propId = res.body.id;
     });
@@ -417,7 +424,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
       res = await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}/status`)
         .set('Authorization', `Bearer ${salesToken}`)
-        .send({ status: 'SENT_TO_CUSTOMER', sent_date: '2026-09-22' });
+        .send({ status: 'SENT_TO_CUSTOMER', sent_date: '2026-09-22', reference: 'Email to DIG Procurement' });
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('SENT_TO_CUSTOMER');
       expect(res.body.sent_date).toBeDefined();
@@ -453,7 +460,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
       await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}/status`)
         .set('Authorization', `Bearer ${salesToken}`)
-        .send({ status: 'SENT_TO_CUSTOMER' });
+        .send({ status: 'SENT_TO_CUSTOMER', reference: 'Email to DIG Procurement' });
 
       // Attempt to mark LOST without reason
       const failLost = await request(app.getHttpServer())
@@ -497,6 +504,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
           required_date: '2026-09-25',
           status: 'PROPOSAL_REQUESTED',
           duplicate_override_reason: 'Testing follow-up alerts',
+          quoted_value: 325000, // DEF-029: review / approval require a quoted value
         });
       sentPropId = res.body.id;
 
@@ -516,7 +524,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
       await request(app.getHttpServer())
         .patch(`/api/proposals/${sentPropId}/status`)
         .set('Authorization', `Bearer ${salesToken}`)
-        .send({ status: 'SENT_TO_CUSTOMER' });
+        .send({ status: 'SENT_TO_CUSTOMER', reference: 'Email to DIG Procurement' });
     });
 
     it('✓ Adds follow-up, updates last/next follow-up dates and switches status', async () => {
@@ -524,11 +532,12 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          followup_date: new Date().toISOString().split('T')[0],
+          // IST calendar day: the UTC date lags behind between 00:00 and 05:30 IST (contact date >= sent date).
+          followup_date: new Date(Date.now() + 5.5 * 3600000).toISOString().split('T')[0],
           owner_id: salesUserId,
           remarks: 'Discussed technical specs with purchase officer.',
           outcome: 'Requested revised delivery schedule',
-          next_followup_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
+          next_followup_date: new Date(Date.now() + 5.5 * 3600000 + 86400000 * 7).toISOString().split('T')[0],
         });
 
       expect(followupRes.status).toBe(201);
@@ -626,6 +635,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
           responsible_id: salesUserId,
           required_date: new Date(Date.now() + 86400000 * 7).toISOString().split('T')[0],
           duplicate_override_reason: 'Testing EDA notifications',
+          quoted_value: 325000, // DEF-029: review / approval require a quoted value
         });
       expect(createRes.status).toBe(201);
       const propId = createRes.body.id;

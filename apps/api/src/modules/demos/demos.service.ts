@@ -1,4 +1,4 @@
-import { todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -52,6 +52,25 @@ function formatDateOnly(d: any, fallback: string = ''): string {
     return str.split('T')[0];
   }
   return str;
+}
+
+/** A calendar value (DATE column, ISO instant or 'YYYY-MM-DD') as DD/MM/YYYY for user-facing messages. */
+function dmy(value: unknown): string {
+  const day = calendarDay(value as any);
+  if (!day) return String(value ?? '');
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+/** Demo dates are planned for today or later (IST), like field visits. */
+function assertNotPastDemoDate(value: unknown, what: string) {
+  const day = calendarDay(value as any) || '';
+  if (day && day < todayInKolkata()) {
+    throw new BadRequestException({
+      code: 'PAST_DATE_NOT_ALLOWED',
+      message: `The ${what} (${dmy(day)}) is in the past. Choose today or a later date.`,
+    });
+  }
 }
 
 @Injectable()
@@ -230,8 +249,8 @@ export class DemosService {
 
     const allUnits = await q.execute();
 
-    const fromDate = (query.from_date || new Date().toISOString()).split('T')[0];
-    const toDate = (query.to_date || fromDate).split('T')[0];
+    const fromDate = calendarDay(query.from_date) || todayInKolkata();
+    const toDate = calendarDay(query.to_date) || fromDate;
 
     // Fetch active reservations in range
     const activeReservations = await this.db
@@ -634,6 +653,10 @@ export class DemosService {
   }
 
   async createDemo(dto: CreateDemoDto, user: AuthUser) {
+    // A trial is requested for today or later (IST) — same rule as the tour planner.
+    assertNotPastDemoDate(dto.requested_date, 'requested trial date');
+    if (dto.confirmed_date) assertNotPastDemoDate(dto.confirmed_date, 'confirmed demo date');
+
     return this.db.transaction().execute(async (trx) => {
       // 1. Check network retry idempotency: identical request by same user within past 60 seconds
       const sixtySecondsAgo = new Date(Date.now() - 60000);
@@ -769,6 +792,9 @@ export class DemosService {
         version: demo.version + 1,
       };
       if (dto.location !== undefined) updatePayload.location = dto.location;
+      if (dto.requested_date !== undefined && calendarDay(dto.requested_date) !== calendarDay(demo.requested_date as any)) {
+        assertNotPastDemoDate(dto.requested_date, 'requested trial date');
+      }
       if (dto.requested_date !== undefined) updatePayload.requested_date = dto.requested_date;
       if (dto.purpose !== undefined) updatePayload.purpose = dto.purpose;
       if (dto.expected_audience !== undefined) updatePayload.expected_audience = dto.expected_audience;
@@ -897,7 +923,7 @@ export class DemosService {
         if (conflict) {
           throw new ConflictException({
             code: 'TEAM_MEMBER_ALREADY_ASSIGNED',
-            message: `Team member is already assigned to Demo ${conflict.demo_no || conflict.id} at ${conflict.location || 'Site'} on ${targetDate}.`,
+            message: `Team member is already assigned to Demo ${conflict.demo_no || conflict.id} at ${conflict.location || 'Site'} on ${dmy(targetDate)}.`,
           });
         }
       }
@@ -1000,6 +1026,29 @@ export class DemosService {
         throw new BadRequestException('Equipment is currently under maintenance and cannot be reserved.');
       }
 
+      // Product check: a demo of product A is run with a unit of product A. Sending a unit of another product
+      // (a substitute) needs a recorded reason, so the trial is never silently set up with the wrong equipment.
+      const substituteReason = (dto.product_mismatch_reason || '').trim();
+      let productMismatch = false;
+      let productNote: string | null = null;
+      if (demo.product_id && equipment.product_id && equipment.product_id !== demo.product_id) {
+        const names = await trx
+          .selectFrom('products')
+          .select(['id', 'name'])
+          .where('id', 'in', [demo.product_id, equipment.product_id])
+          .execute();
+        const nameOf = (id: string) => names.find((p) => p.id === id)?.name || 'another product';
+        const unitLabel = `${equipment.model || 'Unit'} (${equipment.serial_no || 'no serial'})`;
+        if (substituteReason.length < 5) {
+          throw new BadRequestException({
+            code: 'PRODUCT_MISMATCH',
+            message: `${unitLabel} is a ${nameOf(equipment.product_id)} unit, but this demo is for ${nameOf(demo.product_id)}. Reserve a ${nameOf(demo.product_id)} unit, or give a reason (at least 5 characters) for sending a substitute.`,
+          });
+        }
+        productMismatch = true;
+        productNote = `Substitute unit: ${nameOf(equipment.product_id)} sent for a ${nameOf(demo.product_id)} demo. Reason: ${substituteReason}`;
+      }
+
       // Check if this equipment unit is ALREADY reserved on THIS demo
       const existingOnThisDemo = await trx
         .selectFrom('demo_reservations')
@@ -1095,7 +1144,7 @@ export class DemosService {
         } else {
           throw new ConflictException({
             code: 'EQUIPMENT_ALREADY_RESERVED',
-            message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is already reserved from ${confFrom} to ${confTo} for Demo ${conflict.demo_no || ''} (${conflict.organisation_name || 'Client'}).`,
+            message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is already reserved from ${dmy(confFrom)} to ${dmy(confTo)} for Demo ${conflict.demo_no || ''} (${conflict.organisation_name || 'Client'}).`,
             conflicting_reservation: conflict,
             priority_analysis: {
               conflicting_demo: {
@@ -1124,7 +1173,7 @@ export class DemosService {
         if (reservedUntilStr >= fromDate) {
           throw new ConflictException({
             code: 'EQUIPMENT_ALREADY_RESERVED',
-            message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is currently reserved until ${reservedUntilStr}.`,
+            message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is currently reserved until ${dmy(reservedUntilStr)}.`,
           });
         }
       }
@@ -1139,7 +1188,7 @@ export class DemosService {
           reserved_to: toDate,
           status: 'approved',
           approved_by: user.id,
-          remarks: dto.remarks || null,
+          remarks: [dto.remarks?.trim(), productNote].filter(Boolean).join(' | ') || null,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -1175,7 +1224,12 @@ export class DemosService {
         entityType: 'demo',
         entityId: demoId,
         action: 'EQUIPMENT_RESERVED',
-        newValue: { ...reservation, location_mismatch: locationMismatch },
+        newValue: {
+          ...reservation,
+          location_mismatch: locationMismatch,
+          product_mismatch: productMismatch,
+          ...(productMismatch ? { product_mismatch_reason: substituteReason } : {}),
+        },
       });
 
       // Notification
@@ -1191,6 +1245,7 @@ export class DemosService {
       return {
         ...reservation,
         location_mismatch: locationMismatch,
+        product_mismatch: productMismatch,
         equipment_location: equipment.current_location,
         demo_location: demo.location,
       };
@@ -1512,6 +1567,93 @@ export class DemosService {
         throw new BadRequestException(`Cannot confirm demo in terminal state "${demo.status}"`);
       }
 
+      const confirmedDay = calendarDay(dto.confirmed_date) || '';
+      assertNotPastDemoDate(confirmedDay, 'confirmed demo date');
+
+      // The equipment held for this demo must be reserved on the demo day. If the confirmed date falls outside a
+      // reservation, either block (default) or — when the coordinator asks — extend that reservation to cover it,
+      // provided no other demo holds the unit on the added days.
+      const activeReservations = await trx
+        .selectFrom('demo_reservations')
+        .innerJoin('demo_equipment', 'demo_reservations.equipment_id', 'demo_equipment.id')
+        .select([
+          'demo_reservations.id',
+          'demo_reservations.equipment_id',
+          'demo_reservations.reserved_from',
+          'demo_reservations.reserved_to',
+          'demo_equipment.model',
+          'demo_equipment.serial_no',
+        ])
+        .where('demo_reservations.demo_id', '=', demoId)
+        .where('demo_reservations.status', 'in', ['approved', 'requested'])
+        .execute();
+
+      const uncovered = activeReservations
+        .map((r) => {
+          const from = calendarDay(r.reserved_from as any) || '';
+          const to = calendarDay((r.reserved_to || r.reserved_from) as any) || from;
+          return { ...r, from, to };
+        })
+        .filter((r) => confirmedDay < r.from || confirmedDay > r.to);
+
+      if (uncovered.length > 0 && !dto.extend_reservation) {
+        const held = uncovered
+          .map((r) => `${r.model || 'Unit'} (${r.serial_no || 'no serial'}) is reserved ${dmy(r.from)} – ${dmy(r.to)}`)
+          .join('; ');
+        throw new BadRequestException({
+          code: 'DATE_OUTSIDE_RESERVATION',
+          message: `${dmy(confirmedDay)} is outside the equipment reservation: ${held}. Pick a date inside the reservation, or extend the reservation to cover ${dmy(confirmedDay)}.`,
+          reservations: uncovered.map((r) => ({
+            id: r.id,
+            equipment_id: r.equipment_id,
+            model: r.model,
+            serial_no: r.serial_no,
+            reserved_from: r.from,
+            reserved_to: r.to,
+          })),
+        });
+      }
+
+      for (const r of uncovered) {
+        const newFrom = confirmedDay < r.from ? confirmedDay : r.from;
+        const newTo = confirmedDay > r.to ? confirmedDay : r.to;
+        const clash = await trx
+          .selectFrom('demo_reservations')
+          .innerJoin('demos', 'demo_reservations.demo_id', 'demos.id')
+          .select(['demo_reservations.reserved_from', 'demo_reservations.reserved_to', 'demos.demo_no'])
+          .where('demo_reservations.equipment_id', '=', r.equipment_id)
+          .where('demo_reservations.demo_id', '!=', demoId)
+          .where('demo_reservations.status', 'in', ['approved', 'requested'])
+          .where(sql<boolean>`coalesce(demos.status, '') not in ('cancelled', 'completed')`)
+          .where('demo_reservations.reserved_from', '<=', newTo)
+          .where(sql<boolean>`coalesce(demo_reservations.reserved_to, demo_reservations.reserved_from) >= ${newFrom}`)
+          .executeTakeFirst();
+        if (clash) {
+          throw new ConflictException({
+            code: 'EQUIPMENT_ALREADY_RESERVED',
+            message: `The reservation of ${r.model || 'Unit'} (${r.serial_no || 'no serial'}) cannot be extended to ${dmy(confirmedDay)}: Demo ${clash.demo_no || ''} holds the unit from ${dmy(clash.reserved_from)} to ${dmy(clash.reserved_to || clash.reserved_from)}. Reserve another unit or pick another date.`,
+          });
+        }
+        await trx
+          .updateTable('demo_reservations')
+          .set({ reserved_from: newFrom, reserved_to: newTo, updated_at: new Date() })
+          .where('id', '=', r.id)
+          .execute();
+        await trx
+          .updateTable('demo_equipment')
+          .set({ reserved_until: sql`greatest(coalesce(reserved_until, ${newTo}::date), ${newTo}::date)` as any })
+          .where('id', '=', r.equipment_id)
+          .execute();
+        this.eventEmitter.emit('audit.log', {
+          actorId: user.id,
+          entityType: 'demo_reservation',
+          entityId: r.id,
+          action: 'RESERVATION_EXTENDED_FOR_CONFIRMED_DATE',
+          previousValue: { reserved_from: r.from, reserved_to: r.to },
+          newValue: { reserved_from: newFrom, reserved_to: newTo, demo_id: demoId },
+        });
+      }
+
       const updated = await trx
         .updateTable('demos')
         .set({
@@ -1567,6 +1709,8 @@ export class DemosService {
         throw new BadRequestException(`Cannot reschedule demo in terminal state "${demo.status}"`);
       }
 
+      assertNotPastDemoDate(dto.new_date, 'new demo date');
+
       const oldDate = demo.confirmed_date || demo.requested_date;
 
       // 1. Recheck team availability on new date
@@ -1591,7 +1735,7 @@ export class DemosService {
         if (teamConflict) {
           throw new ConflictException({
             code: 'TEAM_MEMBER_CONFLICT_ON_RESCHEDULE',
-            message: `Assigned team member has a conflicting demo (${teamConflict.demo_no || ''}) on ${dto.new_date}. Please reassign or select an alternate date.`,
+            message: `Assigned team member has a conflicting demo (${teamConflict.demo_no || ''}) on ${dmy(dto.new_date)}. Please reassign or select an alternate date.`,
           });
         }
       }
@@ -1621,7 +1765,7 @@ export class DemosService {
         if (equipConflict) {
           throw new ConflictException({
             code: 'EQUIPMENT_CONFLICT_ON_RESCHEDULE',
-            message: `Reserved equipment is already booked on ${dto.new_date} by Demo ${equipConflict.demo_no || ''}. Please release/replace unit before rescheduling.`,
+            message: `Reserved equipment is already booked on ${dmy(dto.new_date)} by Demo ${equipConflict.demo_no || ''}. Please release/replace unit before rescheduling.`,
           });
         }
 
@@ -1791,6 +1935,15 @@ export class DemosService {
         message: 'A structured failure reason is required when demo result is unsuccessful.',
       });
     }
+    // ...and so is a description of what went wrong: it feeds the failure analysis and, for a technical failure,
+    // becomes the complaint on the auto-created service ticket.
+    const failureDescription = [dto.technical_performance?.trim(), dto.remarks?.trim()].filter(Boolean).join(' | ');
+    if (dto.result === 'fail' && !failureDescription) {
+      throw new BadRequestException({
+        code: 'MISSING_FAILURE_DESCRIPTION',
+        message: 'Describe what went wrong in the trial (technical performance or remarks) when the demo was unsuccessful.',
+      });
+    }
 
     let createdTicket: any = null;
     const outcomeResult = await this.db.transaction().execute(async (trx) => {
@@ -1816,6 +1969,15 @@ export class DemosService {
         throw new BadRequestException('Cannot submit outcome for a cancelled demo.');
       }
 
+      // An outcome describes a trial that has happened: only on or after the (confirmed) demo day, IST.
+      const demoDay = calendarDay((demo.confirmed_date || demo.requested_date) as any) || '';
+      if (demoDay && demoDay > todayInKolkata()) {
+        throw new BadRequestException({
+          code: 'OUTCOME_BEFORE_DEMO_DATE',
+          message: `This demo is scheduled for ${dmy(demoDay)}. Its outcome can only be recorded on or after that date.`,
+        });
+      }
+
       // Check if outcome already exists (idempotent / prevent duplicate)
       const existingOutcome = await trx
         .selectFrom('demo_outcomes')
@@ -1837,7 +1999,8 @@ export class DemosService {
         const primaryUnit = reservedUnits[0] || null;
         const productId = demo.product_id || primaryUnit?.product_id || null;
         const serialNo = primaryUnit?.serial_no || null;
-        const complaintText = `Live Trial Technical Failure reported during demo ${demo.demo_no}: ${dto.technical_performance || dto.remarks || 'Hardware / calibration failure during field demonstration'}`;
+        // The ticket carries what failed, as described by the demo team (never the outcome form's success text).
+        const complaintText = `Live trial technical failure during demo ${demo.demo_no} at ${demo.organisation_name || 'customer site'}: ${failureDescription}`;
 
         // one shared ticket factory: collision-free numbering, SLA from sla_rules, repeat detection, history
         const created = await this.serviceService.createTicketCore(trx, {

@@ -365,7 +365,8 @@ describe('Module 9 — Expense Management (e2e)', () => {
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('accounts_approved');
       expect(res.body.total_approved).toBe(3900);
-      const q = await http().get('/api/expense-claims/pending/accounts').set(bearer(users.accounts));
+      // Newest first: the queue is oldest-first by default, and claims left by earlier runs can push this one off page 1.
+      const q = await http().get('/api/expense-claims/pending/accounts?sort_dir=desc').set(bearer(users.accounts));
       expect(q.body.data.some((c: any) => c.id === claimId)).toBe(true);
       expect((await http().get('/api/expense-claims/pending/accounts').set(bearer(users.amit))).status).toBe(403);
     });

@@ -27,7 +27,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           id={textareaId}
           rows={rows}
           className={twMerge(
-            'flex w-full rounded-[8px] border border-[#C9C4B8] bg-white px-3.5 py-2 text-xs font-normal text-[#14213D] placeholder:text-[#8A8578] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15 disabled:cursor-not-allowed disabled:opacity-50 resize-y',
+            'flex w-full rounded-[8px] border border-[#C9C4B8] bg-white px-3.5 py-2 text-xs font-normal text-[#14213D] placeholder:text-[#6B7280] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15 disabled:cursor-not-allowed disabled:opacity-50 resize-y',
             error && 'border-[#881337] focus:border-[#881337] focus:ring-[#881337]/15',
             className,
           )}

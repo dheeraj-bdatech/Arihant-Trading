@@ -110,7 +110,7 @@ export const DateTime: React.FC<{ value: string | null | undefined; dateOnly?: b
 
 /** Deadline with a relative hint ("due in 3h", "overdue by 2 days"). */
 export const DueText: React.FC<{ deadline: string | null; open: boolean; compact?: boolean }> = ({ deadline, open, compact }) => {
-  if (!deadline) return <span className="text-[#8A8578]">No deadline</span>;
+  if (!deadline) return <span className="text-[#6B7280]">No deadline</span>;
   const rel = relativeDue(deadline);
   return (
     <span className="inline-flex flex-col leading-tight">
@@ -324,7 +324,7 @@ export const FileViewer: React.FC<{ file: TaskAttachment | null; onClose: () => 
 const PURPOSE_LABEL: Record<TaskAttachment['purpose'], string> = { supporting_doc: 'Supporting', evidence: 'Evidence', blocker_evidence: 'Blocker', update: 'Update' };
 
 export const FileList: React.FC<{ files: TaskAttachment[]; onOpen: (f: TaskAttachment) => void; onRemove?: (f: TaskAttachment) => void; canRemove?: (f: TaskAttachment) => boolean }> = ({ files, onOpen, onRemove, canRemove }) => {
-  if (!files.length) return <p className="text-xs text-[#8A8578]">No files yet.</p>;
+  if (!files.length) return <p className="text-xs text-[#6B7280]">No files yet.</p>;
   return (
     <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#ECE9E2]">
       {files.map((f) => (
@@ -336,9 +336,9 @@ export const FileList: React.FC<{ files: TaskAttachment[]; onOpen: (f: TaskAttac
           <Badge variant={f.purpose === 'evidence' ? 'success' : 'outline'} size="sm">
             {PURPOSE_LABEL[f.purpose]}
           </Badge>
-          <span className="hidden sm:inline text-[11px] text-[#8A8578] font-mono">{fileSize(f.size_bytes)}</span>
+          <span className="hidden sm:inline text-[11px] text-[#6B7280] font-mono">{fileSize(f.size_bytes)}</span>
           {onRemove && canRemove?.(f) && (
-            <button type="button" aria-label={`Remove ${f.file_name}`} onClick={() => onRemove(f)} className="-my-1 p-2 text-[#8A8578] hover:text-[#881337] sm:my-0 sm:p-1">
+            <button type="button" aria-label={`Remove ${f.file_name}`} onClick={() => onRemove(f)} className="-my-1 p-2 text-[#6B7280] hover:text-[#881337] sm:my-0 sm:p-1">
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
@@ -388,7 +388,7 @@ function updateDetails(u: TaskUpdate): string | null {
 }
 
 export const ActivityTimeline: React.FC<{ updates: TaskUpdate[] }> = ({ updates }) => {
-  if (!updates.length) return <p className="text-sm text-[#8A8578]">No activity yet.</p>;
+  if (!updates.length) return <p className="text-sm text-[#6B7280]">No activity yet.</p>;
   return (
     <ol className="relative border-l border-[#DCD8CE] ml-2 space-y-4">
       {updates.map((u) => {
@@ -399,7 +399,7 @@ export const ActivityTimeline: React.FC<{ updates: TaskUpdate[] }> = ({ updates 
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="text-sm font-semibold text-[#14213D]">{TASK_ACTION_LABELS[u.kind] || u.kind.replace(/_/g, ' ')}</span>
               <span className="text-xs text-[#4A5568]">{u.author_name || 'System'}</span>
-              <span className="text-[11px] font-mono text-[#8A8578] ml-auto">{formatTaskDateTime(u.created_at)}</span>
+              <span className="text-[11px] font-mono text-[#6B7280] ml-auto">{formatTaskDateTime(u.created_at)}</span>
             </div>
             {details && <p className="mt-0.5 text-xs text-[#4A5568]">{details}</p>}
             {u.comment && <p className="mt-1 text-sm text-[#14213D] bg-[#FBFAF7] border border-[#ECE9E2] rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{u.comment}</p>}

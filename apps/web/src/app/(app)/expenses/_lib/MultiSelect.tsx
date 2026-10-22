@@ -19,7 +19,11 @@ export const MultiSelect: React.FC<{
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault(); // closes only this picker, not an enclosing Modal
+      setOpen(false);
+    };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
@@ -43,7 +47,7 @@ export const MultiSelect: React.FC<{
         onClick={() => setOpen((o) => !o)}
         className="flex h-10 w-full items-center gap-2 rounded-[8px] border border-[#C9C4B8] bg-white px-3 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
       >
-        <span className={`flex-1 truncate text-left ${selectedLabels.length ? '' : 'text-[#8A8578]'}`}>
+        <span className={`flex-1 truncate text-left ${selectedLabels.length ? '' : 'text-[#6B7280]'}`}>
           {selectedLabels.length === 0 ? placeholder : selectedLabels.length <= 2 ? selectedLabels.join(', ') : `${selectedLabels.length} selected`}
         </span>
         {value.length > 0 && (
@@ -56,21 +60,21 @@ export const MultiSelect: React.FC<{
               onChange([]);
             }}
             onKeyDown={(e) => e.key === 'Enter' && onChange([])}
-            className="text-[#8A8578] hover:text-[#881337]"
+            className="text-[#6B7280] hover:text-[#881337]"
           >
             <X className="h-3.5 w-3.5" />
           </span>
         )}
-        <ChevronDown className="h-4 w-4 text-[#8A8578]" />
+        <ChevronDown className="h-4 w-4 text-[#6B7280]" />
       </button>
       {open && (
         <div className="absolute z-50 mt-1 w-full min-w-[220px] rounded-[10px] border border-[#DCD8CE] bg-white shadow-lg">
           <div className="flex items-center gap-2 border-b border-[#ECE9E2] px-3 py-2">
-            <Search className="h-3.5 w-3.5 text-[#8A8578]" />
+            <Search className="h-3.5 w-3.5 text-[#6B7280]" />
             <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" className="w-full text-xs outline-none" />
           </div>
           <ul role="listbox" aria-multiselectable className="max-h-60 overflow-y-auto py-1">
-            {filtered.length === 0 && <li className="px-3 py-2 text-xs text-[#8A8578]">No matches</li>}
+            {filtered.length === 0 && <li className="px-3 py-2 text-xs text-[#6B7280]">No matches</li>}
             {filtered.map((o) => {
               const on = value.includes(o.value);
               return (

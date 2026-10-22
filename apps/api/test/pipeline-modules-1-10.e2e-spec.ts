@@ -206,10 +206,12 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
     expect(fu).toHaveLength(1);
     expect(fu[0]).toMatchObject({ organisation_id: orgId, status: 'pending', assigned_to: u.sales.id, interaction_id: firstTouch[0].id });
 
-    // Link: the same organisation typed with different case / surrounding whitespace is reused, and the lead is re-approached.
+    // Link: the same organisation (name + city) typed with different case / surrounding whitespace is reused, and the
+    // lead is re-approached. (Units of the same name in another city are separate accounts — dedupe is name + city.)
     const l2 = ok(
       await http().post('/api/leads').set(bearer(u.sales)).send({
         organisation_name: `   ${orgName.toLowerCase().replace('directorate', 'DIRECTORATE')}  `,
+        city: '  new delhi ',
         product_id: productId,
         value_lakh: 10,
         next_followup_date: day(6),
@@ -365,6 +367,10 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
     const fetched = ok(await http().get(`/api/demos/${demoId}`).set(bearer(u.sales)), 200);
     expect(fetched.lead_id ?? fetched.demo?.lead_id).toBe(lead1Id);
 
+    // DEF-024: an outcome is recorded only on / after the demo day. The trial was requested for day(2); move its date to
+    // today to stand for "the trial day has arrived" before the demo team records the result.
+    await db.updateTable('demos').set({ requested_date: today, confirmed_date: today } as any).where('id', '=', demoId).execute();
+
     // Link: a failed outcome with TECHNICAL_FAILURE opens a service ticket for the same org and links it back.
     const out = ok(
       await http().post(`/api/demos/${demoId}/outcome`).set(bearer(u.demo)).send({
@@ -405,6 +411,7 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
         request_date: utcToday,
         required_date: day(10),
         responsible_person_id: u.sales.id,
+        quoted_value: 23500000, // DEF-029: review / approval require a quoted value
         remarks: `${TAG} techno-commercial offer`,
       }),
       201,
@@ -464,11 +471,21 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
   it('stage 6 — Tender → WON → Sales Order creates a delivery for the same org (M4→M5)', async () => {
     ok(await http().post(`/api/tenders/${tenderId}/approval-request`).set(bearer(u.tender)).send({ remarks: 'Participation approval' }), [200, 201]);
     ok(await http().post(`/api/tenders/${tenderId}/approve`).set(bearer(u.mgmt)).send({ decision: 'approved', remarks: 'Go' }), [200, 201]);
-    ok(await http().post(`/api/tenders/${tenderId}/transitions`).set(bearer(u.tender)).send({ target_status: 'submitted', submission_date: utcToday, remarks: 'Bid uploaded' }), [200, 201]);
+    // DEF-006: the bid is submitted only once every mandatory checklist document is Ready.
+    const docs = ok(await http().get(`/api/tenders/${tenderId}/documents`).set(bearer(u.tender)), 200);
+    const mandatory = (docs.documents || []).filter((d: any) => d.is_mandatory);
+    expect(mandatory.length).toBeGreaterThan(0);
+    for (const d of mandatory) {
+      ok(await http().patch(`/api/tenders/${tenderId}/documents/${d.id}`).set(bearer(u.tender)).send({ status: 'Ready' }), 200);
+    }
+    ok(await http().post(`/api/tenders/${tenderId}/transitions`).set(bearer(u.tender)).send({ target_status: 'submitted', submission_date: today, remarks: 'Bid uploaded' }), [200, 201]);
+    // DEF-090: a result is declared only after bids close — stand for the bid closing having passed (yesterday).
+    const closedAt = new Date(Date.now() - 86400000);
+    await db.updateTable('tenders').set({ submission_deadline: closedAt, bid_closing_date: closedAt } as any).where('id', '=', tenderId).execute();
     const won = ok(
       await http().post(`/api/tenders/${tenderId}/result`).set(bearer(u.mgmt)).send({
         outcome: 'won',
-        result_date: utcToday,
+        result_date: today,
         value: 24000000,
         awarded_value: 24000000,
         po_number: `${TAG}-PO`,
@@ -498,7 +515,8 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
   it('stage 7 — Service ticket with serial; customer service history spans demo-failure + manual tickets (M6)', async () => {
     const before = (await db.selectFrom('interactions').select('id').where('organisation_id', '=', orgId).where('type', '=', 'service').execute()).length;
     const t = ok(
-      await http().post('/api/service/tickets').set(bearer(u.sales)).send({
+      // Sales report the complaint; the ticket is logged by the regional manager (sales cannot create tickets, Module 6 RBAC).
+      await http().post('/api/service/tickets').set(bearer(u.rm)).send({
         organisation_id: orgId,
         contact_id: contactId,
         product_id: productId,

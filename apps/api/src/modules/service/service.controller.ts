@@ -36,8 +36,17 @@ export class ServiceController {
 
   @Get('stats')
   @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
-  async getDashboardStats(@CurrentUser() user: AuthUser) {
-    return this.serviceService.getDashboardStats(user);
+  async getDashboardStats(@Query() query: Record<string, any>, @CurrentUser() user: AuthUser) {
+    // Optional list filters (search, priority, source, unassigned, overdue, repeat, unverified): the KPI tiles
+    // then count exactly what the ticket list shows.
+    return this.serviceService.getDashboardStats(user, query);
+  }
+
+  /** Engineers the current user may dispatch (a chief service engineer: his depot team; an engineer: himself). */
+  @Get('engineers')
+  @Roles('management', 'regional_manager', 'service_team', 'admin')
+  async getAssignableEngineers(@CurrentUser() user: AuthUser) {
+    return this.serviceService.assignableEngineers(user);
   }
 
   @Get()
@@ -58,7 +67,8 @@ export class ServiceController {
   }
 
   @Post('tickets')
-  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
+  // QA DEF-084: Sales has no Service Desk (RBAC spec); it keeps read access to tickets on related records only.
+  @Roles('management', 'regional_manager', 'service_team', 'admin', 'demo_team', 'tender_team')
   async createTicket(@Body() dto: CreateTicketDto, @CurrentUser() user: AuthUser) {
     return this.serviceService.createTicket(dto, user);
   }

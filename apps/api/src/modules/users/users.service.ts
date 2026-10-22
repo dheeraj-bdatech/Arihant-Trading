@@ -99,6 +99,9 @@ export class UsersService {
         'users.zone_id',
         'users.reporting_manager_id',
         'users.is_active',
+        'users.department_id',
+        'users.employee_code',
+        'users.deactivated_at',
         'users.created_at',
         'users.updated_at',
         'regions.name as region_name',
@@ -209,6 +212,20 @@ export class UsersService {
       // An admin locking themselves out (or demoting themselves) leaves nobody able to undo it.
       if (dto.is_active === false) throw new BadRequestException('You cannot deactivate your own account');
       if (dto.role && dto.role !== existing.role) throw new BadRequestException('You cannot change your own role');
+    }
+
+    // Never leave the platform without an active administrator.
+    const losesAdmin =
+      existing.role === 'admin' && existing.is_active && (dto.is_active === false || (dto.role !== undefined && dto.role !== 'admin'));
+    if (losesAdmin) {
+      const admins = await this.db
+        .selectFrom('users')
+        .select(sql<number>`count(*)::int`.as('n'))
+        .where('role', '=', 'admin')
+        .where('is_active', '=', true)
+        .where('id', '<>', id)
+        .executeTakeFirst();
+      if ((admins?.n ?? 0) === 0) throw new BadRequestException('This is the last active System Administrator account');
     }
 
     if (dto.reporting_manager_id) {

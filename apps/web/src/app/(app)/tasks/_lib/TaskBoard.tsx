@@ -338,7 +338,7 @@ export const TaskBoard: React.FC<{
                     onClick={() => toggleCollapsed(col.id)}
                     aria-label={`Collapse ${col.label}`}
                     title={`Collapse ${col.label}`}
-                    className="ml-auto hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-[#8A8578] hover:bg-white hover:text-[#14213D] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/40 lg:flex"
+                    className="ml-auto hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-[#6B7280] hover:bg-white hover:text-[#14213D] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/40 lg:flex"
                   >
                     <ChevronsLeft className="h-3.5 w-3.5" />
                   </button>
@@ -349,7 +349,7 @@ export const TaskBoard: React.FC<{
                     <li
                       aria-hidden
                       className={`shrink-0 rounded-[10px] border border-dashed px-3 py-2.5 text-center text-[11px] font-semibold transition-colors ${
-                        plan.ok ? (isOver ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#0F5E63]/50 text-[#0F5E63]') : 'border-[#DCD8CE] text-[#8A8578]'
+                        plan.ok ? (isOver ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#0F5E63]/50 text-[#0F5E63]') : 'border-[#DCD8CE] text-[#6B7280]'
                       }`}
                     >
                       {plan.ok ? `Drop to ${plan.label.toLowerCase()}` : isOver ? plan.message : 'Not allowed'}
@@ -358,7 +358,7 @@ export const TaskBoard: React.FC<{
                   {col.shown.length === 0 && !dragRow && (
                     <li className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-[10px] border border-dashed border-[#DCD8CE] p-4 text-center">
                       <Icon className="h-5 w-5 text-[#C9C4B8]" aria-hidden />
-                      <span className="text-[11px] text-[#8A8578]">{filtered ? 'No tasks match this filter.' : meta.empty}</span>
+                      <span className="text-[11px] text-[#6B7280]">{filtered ? 'No tasks match this filter.' : meta.empty}</span>
                     </li>
                   )}
                   {col.shown.map((t) => (
@@ -380,7 +380,7 @@ export const TaskBoard: React.FC<{
                     />
                   ))}
                 </ul>
-                {notes?.[col.id] && <p className="border-t border-[#ECE9E2] px-3 py-2 text-[11px] text-[#8A8578]">{notes[col.id]}</p>}
+                {notes?.[col.id] && <p className="border-t border-[#ECE9E2] px-3 py-2 text-[11px] text-[#6B7280]">{notes[col.id]}</p>}
               </section>
             );
           })}
@@ -421,7 +421,7 @@ export const DueChip: React.FC<{ task: TaskRow }> = ({ task: t }) => {
       </span>
     );
   }
-  if (!t.deadline) return <span className="text-[11px] text-[#8A8578]">No deadline</span>;
+  if (!t.deadline) return <span className="text-[11px] text-[#6B7280]">No deadline</span>;
   const diff = new Date(t.deadline).getTime() - Date.now();
   const paused = t.status === 'blocked' && t.open_blocker?.status === 'accepted';
   const late = !paused && (t.is_overdue || diff < 0);
@@ -442,7 +442,7 @@ export const DueChip: React.FC<{ task: TaskRow }> = ({ task: t }) => {
 };
 
 const Indicator: React.FC<{ icon: LucideIcon; label: string; count?: number }> = ({ icon: I, label, count }) => (
-  <span role="img" className="inline-flex items-center gap-0.5 text-[#8A8578]" title={label} aria-label={label}>
+  <span role="img" className="inline-flex items-center gap-0.5 text-[#6B7280]" title={label} aria-label={label}>
     <I className="h-3.5 w-3.5" aria-hidden />
     {count ? <span className="font-mono text-[10px] font-semibold">{count}</span> : null}
   </span>
@@ -491,7 +491,7 @@ const BoardCard: React.FC<{
         <div className="flex items-center gap-1.5">
           <GripVertical className="-ml-1 hidden h-3.5 w-3.5 shrink-0 text-[#C9C4B8] md:inline" aria-hidden />
           <span className="shrink-0 font-mono text-[11px] font-semibold text-[#0F5E63]">{t.task_number}</span>
-          <span className="min-w-0 flex-1 truncate text-[11px] text-[#8A8578]">{t.category_name}</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-[#6B7280]">{t.category_name}</span>
           <span className="flex shrink-0 items-center gap-1.5">
             {t.template_id && <Indicator icon={Repeat} label="Recurring task" />}
             {t.evidence_required && <Indicator icon={FileCheck2} label="Evidence required" />}

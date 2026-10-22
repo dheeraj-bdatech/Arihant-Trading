@@ -22,16 +22,16 @@ export const InfoCallout: React.FC<InfoCalloutProps> = ({
   const variantStyles = {
     info: 'bg-[#E3EFEE] border-[#0F5E63]/30 text-[#0F5E63]',
     warning: 'bg-[#FBEBDD] border-[#9A3412]/30 text-[#7C2D12]',
-    danger: 'bg-[#FCE8EC] border-red-200 text-[#881337]',
-    success: 'bg-[#E3EFEE] border-emerald-300 text-[#0F5E63]',
+    danger: 'bg-[#FCE8EC] border-[#F3C7CF] text-[#881337]',
+    success: 'bg-[#E3EFEE] border-[#D0E5E3] text-[#0F5E63]',
     neutral: 'bg-[#FBFAF7] border-[#DCD8CE] text-[#14213D]',
   }[variant];
 
   const closeButtonColors = {
     info: 'text-[#0F5E63] hover:bg-[#D3E7E6]',
     warning: 'text-[#7C2D12] hover:bg-[#F2B872]/30',
-    danger: 'text-[#881337] hover:bg-red-100',
-    success: 'text-[#0F5E63] hover:bg-emerald-100',
+    danger: 'text-[#881337] hover:bg-[#FCE8EC]',
+    success: 'text-[#0F5E63] hover:bg-[#E3EFEE]',
     neutral: 'text-[#4A5568] hover:bg-[#ECE9E2]',
   }[variant];
 

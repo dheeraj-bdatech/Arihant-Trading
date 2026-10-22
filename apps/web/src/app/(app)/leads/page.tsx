@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { addIsoDays, istToday } from '@/lib/ist-date';
+import { INDIAN_STATES, canonicalState, resolveLocation, stateOfCity } from './_lib/india-geo';
 import { calendarDay } from '@/lib/calendar-day';
 import {
   Target,
@@ -68,6 +69,7 @@ import {
   Select,
   Textarea,
   EmptyState,
+  InfoCallout,
   PageHeader,
   StatCard,
   Table,
@@ -77,11 +79,14 @@ import {
   TableHead,
   TableCell, Spinner, PageLoader, StatGrid, FilterMenu,
   RecordViews,
+  RecordTable,
+  formatDateIN,
+  daysFromToday,
   toneFor,
   ScrollStrip,
 } from '@/components/ui';
-import type { BoardLane, RecordItem } from '@/components/ui';
-import { formatLakh, LeadStatus, LeadCategory, LeadType, LeadLossReason, InteractionType, FollowUpStatus } from '@arihant/shared';
+import type { BadgeProps, BoardLane, RecordItem } from '@/components/ui';
+import { formatLakh, LeadStatus, LeadCategory, LeadType, LeadLossReason, InteractionType, FollowUpStatus, INDIAN_MOBILE_PATTERN, isClosedLeadStatus } from '@arihant/shared';
 
 const LEAD_CATEGORY_OPTIONS: { value: LeadCategory; label: string }[] = [
   { value: 'new_lead', label: 'New Lead' },
@@ -115,6 +120,12 @@ const LEAD_SOURCE_OPTIONS = [
   { value: 'partner', label: 'OEM / Partner Channel' },
 ];
 
+/** Stages a lead can be registered in — later stages are reached through the lifecycle actions (QA DEF-059). */
+const INITIAL_LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified'];
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** A status that records the lead as won — CONVERTED, or legacy WON (from legacy OPEN / QUOTED leads); both need the PO. */
+const isWinStatus = (st?: string | null) => st === 'converted' || st === 'won';
+
 const LEAD_STATUS_OPTIONS: { value: LeadStatus; label: string }[] = [
   { value: 'new', label: 'New / Inquired' },
   { value: 'contacted', label: 'Contacted' },
@@ -128,6 +139,11 @@ const LEAD_STATUS_OPTIONS: { value: LeadStatus; label: string }[] = [
   { value: 'on_hold', label: 'On Hold' },
   { value: 'dropped', label: 'Dropped / Lost' },
 ];
+
+// Lead register table (RecordViews list) badge helpers — same vocabulary as the regional registers.
+type BadgeVariant = NonNullable<BadgeProps['variant']>;
+const leadStatusBadge = (lane?: string): BadgeVariant => (lane === 'converted' ? 'success' : lane === 'lost' ? 'danger' : 'default');
+const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
 
 const INTERACTION_TYPE_OPTIONS = [
   { value: 'call', label: 'Phone Call' },
@@ -274,6 +290,8 @@ export default function LeadsPage() {
   const [productReport, setProductReport] = useState<any[]>([]);
   const [interactionReport, setInteractionReport] = useState<any[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
+  // Per-report load errors (e.g. no access) shown in place of an empty table (QA DEF-052)
+  const [reportErrors, setReportErrors] = useState<Record<string, string>>({});
 
   // Modal Dialogs State
   const [isCreateLeadOpen, setIsCreateLeadOpen] = useState(false);
@@ -301,6 +319,13 @@ export default function LeadsPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [createLeadError, setCreateLeadError] = useState<string | null>(null);
+  // Inline field errors for the Register Lead form (QA DEF-102) — shown after the first submit, then kept live
+  const [leadErrors, setLeadErrors] = useState<Record<string, string>>({});
+  const [leadSubmitAttempted, setLeadSubmitAttempted] = useState(false);
+  // Wizard pages already checked by "Next" — their errors stay live as the user edits (QA DEF-102).
+  const [leadCheckedSteps, setLeadCheckedSteps] = useState<number[]>([]);
+  // Synchronous guard: a double-click fires two submits before `actionLoading` re-renders the button (QA DEF-012)
+  const createLeadInFlight = useRef(false);
 
   // Create Lead Form (Complete 18 Parameters)
   const [leadForm, setLeadForm] = useState({
@@ -336,14 +361,114 @@ export default function LeadsPage() {
     return regionsList.filter((r) => r.zone_id === leadForm.zone_id);
   }, [regionsList, leadForm.zone_id]);
 
+  // Who a new lead can be assigned to (QA DEF-060): sales register in their own name; Regional Managers pick
+  // themselves or their team; management / admin pick any active salesperson or Regional Manager. Mirrors the API.
+  const assignableSalespeople = useMemo(() => {
+    const active = usersList.filter((u) => u.is_active !== false);
+    if (user?.role === 'sales') {
+      const self = active.find((u) => u.id === user.id);
+      return [self || { id: user.id, full_name: user.full_name, role: user.role, reporting_manager_id: user.reporting_manager_id }];
+    }
+    const owners = active.filter((u) => u.role === 'sales' || u.role === 'regional_manager');
+    if (user?.role === 'regional_manager') {
+      return owners.filter(
+        (u) => u.id === user.id || u.reporting_manager_id === user.id || (Boolean(user.region_id) && u.region_id === user.region_id),
+      );
+    }
+    return owners;
+  }, [usersList, user]);
+
+  // Regional Managers a lead can report to (QA DEF-100) — active Regional Managers, plus management as escalation.
+  const regionalManagerOptions = useMemo(
+    () => usersList.filter((u) => u.is_active !== false && (u.role === 'regional_manager' || u.role === 'management')),
+    [usersList],
+  );
+
+  /** Default Regional Manager for a lead owner: an RM supervises their own leads, a salesperson reports to theirs. */
+  const defaultRmFor = (userId: string) => {
+    const owner = usersList.find((u) => u.id === userId) || (user?.id === userId ? user : null);
+    if (!owner) return '';
+    if (owner.role === 'regional_manager') return owner.id;
+    return owner.reporting_manager_id || '';
+  };
+
   const handleSalespersonChange = (userId: string) => {
-    const selectedUser = usersList.find((u) => u.id === userId);
     setLeadForm((prev) => ({
       ...prev,
       assigned_to: userId,
-      regional_manager_id: selectedUser?.reporting_manager_id || prev.regional_manager_id,
+      regional_manager_id: defaultRmFor(userId) || prev.regional_manager_id,
     }));
   };
+
+  /** City typed → state filled in when the city is well known and the state was empty or derived (QA DEF-099). */
+  const handleLeadCityChange = (city: string) => {
+    setLeadForm((prev) => {
+      const derived = stateOfCity(city);
+      const stateWasDerived = !prev.state || stateOfCity(prev.city) === prev.state;
+      return { ...prev, city, state: derived && stateWasDerived ? derived : prev.state };
+    });
+  };
+
+  /** Register Lead form rules — the same rules the API enforces, shown inline under each field (QA DEF-102). */
+  const validateLeadForm = (f: typeof leadForm): Record<string, string> => {
+    const e: Record<string, string> = {};
+    const today = istToday();
+    if (f.organisation_mode === 'new' && !f.organisation_name.trim()) e.organisation_name = 'Organisation name is required';
+    if (f.organisation_mode === 'existing' && !f.organisation_id) e.organisation_id = 'Select an existing organisation';
+    if (!f.city.trim()) e.city = 'City is required';
+    if (!f.state.trim()) e.state = 'State is required';
+    else {
+      const location = resolveLocation(f.city, f.state);
+      if (location.error) e.state = location.error;
+    }
+    if (!f.sector) e.sector = 'Select a sector';
+    if (!f.zone_id) e.zone_id = 'Select a zone';
+    if (!f.region_id) e.region_id = 'Select a region';
+    if (!f.contact_name.trim()) e.contact_name = 'Contact person name is required';
+    if (!f.contact_designation.trim()) e.contact_designation = 'Designation / rank is required';
+    if (!f.contact_mobile.trim()) e.contact_mobile = 'Mobile number is required';
+    else if (!INDIAN_MOBILE_PATTERN.test(f.contact_mobile.trim())) e.contact_mobile = 'Enter a valid 10-digit mobile number (e.g. 98110 00000)';
+    if (f.contact_email.trim() && !EMAIL_PATTERN.test(f.contact_email.trim())) e.contact_email = 'Enter a valid email address';
+    if (f.product_ids.length === 0) e.product_ids = 'Select at least one product interest';
+    if (!INITIAL_LEAD_STATUSES.includes(f.lead_status)) e.lead_status = 'A new lead starts as New, Contacted or Qualified';
+    if (f.value_lakh !== '' && !(Number(f.value_lakh) > 0)) e.value_lakh = 'Estimated deal value must be greater than zero';
+    if (!f.assigned_to) e.assigned_to = 'Select the salesperson who owns this lead';
+    if (!f.last_interaction_date) e.last_interaction_date = 'Last interaction date is required';
+    else if (f.last_interaction_date > today) e.last_interaction_date = 'Last interaction date cannot be in the future';
+    if (f.next_followup_date) {
+      if (f.next_followup_date < today) e.next_followup_date = 'Next follow-up cannot be in the past';
+      else if (f.last_interaction_date && f.next_followup_date < f.last_interaction_date)
+        e.next_followup_date = 'Next follow-up cannot be before the last interaction';
+    }
+    return e;
+  };
+
+  /** Register Lead wizard pages (Organisation & Location / Contact & Opportunity / Follow-up) and the fields on each. */
+  const LEAD_STEP_FIELDS: string[][] = [
+    ['organisation_name', 'organisation_id', 'city', 'state', 'sector', 'zone_id', 'region_id'],
+    ['contact_name', 'contact_designation', 'contact_mobile', 'contact_email', 'lead_status', 'product_ids', 'value_lakh'],
+    ['assigned_to', 'last_interaction_date', 'next_followup_date'],
+  ];
+  const leadErrorsFor = (f: typeof leadForm, pages: number[]) => {
+    const keys = pages.flatMap((p) => LEAD_STEP_FIELDS[p] ?? []);
+    return Object.fromEntries(Object.entries(validateLeadForm(f)).filter(([k]) => keys.includes(k)));
+  };
+
+  /** "Next" in the wizard: show every error on the current page inline, all at once (QA DEF-102). */
+  const validateLeadStep = (page: number) => {
+    const pages = Array.from(new Set([...leadCheckedSteps, page]));
+    setLeadCheckedSteps(pages);
+    const errors = leadErrorsFor(leadForm, pages);
+    setLeadErrors(errors);
+    return !Object.keys(errors).some((k) => (LEAD_STEP_FIELDS[page] ?? []).includes(k));
+  };
+
+  // After the first submit (or a checked page), errors follow the user's edits so each message clears as soon as it is fixed
+  useEffect(() => {
+    if (leadSubmitAttempted) setLeadErrors(validateLeadForm(leadForm));
+    else if (leadCheckedSteps.length) setLeadErrors(leadErrorsFor(leadForm, leadCheckedSteps));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leadForm, leadSubmitAttempted, leadCheckedSteps]);
 
   const handleZoneChange = (zoneId: string) => {
     setLeadForm((prev) => {
@@ -363,7 +488,7 @@ export default function LeadsPage() {
       organisation_id: orgId,
       organisation_name: found?.name || prev.organisation_name,
       city: found?.city || prev.city,
-      state: found?.state || prev.state,
+      state: canonicalState(found?.state) || found?.state || prev.state,
       zone_id: found?.zone_id || prev.zone_id,
       region_id: found?.region_id || prev.region_id,
       sector: found?.sector || prev.sector,
@@ -418,8 +543,17 @@ export default function LeadsPage() {
     attachment_url: '',
   });
 
+  // Win details captured when a lead is marked CONVERTED (QA DEF-054)
+  const [winPoReference, setWinPoReference] = useState('');
+  const [winOrderValue, setWinOrderValue] = useState('');
+  const [winOrderDate, setWinOrderDate] = useState('');
+  const [statusFieldErrors, setStatusFieldErrors] = useState<Record<string, string>>({});
+
   // Follow-up Completion Form
   const [completionOutcome, setCompletionOutcome] = useState('');
+  const [completionOutcomeError, setCompletionOutcomeError] = useState<string | null>(null);
+  const [nextFollowupDateError, setNextFollowupDateError] = useState<string | null>(null);
+  const [rescheduleDateError, setRescheduleDateError] = useState<string | null>(null);
   const [completionRemarks, setCompletionRemarks] = useState('');
   const [scheduleNextFollowup, setScheduleNextFollowup] = useState(false);
   const [nextFollowupDueDate, setNextFollowupDueDate] = useState('');
@@ -495,7 +629,7 @@ export default function LeadsPage() {
       const statusTag = isAvail
         ? '🟢 [AVAILABLE]'
         : isReserved
-        ? `🟡 [RESERVED${e.reserved_until ? ` to ${new Date(e.reserved_until).toLocaleDateString()}` : ''}]`
+        ? `🟡 [RESERVED${e.reserved_until ? ` to ${formatDateIN(e.reserved_until)}` : ''}]`
         : isMaint
         ? '🔴 [MAINTENANCE]'
         : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
@@ -616,7 +750,8 @@ export default function LeadsPage() {
       try {
         const [prodRes, usrRes, znRes, regRes, orgRes, deRes] = await Promise.allSettled([
           api.get('/masters/products'),
-          api.get('/users'),
+          // the full active roster (the API pages at 20 by default, which dropped some Regional Managers — QA DEF-100)
+          api.get('/users', { limit: 100, is_active: 'true' }),
           api.get('/masters/zones'),
           api.get('/masters/regions'),
           api.get('/organisations', { limit: 200 }),
@@ -769,22 +904,42 @@ export default function LeadsPage() {
         api.get('/leads/reports/interactions'),
       ]);
 
+      // A report that fails (no access, server error) shows why instead of an empty table (QA DEF-052)
+      const errors: Record<string, string> = {};
+      const failure = (r: PromiseRejectedResult) =>
+        r.reason?.status === 403
+          ? 'You do not have access to this report.'
+          : r.reason?.message || 'This report could not be loaded. Please try again.';
       if (spRes.status === 'fulfilled') {
         const val = spRes.value;
         setSalespersonReport(Array.isArray(val) ? val : (val?.data || []));
+      } else {
+        setSalespersonReport([]);
+        errors.salesperson = failure(spRes);
       }
       if (znRes.status === 'fulfilled') {
         const val = znRes.value;
         setZoneReport(Array.isArray(val) ? val : (val?.data || []));
+      } else {
+        setZoneReport([]);
+        errors.zones = failure(znRes);
       }
       if (prRes.status === 'fulfilled') {
         const val = prRes.value;
         setProductReport(Array.isArray(val) ? val : (val?.data || []));
+      } else {
+        setProductReport([]);
+        errors.products = failure(prRes);
       }
       if (inRes.status === 'fulfilled') {
+        // GET /leads/reports/interactions returns { byType, byEmployee }; the Field Activity cards show byType
         const val = inRes.value;
-        setInteractionReport(Array.isArray(val) ? val : (val?.data || []));
+        setInteractionReport(Array.isArray(val) ? val : (val?.byType || val?.data || []));
+      } else {
+        setInteractionReport([]);
+        errors.interactions = failure(inRes);
       }
+      setReportErrors(errors);
     } catch (err) {
       console.error('Failed to load reports:', err);
     } finally {
@@ -861,9 +1016,23 @@ export default function LeadsPage() {
     }
   }, [isCreateLeadOpen]);
 
+  // Success / error banners belong to the lead they were raised on — drop them when another lead is opened (QA DEF-098)
+  const selectedLeadId = selectedLead?.id;
+  useEffect(() => {
+    setActionSuccess(null);
+    setFormError(null);
+  }, [selectedLeadId]);
+
+  const handleCloseLeadDetail = () => {
+    setIsLeadDetailOpen(false);
+    setActionSuccess(null);
+    setFormError(null);
+  };
+
   // Open Lead Details Modal
   const handleOpenLead = async (leadId: string) => {
     try {
+      setActionSuccess(null);
       const fullLead = await api.get(`/leads/${leadId}`);
       setSelectedLead(fullLead);
       setLeadDetailTab('overview'); setIsLeadDetailOpen(true);
@@ -910,24 +1079,21 @@ export default function LeadsPage() {
   // Handle Create Lead Submission (Atomic Sync of all 18 Parameters)
   const handleCreateLead = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (createLeadInFlight.current) return;
     setFormError(null);
     setCreateLeadError(null);
+
+    setLeadSubmitAttempted(true);
+    const errors = validateLeadForm(leadForm);
+    setLeadErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      setCreateLeadError('Please correct the highlighted fields before registering the lead.');
+      return;
+    }
+
+    createLeadInFlight.current = true;
     setActionLoading(true);
-
     try {
-      if (leadForm.organisation_mode === 'new' && !leadForm.organisation_name.trim()) {
-        throw new Error('Organisation name is required.');
-      }
-      if (leadForm.organisation_mode === 'existing' && !leadForm.organisation_id) {
-        throw new Error('Please select an existing organisation.');
-      }
-      if (leadForm.product_ids.length === 0) {
-        throw new Error('Please select at least one Product Interest.');
-      }
-      if (leadForm.contact_name.trim() && !leadForm.contact_designation.trim()) {
-        throw new Error('Designation / Rank is required for the contact officer.');
-      }
-
       await api.post('/leads', {
         organisation_id: leadForm.organisation_mode === 'existing' ? leadForm.organisation_id : undefined,
         organisation_name: leadForm.organisation_mode === 'new' ? leadForm.organisation_name.trim() : undefined,
@@ -936,7 +1102,7 @@ export default function LeadsPage() {
         contact_mobile: leadForm.contact_mobile.trim() || undefined,
         contact_email: leadForm.contact_email.trim() || undefined,
         city: leadForm.city.trim() || undefined,
-        state: leadForm.state.trim() || undefined,
+        state: canonicalState(leadForm.state) || leadForm.state.trim() || undefined,
         zone_id: leadForm.zone_id || undefined,
         region_id: leadForm.region_id || undefined,
         sector: leadForm.sector || undefined,
@@ -968,6 +1134,7 @@ export default function LeadsPage() {
       setCreateLeadError(msg);
       setFormError(msg);
     } finally {
+      createLeadInFlight.current = false;
       setActionLoading(false);
     }
   };
@@ -977,6 +1144,9 @@ export default function LeadsPage() {
     setCreateLeadError(null);
     setActionLoading(false);
     setIsCheckingDuplicate(false);
+    setLeadErrors({});
+    setLeadSubmitAttempted(false);
+    setLeadCheckedSteps([]);
     setLeadForm({
       organisation_mode: 'new',
       organisation_id: '',
@@ -994,8 +1164,9 @@ export default function LeadsPage() {
       product_ids: [],
       source: 'field_visit',
       category: 'new_lead',
-      assigned_to: user?.id || '',
-      regional_manager_id: '',
+      // Sales / RMs own what they register; management and admin pick the owner from the sales team
+      assigned_to: user && (user.role === 'sales' || user.role === 'regional_manager') ? user.id : '',
+      regional_manager_id: user && (user.role === 'sales' || user.role === 'regional_manager') ? defaultRmFor(user.id) : '',
       remarks: '',
       lead_status: 'new',
       last_interaction_date: istToday(),
@@ -1013,6 +1184,8 @@ export default function LeadsPage() {
     setCreateLeadError(null);
     setIsCreateLeadOpen(true);
   };
+  // Dashboard "New opportunity" quick action links to /leads?new=1 (QA DEF-108).
+  useOpenParam(() => handleOpenCreateLead(), true, 'new');
 
   const handleCloseCreateLead = () => {
     setIsCreateLeadOpen(false);
@@ -1026,6 +1199,15 @@ export default function LeadsPage() {
     e.preventDefault();
     if (!selectedLead) return;
     setFormError(null);
+
+    if (isWinStatus(targetStatus)) {
+      const errors: Record<string, string> = {};
+      if (!winPoReference.trim()) errors.po_reference = 'Enter the purchase / supply order reference';
+      if (winOrderValue !== '' && !(Number(winOrderValue) > 0)) errors.order_value = 'Order value must be greater than zero';
+      if (winOrderDate && winOrderDate > istToday()) errors.order_date = 'Order date cannot be in the future';
+      setStatusFieldErrors(errors);
+      if (Object.keys(errors).length > 0) return;
+    }
     setActionLoading(true);
 
     try {
@@ -1033,13 +1215,24 @@ export default function LeadsPage() {
         status: targetStatus,
         loss_reason: targetStatus === 'lost' ? lossReason : undefined,
         loss_remarks: targetStatus === 'lost' ? lossRemarks : undefined,
+        po_reference: isWinStatus(targetStatus) ? winPoReference.trim() : undefined,
+        order_value_lakh: isWinStatus(targetStatus) && winOrderValue !== '' ? Number(winOrderValue) : undefined,
+        order_date: isWinStatus(targetStatus) && winOrderDate ? winOrderDate : undefined,
       });
 
       setIsStatusModalOpen(false);
       const updated = await api.get(`/leads/${selectedLead.id}`);
       setSelectedLead(updated);
+      setActionSuccess(
+        isWinStatus(targetStatus)
+          ? `Lead marked ${targetStatus.toUpperCase()} on order ${winPoReference.trim()}.`
+          : targetStatus === 'lost'
+          ? 'Lead marked LOST. Its pending follow-ups were cancelled.'
+          : `Lifecycle stage advanced to ${targetStatus.toUpperCase()} successfully!`,
+      );
       fetchLeads();
       fetchDashboardStats();
+      if (activeTab === 'followups') fetchFollowups();
     } catch (err: any) {
       setFormError(err.message || 'Failed to update lead status.');
     } finally {
@@ -1175,8 +1368,22 @@ export default function LeadsPage() {
   // Lifecycle Stage Advance Router
   const handleDirectAdvanceStatus = async (nextSt: string) => {
     if (!selectedLead) return;
+    setActionSuccess(null);
     if (nextSt === 'lost') {
       setTargetStatus('lost');
+      setFormError(null);
+      setStatusFieldErrors({});
+      setIsStatusModalOpen(true);
+      return;
+    }
+    // Marking a lead won is confirmed with its purchase / supply order details (QA DEF-054)
+    if (isWinStatus(nextSt)) {
+      setTargetStatus(nextSt);
+      setWinPoReference('');
+      setWinOrderValue(selectedLead.value_lakh || selectedLead.estimated_value_lakh ? String(selectedLead.value_lakh || selectedLead.estimated_value_lakh) : '');
+      setWinOrderDate(istToday());
+      setFormError(null);
+      setStatusFieldErrors({});
       setIsStatusModalOpen(true);
       return;
     }
@@ -1479,11 +1686,23 @@ export default function LeadsPage() {
     e.preventDefault();
     if (!selectedFollowup) return;
     setFormError(null);
+
+    // Outcome is mandatory; the next follow-up (when booked) is today or later — checked here, enforced by the API
+    const outcomeError = completionOutcome.trim() ? null : 'Enter the touchpoint outcome to complete this follow-up';
+    const nextDateError =
+      scheduleNextFollowup && !nextFollowupDueDate
+        ? 'Choose the next follow-up date'
+        : scheduleNextFollowup && nextFollowupDueDate < istToday()
+        ? 'Next follow-up cannot be in the past'
+        : null;
+    setCompletionOutcomeError(outcomeError);
+    setNextFollowupDateError(nextDateError);
+    if (outcomeError || nextDateError) return;
     setActionLoading(true);
 
     try {
       await api.patch(`/follow-ups/${selectedFollowup.id}/complete`, {
-        outcome: completionOutcome || undefined,
+        outcome: completionOutcome.trim(),
         remarks: completionRemarks || undefined,
         next_followup_date: scheduleNextFollowup && nextFollowupDueDate ? nextFollowupDueDate : undefined,
         next_followup_time: scheduleNextFollowup && nextFollowupDueDate && nextFollowupDueTime ? nextFollowupDueTime : undefined,
@@ -1510,6 +1729,14 @@ export default function LeadsPage() {
     e.preventDefault();
     if (!selectedFollowup) return;
     setFormError(null);
+
+    const dateError = !rescheduleDate
+      ? 'Choose the new due date'
+      : rescheduleDate < istToday()
+      ? 'A follow-up cannot be rescheduled to a past date'
+      : null;
+    setRescheduleDateError(dateError);
+    if (dateError) return;
     setActionLoading(true);
 
     try {
@@ -1570,7 +1797,7 @@ export default function LeadsPage() {
     leadStats?.activeLeads ??
     leadStats?.metrics?.activeLeads ??
     (leads.length > 0
-      ? leads.filter((l) => !['converted', 'won', 'lost', 'dropped'].includes(String(l.lead_status || l.status).toLowerCase())).length
+      ? leads.filter((l) => !isClosedLeadStatus(l.lead_status || l.status)).length
       : 0);
 
   const totalLeadsCount =
@@ -1700,7 +1927,7 @@ export default function LeadsPage() {
           ? `${lead.contact_name}${lead.contact_designation ? ` · ${lead.contact_designation}` : ''}`
           : 'Unspecified',
       },
-      { label: 'Last touch', value: lastTouch ? new Date(lastTouch).toLocaleDateString('en-IN') : 'None logged' },
+      { label: 'Last touch', value: lastTouch ? formatDateIN(lastTouch) : 'None logged' },
       { label: 'Source', value: lead.source || 'Direct' },
       { label: category ? 'Category' : 'Sector', value: category || lead.sector || 'Defence / Security' },
     ];
@@ -1721,6 +1948,121 @@ export default function LeadsPage() {
       onOpen: () => handleOpenLead(lead.id),
     };
   });
+
+  // Lead register as the page's own table (RecordViews list) — same rows, same order as leadRecordItems.
+  const leadList = leads.length ? (
+    <RecordTable items={leadRecordItems}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Opportunity / Title</TableHead>
+            <TableHead>Organisation & Sector</TableHead>
+            <TableHead>Primary Contact</TableHead>
+            <TableHead>Classification</TableHead>
+            <TableHead>Salesperson / RM</TableHead>
+            <TableHead>Products</TableHead>
+            <TableHead>Stage / Status</TableHead>
+            <TableHead className="text-right">Est. Value</TableHead>
+            <TableHead>Next Follow-Up</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {leads.map((lead, i) => {
+            const item = leadRecordItems[i];
+            const lane = leadLaneKey(lead.lead_status || lead.status);
+            const closed = lane === 'converted' || lane === 'lost';
+            const products: string[] =
+              lead.product_interests && lead.product_interests.length > 0
+                ? lead.product_interests.map((p: any) => p.name || p.product_name).filter(Boolean)
+                : lead.product_name
+                ? [lead.product_name]
+                : [];
+            const productText = products.length > 2 ? `${products.slice(0, 2).join(', ')} +${products.length - 2}` : products.join(', ');
+            const followup = lead.next_followup_at || lead.next_followup_date;
+            const daysLeft = closed ? null : daysFromToday(followup);
+            const overdueDays = daysLeft !== null && daysLeft < 0 ? -daysLeft : 0;
+            return (
+              <TableRow key={lead.id}>
+                <TableCell className="font-bold text-[#14213D]">
+                  {lead.product_name || (lead.product_interests && lead.product_interests[0]?.name) || lead.organisation_name || 'Procurement Opportunity'}
+                  <div className="text-[10px] text-[#4A5568] font-normal">
+                    <span className="font-mono text-[#0F5E63]">#{String(lead.id).slice(0, 8)}</span> · Source: {upperLabel(lead.source || 'Direct')}
+                  </div>
+                </TableCell>
+                <TableCell className="text-[#14213D]">
+                  <div className="font-semibold text-[#14213D]">{lead.organisation_name || '—'}</div>
+                  <div className="text-[10px] text-[#4A5568]">
+                    {[lead.sector || 'Defence / Security', [lead.city, lead.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
+                  </div>
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {lead.contact_name ? (
+                    <>
+                      <div className="font-semibold text-[#14213D]">{lead.contact_name}</div>
+                      <div className="text-[10px] text-[#4A5568]">
+                        {lead.contact_designation || (
+                          <span className="font-mono">{lead.contact_mobile || lead.contact_phone || '—'}</span>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <span className="text-[#4A5568]">Unspecified</span>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={lead.lead_type === 're_approached' ? 'warning' : 'info'} size="sm" className="uppercase font-bold">
+                    {lead.lead_type === 're_approached' ? 'Re-approached' : 'Fresh'}
+                  </Badge>
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <div className="font-semibold text-[#14213D]">{lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned'}</div>
+                  {lead.regional_manager_name && <div className="text-[10px] text-[#4A5568]">RM: {lead.regional_manager_name}</div>}
+                </TableCell>
+                <TableCell className="text-[#14213D] max-w-[240px] truncate" title={products.join(', ') || undefined}>
+                  {productText || <span className="text-[#4A5568]">None tagged</span>}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={leadStatusBadge(lane)} size="sm" className="uppercase font-bold">
+                    {upperLabel(lane)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right font-mono font-bold text-[#0F5E63] whitespace-nowrap">
+                  {formatLakh(lead.value_lakh || lead.estimated_value_lakh || 0)}
+                </TableCell>
+                <TableCell className="font-mono text-[#4A5568] whitespace-nowrap">
+                  {formatDateIN(followup)}
+                  {overdueDays > 0 && (
+                    <div className="text-[10px] font-bold text-[#881337]">
+                      {overdueDays} {overdueDays === 1 ? 'DAY' : 'DAYS'} OVERDUE
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-1.5">
+                    {item.primary && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={item.primary.onClick}
+                        disabled={item.primary.disabled}
+                        className="text-xs text-[#0F5E63] hover:bg-[#E3EFEE]"
+                      >
+                        {item.primary.label}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="secondary" onClick={item.onOpen} className="shadow-xs text-xs">
+                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
 
   const followupsDueTodayTab = followupStats?.dueToday ?? followupStats?.due_today;
   // View menu (first control of the filter row) — one option per workspace register.
@@ -1777,7 +2119,7 @@ export default function LeadsPage() {
       value: freshLeadsCount,
       subtext: 'First-time Accounts',
       variant: 'emerald',
-      icon: <Sparkles className="h-4 w-4 text-emerald-600" />,
+      icon: <Sparkles className="h-4 w-4 text-[#0F5E63]" />,
       active: leadFilters.lead_type === 'fresh',
       onClick: () => {
         setActiveTab('leads');
@@ -1790,7 +2132,7 @@ export default function LeadsPage() {
       value: reapproachedLeadsCount,
       subtext: 'Repeat Engagements',
       variant: 'amber',
-      icon: <Layers className="h-4 w-4 text-amber-600" />,
+      icon: <Layers className="h-4 w-4 text-[#9A3412]" />,
       active: leadFilters.lead_type === 're_approached',
       onClick: () => {
         setActiveTab('leads');
@@ -1803,7 +2145,7 @@ export default function LeadsPage() {
       value: followupsDueTodayCount,
       subtext: `Overdue: ${followupsOverdueCount}`,
       variant: Number(followupsOverdueCount) > 0 ? 'rose' : 'amber',
-      icon: <Clock className="h-4 w-4 text-amber-600" />,
+      icon: <Clock className="h-4 w-4 text-[#9A3412]" />,
       active: leadFilters.followup === 'due_today',
       onClick: () => {
         setActiveTab('leads');
@@ -1816,7 +2158,7 @@ export default function LeadsPage() {
       value: convertedDealsCount,
       subtext: `Lost: ${lostLeadsCount}`,
       variant: 'emerald',
-      icon: <Award className="h-4 w-4 text-emerald-600" />,
+      icon: <Award className="h-4 w-4 text-[#0F5E63]" />,
       active: leadFilters.lead_status === 'converted',
       onClick: () => {
         setActiveTab('leads');
@@ -1869,14 +2211,14 @@ export default function LeadsPage() {
           {activeTab === 'leads' && (
             <>
               <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
                 <input
                   type="search"
                   aria-label="Search leads"
                   placeholder="Search lead, client, salesperson…"
                   value={leadFilters.search}
                   onChange={(e) => updateLeadFilter({ search: e.target.value })}
-                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -1945,14 +2287,14 @@ export default function LeadsPage() {
           {activeTab === 'customers' && (
             <>
               <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
                 <input
                   type="search"
                   aria-label="Search organisations"
                   placeholder="Search organisations by name, city, sector…"
                   value={customerSearch}
                   onChange={(e) => setCustomerSearch(e.target.value)}
-                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
@@ -2101,7 +2443,8 @@ export default function LeadsPage() {
               lanes={leadLanes}
               laneOf={(item) => leadLaneById.get(item.key) || 'new'}
               storageKey="leads"
-              defaultView="cards"
+              defaultView="list"
+              list={leadList}
               hideEmptyLanes
               summary={
                 <span className="font-mono text-xs">
@@ -2162,7 +2505,7 @@ export default function LeadsPage() {
                     </TableCell>
 
                     <TableCell>
-                      <div className="text-xs text-gray-800 flex items-center gap-1">
+                      <div className="text-xs text-[#14213D] flex items-center gap-1">
                         <MapPin className="h-3 w-3 text-[#4A5568]" />
                         <span>{org.city || '—'}, {org.state || '—'}</span>
                       </div>
@@ -2172,7 +2515,7 @@ export default function LeadsPage() {
                     </TableCell>
 
                     <TableCell>
-                      <span className="px-2 py-0.5 rounded bg-[#F8FAFC] border border-[#DCD8CE] text-[11px] font-medium text-gray-700">
+                      <span className="px-2 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] text-[11px] font-medium text-[#14213D]">
                         {org.sector || 'Government / PSU'}
                       </span>
                     </TableCell>
@@ -2193,7 +2536,7 @@ export default function LeadsPage() {
                     </TableCell>
 
                     <TableCell>
-                      <span className="font-semibold text-gray-800">
+                      <span className="font-semibold text-[#14213D]">
                         {org.current_salesperson || 'Unassigned'}
                       </span>
                     </TableCell>
@@ -2206,8 +2549,8 @@ export default function LeadsPage() {
 
                     <TableCell>
                       {org.last_interaction_at ? (
-                        <div className="text-[11px] font-mono text-gray-700">
-                          {new Date(org.last_interaction_at).toLocaleDateString('en-IN')}
+                        <div className="text-[11px] font-mono text-[#14213D]">
+                          {formatDateIN(org.last_interaction_at)}
                         </div>
                       ) : (
                         <span className="text-[#4A5568] italic text-[10px]">No interactions</span>
@@ -2302,9 +2645,9 @@ export default function LeadsPage() {
                     <TableRow key={fu.id}>
                       <TableCell>
                         <div className="flex items-center gap-1.5">
-                          <Clock className={`h-4 w-4 ${isOverdue ? 'text-red-600' : isToday ? 'text-amber-600' : 'text-[#0F5E63]'}`} />
+                          <Clock className={`h-4 w-4 ${isOverdue ? 'text-[#881337]' : isToday ? 'text-[#9A3412]' : 'text-[#0F5E63]'}`} />
                           <span className="font-mono font-bold text-xs text-[#14213D]">
-                            {new Date(fu.due_date).toLocaleDateString('en-IN')}
+                            {formatDateIN(fu.due_date)}
                           </span>
                           {fu.due_time && (
                             <span className="font-mono text-[10px] text-[#4A5568]">{String(fu.due_time).slice(0, 5)}</span>
@@ -2348,17 +2691,31 @@ export default function LeadsPage() {
                       </TableCell>
 
                       <TableCell>
-                        <span className="font-semibold text-gray-800 text-xs">
-                          {fu.assigned_salesperson_name || 'Sales Officer'}
+                        <span className="font-semibold text-[#14213D] text-xs">
+                          {fu.assigned_to_name || fu.assigned_salesperson_name || 'Unassigned'}
                         </span>
                       </TableCell>
 
                       <TableCell>
-                        <p className="text-xs text-gray-700 leading-snug max-w-sm line-clamp-2">
-                          {fu.remarks || 'Standard pipeline follow-up'}
-                        </p>
+                        {(() => {
+                          // Remarks accumulate one line per event (created, rescheduled …): show the objective and the latest note
+                          const lines = String(fu.remarks || '').split('\n').map((l) => l.trim()).filter(Boolean);
+                          const latest = lines.length > 1 ? lines[lines.length - 1] : null;
+                          return (
+                            <>
+                              <p className="text-xs text-[#14213D] leading-snug max-w-sm line-clamp-2">
+                                {lines[0] || 'Standard pipeline follow-up'}
+                              </p>
+                              {latest && (
+                                <div className="text-[10px] text-[#9A3412] mt-0.5 max-w-sm line-clamp-2" title={lines.slice(1).join('\n')}>
+                                  {latest}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                         {fu.outcome && (
-                          <div className="text-[10px] text-emerald-700 mt-0.5">
+                          <div className="text-[10px] text-[#0B4A4E] mt-0.5">
                             Outcome: {fu.outcome}
                           </div>
                         )}
@@ -2387,6 +2744,9 @@ export default function LeadsPage() {
                                 setScheduleNextFollowup(false);
                                 setNextFollowupDueDate('');
                                 setNextFollowupDueTime('');
+                                setCompletionOutcomeError(null);
+                                setNextFollowupDateError(null);
+                                setFormError(null);
                                 setIsCompleteFollowupOpen(true);
                               }}
                               leftIcon={<Check className="h-3 w-3" />}
@@ -2401,6 +2761,8 @@ export default function LeadsPage() {
                                 setRescheduleDate(calendarDay(fu.due_date));
                                 setRescheduleTime(fu.due_time ? String(fu.due_time).slice(0, 5) : '');
                                 setRescheduleRemarks('');
+                                setRescheduleDateError(null);
+                                setFormError(null);
                                 setIsRescheduleFollowupOpen(true);
                               }}
                             >
@@ -2423,8 +2785,25 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       {activeTab === 'reports' && (
         <div className="space-y-4">
+          {reportErrors[reportSubTab] ? (
+            <InfoCallout variant="warning" title="Report unavailable">
+              {reportErrors[reportSubTab]}
+            </InfoCallout>
+          ) : (
+            !reportsLoading &&
+            ((reportSubTab === 'salesperson' && salespersonReport.length === 0) ||
+              (reportSubTab === 'zones' && zoneReport.length === 0) ||
+              (reportSubTab === 'products' && productReport.length === 0) ||
+              (reportSubTab === 'interactions' && interactionReport.length === 0)) && (
+              <EmptyState
+                icon={<Activity />}
+                title="No data for this report yet"
+                description="Leads, follow-ups and touchpoints in your scope will appear here as they are recorded."
+              />
+            )
+          )}
           {/* Sub-report 1: Salesperson Performance */}
-          {reportSubTab === 'salesperson' && (
+          {reportSubTab === 'salesperson' && salespersonReport.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle>Salesperson Conversion & Pipeline Ownership</CardTitle>
@@ -2451,15 +2830,15 @@ export default function LeadsPage() {
                           {sp.salesperson_name}
                         </TableCell>
                         <TableCell className="font-semibold text-center">{sp.total_leads}</TableCell>
-                        <TableCell className="text-center font-medium text-emerald-700">{sp.fresh_leads}</TableCell>
-                        <TableCell className="text-center font-medium text-amber-700">{sp.reapproached_leads}</TableCell>
+                        <TableCell className="text-center font-medium text-[#0B4A4E]">{sp.fresh_leads}</TableCell>
+                        <TableCell className="text-center font-medium text-[#7C2D12]">{sp.reapproached_leads}</TableCell>
                         <TableCell className="text-center font-bold text-[#0F5E63]">{sp.active_leads}</TableCell>
-                        <TableCell className="text-center font-extrabold text-emerald-700">{sp.converted_leads}</TableCell>
-                        <TableCell className="text-center text-red-700 font-medium">{sp.lost_leads}</TableCell>
+                        <TableCell className="text-center font-extrabold text-[#0B4A4E]">{sp.converted_leads}</TableCell>
+                        <TableCell className="text-center text-[#700F2D] font-medium">{sp.lost_leads}</TableCell>
                         <TableCell className="text-center font-mono">{sp.pending_followups}</TableCell>
                         <TableCell className="text-center">
                           {Number(sp.overdue_followups) > 0 ? (
-                            <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs">
+                            <span className="px-2 py-0.5 rounded-full bg-[#FCE8EC] text-[#700F2D] font-bold text-xs">
                               {sp.overdue_followups}
                             </span>
                           ) : (
@@ -2475,7 +2854,7 @@ export default function LeadsPage() {
           )}
 
           {/* Sub-report 2: Territorial Zone Breakdown */}
-          {reportSubTab === 'zones' && (
+          {reportSubTab === 'zones' && zoneReport.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle>Territorial Zone & Regional Pipeline Analysis</CardTitle>
@@ -2497,12 +2876,12 @@ export default function LeadsPage() {
                     {zoneReport.map((z, idx) => (
                       <TableRow key={idx}>
                         <TableCell className="font-bold text-[#14213D]">{z.zone_name}</TableCell>
-                        <TableCell className="font-medium text-gray-700">{z.region_name}</TableCell>
+                        <TableCell className="font-medium text-[#14213D]">{z.region_name}</TableCell>
                         <TableCell className="text-center font-bold text-[#0F5E63]">{z.total_leads}</TableCell>
-                        <TableCell className="text-center font-semibold text-emerald-700">{z.fresh_leads}</TableCell>
-                        <TableCell className="text-center font-semibold text-amber-700">{z.reapproached_leads}</TableCell>
-                        <TableCell className="text-center font-bold text-emerald-700">{z.converted_leads}</TableCell>
-                        <TableCell className="text-center font-medium text-red-700">{z.lost_leads}</TableCell>
+                        <TableCell className="text-center font-semibold text-[#0B4A4E]">{z.fresh_leads}</TableCell>
+                        <TableCell className="text-center font-semibold text-[#7C2D12]">{z.reapproached_leads}</TableCell>
+                        <TableCell className="text-center font-bold text-[#0B4A4E]">{z.converted_leads}</TableCell>
+                        <TableCell className="text-center font-medium text-[#700F2D]">{z.lost_leads}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -2512,7 +2891,7 @@ export default function LeadsPage() {
           )}
 
           {/* Sub-report 3: Product Demand Intelligence */}
-          {reportSubTab === 'products' && (
+          {reportSubTab === 'products' && productReport.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle>Product Demand & Inquiry Heatmap</CardTitle>
@@ -2536,8 +2915,8 @@ export default function LeadsPage() {
                           <Badge variant="outline" size="sm">{p.category?.toUpperCase() || 'DEFENCE'}</Badge>
                         </TableCell>
                         <TableCell className="text-center font-bold text-[#0F5E63]">{p.total_leads}</TableCell>
-                        <TableCell className="text-center font-semibold text-amber-700">{p.active_leads}</TableCell>
-                        <TableCell className="text-center font-extrabold text-emerald-700">{p.converted_leads}</TableCell>
+                        <TableCell className="text-center font-semibold text-[#7C2D12]">{p.active_leads}</TableCell>
+                        <TableCell className="text-center font-extrabold text-[#0B4A4E]">{p.converted_leads}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -2565,7 +2944,7 @@ export default function LeadsPage() {
                   <div className="mt-4 pt-2 border-t border-[#DCD8CE] flex items-baseline justify-between">
                     <span className="text-[10px] text-[#4A5568] font-semibold">Total Logged</span>
                     <span className="text-xl font-extrabold text-[#0F5E63]">
-                      {ir.total_interactions}
+                      {ir.total_interactions ?? ir.count}
                     </span>
                   </div>
                 </div>
@@ -2585,19 +2964,21 @@ export default function LeadsPage() {
         description="Capture comprehensive opportunity intelligence, contact person, jurisdiction, and initial interaction."
         maxWidth="4xl"
       >
-        <form onSubmit={handleCreateLead} className="text-xs">
+        {/* noValidate: required fields are checked by validateLeadForm and reported inline, all at once (QA DEF-102) */}
+        <form onSubmit={handleCreateLead} noValidate className="text-xs">
           <FormSteps
             onCancel={handleCloseCreateLead}
+            validateStep={validateLeadStep}
             banner={
               (createLeadError || formError) && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 flex items-center gap-2">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] flex items-center gap-2">
                   <AlertCircle className="h-4 w-4 shrink-0" />
                   <span className="font-medium">{createLeadError || formError}</span>
                 </div>
               )
             }
             submit={
-              <Button type="submit" variant="primary" isLoading={actionLoading}>
+              <Button type="submit" variant="primary" isLoading={actionLoading} disabled={actionLoading}>
                 <span className="sm:hidden">Register Lead</span>
                 <span className="hidden sm:inline">Register Lead Opportunity</span>
               </Button>
@@ -2645,6 +3026,7 @@ export default function LeadsPage() {
                     value={leadForm.organisation_name}
                     onChange={(e) => setLeadForm({ ...leadForm, organisation_name: e.target.value })}
                     placeholder="e.g. Central Reserve Police Force or Western Naval Command"
+                    error={leadErrors.organisation_name}
                   />
                   <Input
                     label="Department / Unit / Wing"
@@ -2662,19 +3044,19 @@ export default function LeadsPage() {
                   </div>
                 )}
                 {duplicateMatches.length > 0 && (
-                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 space-y-2">
+                  <div className="p-3 rounded-xl bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] space-y-2">
                     <div className="flex items-center gap-2 font-bold text-xs">
-                      <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                      <AlertTriangle className="h-4 w-4 text-[#7C2D12] shrink-0" />
                       <span>Possible Duplicate Organisation Detected!</span>
                     </div>
-                    <p className="text-[11px] text-amber-800 leading-snug">
+                    <p className="text-[11px] text-[#7C2D12] leading-snug">
                       {duplicateSuggestion}
                     </p>
                     <div className="space-y-1.5 pt-1">
                       {duplicateMatches.map((m) => (
                         <div
                           key={m.id}
-                          className="flex flex-col gap-2 p-2 rounded-lg bg-white border border-amber-200 sm:flex-row sm:items-center sm:justify-between"
+                          className="flex flex-col gap-2 p-2 rounded-lg bg-white border border-[#E9C9B4] sm:flex-row sm:items-center sm:justify-between"
                         >
                           <div className="min-w-0">
                             <span className="font-bold text-[#14213D] block">{m.name}</span>
@@ -2710,6 +3092,7 @@ export default function LeadsPage() {
                   label="Select Existing Organisation Account *"
                   required
                   value={leadForm.organisation_id}
+                  error={leadErrors.organisation_id}
                   onChange={(e) => handleSelectExistingOrg(e.target.value)}
                   options={[
                     { value: '', label: 'Select Organisation...' },
@@ -2736,19 +3119,30 @@ export default function LeadsPage() {
                 label="City *"
                 required
                 value={leadForm.city}
-                onChange={(e) => setLeadForm({ ...leadForm, city: e.target.value })}
+                onChange={(e) => handleLeadCityChange(e.target.value)}
                 placeholder="e.g. New Delhi"
+                error={leadErrors.city}
               />
-              <Input
-                label="State *"
+              <Select
+                label="State / UT *"
                 required
                 value={leadForm.state}
                 onChange={(e) => setLeadForm({ ...leadForm, state: e.target.value })}
-                placeholder="e.g. Delhi or Maharashtra"
+                error={leadErrors.state}
+                helperText={stateOfCity(leadForm.city) === leadForm.state && leadForm.state ? `Filled in from ${leadForm.city.trim()}` : undefined}
+                options={[
+                  { value: '', label: 'Select State / UT...' },
+                  ...INDIAN_STATES.map((st) => ({ value: st, label: st })),
+                  // a legacy free-text state on an existing account stays visible (and is flagged) until corrected
+                  ...(leadForm.state && !INDIAN_STATES.includes(leadForm.state)
+                    ? [{ value: leadForm.state, label: `${leadForm.state} (not recognised)` }]
+                    : []),
+                ]}
               />
               <Select
                 label="Sector / Department *"
                 required
+                error={leadErrors.sector}
                 value={leadForm.sector}
                 onChange={(e) => setLeadForm({ ...leadForm, sector: e.target.value })}
                 options={[
@@ -2762,6 +3156,7 @@ export default function LeadsPage() {
               <Select
                 label="Zone *"
                 required
+                error={leadErrors.zone_id}
                 value={leadForm.zone_id}
                 onChange={(e) => handleZoneChange(e.target.value)}
                 options={[
@@ -2772,6 +3167,7 @@ export default function LeadsPage() {
               <Select
                 label="Region *"
                 required
+                error={leadErrors.region_id}
                 value={leadForm.region_id}
                 onChange={(e) => setLeadForm({ ...leadForm, region_id: e.target.value })}
                 options={[
@@ -2796,6 +3192,7 @@ export default function LeadsPage() {
                 value={leadForm.contact_name}
                 onChange={(e) => setLeadForm({ ...leadForm, contact_name: e.target.value })}
                 placeholder="e.g. Col. Alok Mathur or Shri R.K. Sharma"
+                error={leadErrors.contact_name}
               />
               <Input
                 label="Designation / Rank *"
@@ -2803,15 +3200,20 @@ export default function LeadsPage() {
                 value={leadForm.contact_designation}
                 onChange={(e) => setLeadForm({ ...leadForm, contact_designation: e.target.value })}
                 placeholder="e.g. DIG Procurement, Director, ADG"
+                error={leadErrors.contact_designation}
               />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
                 label="Mobile / Direct Phone *"
                 required
+                type="tel"
+                inputMode="tel"
+                maxLength={16}
                 value={leadForm.contact_mobile}
                 onChange={(e) => setLeadForm({ ...leadForm, contact_mobile: e.target.value })}
                 placeholder="+91 98110 00000"
+                error={leadErrors.contact_mobile}
               />
               <Input
                 label="Email Address"
@@ -2819,6 +3221,7 @@ export default function LeadsPage() {
                 value={leadForm.contact_email}
                 onChange={(e) => setLeadForm({ ...leadForm, contact_email: e.target.value })}
                 placeholder="officer@crpf.gov.in"
+                error={leadErrors.contact_email}
               />
             </div>
           </div>
@@ -2835,6 +3238,7 @@ export default function LeadsPage() {
                 <Select
                   label="Product Interests *"
                   required={leadForm.product_ids.length === 0}
+                  error={leadErrors.product_ids}
                   value=""
                   onChange={(e) => {
                     const pid = e.target.value;
@@ -2881,7 +3285,9 @@ export default function LeadsPage() {
                 required
                 value={leadForm.lead_status}
                 onChange={(e) => setLeadForm({ ...leadForm, lead_status: e.target.value as LeadStatus })}
-                options={LEAD_STATUS_OPTIONS}
+                error={leadErrors.lead_status}
+                helperText="Later stages are reached from the lead's lifecycle actions"
+                options={LEAD_STATUS_OPTIONS.filter((o) => INITIAL_LEAD_STATUSES.includes(o.value))}
               />
             </div>
             {leadForm.product_ids.length > 0 && (
@@ -2902,7 +3308,7 @@ export default function LeadsPage() {
                             product_ids: leadForm.product_ids.filter((id) => id !== pid),
                           })
                         }
-                        className="text-[#0F5E63] hover:text-red-700 transition-colors"
+                        className="text-[#0F5E63] hover:text-[#700F2D] transition-colors"
                         title="Remove product"
                       >
                         <X className="h-3 w-3" />
@@ -2917,9 +3323,11 @@ export default function LeadsPage() {
                 label="Estimated Deal Value (₹ Lakh)"
                 type="number"
                 step="0.1"
+                min="0.01"
                 value={leadForm.value_lakh}
                 onChange={(e) => setLeadForm({ ...leadForm, value_lakh: e.target.value })}
                 placeholder="e.g. 45.0"
+                error={leadErrors.value_lakh}
               />
               <div className="sm:col-span-2 flex items-center sm:pt-5">
                 <span className="text-[11px] text-[#4A5568] italic">
@@ -2942,9 +3350,15 @@ export default function LeadsPage() {
                 required
                 value={leadForm.assigned_to}
                 onChange={(e) => handleSalespersonChange(e.target.value)}
+                disabled={user?.role === 'sales'}
+                error={leadErrors.assigned_to}
+                helperText={user?.role === 'sales' ? 'Leads you register are assigned to you' : undefined}
                 options={[
                   { value: '', label: 'Select Salesperson...' },
-                  ...usersList.map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
+                  ...assignableSalespeople.map((u: any) => ({
+                    value: u.id,
+                    label: `${u.full_name} (${u.role === 'regional_manager' ? 'Regional Manager' : 'Sales'})`,
+                  })),
                 ]}
               />
               <Select
@@ -2953,7 +3367,10 @@ export default function LeadsPage() {
                 onChange={(e) => setLeadForm({ ...leadForm, regional_manager_id: e.target.value })}
                 options={[
                   { value: '', label: 'Auto-assigned from reporting manager' },
-                  ...usersList.filter((u) => u.role === 'regional_manager' || u.role === 'management' || u.role === 'admin').map((u) => ({ value: u.id, label: `${u.full_name} (${u.role})` })),
+                  ...regionalManagerOptions.map((u) => ({
+                    value: u.id,
+                    label: `${u.full_name} (${u.role === 'regional_manager' ? `RM${u.region_name ? ` · ${u.region_name}` : ''}` : 'Management'})`,
+                  })),
                 ]}
               />
             </div>
@@ -2962,8 +3379,10 @@ export default function LeadsPage() {
                 label="Last Interaction Date *"
                 type="date"
                 required
+                max={istToday()}
                 value={leadForm.last_interaction_date}
                 onChange={(e) => setLeadForm({ ...leadForm, last_interaction_date: e.target.value })}
+                error={leadErrors.last_interaction_date}
               />
               <Select
                 label="Last Interaction Type"
@@ -2974,8 +3393,10 @@ export default function LeadsPage() {
               <Input
                 label="Next Follow-up Date (Optional)"
                 type="date"
+                min={leadForm.last_interaction_date > istToday() ? leadForm.last_interaction_date : istToday()}
                 value={leadForm.next_followup_date}
                 onChange={(e) => setLeadForm({ ...leadForm, next_followup_date: e.target.value })}
+                error={leadErrors.next_followup_date}
               />
             </div>
             <Textarea
@@ -2998,7 +3419,7 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       <Modal
         isOpen={isLeadDetailOpen}
-        onClose={() => setIsLeadDetailOpen(false)}
+        onClose={handleCloseLeadDetail}
         title={selectedLead?.title || (selectedLead?.organisation_name ? `${selectedLead.organisation_name} — Opportunity Intelligence` : 'Opportunity Intelligence')}
         description={`Account: ${selectedLead?.organisation_name || 'Government Body'}${selectedLead?.department ? ` • ${selectedLead.department}` : ''}${selectedLead?.city ? ` (${selectedLead.city}, ${selectedLead.state || ''})` : ''}`}
         maxWidth="4xl"
@@ -3089,7 +3510,7 @@ export default function LeadsPage() {
               )}
 
               {formError && (
-                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
+                <div className="p-2.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] text-xs font-medium">
                   {formError}
                 </div>
               )}
@@ -3103,7 +3524,11 @@ export default function LeadsPage() {
                 const nextStage = PIPELINE.find((st, i) => i > curIdx && allowed.includes(st));
                 const sideActions = allowed.filter((st) => st !== nextStage && !PIPELINE.includes(st) || (st !== nextStage && PIPELINE.includes(st) && PIPELINE.indexOf(st) > curIdx && st !== 'converted'));
                 const closeActions = allowed.filter((st) => st === 'converted' || st === 'lost');
-                const otherActions = sideActions.filter((st) => st !== 'lost' && st !== 'converted');
+                // A won lead offers only management's reopen actions (the API returns none to anyone else — QA DEF-055)
+                const otherActions =
+                  current === 'converted' || current === 'won'
+                    ? allowed
+                    : sideActions.filter((st) => st !== 'lost' && st !== 'converted');
                 return (
                   <div className="space-y-3">
                     <ol className="flex flex-wrap items-center gap-1.5">
@@ -3162,7 +3587,13 @@ export default function LeadsPage() {
                             isLoading={actionLoading && targetStatus === st}
                             onClick={() => handleDirectAdvanceStatus(st)}
                           >
-                            {st === 'follow_up' ? 'Schedule Follow-up' : st === 'on_hold' ? 'Put On Hold' : `Skip to ${label(st)}`}
+                            {current === 'converted' || current === 'won'
+                              ? `Reopen to ${label(st)} (management)`
+                              : st === 'follow_up'
+                              ? 'Schedule Follow-up'
+                              : st === 'on_hold'
+                              ? 'Put On Hold'
+                              : `Skip to ${label(st)}`}
                           </Button>
                         ))}
                         {closeActions.map((st) => (
@@ -3362,7 +3793,7 @@ export default function LeadsPage() {
                 <div>
                   <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Lead Created / Registered</span>
                   <span className="font-mono text-xs text-[#14213D] block mt-0.5">
-                    {selectedLead.created_at ? new Date(selectedLead.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
+                    {selectedLead.created_at ? new Date(selectedLead.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—'}
                   </span>
                 </div>
               </div>
@@ -3387,11 +3818,11 @@ export default function LeadsPage() {
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-xs font-semibold text-[#14213D]">
                       {selectedLead.last_contact_date
-                        ? new Date(selectedLead.last_contact_date).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedLead.last_contact_date)
                         : selectedLead.last_interaction_at
-                        ? new Date(selectedLead.last_interaction_at).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedLead.last_interaction_at)
                         : selectedLead.interactions?.[0]?.occurred_on
-                        ? new Date(selectedLead.interactions[0].occurred_on).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedLead.interactions[0].occurred_on)
                         : 'None logged'}
                     </span>
                     <Badge variant="outline" size="sm" className="font-bold text-[10px]">
@@ -3405,11 +3836,11 @@ export default function LeadsPage() {
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-xs font-semibold text-[#14213D]">
                       {selectedLead.next_followup_date
-                        ? new Date(selectedLead.next_followup_date).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedLead.next_followup_date)
                         : selectedLead.next_followup_at
-                        ? new Date(selectedLead.next_followup_at).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedLead.next_followup_at)
                         : selectedLead.follow_ups?.[0]?.due_date
-                        ? new Date(selectedLead.follow_ups[0].due_date).toLocaleDateString('en-IN')
+                        ? formatDateIN(selectedLead.follow_ups[0].due_date)
                         : 'None scheduled'}
                     </span>
                     {(selectedLead.next_followup_date || selectedLead.next_followup_at || selectedLead.follow_ups?.[0]?.due_date) && (
@@ -3469,7 +3900,7 @@ export default function LeadsPage() {
                       <button
                         type="button"
                         onClick={() => handleRemoveProductInterest(p.product_id || p.id)}
-                        className="text-gray-400 hover:text-red-600 transition-colors"
+                        className="text-[#6B7280] hover:text-[#881337] transition-colors"
                         title="Remove product"
                       >
                         <X className="h-3.5 w-3.5" />
@@ -3526,7 +3957,7 @@ export default function LeadsPage() {
                   {selectedLead.assignment_history.map((h: any) => (
                     <div
                       key={h.id}
-                      className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] flex flex-col gap-1 text-[11px] sm:flex-row sm:items-center sm:justify-between"
+                      className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] flex flex-col gap-1 text-[11px] sm:flex-row sm:items-center sm:justify-between"
                     >
                       <div className="min-w-0">
                         <span className="font-semibold text-[#14213D]">
@@ -3537,7 +3968,7 @@ export default function LeadsPage() {
                         )}
                       </div>
                       <div className="text-[#4A5568] font-mono text-[10px] sm:shrink-0 sm:text-right">
-                        By {h.changed_by_name || 'Admin'} • {new Date(h.changed_at).toLocaleDateString('en-IN')}
+                        By {h.changed_by_name || 'Admin'} • {formatDateIN(h.changed_at)}
                       </div>
                     </div>
                   ))}
@@ -3594,7 +4025,7 @@ export default function LeadsPage() {
                 >
                   Log Touchpoint
                 </Button>
-                <Button variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => setIsLeadDetailOpen(false)}>
+                <Button variant="ghost" size="sm" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={handleCloseLeadDetail}>
                   Close
                 </Button>
               </div>
@@ -3609,21 +4040,25 @@ export default function LeadsPage() {
       <Modal
         isOpen={isStatusModalOpen}
         onClose={() => setIsStatusModalOpen(false)}
-        title={`Advance Opportunity Status: ${targetStatus.toUpperCase()}`}
-        description="Transitions are verified against Arihant BOS state machine rules."
+        title={isWinStatus(targetStatus) ? `Confirm Win: Mark Lead ${targetStatus.toUpperCase()}` : `Advance Opportunity Status: ${targetStatus.toUpperCase()}`}
+        description={
+          isWinStatus(targetStatus)
+            ? 'Record the order this opportunity was won on. A converted lead is closed and can be reopened only by management.'
+            : 'Transitions are verified against Arihant BOS state machine rules.'
+        }
         maxWidth="md"
         zIndex={60}
       >
-        <form onSubmit={handleStatusChange} className="space-y-4 text-xs">
+        <form onSubmit={handleStatusChange} noValidate className="space-y-4 text-xs">
           {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
               {formError}
             </div>
           )}
 
           {targetStatus === 'lost' && (
-            <div className="space-y-3 p-3 rounded-xl bg-red-50 border border-red-200">
-              <span className="font-bold text-red-900 block text-xs">
+            <div className="space-y-3 p-3 rounded-xl bg-[#FCE8EC] border border-[#F3C7CF]">
+              <span className="font-bold text-[#700F2D] block text-xs">
                 Mandatory Win/Loss Analysis Reason:
               </span>
               <Select
@@ -3650,7 +4085,40 @@ export default function LeadsPage() {
             </div>
           )}
 
-          <p className="text-gray-600">
+          {isWinStatus(targetStatus) && (
+            <div className="space-y-3 p-3 rounded-xl bg-[#E3EFEE] border border-[#0F5E63]/30">
+              <span className="font-bold text-[#0F5E63] block text-xs">Win details (purchase / supply order)</span>
+              <Input
+                label="PO / Supply Order Reference *"
+                required
+                value={winPoReference}
+                onChange={(e) => setWinPoReference(e.target.value)}
+                placeholder="e.g. GEMC-511687712345678 or SO/CRPF/2026/114"
+                error={statusFieldErrors.po_reference}
+              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Input
+                  label="Order Value (₹ Lakh)"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={winOrderValue}
+                  onChange={(e) => setWinOrderValue(e.target.value)}
+                  error={statusFieldErrors.order_value}
+                />
+                <Input
+                  label="Order Date"
+                  type="date"
+                  max={istToday()}
+                  value={winOrderDate}
+                  onChange={(e) => setWinOrderDate(e.target.value)}
+                  error={statusFieldErrors.order_date}
+                />
+              </div>
+            </div>
+          )}
+
+          <p className="text-[#4A5568]">
             Confirm advancing this opportunity from{' '}
             <strong className="text-[#14213D]">{selectedLead?.lead_status?.toUpperCase()}</strong> to{' '}
             <strong className="text-[#0F5E63]">{targetStatus.toUpperCase()}</strong>.
@@ -3664,10 +4132,10 @@ export default function LeadsPage() {
               type="submit"
               size="sm"
               className="h-10 flex-1 sm:h-8 sm:flex-none"
-              variant={targetStatus === 'lost' ? 'danger' : 'primary'}
+              variant={targetStatus === 'lost' ? 'danger' : isWinStatus(targetStatus) ? 'success' : 'primary'}
               isLoading={actionLoading}
             >
-              Confirm Transition
+              {isWinStatus(targetStatus) ? 'Confirm Win' : 'Confirm Transition'}
             </Button>
           </div>
         </form>
@@ -3686,13 +4154,13 @@ export default function LeadsPage() {
       >
         <form onSubmit={handleReassign} className="space-y-4 text-xs">
           {!canReassign && (
-            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-2.5">
-              <div className="flex items-center gap-2 font-semibold text-xs text-amber-800">
-                <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+            <div className="p-3.5 rounded-xl bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] space-y-2.5">
+              <div className="flex items-center gap-2 font-semibold text-xs text-[#7C2D12]">
+                <AlertTriangle className="h-4 w-4 text-[#9A3412] shrink-0" />
                 <span>Managerial Authorization Required</span>
               </div>
-              <p className="text-[11px] text-amber-700 leading-relaxed">
-                Under Arihant BOS territorial governance, lead ownership reassignment is restricted to <strong>Regional Manager</strong>, <strong>Management</strong>, or <strong>Admin</strong> roles to ensure account integrity. Your current active role is <span className="font-mono font-medium px-1.5 py-0.5 rounded bg-amber-100/70 border border-amber-300 text-amber-900">{user?.role}</span>.
+              <p className="text-[11px] text-[#7C2D12] leading-relaxed">
+                Under Arihant BOS territorial governance, lead ownership reassignment is restricted to <strong>Regional Manager</strong>, <strong>Management</strong>, or <strong>Admin</strong> roles to ensure account integrity. Your current active role is <span className="font-mono font-medium px-1.5 py-0.5 rounded bg-[#FBEBDD]/70 border border-[#E9C9B4] text-[#7C2D12]">{user?.role}</span>.
               </p>
               <div className="pt-1 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                 <Button
@@ -3721,7 +4189,7 @@ export default function LeadsPage() {
           )}
 
           {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
               {formError}
             </div>
           )}
@@ -3746,7 +4214,7 @@ export default function LeadsPage() {
 
           <div className="flex flex-col gap-2 pt-2 border-t border-[#DCD8CE] sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             {!canReassign ? (
-              <span className="text-[11px] text-amber-700 font-medium">
+              <span className="text-[11px] text-[#7C2D12] font-medium">
                 Switch role above to enable transfer.
               </span>
             ) : (
@@ -3791,7 +4259,7 @@ export default function LeadsPage() {
             banner={
               <div className="space-y-3">
                 {formError && (
-                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+                  <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
                     {formError}
                   </div>
                 )}
@@ -3813,7 +4281,7 @@ export default function LeadsPage() {
                   <div>
                     <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Requested Date:</span>
                     <span className="font-semibold text-[#14213D] block font-mono">
-                      📅 {demoForm.requested_date ? new Date(demoForm.requested_date).toLocaleDateString() : 'Pending'}
+                      📅 {demoForm.requested_date ? formatDateIN(demoForm.requested_date) : 'Pending'}
                     </span>
                   </div>
                   <div>
@@ -3962,10 +4430,10 @@ export default function LeadsPage() {
                         <span
                           className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
                             availCount > 0
-                              ? 'bg-emerald-100 text-emerald-800'
+                              ? 'bg-[#E3EFEE] text-[#0B4A4E]'
                               : total > 0
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-gray-100 text-gray-600'
+                              ? 'bg-[#FBEBDD] text-[#7C2D12]'
+                              : 'bg-[#ECE9E2] text-[#4A5568]'
                           }`}
                         >
                           {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
@@ -3990,17 +4458,17 @@ export default function LeadsPage() {
                     </span>
                   </div>
                   {activeLeadDemoFleet.availableCount > 0 ? (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
                       AVAILABLE ({activeLeadDemoFleet.availableCount} Ready)
                     </span>
                   ) : activeLeadDemoFleet.total > 0 ? (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#9A3412]" />
                       RESERVED ({activeLeadDemoFleet.total} in Fleet)
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#ECE9E2] text-[#14213D] border border-[#C9C4B8]">
                       No Fleet Unit
                     </span>
                   )}
@@ -4016,10 +4484,10 @@ export default function LeadsPage() {
                   </span>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px]">
                     <span>Fleet: <b>{activeLeadDemoFleet.total}</b></span>
-                    <span className="text-emerald-700">Ready: <b>{activeLeadDemoFleet.availableCount}</b></span>
-                    <span className="text-amber-700">In-Trial: <b>{activeLeadDemoFleet.reservedCount}</b></span>
+                    <span className="text-[#0B4A4E]">Ready: <b>{activeLeadDemoFleet.availableCount}</b></span>
+                    <span className="text-[#7C2D12]">In-Trial: <b>{activeLeadDemoFleet.reservedCount}</b></span>
                     {activeLeadDemoFleet.maintenanceCount > 0 && (
-                      <span className="text-red-700">Maint: <b>{activeLeadDemoFleet.maintenanceCount}</b></span>
+                      <span className="text-[#700F2D]">Maint: <b>{activeLeadDemoFleet.maintenanceCount}</b></span>
                     )}
                   </div>
                 </div>
@@ -4060,15 +4528,15 @@ export default function LeadsPage() {
                             </span>
                             <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
                             {isReady ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
                                 🟢 Ready
                               </span>
                             ) : isReserved ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
                                 🟡 Reserved
                               </span>
                             ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FCE8EC] text-[#700F2D] border border-[#F3C7CF]">
                                 🔴 Maint
                               </span>
                             )}
@@ -4103,7 +4571,7 @@ export default function LeadsPage() {
                       <Badge variant="success">● READY & AVAILABLE</Badge>
                     ) : selectedLeadEquipUnit.availability_status === 'reserved' || selectedLeadEquipUnit.availability_status === 'in_use' ? (
                       <Badge variant="warning">
-                        ○ RESERVED {selectedLeadEquipUnit.reserved_until ? `UNTIL ${new Date(selectedLeadEquipUnit.reserved_until).toLocaleDateString()}` : ''}
+                        ○ RESERVED {selectedLeadEquipUnit.reserved_until ? `UNTIL ${formatDateIN(selectedLeadEquipUnit.reserved_until)}` : ''}
                       </Badge>
                     ) : (
                       <Badge variant="danger">▲ MAINTENANCE: {selectedLeadEquipUnit.condition || 'Service Needed'}</Badge>
@@ -4139,7 +4607,7 @@ export default function LeadsPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
                     {getStandardKitAccessories(selectedLeadEquipUnit.product_name, selectedLeadEquipUnit.product_category).map((item, idx) => (
                       <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
-                        <CheckCircle className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                        <CheckCircle className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                         <span className="truncate text-[11px]">{item}</span>
                       </div>
                     ))}
@@ -4148,18 +4616,18 @@ export default function LeadsPage() {
 
                 {/* Status Note Callout */}
                 {selectedLeadEquipUnit.availability_status === 'available' ? (
-                  <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                  <div className="p-2 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[11px] flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-[#0B4A4E] shrink-0" />
                     <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedLeadEquipUnit.current_location} Depot.</span>
                   </div>
                 ) : selectedLeadEquipUnit.availability_status === 'reserved' || selectedLeadEquipUnit.availability_status === 'in_use' ? (
-                  <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0" />
+                  <div className="p-2 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[11px] flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-[#7C2D12] shrink-0" />
                     <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
                   </div>
                 ) : (
-                  <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4 text-red-700 shrink-0" />
+                  <div className="p-2 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] text-[11px] flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-[#700F2D] shrink-0" />
                     <span>Unit marked under maintenance ({selectedLeadEquipUnit.condition}). You may select another serial or custom kit.</span>
                   </div>
                 )}
@@ -4197,7 +4665,7 @@ export default function LeadsPage() {
                 </span>
               ) : (
                 <span className="text-[10px] text-[#4A5568]">
-                  Availability for {new Date(demoForm.requested_date).toLocaleDateString()}
+                  Availability for {formatDateIN(demoForm.requested_date)}
                 </span>
               )}
             </div>
@@ -4216,7 +4684,7 @@ export default function LeadsPage() {
               <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                   <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                    Demo Team Availability on {new Date(demoForm.requested_date).toLocaleDateString()}:
+                    Demo Team Availability on {formatDateIN(demoForm.requested_date)}:
                   </span>
                   <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
                 </div>
@@ -4240,7 +4708,7 @@ export default function LeadsPage() {
                         </div>
                         <span
                           className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
-                            isAvail ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                            isAvail ? 'bg-[#E3EFEE] text-[#0B4A4E]' : 'bg-[#FBEBDD] text-[#7C2D12]'
                           }`}
                         >
                           {isAvail ? '🟢 Available' : '🟡 Booked'}
@@ -4267,7 +4735,7 @@ export default function LeadsPage() {
                   </div>
                   <div>
                     {selectedLeadDemoMember.is_available ?? true ? (
-                      <Badge variant="success">● AVAILABLE ON {new Date(demoForm.requested_date).toLocaleDateString()}</Badge>
+                      <Badge variant="success">● AVAILABLE ON {formatDateIN(demoForm.requested_date)}</Badge>
                     ) : (
                       <Badge variant="warning">
                         ▲ BUSY ON {selectedLeadDemoMember.active_demo?.demo_no || 'ANOTHER TRIAL'}
@@ -4278,13 +4746,13 @@ export default function LeadsPage() {
 
                 <div className="text-[11px] text-[#4A5568]">
                   {selectedLeadDemoMember.is_available ?? true ? (
-                    <div className="flex items-center gap-1.5 text-emerald-800">
-                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                    <div className="flex items-center gap-1.5 text-[#0B4A4E]">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
                       <span>Specialist has zero trial schedule conflicts on this date and is cleared for field demonstration.</span>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1.5 text-amber-800">
-                      <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                    <div className="flex items-center gap-1.5 text-[#7C2D12]">
+                      <AlertTriangle className="h-3.5 w-3.5 text-[#9A3412] shrink-0" />
                       <span>Specialist has active trial booking for <strong>{selectedLeadDemoMember.active_demo?.organisation_name || 'Client'}</strong>. Booking will flag a schedule overlap notice.</span>
                     </div>
                   )}
@@ -4372,7 +4840,7 @@ export default function LeadsPage() {
       >
         <form onSubmit={handleSubmitProposalTransition} className="space-y-4 text-xs">
           {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
               {formError}
             </div>
           )}
@@ -4492,7 +4960,7 @@ export default function LeadsPage() {
       >
         <form onSubmit={handleSubmitDiscussionTransition} className="space-y-4 text-xs">
           {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
               {formError}
             </div>
           )}
@@ -4661,7 +5129,7 @@ export default function LeadsPage() {
                 <span className="font-bold text-[#0F5E63] mt-0.5 block">
                   {customerManagementSummary?.current_salesperson || selectedCustomer.current_salesperson || 'Assigned Rep'}
                 </span>
-                <span className="text-[10px] text-emerald-600 font-semibold block">Active Territory Owner</span>
+                <span className="text-[10px] text-[#0F5E63] font-semibold block">Active Territory Owner</span>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Pipeline Volume</span>
@@ -4684,7 +5152,7 @@ export default function LeadsPage() {
                 className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'management'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
+                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
                 }`}
               >
                 <ShieldCheck className="h-3.5 w-3.5" />
@@ -4699,12 +5167,12 @@ export default function LeadsPage() {
                 className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'timeline'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
+                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
                 }`}
               >
                 <History className="h-3.5 w-3.5" />
                 <span>Chronological Timeline</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'timeline' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'timeline' ? 'bg-white/20 text-white' : 'bg-[#DCD8CE] text-[#14213D]'}`}>
                   {customerTimeline.length}
                 </span>
               </button>
@@ -4717,12 +5185,12 @@ export default function LeadsPage() {
                 className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'contacts'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
+                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
                 }`}
               >
                 <Users className="h-3.5 w-3.5" />
                 <span>Contacts Roster</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'contacts' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'contacts' ? 'bg-white/20 text-white' : 'bg-[#DCD8CE] text-[#14213D]'}`}>
                   {customerContacts.length}
                 </span>
               </button>
@@ -4735,12 +5203,12 @@ export default function LeadsPage() {
                 className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'deals'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
+                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
                 }`}
               >
                 <Briefcase className="h-3.5 w-3.5" />
                 <span>Opportunities</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'deals' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'deals' ? 'bg-white/20 text-white' : 'bg-[#DCD8CE] text-[#14213D]'}`}>
                   {customerLeads.length}
                 </span>
               </button>
@@ -4753,7 +5221,7 @@ export default function LeadsPage() {
                 className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
                   c360Tab === 'linked'
                     ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#F8FAFC] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
+                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
                 }`}
               >
                 <Layers className="h-3.5 w-3.5" />
@@ -4775,7 +5243,7 @@ export default function LeadsPage() {
                       </span>
                       {customerManagementSummary?.first_interaction?.occurred_on && (
                         <Badge variant="info" size="sm" className="font-mono text-[10px]">
-                          {new Date(customerManagementSummary.first_interaction.occurred_on).toLocaleDateString('en-IN')}
+                          {formatDateIN(customerManagementSummary.first_interaction.occurred_on)}
                         </Badge>
                       )}
                     </div>
@@ -4794,11 +5262,11 @@ export default function LeadsPage() {
                             Client Contact: <span className="font-medium text-[#14213D]">{customerManagementSummary.first_interaction.contact_name}</span>
                           </div>
                         )}
-                        <p className="text-gray-700 italic bg-[#F8FAFC] p-2 rounded-lg border border-[#DCD8CE]">
+                        <p className="text-[#14213D] italic bg-[#FBFAF7] p-2 rounded-lg border border-[#DCD8CE]">
                           "{customerManagementSummary.first_interaction.remarks || customerManagementSummary.first_interaction.notes || 'Initial prospect connection established.'}"
                         </p>
                         {customerManagementSummary.first_interaction.outcome && (
-                          <div className="text-[10px] text-emerald-700 font-semibold">
+                          <div className="text-[10px] text-[#0B4A4E] font-semibold">
                             Outcome: {customerManagementSummary.first_interaction.outcome}
                           </div>
                         )}
@@ -4817,7 +5285,7 @@ export default function LeadsPage() {
                       </span>
                       {customerManagementSummary?.latest_interaction?.occurred_on && (
                         <Badge variant="success" size="sm" className="font-mono text-[10px]">
-                          {new Date(customerManagementSummary.latest_interaction.occurred_on).toLocaleDateString('en-IN')}
+                          {formatDateIN(customerManagementSummary.latest_interaction.occurred_on)}
                         </Badge>
                       )}
                     </div>
@@ -4836,11 +5304,11 @@ export default function LeadsPage() {
                             Client Contact: <span className="font-medium text-[#14213D]">{customerManagementSummary.latest_interaction.contact_name}</span>
                           </div>
                         )}
-                        <p className="text-gray-700 italic bg-[#F8FAFC] p-2 rounded-lg border border-[#DCD8CE]">
+                        <p className="text-[#14213D] italic bg-[#FBFAF7] p-2 rounded-lg border border-[#DCD8CE]">
                           "{customerManagementSummary.latest_interaction.remarks || customerManagementSummary.latest_interaction.notes || 'Interaction discussion recorded.'}"
                         </p>
                         {customerManagementSummary.latest_interaction.outcome && (
-                          <div className="text-[10px] text-emerald-700 font-semibold">
+                          <div className="text-[10px] text-[#0B4A4E] font-semibold">
                             Outcome: {customerManagementSummary.latest_interaction.outcome}
                           </div>
                         )}
@@ -4884,16 +5352,16 @@ export default function LeadsPage() {
                         {customerManagementSummary.previous_salespersons.map((h: any, idx: number) => (
                           <div
                             key={idx}
-                            className="p-2 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] flex items-center justify-between gap-2 text-[10px]"
+                            className="p-2 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between gap-2 text-[10px]"
                           >
                             <div className="min-w-0">
-                              <span className="font-semibold text-gray-800">
+                              <span className="font-semibold text-[#14213D]">
                                 {h.previous_salesperson_name || 'Unassigned'} → {h.new_salesperson_name}
                               </span>
                               {h.reason && <span className="text-[#4A5568] block">Reason: {h.reason}</span>}
                             </div>
                             <span className="shrink-0 text-[#4A5568] font-mono text-[9px]">
-                              {new Date(h.changed_at).toLocaleDateString('en-IN')}
+                              {formatDateIN(h.changed_at)}
                             </span>
                           </div>
                         ))}
@@ -4954,25 +5422,25 @@ export default function LeadsPage() {
                       {customerManagementSummary.previous_meetings.map((m: any) => (
                         <div
                           key={m.id}
-                          className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] space-y-1 text-[11px]"
+                          className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-1 text-[11px]"
                         >
                           <div className="flex items-center justify-between">
                             <Badge variant="outline" size="sm" className="uppercase font-bold text-[9px]">
                               {m.type === 'physical_visit' ? 'Face-to-Face Visit' : m.type === 'video_conference' ? 'Video Conference' : m.type === 'demo' ? 'Demonstration' : m.type}
                             </Badge>
                             <span className="text-[#4A5568] font-mono text-[10px]">
-                              {new Date(m.occurred_on || m.interaction_date).toLocaleDateString('en-IN')}
+                              {formatDateIN(m.occurred_on || m.interaction_date)}
                             </span>
                           </div>
                           <div className="text-[#4A5568] text-[10px]">
                             Conducted by: <strong className="text-[#14213D]">{m.employee_name || 'Executive'}</strong>
                             {m.contact_name && <span> • Contact: <strong className="text-[#14213D]">{m.contact_name}</strong></span>}
                           </div>
-                          <p className="text-gray-700 line-clamp-2">
+                          <p className="text-[#14213D] line-clamp-2">
                             {m.remarks || m.notes || 'Meeting concluded.'}
                           </p>
                           {m.outcome && (
-                            <div className="text-[10px] text-emerald-700 font-semibold">
+                            <div className="text-[10px] text-[#0B4A4E] font-semibold">
                               Outcome: {m.outcome}
                             </div>
                           )}
@@ -4980,7 +5448,7 @@ export default function LeadsPage() {
                       ))}
                     </div>
                   ) : (
-                    <div className="text-[11px] text-[#4A5568] italic p-2 bg-[#F8FAFC] rounded-lg border border-[#DCD8CE] text-center">
+                    <div className="text-[11px] text-[#4A5568] italic p-2 bg-[#FBFAF7] rounded-lg border border-[#DCD8CE] text-center">
                       No physical visits or product demonstrations recorded yet.
                     </div>
                   )}
@@ -4996,27 +5464,27 @@ export default function LeadsPage() {
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div className="p-2.5 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] text-center">
+                    <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-center">
                       <span className="text-[10px] text-[#4A5568] uppercase font-bold block">Total Scheduled</span>
                       <span className="text-sm font-extrabold text-[#14213D] mt-0.5 block">
                         {customerManagementSummary?.follow_up_history?.total || 0}
                       </span>
                     </div>
-                    <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-center">
-                      <span className="text-[10px] text-amber-800 uppercase font-bold block">Pending</span>
-                      <span className="text-sm font-extrabold text-amber-800 mt-0.5 block">
+                    <div className="p-2.5 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-center">
+                      <span className="text-[10px] text-[#7C2D12] uppercase font-bold block">Pending</span>
+                      <span className="text-sm font-extrabold text-[#7C2D12] mt-0.5 block">
                         {customerManagementSummary?.follow_up_history?.pending || 0}
                       </span>
                     </div>
-                    <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
-                      <span className="text-[10px] text-emerald-800 uppercase font-bold block">Completed</span>
-                      <span className="text-sm font-extrabold text-emerald-800 mt-0.5 block">
+                    <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-center">
+                      <span className="text-[10px] text-[#0B4A4E] uppercase font-bold block">Completed</span>
+                      <span className="text-sm font-extrabold text-[#0B4A4E] mt-0.5 block">
                         {customerManagementSummary?.follow_up_history?.completed || 0}
                       </span>
                     </div>
-                    <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-center">
-                      <span className="text-[10px] text-rose-800 uppercase font-bold block">Overdue</span>
-                      <span className="text-sm font-extrabold text-rose-800 mt-0.5 block">
+                    <div className="p-2.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-center">
+                      <span className="text-[10px] text-[#700F2D] uppercase font-bold block">Overdue</span>
+                      <span className="text-sm font-extrabold text-[#700F2D] mt-0.5 block">
                         {customerManagementSummary?.follow_up_history?.overdue || 0}
                       </span>
                     </div>
@@ -5038,7 +5506,7 @@ export default function LeadsPage() {
                   {customerManagementSummary?.current_opportunity_status && customerManagementSummary.current_opportunity_status.length > 0 ? (
                     <div className="divide-y divide-[#DCD8CE] border border-[#DCD8CE] rounded-lg overflow-hidden">
                       {customerManagementSummary.current_opportunity_status.map((opp: any) => (
-                        <div key={opp.id} className="p-2.5 bg-white flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between text-[11px] hover:bg-[#F8FAFC]">
+                        <div key={opp.id} className="p-2.5 bg-white flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between text-[11px] hover:bg-[#FBFAF7]">
                           <div>
                             <div className="font-bold text-[#14213D] flex flex-wrap items-center gap-x-2 gap-y-1">
                               <span>{opp.product_name}</span>
@@ -5055,12 +5523,12 @@ export default function LeadsPage() {
                             <div className="text-[10px] text-[#4A5568] mt-0.5">
                               Assigned: <strong className="text-[#14213D]">{opp.assigned_salesperson || 'Unassigned'}</strong>
                               {opp.next_followup_date && (
-                                <span> • Next Due: <strong className="text-[#0F5E63]">{new Date(opp.next_followup_date).toLocaleDateString('en-IN')}</strong></span>
+                                <span> • Next Due: <strong className="text-[#0F5E63]">{formatDateIN(opp.next_followup_date)}</strong></span>
                               )}
                             </div>
                           </div>
                           <div className="flex flex-wrap items-center gap-3">
-                            <span className="font-mono font-bold text-gray-800">
+                            <span className="font-mono font-bold text-[#14213D]">
                               {formatLakh(opp.value_lakh || 0)}
                             </span>
                             {getStatusBadge(opp.status)}
@@ -5069,7 +5537,7 @@ export default function LeadsPage() {
                       ))}
                     </div>
                   ) : (
-                    <div className="text-[11px] text-[#4A5568] italic p-3 text-center bg-[#F8FAFC] rounded-lg border border-[#DCD8CE]">
+                    <div className="text-[11px] text-[#4A5568] italic p-3 text-center bg-[#FBFAF7] rounded-lg border border-[#DCD8CE]">
                       No opportunities registered for this organization.
                     </div>
                   )}
@@ -5160,7 +5628,7 @@ export default function LeadsPage() {
                                 {it.type?.replace('_', ' ')}
                               </Badge>
                               <span className="text-[11px] text-[#4A5568] font-medium font-mono">
-                                {new Date(it.occurred_on || it.interaction_date || it.created_at).toLocaleDateString('en-IN')}
+                                {formatDateIN(it.occurred_on || it.interaction_date || it.created_at)}
                               </span>
                             </div>
                             <div className="text-[10px] text-[#4A5568] sm:text-right">
@@ -5176,12 +5644,12 @@ export default function LeadsPage() {
                             </div>
                           )}
 
-                          <p className="text-gray-800 text-xs leading-relaxed font-sans bg-[#F8FAFC] p-2.5 rounded-lg border border-[#DCD8CE]">
+                          <p className="text-[#14213D] text-xs leading-relaxed font-sans bg-[#FBFAF7] p-2.5 rounded-lg border border-[#DCD8CE]">
                             {it.remarks || it.notes || 'No discussion notes provided.'}
                           </p>
 
                           {it.outcome && (
-                            <div className="text-[11px] text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 font-medium">
+                            <div className="text-[11px] text-[#0B4A4E] bg-[#E3EFEE] px-2.5 py-1 rounded-md border border-[#D0E5E3] font-medium">
                               Outcome: {it.outcome}
                             </div>
                           )}
@@ -5197,7 +5665,7 @@ export default function LeadsPage() {
                               {(it.followup_date || it.next_action_date) && (
                                 <div className="flex items-center gap-1 text-[#4A5568] font-mono text-[10px]">
                                   <Clock className="h-3 w-3" />
-                                  <span>Target Due: {new Date(it.followup_date || it.next_action_date).toLocaleDateString('en-IN')}</span>
+                                  <span>Target Due: {formatDateIN(it.followup_date || it.next_action_date)}</span>
                                 </div>
                               )}
                             </div>
@@ -5211,7 +5679,7 @@ export default function LeadsPage() {
                                   href={att.file_url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#F8FAFC] border border-[#DCD8CE] text-[10px] text-[#0F5E63] hover:underline"
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] text-[10px] text-[#0F5E63] hover:underline"
                                 >
                                   <Paperclip className="h-3 w-3" />
                                   <span>{att.file_name}</span>
@@ -5244,7 +5712,7 @@ export default function LeadsPage() {
                     {customerContacts.map((c) => (
                       <div
                         key={c.id}
-                        className="p-3 rounded-lg bg-[#F8FAFC] border border-[#DCD8CE] space-y-1.5"
+                        className="p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-1.5"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="min-w-0 font-bold text-[#14213D]">{c.name || c.full_name}</span>
@@ -5253,7 +5721,7 @@ export default function LeadsPage() {
                           )}
                         </div>
                         <div className="text-[11px] text-[#4A5568]">{c.designation || 'Officer'}</div>
-                        <div className="flex flex-col gap-1 text-[10px] text-gray-600 font-mono">
+                        <div className="flex flex-col gap-1 text-[10px] text-[#4A5568] font-mono">
                           {(c.phone || c.mobile) && <span>📞 {c.phone || c.mobile}</span>}
                           {c.email && <span>✉️ {c.email}</span>}
                         </div>
@@ -5293,7 +5761,7 @@ export default function LeadsPage() {
                 </div>
 
                 {customerLeads.length === 0 ? (
-                  <div className="p-6 text-center text-[#4A5568] italic bg-[#F8FAFC] rounded-lg border border-[#DCD8CE]">
+                  <div className="p-6 text-center text-[#4A5568] italic bg-[#FBFAF7] rounded-lg border border-[#DCD8CE]">
                     No deals or opportunities registered under this organisation.
                   </div>
                 ) : (
@@ -5301,7 +5769,7 @@ export default function LeadsPage() {
                     {customerLeads.map((ld) => (
                       <div
                         key={ld.id}
-                        className="p-3 rounded-xl bg-[#F8FAFC] border border-[#DCD8CE] flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between hover:border-[#0F5E63] transition-colors cursor-pointer"
+                        className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between hover:border-[#0F5E63] transition-colors cursor-pointer"
                         onClick={() => {
                           setIsCustomer360Open(false);
                           handleOpenLead(ld.id);
@@ -5323,13 +5791,13 @@ export default function LeadsPage() {
                           <div className="text-[10px] text-[#4A5568]">
                             Assigned to: <strong className="text-[#14213D]">{ld.assignee_name || ld.assigned_salesperson_name || 'Unassigned'}</strong>
                             {ld.next_followup_date && (
-                              <span> • Follow-up Due: <strong className="text-[#0F5E63]">{new Date(ld.next_followup_date).toLocaleDateString('en-IN')}</strong></span>
+                              <span> • Follow-up Due: <strong className="text-[#0F5E63]">{formatDateIN(ld.next_followup_date)}</strong></span>
                             )}
                           </div>
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3">
-                          <span className="font-mono font-bold text-gray-800">
+                          <span className="font-mono font-bold text-[#14213D]">
                             {formatLakh(ld.value_lakh || ld.estimated_value_lakh || 0)}
                           </span>
                           {getStatusBadge(ld.lead_status || ld.status)}
@@ -5397,7 +5865,7 @@ export default function LeadsPage() {
             onCancel={() => setIsLogInteractionOpen(false)}
             banner={
               formError && (
-                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
                   {formError}
                 </div>
               )
@@ -5538,9 +6006,9 @@ export default function LeadsPage() {
         maxWidth="md"
         zIndex={60}
       >
-        <form onSubmit={handleCompleteFollowup} className="space-y-4 text-xs">
+        <form onSubmit={handleCompleteFollowup} noValidate className="space-y-4 text-xs">
           {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
               {formError}
             </div>
           )}
@@ -5551,10 +6019,15 @@ export default function LeadsPage() {
             description="How the touchpoint went."
           >
             <Input
-              label="Touchpoint Outcome"
+              label="Touchpoint Outcome *"
+              required
               value={completionOutcome}
-              onChange={(e) => setCompletionOutcome(e.target.value)}
+              onChange={(e) => {
+                setCompletionOutcome(e.target.value);
+                if (e.target.value.trim()) setCompletionOutcomeError(null);
+              }}
               placeholder="e.g. Officer agreed to physical demonstration on 28th"
+              error={completionOutcomeError || undefined}
             />
 
             <Textarea
@@ -5577,7 +6050,7 @@ export default function LeadsPage() {
                 onChange={(e) => setScheduleNextFollowup(e.target.checked)}
                 className="rounded border-[#DCD8CE] text-[#0F5E63] focus:ring-[#0F5E63]"
               />
-              <span className="font-semibold text-gray-800 text-xs">
+              <span className="font-semibold text-[#14213D] text-xs">
                 Schedule next follow-up touchpoint
               </span>
             </label>
@@ -5588,8 +6061,10 @@ export default function LeadsPage() {
                   label="Next Follow-up Due Date *"
                   type="date"
                   required={scheduleNextFollowup}
+                  min={istToday()}
                   value={nextFollowupDueDate}
                   onChange={(e) => setNextFollowupDueDate(e.target.value)}
+                  error={nextFollowupDateError || undefined}
                 />
                 <Input
                   label="Next Follow-up Due Time"
@@ -5624,9 +6099,9 @@ export default function LeadsPage() {
         maxWidth="sm"
         zIndex={60}
       >
-        <form onSubmit={handleRescheduleFollowup} className="space-y-4 text-xs">
+        <form onSubmit={handleRescheduleFollowup} noValidate className="space-y-4 text-xs">
           {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700">
+            <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
               {formError}
             </div>
           )}
@@ -5636,8 +6111,10 @@ export default function LeadsPage() {
               label="New Due Date *"
               type="date"
               required
+              min={istToday()}
               value={rescheduleDate}
               onChange={(e) => setRescheduleDate(e.target.value)}
+              error={rescheduleDateError || undefined}
             />
             <Input
               label="New Due Time"

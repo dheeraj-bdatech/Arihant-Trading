@@ -67,19 +67,13 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const countdown = (d: string) => <DeadlineChip deadline={d} />;
 
 /** Builds a readable "x, y and z need you today" line from the non-zero parts: [count, singular, plural]. */
-function sentence(parts: [number, string, string][], allClear: string): string {
-  const live = parts.filter(([n]) => n > 0).map(([n, one, many]) => `${n} ${n === 1 ? one : many}`);
-  if (live.length === 0) return allClear;
-  const body = live.length === 1 ? live[0] : `${live.slice(0, -1).join(', ')} and ${live[live.length - 1]}`;
-  return `${body.charAt(0).toUpperCase()}${body.slice(1)}.`;
-}
-
 const Grid: React.FC<{ className?: string; children: React.ReactNode }> = ({ className = '', children }) => (
   <div className={`grid grid-cols-1 gap-4 sm:gap-5 ${className}`}>{children}</div>
 );
 
-const Kpis: React.FC<{ items: KpiProps[]; cols?: 'four' | 'six' }> = ({ items, cols = 'four' }) => (
-  <div className={`grid grid-cols-2 gap-3 sm:gap-4 ${cols === 'six' ? 'md:grid-cols-3 2xl:grid-cols-6' : 'xl:grid-cols-4'}`}>
+const KPI_COLS = { four: 'xl:grid-cols-4', five: 'md:grid-cols-3 xl:grid-cols-5', six: 'md:grid-cols-3 2xl:grid-cols-6' } as const;
+const Kpis: React.FC<{ items: KpiProps[]; cols?: keyof typeof KPI_COLS }> = ({ items, cols = 'four' }) => (
+  <div className={`grid grid-cols-2 gap-3 sm:gap-4 ${KPI_COLS[cols]}`}>
     {items.map((k, i) => (
       <div key={k.label} className="dx-rise" style={{ animationDelay: `${80 + i * 60}ms` }}>
         <KpiTile {...k} />
@@ -91,8 +85,6 @@ const Kpis: React.FC<{ items: KpiProps[]; cols?: 'four' | 'six' }> = ({ items, c
 const A = (label: string, hint: string, href: string, icon: React.ReactNode): QuickAction => ({ label, hint, href, icon });
 
 interface DeskView {
-  eyebrow: string;
-  summary: string;
   stats: HeroStat[];
   cta: { href: string; label: string };
   body: React.ReactNode;
@@ -104,16 +96,6 @@ function management(w: W): DeskView {
   const lost = num(w, 'tendersLost');
   const open = num(w, 'openTickets');
   return {
-    eyebrow: 'Executive command',
-    summary: sentence(
-      [
-        [num(w, 'tendersClosing48h'), 'bid closes within 48 hours', 'bids close within 48 hours'],
-        [num(w, 'urgentTickets'), 'urgent service ticket is open', 'urgent service tickets are open'],
-        [num(w, 'criticalBlockers'), 'blocked task waits for a decision', 'blocked tasks wait for a decision'],
-        [num(w, 'depotConflicts'), 'demo unit is double-booked', 'demo units are double-booked'],
-      ],
-      'Nothing urgent across India right now. Bids, service and approvals are on track.',
-    ),
     stats: [
       { label: 'Close ≤ 48h', value: num(w, 'tendersClosing48h'), tone: 'red' },
       { label: 'Urgent tickets', value: num(w, 'urgentTickets'), tone: 'ochre' },
@@ -126,7 +108,7 @@ function management(w: W): DeskView {
         <Kpis
           cols="six"
           items={[
-            { label: 'Tenders closing ≤ 48h', value: num(w, 'tendersClosing48h'), sub: `${num(w, 'tendersClosing7d')} within 7 days`, chip: num(w, 'tendersAwaitingApproval') ? `${num(w, 'tendersAwaitingApproval')} to approve` : undefined, href: '/tenders', icon: <FileText size={15} />, tone: num(w, 'tendersClosing48h') ? 'red' : 'teal' },
+            { label: 'Tenders closing ≤ 48h', value: num(w, 'tendersClosing48h'), sub: `${num(w, 'tendersClosing7d')} within 7 days · ${num(w, 'tendersLive')} live bids`, chip: num(w, 'tendersAwaitingApproval') ? `${num(w, 'tendersAwaitingApproval')} to approve` : undefined, href: '/tenders', icon: <FileText size={15} />, tone: num(w, 'tendersClosing48h') ? 'red' : 'teal' },
             { label: 'Demos this week', value: num(w, 'demosThisWeek'), sub: `${num(w, 'demosPending')} requests waiting`, href: '/demos', icon: <Box size={15} />, tone: 'teal' },
             { label: 'Depot conflicts', value: num(w, 'depotConflicts'), sub: 'Units booked twice', href: '/demos', icon: <AlertTriangle size={15} />, tone: num(w, 'depotConflicts') ? 'red' : 'green' },
             { label: 'Urgent service tickets', value: num(w, 'urgentTickets'), sub: `${open} open · ${num(w, 'slaBreached')} past SLA`, href: '/service', icon: <Wrench size={15} />, tone: num(w, 'urgentTickets') ? 'ochre' : 'teal' },
@@ -168,15 +150,6 @@ function management(w: W): DeskView {
 /* ------------------------------------------------------ regional manager -- */
 function regional(w: W): DeskView {
   return {
-    eyebrow: `Territory desk · ${w.scopeLabel}`,
-    summary: sentence(
-      [
-        [num(w, 'stage1Pending'), 'expense claim waits for your stage-1 approval', 'expense claims wait for your stage-1 approval'],
-        [num(w, 'blockersToReview'), 'task blocker needs your review', 'task blockers need your review'],
-        [num(w, 'followupsOverdue'), 'lead follow-up in your zone is overdue', 'lead follow-ups in your zone are overdue'],
-      ],
-      'Your team is on track. No approvals, blockers or overdue follow-ups are waiting on you.',
-    ),
     stats: [
       { label: 'Approvals', value: num(w, 'stage1Pending'), tone: 'ochre' },
       { label: 'Blockers', value: num(w, 'blockersToReview'), tone: 'red' },
@@ -188,9 +161,9 @@ function regional(w: W): DeskView {
         <Kpis
           items={[
             { label: 'Zone pipeline', value: lakh(num(w, 'pipelineLakh')), sub: `${num(w, 'openLeads')} open leads`, chip: num(w, 'followupsOverdue') ? `${num(w, 'followupsOverdue')} overdue` : undefined, href: '/leads', icon: <Target size={15} />, tone: 'teal' },
-            { label: 'Team visits this week', value: num(w, 'visitsWeek'), sub: `${num(w, 'visitsToday')} today · ${num(w, 'visitsDone30d')} done in 30 days`, href: '/visits', icon: <MapPin size={15} />, tone: 'teal' },
+            { label: 'Team visits this week', value: num(w, 'visitsWeek'), sub: `${num(w, 'visitsToday')} today · ${num(w, 'visitsCompleted')} completed of ${num(w, 'visitsTotal')}`, href: '/visits', icon: <MapPin size={15} />, tone: 'teal' },
             { label: 'Stage-1 approvals', value: num(w, 'stage1Pending'), sub: inr(num(w, 'stage1Amount')), href: '/expenses/approvals', icon: <Receipt size={15} />, tone: num(w, 'stage1Pending') ? 'ochre' : 'green' },
-            { label: 'Zone bids closing', value: num(w, 'tendersClosing7d'), sub: 'Within 7 days', href: '/tenders', icon: <FileText size={15} />, tone: num(w, 'tendersClosing7d') ? 'red' : 'teal' },
+            { label: 'Zone bids closing', value: num(w, 'tendersClosing7d'), sub: `Within 7 days · ${num(w, 'tendersLive')} live`, href: '/tenders', icon: <FileText size={15} />, tone: num(w, 'tendersClosing7d') ? 'red' : 'teal' },
           ]}
         />
         <Grid className="lg:grid-cols-3">
@@ -235,16 +208,6 @@ function regional(w: W): DeskView {
 /* ----------------------------------------------------------------- sales -- */
 function sales(w: W): DeskView {
   return {
-    eyebrow: 'My day',
-    summary: sentence(
-      [
-        [num(w, 'visitsToday'), 'visit is planned today', 'visits are planned today'],
-        [num(w, 'followupsDue'), 'follow-up is due', 'follow-ups are due'],
-        [num(w, 'bidsClosing'), 'of your bids closes this week', 'of your bids close this week'],
-        [num(w, 'claimsClarify'), 'expense claim needs clarification', 'expense claims need clarification'],
-      ],
-      'A clear day. Plan a visit or follow up with a prospect to keep the pipeline moving.',
-    ),
     stats: [
       { label: 'Visits today', value: num(w, 'visitsToday'), tone: 'teal' },
       { label: 'Follow-ups due', value: num(w, 'followupsDue'), tone: 'red' },
@@ -262,8 +225,10 @@ function sales(w: W): DeskView {
           </Panel>
         </Grid>
         <Kpis
+          cols="five"
           items={[
-            { label: 'My pipeline', value: lakh(num(w, 'pipelineLakh')), sub: `${num(w, 'openLeads')} open leads`, href: '/leads', icon: <Target size={15} />, tone: 'teal' },
+            { label: 'My pipeline', value: lakh(num(w, 'pipelineLakh')), sub: `${num(w, 'openLeads')} active of ${num(w, 'totalLeads')} leads`, href: '/leads', icon: <Target size={15} />, tone: 'teal' },
+            { label: 'My open tasks', value: num(w, 'tasksOpen'), sub: `${num(w, 'tasksOverdue')} overdue · ${num(w, 'tasksBlocked')} blocked`, href: '/tasks', icon: <ListChecks size={15} />, tone: num(w, 'tasksOverdue') ? 'red' : 'teal' },
             { label: 'Open proposals', value: num(w, 'proposalsOpen'), sub: 'Requested or with the customer', href: '/proposals', icon: <Layers size={15} />, tone: 'ink' },
             { label: 'Demos in progress', value: num(w, 'demosOpen'), sub: 'Requested by you', href: '/demos', icon: <Box size={15} />, tone: 'teal' },
             { label: 'My expense claims', value: num(w, 'claimsLive'), sub: `${inr(num(w, 'claimsAmount'))} in approval`, chip: num(w, 'claimsDraft') ? `${num(w, 'claimsDraft')} draft` : undefined, href: '/expenses', icon: <Wallet size={15} />, tone: num(w, 'claimsClarify') ? 'red' : 'ochre' },
@@ -273,7 +238,7 @@ function sales(w: W): DeskView {
           <Panel title="My proposals" icon={<Layers size={15} />} tone="ink" href="/proposals" hrefLabel="All">
             <ItemList items={list(w, 'proposals')} dateMode="day" empty="No open proposals" />
           </Panel>
-          <Panel title="My bids closing" icon={<FileText size={15} />} tone="red" href="/tenders?scope=my_tenders" hrefLabel="My tenders">
+          <Panel title={`My bids closing · ${num(w, 'bidsClosing')}`} icon={<FileText size={15} />} tone="red" href="/tenders?scope=my_tenders" hrefLabel="My tenders">
             <ItemList items={list(w, 'bids')} dateMode="countdown" countdown={countdown} empty="None of your bids close this week" />
           </Panel>
           <Panel title="My demos" icon={<Box size={15} />} tone="teal" href="/demos" hrefLabel="All demos">
@@ -287,7 +252,7 @@ function sales(w: W): DeskView {
           <Panel className="lg:col-span-2" title="Quick actions" icon={<Zap size={15} />} tone="teal">
             <QuickActions
               actions={[
-                A('New opportunity', 'Log a lead or account', '/leads', <Target size={16} />),
+                A('New opportunity', 'Log a lead or account', '/leads?new=1', <Target size={16} />),
                 A('Plan a visit', 'Client tour planner', '/visits', <Calendar size={16} />),
                 A('Request a demo', 'Reserve a demo unit', '/demos', <Box size={16} />),
                 A('Submit expenses', 'Travel and lodging claims', '/expenses', <Receipt size={16} />),
@@ -306,15 +271,6 @@ function tender(w: W): DeskView {
   const lost = num(w, 'lost');
   const rate = pct(won, won + lost);
   return {
-    eyebrow: 'Bid desk',
-    summary: sentence(
-      [
-        [num(w, 'closing48h'), 'bid closes within 48 hours', 'bids close within 48 hours'],
-        [num(w, 'awaitingApproval'), 'bid waits for participation approval', 'bids wait for participation approval'],
-        [num(w, 'underPreparation'), 'bid is being prepared', 'bids are being prepared'],
-      ],
-      'No deadlines in the next 48 hours. Good time to clear PQ documents for upcoming bids.',
-    ),
     stats: [
       { label: 'Close ≤ 48h', value: num(w, 'closing48h'), tone: 'red' },
       { label: 'Close ≤ 7d', value: num(w, 'closing7d'), tone: 'ochre' },
@@ -365,16 +321,6 @@ function tender(w: W): DeskView {
 /* ------------------------------------------------------------- demo team -- */
 function demo(w: W): DeskView {
   return {
-    eyebrow: 'Demo & depot desk',
-    summary: sentence(
-      [
-        [num(w, 'thisWeek'), 'demo is scheduled this week', 'demos are scheduled this week'],
-        [num(w, 'pendingRequests'), 'request waits for planning', 'requests wait for planning'],
-        [num(w, 'conflicts'), 'unit is double-booked', 'units are double-booked'],
-        [num(w, 'outcomesDue'), 'outcome report is due', 'outcome reports are due'],
-      ],
-      'No demos or requests waiting. The fleet is ready for the next booking.',
-    ),
     stats: [
       { label: 'This week', value: num(w, 'thisWeek'), tone: 'teal' },
       { label: 'Requests', value: num(w, 'pendingRequests'), tone: 'ochre' },
@@ -420,7 +366,7 @@ function demo(w: W): DeskView {
             <QuickActions
               actions={[
                 A('Demo pipeline', 'Requests, dates, engineers', '/demos', <Box size={16} />),
-                A('Deliveries', 'Dispatch and handover', '/deliveries', <Truck size={16} />),
+                A('My tasks', 'Trial prep and follow-ups', '/tasks', <CheckSquare size={16} />),
                 A('Field trials', 'Visits in the field', '/visits', <MapPin size={16} />),
                 A('Freight claims', 'Transit and freight costs', '/expenses', <Receipt size={16} />),
               ]}
@@ -436,16 +382,6 @@ function demo(w: W): DeskView {
 function service(w: W): DeskView {
   const hours = num(w, 'avgClosureHours');
   return {
-    eyebrow: 'Service desk',
-    summary: sentence(
-      [
-        [num(w, 'overdue'), 'of your tickets is past SLA', 'of your tickets are past SLA'],
-        [num(w, 'critical'), 'critical (LD risk) ticket is yours', 'critical (LD risk) tickets are yours'],
-        [num(w, 'awaitingParts'), 'ticket waits for spares', 'tickets wait for spares'],
-        [num(w, 'unassigned'), 'new ticket has no engineer yet', 'new tickets have no engineer yet'],
-      ],
-      'Your queue is within SLA. Pick up an unassigned ticket or close out a report.',
-    ),
     stats: [
       { label: 'My open', value: num(w, 'open'), tone: 'teal' },
       { label: 'Past SLA', value: num(w, 'overdue'), tone: 'red' },
@@ -494,15 +430,6 @@ function service(w: W): DeskView {
 /* -------------------------------------------------------------- accounts -- */
 function accounts(w: W): DeskView {
   return {
-    eyebrow: 'Finance desk',
-    summary: sentence(
-      [
-        [num(w, 'stage2Pending'), `claim waits for stage-2 review (${inr(num(w, 'stage2Amount'))})`, `claims wait for stage-2 review (${inr(num(w, 'stage2Amount'))})`],
-        [num(w, 'awaitingPayment'), 'approved claim waits for payment', 'approved claims wait for payment'],
-        [num(w, 'clarification'), 'claim is back with the employee for clarification', 'claims are back with employees for clarification'],
-      ],
-      'The settlement queue is clear. Export this month’s processed claims to Tally when ready.',
-    ),
     stats: [
       { label: 'Stage 2', value: num(w, 'stage2Pending'), tone: 'red' },
       { label: 'To pay', value: num(w, 'awaitingPayment'), tone: 'ochre' },
@@ -562,15 +489,6 @@ function accounts(w: W): DeskView {
 function admin(w: W): DeskView {
   const hygiene = num(w, 'noManager') + num(w, 'noZone');
   return {
-    eyebrow: 'System console',
-    summary: sentence(
-      [
-        [num(w, 'deadLetters'), 'failed background event needs a replay', 'failed background events need a replay'],
-        [num(w, 'noManager'), 'field user has no reporting manager', 'field users have no reporting manager'],
-        [num(w, 'noZone'), 'field user has no zone', 'field users have no zone'],
-      ],
-      `All ${num(w, 'activeUsers')} accounts are configured and background jobs are healthy.`,
-    ),
     stats: [
       { label: 'Active users', value: num(w, 'activeUsers'), tone: 'teal' },
       { label: 'Audit 24h', value: num(w, 'audit24h'), tone: 'ink' },
@@ -580,16 +498,21 @@ function admin(w: W): DeskView {
     body: (
       <>
         <Kpis
+          cols="five"
           items={[
-            { label: 'User accounts', value: num(w, 'activeUsers'), sub: `${num(w, 'inactiveUsers')} deactivated`, href: '/admin', icon: <Users size={15} />, tone: 'teal' },
-            { label: 'Product masters', value: num(w, 'products'), sub: `${num(w, 'equipment')} demo units`, href: '/admin', icon: <Database size={15} />, tone: 'ink' },
-            { label: 'Territory structure', value: num(w, 'zones'), sub: `zones · ${num(w, 'regions')} regions`, href: '/admin', icon: <Compass size={15} />, tone: 'teal' },
-            { label: 'Data hygiene', value: hygiene, sub: hygiene ? 'Users missing manager or zone' : 'Every field user is mapped', href: '/admin', icon: <ShieldCheck size={15} />, tone: hygiene ? 'red' : 'green' },
+            { label: 'User accounts', value: num(w, 'activeUsers'), sub: `${num(w, 'inactiveUsers')} deactivated`, href: '/admin?tab=users', icon: <Users size={15} />, tone: 'teal' },
+            { label: 'Product masters', value: num(w, 'products'), sub: `${num(w, 'equipment')} demo units`, href: '/admin?tab=products', icon: <Database size={15} />, tone: 'ink' },
+            { label: 'Territory structure', value: num(w, 'zones'), sub: `zones · ${num(w, 'regions')} regions`, href: '/admin?tab=zones', icon: <Compass size={15} />, tone: 'teal' },
+            { label: 'Audit trail', value: num(w, 'auditTotal').toLocaleString('en-IN'), sub: `${num(w, 'audit7d')} entries in 7 days`, href: '/admin?tab=audit', icon: <Key size={15} />, tone: 'ink' },
+            { label: 'Data hygiene', value: hygiene, sub: hygiene ? 'Users missing manager or zone' : 'Every field user is mapped', href: '/admin?tab=users', icon: <ShieldCheck size={15} />, tone: hygiene ? 'red' : 'green' },
           ]}
         />
         <Grid className="lg:grid-cols-3">
           <Panel className="lg:col-span-2" title="Recent audit trail" icon={<Key size={15} />} tone="ink" href="/admin" hrefLabel="Full log">
             <ItemList items={list(w, 'audit')} dateMode="ago" empty="No audit entries yet" />
+            <p className="px-4 pb-3 text-[11px] text-[color:var(--th-mute)]">
+              Latest {list(w, 'audit').length} of {num(w, 'auditTotal').toLocaleString('en-IN')} entries · {num(w, 'audit24h')} in the last 24 hours
+            </p>
           </Panel>
           <Panel title="Users by role" icon={<Users size={15} />} tone="teal" href="/admin" hrefLabel="Manage">
             <BarList bars={bars(w, 'roles')} format={(n) => plural(n, 'user')} />
@@ -603,7 +526,7 @@ function admin(w: W): DeskView {
             <QuickActions
               actions={[
                 A('Administration', 'Users, roles, masters', '/admin', <Settings size={16} />),
-                A('Audit trail', 'Security log', '/admin', <Key size={16} />),
+                A('Audit trail', 'Security log', '/admin?tab=audit', <Key size={16} />),
                 A('Reports', 'Consolidated records', '/reports', <TrendingUp size={16} />),
                 A('Notifications', 'Alerts and escalations', '/notifications', <Zap size={16} />),
               ]}
@@ -677,13 +600,8 @@ export default function DashboardPage() {
   return (
     <PageContainer className="dx-root" data-desk={role}>
       <HeroBanner
-        eyebrow={view.eyebrow}
         greeting={greeting}
         name={firstName}
-        roleLabel={preset?.title || role.replace(/_/g, ' ')}
-        zone={data.scopeLabel}
-        dateLabel={new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
-        summary={view.summary}
         stats={view.stats}
         ctaHref={view.cta.href}
         ctaLabel={view.cta.label}

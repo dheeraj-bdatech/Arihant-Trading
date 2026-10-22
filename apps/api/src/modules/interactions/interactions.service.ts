@@ -1,5 +1,5 @@
-import { todayInKolkata } from '../../common/utils/ist-date.util.js';
-import { Injectable, Inject, NotFoundException } from '@nestjs/common';
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
@@ -87,6 +87,10 @@ export class InteractionsService {
     const occurredOn = dto.occurred_on || dto.interaction_date || todayInKolkata();
     const remarks = dto.remarks || dto.notes || null;
     const followupDate = dto.followup_date || dto.next_followup_date || null;
+    // A follow-up is booked for today or later (IST) — never straight into the overdue queue (QA DEF-053 / DEF-058)
+    if (followupDate && (calendarDay(followupDate) || '') < todayInKolkata()) {
+      throw new BadRequestException('Next follow-up date cannot be in the past — choose today or a later date.');
+    }
 
     const result = await this.db.transaction().execute(async (trx) => {
       // 1. Insert interaction

@@ -598,6 +598,9 @@ export class ServicePortalService {
       location: ticket.location,
       engineer_first_name: ticket.engineer_name ? String(ticket.engineer_name).split(/\s+/)[0] : null,
       planned_visit_date: ticket.planned_visit_date,
+      /** The server's clock: the tracking page runs its countdowns against it, so a wrong device clock can never
+       *  make "due in …" disagree with the "by <date>" shown next to it. */
+      server_time: new Date().toISOString(),
       sla: {
         business_hours: await this.slaIsBusinessHours(ticket.priority, 'in_warranty'),
         response_due_at: ticket.first_response_at ? null : ticket.sla_response_due_at,

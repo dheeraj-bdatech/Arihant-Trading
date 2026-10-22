@@ -1,4 +1,4 @@
-import { todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -10,13 +10,34 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
-import type { Database, AuthUser, PaginatedResult } from '@arihant/shared';
+import { PROPOSAL_ORDER_TYPES, type Database, type AuthUser, type PaginatedResult } from '@arihant/shared';
 import {
   CreateDeliveryDto,
   UpdateDeliveryStatusDto,
   DeliveryQueryDto,
   UUID_REGEX,
 } from './deliveries.dto.js';
+
+/** Consignment milestones in the only order they can be recorded (cancellation aside). */
+const DELIVERY_FLOW = ['scheduled', 'dispatched', 'in_transit', 'delivered', 'installed', 'handover_completed'] as const;
+const DELIVERY_LABEL: Record<string, string> = {
+  scheduled: 'Scheduled',
+  dispatched: 'Dispatched',
+  in_transit: 'In Transit',
+  delivered: 'Delivered',
+  installed: 'Installed',
+  handover_completed: 'Handover Completed',
+  cancelled: 'Cancelled',
+};
+const label = (status: string) => DELIVERY_LABEL[status] || status;
+
+/** A calendar value (DATE column, ISO instant or 'YYYY-MM-DD') as DD/MM/YYYY for user-facing messages. */
+function dmy(value: unknown): string {
+  const day = calendarDay(value as any);
+  if (!day) return String(value ?? '');
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+}
 
 @Injectable()
 export class DeliveriesService {
@@ -39,6 +60,7 @@ export class DeliveriesService {
       .innerJoin('organisations', 'deliveries.organisation_id', 'organisations.id')
       .leftJoin('products', 'deliveries.product_id', 'products.id')
       .leftJoin('tenders', 'deliveries.tender_id', 'tenders.id')
+      .leftJoin('proposals', 'deliveries.proposal_id', 'proposals.id')
       .leftJoin('users as assignee', 'deliveries.assigned_to', 'assignee.id')
       .leftJoin('users as installer', 'deliveries.installed_by', 'installer.id');
 
@@ -66,6 +88,11 @@ export class DeliveriesService {
     // Sales orders / deliveries raised against a tender (tender dossier → linked records)
     if (query.tender_id) {
       baseQuery = baseQuery.where('deliveries.tender_id', '=', query.tender_id);
+    }
+
+    // Dispatches raised against a converted proposal (proposal detail → linked deliveries)
+    if (query.proposal_id) {
+      baseQuery = baseQuery.where('deliveries.proposal_id', '=', query.proposal_id);
     }
 
     if (query.assigned_to) {
@@ -117,6 +144,7 @@ export class DeliveriesService {
         'deliveries.installed_by',
         'deliveries.installation_notes',
         'deliveries.remarks',
+        'deliveries.proposal_id',
         'deliveries.document_url',
         'deliveries.version',
         'deliveries.created_at',
@@ -125,6 +153,7 @@ export class DeliveriesService {
         'organisations.city as city',
         'products.name as product_name',
         sql<string>`coalesce(tenders.tender_number, tenders.tender_no)`.as('tender_no'),
+        sql<string | null>`coalesce(proposals.proposal_number, proposals.proposal_no)`.as('proposal_no'),
         'assignee.full_name as assignee_name',
         'installer.full_name as installer_name',
       ])
@@ -144,6 +173,7 @@ export class DeliveriesService {
       .innerJoin('organisations', 'deliveries.organisation_id', 'organisations.id')
       .leftJoin('products', 'deliveries.product_id', 'products.id')
       .leftJoin('tenders', 'deliveries.tender_id', 'tenders.id')
+      .leftJoin('proposals', 'deliveries.proposal_id', 'proposals.id')
       .leftJoin('users as assignee', 'deliveries.assigned_to', 'assignee.id')
       .leftJoin('users as installer', 'deliveries.installed_by', 'installer.id')
       .selectAll('deliveries')
@@ -153,6 +183,7 @@ export class DeliveriesService {
         'organisations.state as state',
         'products.name as product_name',
         sql<string>`coalesce(tenders.tender_number, tenders.tender_no)`.as('tender_no'),
+        sql<string | null>`coalesce(proposals.proposal_number, proposals.proposal_no)`.as('proposal_no'),
         'assignee.full_name as assignee_name',
         'installer.full_name as installer_name',
       ])
@@ -167,6 +198,15 @@ export class DeliveriesService {
   }
 
   async create(dto: CreateDeliveryDto, user: AuthUser) {
+    // Target date: today or later in IST — a dispatch is never scheduled into the past.
+    const deliveryDay = calendarDay(dto.delivery_date) || '';
+    if (deliveryDay < todayInKolkata()) {
+      throw new BadRequestException({
+        code: 'PAST_DATE_NOT_ALLOWED',
+        message: `The target delivery date (${dmy(deliveryDay)}) is in the past. Choose today or a later date.`,
+      });
+    }
+
     const org = await this.db
       .selectFrom('organisations')
       .select(['id', 'name'])
@@ -176,6 +216,65 @@ export class DeliveriesService {
     if (!org) {
       throw new BadRequestException('The selected organisation does not exist');
     }
+
+    // Dispatch against a converted proposal: it must be converted and belong to this customer; its PO
+    // (conversion reference) and product fill the order fields the user left empty.
+    let proposal: {
+      id: string;
+      proposal_number: string;
+      proposal_no?: string | null;
+      status: string;
+      organisation_id: string;
+      customer_id?: string | null;
+      product_id: string | null;
+      conversion_reference?: string | null;
+      converted_reference: string | null;
+      converted_to: string | null;
+    } | undefined;
+    if (dto.proposal_id) {
+      proposal = await this.db
+        .selectFrom('proposals')
+        .select([
+          'id',
+          'proposal_number',
+          'proposal_no',
+          'status',
+          'organisation_id',
+          'customer_id',
+          'product_id',
+          'conversion_reference',
+          'converted_reference',
+          'converted_to',
+        ])
+        .where('id', '=', dto.proposal_id)
+        .where('is_deleted', '=', false)
+        .executeTakeFirst();
+      if (!proposal) {
+        throw new BadRequestException('The selected proposal does not exist.');
+      }
+      const proposalNo = proposal.proposal_number || proposal.proposal_no;
+      if (String(proposal.status).toUpperCase() !== 'CONVERTED') {
+        throw new BadRequestException({
+          code: 'PROPOSAL_NOT_CONVERTED',
+          message: `Proposal ${proposalNo} has not been converted to an order yet. Only converted proposals can be dispatched.`,
+        });
+      }
+      if (proposal.organisation_id !== dto.organisation_id && proposal.customer_id !== dto.organisation_id) {
+        throw new BadRequestException({
+          code: 'PROPOSAL_CUSTOMER_MISMATCH',
+          message: `Proposal ${proposalNo} belongs to another customer than ${org.name}.`,
+        });
+      }
+    }
+    const proposalNo = proposal ? proposal.proposal_number || proposal.proposal_no : null;
+    const orderReference =
+      dto.order_reference?.trim() ||
+      proposal?.conversion_reference ||
+      proposal?.converted_reference ||
+      // Older conversions recorded the PO number in converted_to; it now holds the order type ("Purchase Order" …).
+      (proposal?.converted_to && !(PROPOSAL_ORDER_TYPES as readonly string[]).includes(proposal.converted_to) ? proposal.converted_to : null) ||
+      null;
+    const remarks = [dto.remarks?.trim(), proposalNo && `Proposal: ${proposalNo}`].filter(Boolean).join('\n') || null;
 
     const year = Number(todayInKolkata().slice(0, 4)); // IST business year
     const countRes = await this.db
@@ -190,20 +289,21 @@ export class DeliveriesService {
       .values({
         delivery_no: deliveryNo,
         organisation_id: dto.organisation_id,
-        product_id: dto.product_id || null,
-        model: dto.model || null,
-        equipment_serial: dto.equipment_serial || null,
-        delivery_date: dto.delivery_date,
-        delivery_location: dto.delivery_location,
+        product_id: dto.product_id || proposal?.product_id || null,
+        model: dto.model?.trim() || null,
+        equipment_serial: dto.equipment_serial?.trim() || null,
+        delivery_date: deliveryDay,
+        delivery_location: dto.delivery_location.trim(),
         assigned_to: dto.assigned_to || user.id,
         tender_id: dto.tender_id || null,
-        order_reference: dto.order_reference || null,
+        proposal_id: proposal?.id ?? null,
+        order_reference: orderReference,
         status: 'scheduled',
         installation_required: dto.installation_required || false,
         installation_date: dto.installation_date || null,
         installed_by: dto.installed_by || null,
         installation_notes: dto.installation_notes || null,
-        remarks: dto.remarks || null,
+        remarks,
         document_url: dto.document_url || null,
         created_by: user.id,
         version: 1,
@@ -216,6 +316,7 @@ export class DeliveriesService {
       deliveryNo: delivery.delivery_no,
       organisationId: delivery.organisation_id,
       assignedTo: delivery.assigned_to,
+      proposalId: proposal?.id,
       actorId: user.id,
     });
 
@@ -224,7 +325,7 @@ export class DeliveriesService {
       entityType: 'delivery',
       entityId: delivery.id,
       action: 'create',
-      newValue: delivery,
+      newValue: proposal ? { ...delivery, proposal_id: proposal.id, proposal_no: proposalNo } : delivery,
     });
 
     return delivery;
@@ -233,16 +334,84 @@ export class DeliveriesService {
   async updateStatus(id: string, dto: UpdateDeliveryStatusDto, user: AuthUser) {
     this.validateId(id);
     const existing = await this.findOne(id, user);
+    const from = String(existing.status);
+    const to = dto.status;
+
+    // 1. Closed consignments stay closed.
+    if (from === 'handover_completed' || from === 'cancelled') {
+      throw new BadRequestException({
+        code: 'DELIVERY_CLOSED',
+        message: `Delivery ${existing.delivery_no} is ${label(from).toLowerCase()} and closed; its milestones can no longer change.`,
+      });
+    }
+
+    // 2. Milestones move one step at a time: Scheduled → Dispatched → In Transit → Delivered → Installed → Handover.
+    //    Staying on the same milestone updates its details; cancelling is possible from any open milestone.
+    if (to !== from && to !== 'cancelled') {
+      const fromIdx = DELIVERY_FLOW.indexOf(from as any);
+      const toIdx = DELIVERY_FLOW.indexOf(to as any);
+      const next = fromIdx >= 0 ? DELIVERY_FLOW[fromIdx + 1] : undefined;
+      if (toIdx !== fromIdx + 1) {
+        throw new BadRequestException({
+          code: 'INVALID_DELIVERY_TRANSITION',
+          message:
+            toIdx >= 0 && toIdx < fromIdx
+              ? `Delivery ${existing.delivery_no} is already ${label(from)}; it cannot move back to ${label(to)}.`
+              : `Milestones are recorded in order. Delivery ${existing.delivery_no} is ${label(from)}${next ? `; the next milestone is ${label(next)}` : ''}.`,
+          allowed_next: next ? [next, 'cancelled'] : ['cancelled'],
+        });
+      }
+    }
+
+    // 3. Evidence for the milestone being recorded.
+    const receivedBy = dto.received_by?.trim() || '';
+    const signoffRef = (dto.document_url !== undefined ? dto.document_url : existing.document_url)?.trim() || '';
+    if (to === 'handover_completed' && (receivedBy.length < 3 || !signoffRef)) {
+      throw new BadRequestException({
+        code: 'HANDOVER_SIGNOFF_REQUIRED',
+        message:
+          'Handover needs the client sign-off: enter the officer who signed the handover and the signed handover certificate (link or reference number).',
+      });
+    }
+    if (to === 'installed' && dto.installation_date && (calendarDay(dto.installation_date) || '') > todayInKolkata()) {
+      throw new BadRequestException({
+        code: 'INSTALLATION_DATE_IN_FUTURE',
+        message: `The commissioning date (${dmy(dto.installation_date)}) cannot be in the future.`,
+      });
+    }
+
+    // 4. Milestone log: each update appends a dated line to the remarks instead of overwriting earlier entries.
+    const logParts = [
+      dto.remarks?.trim(),
+      receivedBy && `${to === 'handover_completed' ? 'Signed off by' : 'Received by'}: ${receivedBy}`,
+      to === 'handover_completed' && signoffRef && `Handover certificate: ${signoffRef}`,
+    ].filter(Boolean);
+    const logLine = logParts.length
+      ? `[${dmy(todayInKolkata())}] ${label(to)}${to !== from ? '' : ' (update)'}: ${logParts.join(' · ')}`
+      : to !== from
+        ? `[${dmy(todayInKolkata())}] ${label(to)}`
+        : '';
+    const remarks = [existing.remarks, logLine].filter(Boolean).join('\n') || null;
 
     const updated = await this.db
       .updateTable('deliveries')
       .set({
-        status: dto.status,
-        installation_date: dto.installation_date !== undefined ? dto.installation_date : existing.installation_date,
-        installed_by: dto.installed_by !== undefined ? dto.installed_by : existing.installed_by,
+        status: to,
+        installation_date:
+          dto.installation_date !== undefined
+            ? dto.installation_date || null
+            : to === 'installed' && !existing.installation_date
+              ? todayInKolkata()
+              : existing.installation_date,
+        installed_by:
+          dto.installed_by !== undefined
+            ? dto.installed_by
+            : to === 'installed' && !existing.installed_by
+              ? user.id
+              : existing.installed_by,
         installation_notes: dto.installation_notes !== undefined ? dto.installation_notes : existing.installation_notes,
-        remarks: dto.remarks !== undefined ? dto.remarks : existing.remarks,
-        document_url: dto.document_url !== undefined ? dto.document_url : existing.document_url,
+        remarks,
+        document_url: dto.document_url !== undefined ? dto.document_url.trim() || null : existing.document_url,
         version: existing.version + 1,
         updated_at: new Date(),
       })
@@ -264,7 +433,12 @@ export class DeliveriesService {
       entityId: id,
       action: 'status_change',
       previousValue: { status: existing.status },
-      newValue: { status: dto.status },
+      newValue: {
+        status: dto.status,
+        ...(receivedBy ? { received_by: receivedBy } : {}),
+        ...(dto.document_url ? { document_url: dto.document_url } : {}),
+        ...(dto.remarks ? { remarks: dto.remarks } : {}),
+      },
     });
 
     return updated;

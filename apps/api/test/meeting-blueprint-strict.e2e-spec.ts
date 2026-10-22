@@ -174,9 +174,10 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
   // MODULE 2: Field Visits, "Also-Meet" Directives & "Contact Unavailable" Outcome
   // =========================================================================
   describe('3. Field Visit Planning, Also-Meet Directives & Contact Unavailable (§9 – §12)', () => {
-    const plannedDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+    // DEF-040: the post-visit report is accepted only on / after the visit date, so the visit is for today (IST).
+    const plannedDate = todayInKolkata();
 
-    it('plans a field visit to Patna 1 week in advance', async () => {
+    it('plans a field visit to Patna for today', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/visits')
         .set('Authorization', `Bearer ${salesToken}`)
@@ -376,6 +377,21 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
     });
 
     it('advances through PQ submission, technical evaluation to submitted', async () => {
+      // DEF-006: a bid cannot be submitted until every mandatory checklist document is Ready.
+      const docsRes = await request(app.getHttpServer())
+        .get(`/api/tenders/${tenderId}/documents`)
+        .set('Authorization', `Bearer ${tenderToken}`);
+      expect(docsRes.status).toBe(200);
+      const mandatoryDocs = (docsRes.body.documents || []).filter((d: any) => d.is_mandatory);
+      expect(mandatoryDocs.length).toBeGreaterThan(0);
+      for (const doc of mandatoryDocs) {
+        const upd = await request(app.getHttpServer())
+          .patch(`/api/tenders/${tenderId}/documents/${doc.id}`)
+          .set('Authorization', `Bearer ${tenderToken}`)
+          .send({ status: 'Ready' });
+        expect(upd.status).toBe(200);
+      }
+
       // 1. Move to pq_submitted
       const pqRes = await request(app.getHttpServer())
         .patch(`/api/tenders/${tenderId}/status`)
@@ -402,6 +418,14 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
     });
 
     it('records structured Win/Loss post-mortem analysis (§26)', async () => {
+      // DEF-090: a result is declared only after bids close. Simulate the bid closing having passed (yesterday) so the
+      // post-mortem can be recorded today.
+      const closedAt = new Date(Date.now() - 86400000);
+      await db
+        .updateTable('tenders')
+        .set({ submission_deadline: closedAt, bid_closing_date: closedAt } as any)
+        .where('id', '=', tenderId)
+        .execute();
       const res = await request(app.getHttpServer())
         .post(`/api/tenders/${tenderId}/outcome`)
         .set('Authorization', `Bearer ${tenderToken}`)
@@ -410,7 +434,7 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
           loss_reason: 'PRICING',
           competitor: 'Smiths Detection India Ltd',
           value_lakh: 235,
-          result_date: new Date().toISOString().split('T')[0],
+          result_date: todayInKolkata(), // IST day: never before the (IST) submission date
           pricing_issue: 'L1 price threshold missed by 6.3%. Competitor offered aggressive bundled AMC.',
         });
       expect([200, 201]).toContain(res.status);

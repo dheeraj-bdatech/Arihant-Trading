@@ -143,6 +143,13 @@ export class ProposalsController {
     return this.proposalsService.bulkReassign(dto, user);
   }
 
+  /** Open leads of a customer, for the proposal form's "Source lead" picker (DEF-081). */
+  @Get('lookups/leads')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
+  async lookupLeads(@Query('customer_id') customerId: string, @CurrentUser() user: AuthUser) {
+    return this.proposalsService.lookupLeads(customerId, user);
+  }
+
   // =========================================================================
   // 2. Proposal CRUD & Search
   // =========================================================================
@@ -456,14 +463,14 @@ export class ProposalsController {
 
   @Get(':id/follow-ups')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
-  async getFollowups(@Param('id') id: string) {
-    return this.proposalsService.getFollowups(id);
+  async getFollowups(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.proposalsService.getFollowups(id, user);
   }
 
   @Get(':id/versions')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
-  async getVersions(@Param('id') id: string) {
-    return this.proposalsService.getVersions(id);
+  async getVersions(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.proposalsService.getVersions(id, user);
   }
 
   @Patch(':id/follow-up')
@@ -478,13 +485,13 @@ export class ProposalsController {
 
   @Get(':id/activity')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
-  async getActivity(@Param('id') id: string) {
-    return this.proposalsService.getActivity(id);
+  async getActivity(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.proposalsService.getActivity(id, user);
   }
 
   @Get(':id/history')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
-  async getHistory(@Param('id') id: string) {
-    return this.proposalsService.getHistory(id);
+  async getHistory(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.proposalsService.getHistory(id, user);
   }
 }

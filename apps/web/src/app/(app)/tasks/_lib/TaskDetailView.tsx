@@ -66,6 +66,9 @@ import {
 import { TaskActionDialog, uploadTaskFiles, type TaskDialogAction } from './TaskActions';
 import { LinkPicker } from './pickers';
 
+/** Readable escalation states (never the raw code). */
+const ESCALATION_STATUS_LABELS: Record<string, string> = { open: 'Open', acknowledged: 'Acknowledged', closed: 'Closed' };
+
 /** `short`: the label in the phone action bar, where two buttons share the width. */
 const PRIMARY: { action: TaskDialogAction; label: string; short?: string; icon: React.ReactNode; variant?: 'primary' | 'secondary' | 'danger' }[] = [
   { action: 'start', label: 'Start', icon: <Play className="h-4 w-4" /> },
@@ -386,7 +389,7 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
           <Card className="p-4 space-y-3">
             <h3 className="font-serif text-base text-[#14213D]">Blockers</h3>
             {task.blockers.length === 0 ? (
-              <p className="text-xs text-[#8A8578]">No blockers raised.</p>
+              <p className="text-xs text-[#6B7280]">No blockers raised.</p>
             ) : (
               <ul className="space-y-3">
                 {task.blockers.map((b) => (
@@ -651,7 +654,7 @@ const EscalationRow: React.FC<{
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold text-[#14213D]">To {esc.escalated_to_name}</span>
         <Badge variant={esc.status === 'closed' ? 'outline' : 'warning'} size="sm">
-          {esc.status}
+          {ESCALATION_STATUS_LABELS[esc.status] || String(esc.status || '').replace(/_/g, ' ')}
         </Badge>
       </div>
       <p className="text-[#4A5568]">

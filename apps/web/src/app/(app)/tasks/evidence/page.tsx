@@ -498,7 +498,7 @@ function Evidence() {
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
             <TaskViewMenu />
             <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
               <input
                 id="evidence-employee"
                 type="search"
@@ -526,12 +526,12 @@ function Evidence() {
                     setFindOpen(false);
                   }
                 }}
-                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+                className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
               />
               {findOpen && query.trim() && (
                 <div id="evidence-employee-results" role="listbox" className="filter-menu-panel left-0 max-h-[320px] w-full overflow-y-auto">
                   {matches.length === 0 ? (
-                    <p className="px-2.5 py-2 text-xs text-[#8A8578]">No one matches. {peopleHint}</p>
+                    <p className="px-2.5 py-2 text-xs text-[#6B7280]">No one matches. {peopleHint}</p>
                   ) : (
                     matches.map((p) => (
                       <button
@@ -612,7 +612,7 @@ function Evidence() {
                   {[errors.from, errors.to || rangeError].filter(Boolean).join(' ')}
                 </span>
               ) : (
-                <span className="text-[11px] text-[#8A8578]">Calendar days in IST.</span>
+                <span className="text-[11px] text-[#6B7280]">Calendar days in IST.</span>
               )}
             </div>
           )}
@@ -717,7 +717,7 @@ function Evidence() {
                   {reviews === null ? (
                     <PageLoader rows={2} label="Loading reviews" />
                   ) : reviews.length === 0 ? (
-                    <p className="text-sm text-[#8A8578]">No reviews recorded for {employeeName} yet.</p>
+                    <p className="text-sm text-[#6B7280]">No reviews recorded for {employeeName} yet.</p>
                   ) : (
                     <div className="space-y-3">
                       {reviews.map((r) => {
@@ -766,7 +766,7 @@ function Evidence() {
                   {snapshots === null ? (
                     <PageLoader rows={2} label="Loading snapshots" />
                   ) : snapshots.length === 0 ? (
-                    <p className="text-sm text-[#8A8578]">No snapshots yet{canSnapshot ? ' — generate one to freeze the report for this period.' : '.'}</p>
+                    <p className="text-sm text-[#6B7280]">No snapshots yet{canSnapshot ? ' — generate one to freeze the report for this period.' : '.'}</p>
                   ) : (
                     <ul className="space-y-2.5">
                       {snapshots.map((s) => {
@@ -786,7 +786,7 @@ function Evidence() {
                               Generated <DateTime value={s.generated_at} />
                               {s.generated_by_name ? ` by ${s.generated_by_name}` : ''}
                             </p>
-                            <p className="font-mono text-[10px] text-[#8A8578] break-all" title={`Data ${s.data_sha256}\nPDF ${s.pdf_sha256}\nExcel ${s.xlsx_sha256}`}>
+                            <p className="font-mono text-[10px] text-[#6B7280] break-all" title={`Data ${s.data_sha256}\nPDF ${s.pdf_sha256}\nExcel ${s.xlsx_sha256}`}>
                               SHA-256 data {shortHash(s.data_sha256)} · pdf {shortHash(s.pdf_sha256)} · xlsx {shortHash(s.xlsx_sha256)}
                             </p>
                             <div className="flex flex-wrap gap-1.5">

@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import React, { useState, useEffect, useTransition, useCallback } from 'react';
 import {
   Bell,
@@ -31,6 +32,7 @@ import {
   ArrowUpDown,
   ChevronUp,
   ChevronDown,
+  ChevronRight,
   Edit2,
   Trash2,
   CalendarDays,
@@ -56,7 +58,17 @@ import {
   StatGrid,
   StatCard,
   RecordViews,
+  RecordTable,
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
+  formatDateIN,
+  daysFromToday,
   toneFor,
+  type BadgeProps,
   type RecordItem,
   type BoardLane,
   Tabs, Spinner, FilterMenu, InfoCallout, FormSteps, FormSection, ScrollStrip } from '@/components/ui';
@@ -65,19 +77,74 @@ import { calendarDay } from '@/lib/calendar-day';
 import {
   PROPOSAL_STATUS_LABELS,
   PROPOSAL_LOST_REASONS,
+  formatINR,
   type ProposalStatus,
   type ProposalLostReason,
+  PROPOSAL_ORDER_TYPES,
 } from '@arihant/shared';
 
 /** A proposal DATE value from the API ('YYYY-MM-DD' or a serialized instant) as its IST calendar day. */
 const proposalDay = calendarDay;
+
+/** An instant as IST date-time for audit rows ('13/10/2026, 00:52'); '—' when missing or invalid. */
+const istDateTimeText = (v: unknown) => {
+  if (!v) return '—';
+  const d = new Date(String(v));
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+};
+/** Status code → its label, whatever the casing ('REQUESTED', 'sent', 'SENT_TO_CUSTOMER'). */
+const statusText = (s?: string | null) => (s ? PROPOSAL_STATUS_LABELS[s] || PROPOSAL_STATUS_LABELS[String(s).toUpperCase()] || String(s).replace(/_/g, ' ') : '');
+/** Server-computed transitions the viewer may make right now (RBAC + lifecycle, DEF-008). */
+const canMove = (p: any, target: string) => Array.isArray(p?.allowed_transitions) && p.allowed_transitions.includes(target);
+/** Edit / follow-up rights: server-computed; terminal proposals are always read-only (DEF-080). */
+const canEditProposal = (p: any) => Boolean(p?.can_edit);
+const hasQuote = (p: any) => Number(p?.quoted_value) > 0;
+/** "New Delhi, Delhi" — never a dangling comma when the state is missing (DEF-082). */
+const placeText = (city?: string | null, state?: string | null) => [city, state].map((x) => (x || '').trim()).filter(Boolean).join(', ');
+/** Form number field → API value: '' → null (clears), '1,25,000' → 125000. */
+const numOrNull = (v: string) => {
+  const t = String(v ?? '').replace(/,/g, '').trim();
+  return t === '' ? null : Number(t);
+};
+const numInput = (v: unknown) => (v === null || v === undefined || v === '' ? '' : String(Number(v)));
+const SENT_LANES = ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'];
+
+type CommercialForm = {
+  quoted_value: string;
+  quantity: string;
+  margin_percent: string;
+  validity_date: string;
+  payment_terms: string;
+  delivery_terms: string;
+};
+const EMPTY_COMMERCIAL: CommercialForm = { quoted_value: '', quantity: '', margin_percent: '', validity_date: '', payment_terms: '', delivery_terms: '' };
+const commercialPayload = (c: CommercialForm) => ({
+  quoted_value: numOrNull(c.quoted_value),
+  quantity: numOrNull(c.quantity),
+  margin_percent: numOrNull(c.margin_percent),
+  validity_date: c.validity_date || null,
+  payment_terms: c.payment_terms.trim() || null,
+  delivery_terms: c.delivery_terms.trim() || null,
+});
+/** Client mirror of the server rules, so obvious mistakes are explained before the round trip. */
+const commercialError = (c: CommercialForm): string | null => {
+  const q = numOrNull(c.quoted_value);
+  if (q !== null && (!Number.isFinite(q) || q < 0)) return 'Quoted value must be a positive amount in ₹';
+  const qty = numOrNull(c.quantity);
+  if (qty !== null && (!Number.isInteger(qty) || qty < 1)) return 'Quantity must be a whole number of at least 1';
+  const m = numOrNull(c.margin_percent);
+  if (m !== null && (!Number.isFinite(m) || m < -100 || m > 100)) return 'Margin must be a percentage between -100 and 100';
+  return null;
+};
 
 /**
  * Dialog action rows. Phones (bottom sheet): a sticky footer docked to the sheet's bottom edge, the
  * buttons sharing the full width as 40px thumb targets. From `sm` up: the plain right-aligned row.
  */
 const DIALOG_FOOTER =
-  'sticky -bottom-4 z-10 -mx-4 -mb-4 flex gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 [&>*]:min-w-0 [&>*]:flex-1 sm:static sm:z-auto sm:mx-0 sm:mb-0 sm:justify-end sm:border-[#F0F5FC] sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-3 sm:[&>*]:flex-none';
+  'sticky -bottom-4 z-10 -mx-4 -mb-4 flex gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 [&>*]:min-w-0 [&>*]:flex-1 sm:static sm:z-auto sm:mx-0 sm:mb-0 sm:justify-end sm:border-[#E3EFEE] sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-3 sm:[&>*]:flex-none';
 const DIALOG_BTN = 'h-10 sm:h-8';
 /** Workflow buttons in the proposal sheet: phones share the row as 40px targets; `sm` up keeps the compact xs button. */
 const FLOW_BTN = 'h-10 grow basis-[8rem] text-xs sm:h-7 sm:grow-0 sm:basis-auto sm:text-[11px]';
@@ -107,6 +174,20 @@ const proposalLaneOf = (status?: string | null) => {
   const s = String(status || '').toUpperCase();
   return LEGACY_PROPOSAL_LANE[s] || s || 'PROPOSAL_REQUESTED';
 };
+
+type BadgeVariant = NonNullable<BadgeProps['variant']>;
+/** Register-table status badge, keyed on the canonical lane so legacy lowercase statuses colour the same. */
+const proposalBadge = (status?: string | null): BadgeVariant => {
+  const lane = proposalLaneOf(status);
+  if (['APPROVED', 'SENT_TO_CUSTOMER', 'CONVERTED'].includes(lane)) return 'success';
+  if (['READY_FOR_REVIEW', 'FOLLOW_UP_REQUIRED'].includes(lane)) return 'warning';
+  if (['PROPOSAL_REQUESTED', 'UNDER_PREPARATION'].includes(lane)) return 'default';
+  if (lane === 'LOST') return 'danger';
+  return 'outline';
+};
+const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
+/** The needed-by date only drives urgency until the proposal goes out to the customer. */
+const PROPOSAL_PRE_SEND = ['PROPOSAL_REQUESTED', 'UNDER_PREPARATION', 'READY_FOR_REVIEW', 'APPROVED'];
 const SORT_FIELDS = [
   { key: 'updated_at', label: 'Recently updated' },
   { key: 'request_date', label: 'Request date' },
@@ -122,6 +203,7 @@ const PROPOSALS_PAGE_SIZE = 25;
 
 export default function ProposalsPage() {
   const { user } = useAuth();
+  const router = useRouter();
 
   // (the proposals register itself is useInfiniteList below, paged as the reader scrolls)
 
@@ -176,25 +258,36 @@ export default function ProposalsPage() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [editForm, setEditForm] = useState({
     required_date: '',
-    version: '',
     reference: '',
     remarks: '',
     responsible_id: '',
     followup_owner_id: '',
     required_date_change_reason: '',
+    lead_id: '',
+    ...EMPTY_COMMERCIAL,
   });
+  // Open leads of the customer, for the "Source lead" pickers (DEF-081)
+  const [leadOptions, setLeadOptions] = useState<any[]>([]);
+  const [leadOptionsFor, setLeadOptionsFor] = useState<string>('');
+  const [pageError, setPageError] = useState<string | null>(null);
 
   // Action dialogs
   const [isStatusDialogOpen, setIsStatusDialogOpen] = useState(false);
   const [targetStatus, setTargetStatus] = useState<string>('');
   const [statusForm, setStatusForm] = useState({
     sent_date: istToday(),
-    lost_reason: 'Price' as ProposalLostReason,
+    lost_reason: (PROPOSAL_LOST_REASONS[0] || 'Other') as ProposalLostReason,
     lost_remarks: '',
     converted_to: '',
     converted_reference: '',
+    reference: '',
     remarks: '',
   });
+
+  // Moving a reviewed / approved / sent quote back to preparation needs a reason the preparer can act on.
+  const currentLane = proposalLaneOf(selectedProposal?.status);
+  const isRequestChanges = targetStatus === 'UNDER_PREPARATION' && currentLane === 'READY_FOR_REVIEW';
+  const isBackToPreparation = targetStatus === 'UNDER_PREPARATION' && currentLane !== 'PROPOSAL_REQUESTED';
 
   const [isFollowupDialogOpen, setIsFollowupDialogOpen] = useState(false);
   const [followupForm, setFollowupForm] = useState({
@@ -213,11 +306,12 @@ export default function ProposalsPage() {
     responsible_id: '',
     request_date: istToday(),
     required_date: addIsoDays(istToday(), 7),
-    version: 'v1.0',
     reference: '',
     followup_owner_id: '',
     next_followup: '',
     remarks: '',
+    lead_id: '',
+    ...EMPTY_COMMERCIAL,
   });
 
   const [formError, setFormError] = useState<string | null>(null);
@@ -240,11 +334,12 @@ export default function ProposalsPage() {
       responsible_id: '',
       request_date: istToday(),
       required_date: addIsoDays(istToday(), 7),
-      version: 'v1.0',
       reference: '',
       followup_owner_id: '',
       next_followup: '',
       remarks: '',
+      lead_id: '',
+      ...EMPTY_COMMERCIAL,
     });
     setFormError(null);
     setDuplicateWarning(null);
@@ -365,44 +460,77 @@ export default function ProposalsPage() {
 
   // Deep link from notifications: /proposals?open=<proposal id>
   useOpenParam(async (id) => {
-    const proposal = await api.get(`/proposals/${id}`).catch(() => null);
-    if (proposal) openProposalDetails(proposal);
+    try {
+      const proposal = await api.get(`/proposals/${id}`);
+      applyProposal(proposal);
+      setDetailsTab('overview');
+      setIsDetailsOpen(true);
+    } catch (err: any) {
+      setPageError(err?.message || 'That proposal could not be opened');
+    }
   });
+
+  /** The full record (findOne) carries its follow-ups and status history, so the tab counts are right at once. */
+  const applyProposal = (full: any) => {
+    if (!full) return;
+    setSelectedProposal(full);
+    if (Array.isArray(full.followups)) setFollowups(full.followups);
+    if (Array.isArray(full.history)) setActivities(full.history);
+  };
 
   // Fetch proposal details, follow-ups, and history
   const openProposalDetails = async (proposal: any) => {
     setSelectedProposal(proposal);
+    setFollowups([]);
+    setActivities([]);
     setIsDetailsOpen(true);
     setDetailsTab('overview');
 
     try {
-      const [fullProp, fRes, hRes] = await Promise.all([
-        api.get(`/proposals/${proposal.id}`).catch(() => proposal),
-        api.get(`/proposals/${proposal.id}/follow-ups`).catch(() => []),
-        api.get(`/proposals/${proposal.id}/history`).catch(() => []),
-      ]);
-      setSelectedProposal(fullProp);
-      setFollowups(Array.isArray(fRes) ? fRes : []);
-      setActivities(Array.isArray(hRes) ? hRes : []);
-    } catch (err) {
-      console.error('Failed to load proposal details:', err);
+      applyProposal(await api.get(`/proposals/${proposal.id}`));
+    } catch (err: any) {
+      setPageError(err?.message || 'Failed to load proposal details');
     }
   };
+
+  const loadLeadOptions = useCallback(async (customerId: string): Promise<any[]> => {
+    setLeadOptionsFor(customerId);
+    if (!customerId) {
+      setLeadOptions([]);
+      return [];
+    }
+    try {
+      const rows = await api.get('/proposals/lookups/leads', { customer_id: customerId });
+      const list = Array.isArray(rows) ? rows : [];
+      setLeadOptions(list);
+      return list;
+    } catch {
+      setLeadOptions([]);
+      return [];
+    }
+  }, []);
 
   // Open Edit Proposal Dialog
   const openEditProposal = (proposal: any) => {
     setSelectedProposal(proposal);
     setEditForm({
       required_date: proposal.required_date ? proposalDay(proposal.required_date) : '',
-      version: proposal.version || 'v1.0',
       reference: proposal.reference || '',
       remarks: proposal.remarks || '',
-      responsible_id: proposal.responsible_id || '',
-      followup_owner_id: proposal.followup_owner_id || '',
+      responsible_id: proposal.responsible_id || proposal.responsible_person_id || '',
+      followup_owner_id: proposal.followup_owner_id || proposal.follow_up_owner_id || '',
       required_date_change_reason: '',
+      lead_id: proposal.lead_id || '',
+      quoted_value: numInput(proposal.quoted_value),
+      quantity: numInput(proposal.quantity),
+      margin_percent: numInput(proposal.margin_percent),
+      validity_date: proposal.validity_date ? proposalDay(proposal.validity_date) : '',
+      payment_terms: proposal.payment_terms || '',
+      delivery_terms: proposal.delivery_terms || '',
     });
     setEditError(null);
     setIsEditOpen(true);
+    loadLeadOptions(proposal.customer_id || proposal.organisation_id || '');
   };
 
   // Submit Edit Proposal
@@ -410,24 +538,28 @@ export default function ProposalsPage() {
     e.preventDefault();
     if (!selectedProposal) return;
     setEditError(null);
+    const termsError = commercialError(editForm);
+    if (termsError) {
+      setEditError(termsError);
+      return;
+    }
     try {
       setIsSubmitting(true);
       const payload: any = {
         required_date: editForm.required_date,
-        version: editForm.version || undefined,
         reference: editForm.reference || undefined,
         remarks: editForm.remarks || undefined,
         responsible_id: editForm.responsible_id || undefined,
         followup_owner_id: editForm.followup_owner_id || undefined,
         required_date_change_reason: editForm.required_date_change_reason.trim() || undefined,
+        lead_id: editForm.lead_id || null,
+        ...commercialPayload(editForm),
       };
       const updated = await api.patch(`/proposals/${selectedProposal.id}`, payload);
-      setSelectedProposal(updated);
+      applyProposal(updated);
       setIsEditOpen(false);
       await fetchProposals();
       await fetchStats();
-      const hRes = await api.get(`/proposals/${selectedProposal.id}/history`).catch(() => []);
-      setActivities(hRes);
     } catch (err: any) {
       setEditError(err?.message || 'Failed to update proposal details');
     } finally {
@@ -513,6 +645,11 @@ export default function ProposalsPage() {
       setFormError('Initial follow-up date must be a valid date');
       return;
     }
+    const termsError = commercialError(newProposal);
+    if (termsError) {
+      setFormError(termsError);
+      return;
+    }
     if (duplicateWarning && !duplicateOverrideReason?.trim()) {
       setFormError('Please provide a reason to override the duplicate proposal detection.');
       return;
@@ -528,8 +665,12 @@ export default function ProposalsPage() {
         followup_owner_id: (newProposal.followup_owner_id || newProposal.responsible_id).trim(),
         request_date: newProposal.request_date,
         required_date: newProposal.required_date,
-        version: (newProposal.version || 'v1.0').trim(),
+        ...commercialPayload(newProposal),
       };
+      // Source lead: an explicit choice, or "none" ('' → null). Untouched picker with no options lets the server
+      // link the customer's only open lead.
+      if (newProposal.lead_id) payload.lead_id = newProposal.lead_id;
+      else if (leadOptionsFor === newProposal.organisation_id && leadOptions.length > 0) payload.lead_id = null;
 
       if (newProposal.reference?.trim()) payload.reference = newProposal.reference.trim();
       if (newProposal.next_followup?.trim()) payload.next_followup = newProposal.next_followup.trim();
@@ -537,7 +678,7 @@ export default function ProposalsPage() {
       if (duplicateOverrideReason?.trim()) payload.duplicate_override_reason = duplicateOverrideReason.trim();
 
       const created = await api.post('/proposals', payload);
-      const quoteNo = created?.proposal_no || created?.proposal_number || 'New Quote';
+      const quoteNo = created?.proposal_number || created?.proposal_no || 'New Quote';
 
       setIsCreateOpen(false);
       resetCreateForm();
@@ -577,10 +718,12 @@ export default function ProposalsPage() {
     setStatusError(null);
     setStatusForm({
       sent_date: istToday(),
-      lost_reason: 'Price',
+      lost_reason: (PROPOSAL_LOST_REASONS[0] || 'Other') as ProposalLostReason,
       lost_remarks: '',
       converted_to: '',
       converted_reference: '',
+      // Mark Sent needs the email / dispatch reference the quote went out under; start from the one on record.
+      reference: selectedProposal?.email_reference || selectedProposal?.reference || '',
       remarks: '',
     });
     setIsStatusDialogOpen(true);
@@ -591,6 +734,23 @@ export default function ProposalsPage() {
     e.preventDefault();
     if (!selectedProposal) return;
     setStatusError(null);
+
+    if ((targetStatus === 'READY_FOR_REVIEW' || targetStatus === 'APPROVED') && !hasQuote(selectedProposal)) {
+      setStatusError(
+        targetStatus === 'APPROVED'
+          ? 'This proposal has no quoted value. Pricing must be entered (Edit → Commercial terms) before it can be approved.'
+          : 'Enter the quoted value (₹) under Edit → Commercial terms before submitting for review.',
+      );
+      return;
+    }
+    if (isBackToPreparation && !statusForm.remarks.trim()) {
+      setStatusError(
+        isRequestChanges
+          ? 'Explain the changes you need — the comment is sent to the preparer.'
+          : 'Give the reason for sending this proposal back to preparation.',
+      );
+      return;
+    }
 
     if (targetStatus === 'SENT_TO_CUSTOMER') {
       // Mirror the server guard on IST calendar days: today (IST) is always allowed, even just after midnight.
@@ -616,24 +776,23 @@ export default function ProposalsPage() {
 
       if (targetStatus === 'SENT_TO_CUSTOMER') {
         payload.sent_date = statusForm.sent_date;
+        payload.reference = statusForm.reference.trim();
       } else if (targetStatus === 'LOST') {
         payload.lost_reason = statusForm.lost_reason;
         payload.lost_remarks = statusForm.lost_remarks;
       } else if (targetStatus === 'CONVERTED') {
-        payload.converted_to = statusForm.converted_to;
-        payload.converted_reference = statusForm.converted_reference;
+        payload.converted_to = statusForm.converted_to || 'Purchase Order';
+        payload.converted_reference = statusForm.converted_reference.trim();
       }
       if (statusForm.remarks) payload.remarks = statusForm.remarks;
 
       const updated = await api.patch(`/proposals/${selectedProposal.id}/status`, payload);
-      setSelectedProposal(updated);
+      applyProposal(updated);
       setIsStatusDialogOpen(false);
 
       // Refresh listings & details
       await fetchProposals();
       await fetchStats();
-      const hRes = await api.get(`/proposals/${selectedProposal.id}/history`).catch(() => []);
-      setActivities(hRes);
     } catch (err: any) {
       setStatusError(err?.message || 'Failed to update proposal status');
     } finally {
@@ -657,7 +816,7 @@ export default function ProposalsPage() {
         next_followup_date: followupForm.next_followup_date || undefined,
       });
 
-      setSelectedProposal(res.proposal);
+      applyProposal(res?.proposal || res);
       setIsFollowupDialogOpen(false);
       setFollowupForm({
         followup_date: istToday(),
@@ -667,13 +826,6 @@ export default function ProposalsPage() {
         next_followup_date: '',
       });
 
-      // Reload followups & history
-      const [fRes, hRes] = await Promise.all([
-        api.get(`/proposals/${selectedProposal.id}/follow-ups`),
-        api.get(`/proposals/${selectedProposal.id}/history`),
-      ]);
-      setFollowups(fRes);
-      setActivities(hRes);
       await fetchProposals();
       await fetchStats();
     } catch (err: any) {
@@ -758,9 +910,9 @@ export default function ProposalsPage() {
   const headlineCards: { key: string; label: string; count: number; subtext: string; icon: React.ReactNode; kind: 'status' | 'followup'; value: string; color?: 'primary' | 'amber' | 'rose' | 'emerald' }[] = [
     { key: 'all', label: 'Total Proposals', count: stats.total_proposals || 0, subtext: 'Active & historical register', icon: <FileSpreadsheet className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'all' },
     { key: 'prep', label: 'Under Preparation', count: stats.pending_preparation || 0, subtext: 'Technical & price drafting', icon: <Clock className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'UNDER_PREPARATION', color: 'primary' },
-    { key: 'review', label: 'Ready for Review', count: stats.ready_for_review || 0, subtext: 'Awaiting manager sign-off', icon: <AlertCircle className="h-4 w-4 text-amber-600" />, kind: 'status', value: 'READY_FOR_REVIEW', color: 'amber' },
-    { key: 'overdue', label: 'Overdue Follow-ups', count: stats.overdue || 0, subtext: 'Requires immediate contact', icon: <AlertTriangle className="h-4 w-4 text-red-600" />, kind: 'followup', value: 'overdue', color: 'rose' },
-    { key: 'converted', label: 'Converted to Orders', count: stats.converted || 0, subtext: 'Purchase orders secured', icon: <CheckCircle2 className="h-4 w-4 text-emerald-600" />, kind: 'status', value: 'CONVERTED', color: 'emerald' },
+    { key: 'review', label: 'Ready for Review', count: stats.ready_for_review || 0, subtext: 'Awaiting management sign-off', icon: <AlertCircle className="h-4 w-4 text-[#9A3412]" />, kind: 'status', value: 'READY_FOR_REVIEW', color: 'amber' },
+    { key: 'overdue', label: 'Overdue Follow-ups', count: stats.overdue || 0, subtext: 'Requires immediate contact', icon: <AlertTriangle className="h-4 w-4 text-[#881337]" />, kind: 'followup', value: 'overdue', color: 'rose' },
+    { key: 'converted', label: 'Converted to Orders', count: stats.converted || 0, subtext: 'Purchase orders secured', icon: <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'CONVERTED', color: 'emerald' },
   ];
   const pickStatus = (status: string) => {
     setSelectedStatus(status);
@@ -791,14 +943,16 @@ export default function ProposalsPage() {
     setSelectedProposal(p);
     initiateStatusChange(nextStatus);
   };
+  // Actions follow the server's allowed_transitions / can_edit for this user (DEF-008): a colleague's proposal is
+  // view-only for sales, terminal proposals are read-only for everyone.
   const primaryFor = (p: any): RecordItem['primary'] => {
-    switch (p.status) {
+    switch (proposalLaneOf(p.status)) {
       case 'PROPOSAL_REQUESTED':
-        return { label: 'Start preparation', onClick: statusActionFor(p, 'UNDER_PREPARATION') };
+        return canMove(p, 'UNDER_PREPARATION') ? { label: 'Start preparation', onClick: statusActionFor(p, 'UNDER_PREPARATION') } : undefined;
       case 'UNDER_PREPARATION':
-        return { label: 'Submit for review', onClick: statusActionFor(p, 'READY_FOR_REVIEW') };
+        return canMove(p, 'READY_FOR_REVIEW') ? { label: 'Submit for review', onClick: statusActionFor(p, 'READY_FOR_REVIEW') } : undefined;
       case 'READY_FOR_REVIEW': {
-        if (!['management', 'admin'].includes(user?.role || '')) return { label: 'Awaiting approval', disabled: true };
+        if (!['management', 'admin'].includes(user?.role || '')) return { label: 'Awaiting management approval', disabled: true };
         const isCreator = Boolean(
           user &&
             [p.created_by_id, p.created_by, p.requested_by_id, p.requested_by, p.responsible_person_id, p.responsible_id].includes(user.id),
@@ -807,10 +961,15 @@ export default function ProposalsPage() {
         return { label: 'Approve proposal', onClick: statusActionFor(p, 'APPROVED') };
       }
       case 'APPROVED':
-        return { label: 'Mark sent', onClick: statusActionFor(p, 'SENT_TO_CUSTOMER') };
+        return canMove(p, 'SENT_TO_CUSTOMER') ? { label: 'Mark sent', onClick: statusActionFor(p, 'SENT_TO_CUSTOMER') } : undefined;
       case 'SENT_TO_CUSTOMER':
       case 'FOLLOW_UP_REQUIRED':
-        return { label: 'Log follow-up', onClick: () => openFollowupFor(p) };
+        return canEditProposal(p) ? { label: 'Log follow-up', onClick: () => openFollowupFor(p) } : undefined;
+      case 'CONVERTED':
+        // DEF-070: hand the converted quote to logistics (pre-filled dispatch form)
+        return canOpen(user?.role, '/deliveries')
+          ? { label: 'Create dispatch', onClick: () => router.push(`/deliveries?proposal=${p.id}`) }
+          : undefined;
       default:
         return undefined;
     }
@@ -825,15 +984,15 @@ export default function ProposalsPage() {
     const nextFollowupStr = p.next_followup ? proposalDay(p.next_followup) || null : null;
     const requiredStr = p.required_date ? proposalDay(p.required_date) || null : null;
     const isOverdue = Boolean(nextFollowupStr && nextFollowupStr < todayIst && !closed);
-    const fmt = (d?: string | null) => (d ? new Date(d).toLocaleDateString('en-GB') : '—');
+    const fmt = (d?: string | null) => (d ? formatDateIN(d) : '—');
     const badges: RecordItem['badges'] = [];
     if (p.is_urgent && !closed) badges.push({ label: 'Urgent', tone: 'danger' });
     if (isOverdue) badges.push({ label: 'Follow-up overdue', tone: 'danger' });
     if (!nextFollowupStr && ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(lane)) badges.push({ label: 'Follow-up not scheduled', tone: 'warning' });
     if (p.sent_late) badges.push({ label: 'Sent late', tone: 'warning' });
     const primary = primaryFor(p);
-    const quick: RecordItem['quick'] = [{ label: `Edit ${p.proposal_number || 'proposal'}`, icon: <Edit2 />, onClick: () => openEditProposal(p) }];
-    if (!closed && primary?.label !== 'Log follow-up') quick.unshift({ label: 'Log follow-up', icon: <MessageSquare />, onClick: () => openFollowupFor(p) });
+    // Edit only where the viewer may change it; follow-ups only once the quote has gone out (DEF-079 / DEF-080).
+    const quick: RecordItem['quick'] = canEditProposal(p) ? [{ label: `Edit ${p.proposal_number || 'proposal'}`, icon: <Edit2 />, onClick: () => openEditProposal(p) }] : [];
     return {
       key: String(p.id),
       code: p.proposal_number,
@@ -858,6 +1017,133 @@ export default function ProposalsPage() {
       onOpen: () => openProposalDetails(p),
     };
   });
+
+  // List view: the register's own table — same rows, same order as recordItems (recordItems[i] is proposals[i]).
+  const proposalList = proposals.length ? (
+    <RecordTable items={recordItems}>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Proposal No.</TableHead>
+            <TableHead>Customer</TableHead>
+            <TableHead>Sector</TableHead>
+            <TableHead>Product</TableHead>
+            <TableHead>Requested By</TableHead>
+            <TableHead>Responsible</TableHead>
+            <TableHead>Req. Date</TableHead>
+            <TableHead>Due Date</TableHead>
+            <TableHead>Sent Date</TableHead>
+            <TableHead>Ver.</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Follow-up Owner</TableHead>
+            <TableHead>Next Follow-up</TableHead>
+            <TableHead>Outcome</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {proposals.map((p: any, i: number) => {
+            const primary = recordItems[i]?.primary;
+            const lane = proposalLaneOf(p.status);
+            const closed = ['CONVERTED', 'CLOSED', 'LOST'].includes(lane);
+            const daysLeft = PROPOSAL_PRE_SEND.includes(lane) ? daysFromToday(p.required_date) : null;
+            const followupDays = closed ? null : daysFromToday(p.next_followup);
+            return (
+              <TableRow key={p.id}>
+                <TableCell className="font-bold text-[#14213D] whitespace-nowrap">
+                  <span className="font-mono text-[#0F5E63]">{p.proposal_number}</span>
+                  {p.reference && (
+                    <div className="text-[10px] text-[#4A5568] font-normal max-w-[140px] truncate" title={p.reference}>
+                      ref: {p.reference}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="font-bold text-[#14213D]">
+                  {p.organisation_name || 'Unknown customer'}
+                  {placeText(p.organisation_city, p.organisation_state) && (
+                    <div className="text-[10px] text-[#4A5568] font-normal">{placeText(p.organisation_city, p.organisation_state)}</div>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant="outline" size="sm" className="uppercase font-bold">
+                    {p.sector || 'General'}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-[#14213D] max-w-[240px] truncate" title={p.product_name || undefined}>
+                  {p.product_name || '-'}
+                </TableCell>
+                <TableCell className="text-[#4A5568] whitespace-nowrap">{p.requested_by_name || '-'}</TableCell>
+                <TableCell className="text-[#4A5568] whitespace-nowrap">{p.responsible_name || 'Unassigned'}</TableCell>
+                <TableCell className="font-mono whitespace-nowrap">{formatDateIN(p.request_date)}</TableCell>
+                <TableCell className="font-mono whitespace-nowrap">
+                  {formatDateIN(p.required_date)}
+                  {daysLeft !== null && daysLeft >= 0 && daysLeft <= 7 && (
+                    <div className="text-[10px] font-bold text-[#881337]">{daysLeft === 0 ? 'DUE TODAY' : `${daysLeft} DAYS LEFT`}</div>
+                  )}
+                </TableCell>
+                <TableCell className="font-mono whitespace-nowrap">{formatDateIN(p.sent_date)}</TableCell>
+                <TableCell className="font-mono text-[#4A5568] whitespace-nowrap">{p.version || 'v1.0'}</TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <Badge variant={proposalBadge(p.status)} size="sm" className="uppercase font-bold">
+                    {upperLabel(PROPOSAL_STATUS_LABELS[p.status] || p.status)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-[#4A5568] whitespace-nowrap">{p.followup_owner_name || '-'}</TableCell>
+                <TableCell className="font-mono whitespace-nowrap">
+                  {formatDateIN(p.next_followup)}
+                  {followupDays !== null && followupDays <= 0 && (
+                    <div className="text-[10px] font-bold text-[#881337]">{followupDays === 0 ? 'DUE TODAY' : 'OVERDUE'}</div>
+                  )}
+                  {!p.next_followup && ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(lane) && (
+                    <div className="text-[10px] font-bold text-[#9A3412]">NOT SCHEDULED</div>
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {lane === 'CONVERTED' ? (
+                    <Badge variant="success" size="sm" className="uppercase font-bold">
+                      Converted
+                    </Badge>
+                  ) : lane === 'LOST' ? (
+                    <>
+                      <Badge variant="danger" size="sm" className="uppercase font-bold">
+                        Lost
+                      </Badge>
+                      {p.lost_reason && (
+                        <div
+                          className="text-[10px] text-[#4A5568] max-w-[160px] truncate"
+                          title={p.lost_remarks ? `${p.lost_reason}: ${p.lost_remarks}` : p.lost_reason}
+                        >
+                          {p.lost_reason}
+                        </div>
+                      )}
+                    </>
+                  ) : lane === 'CLOSED' ? (
+                    <Badge variant="outline" size="sm" className="uppercase font-bold">
+                      Closed
+                    </Badge>
+                  ) : (
+                    <span className="text-[#4A5568]">-</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-2">
+                    {primary && (
+                      <Button size="sm" variant="primary" disabled={primary.disabled} onClick={primary.onClick} className="shadow-xs text-xs">
+                        {primary.label}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="secondary" onClick={() => openProposalDetails(p)} className="shadow-xs text-xs">
+                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </RecordTable>
+  ) : undefined;
 
   return (
     <PageContainer>
@@ -887,21 +1173,27 @@ export default function ProposalsPage() {
         }
       />
 
+      {pageError && (
+        <InfoCallout variant="danger" title="Something went wrong" onClose={() => setPageError(null)}>
+          {pageError}
+        </InfoCallout>
+      )}
+
       {/* Success Confirmation Banner */}
       {successMessage && (
-        <div className="p-3 sm:p-4 bg-emerald-50 border border-emerald-300 rounded-[14px] text-emerald-900 flex items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200">
+        <div className="p-3 sm:p-4 bg-[#E3EFEE] border border-[#D0E5E3] rounded-[14px] text-[#0B4A4E] flex items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="p-1.5 bg-emerald-600 text-white rounded-full shrink-0">
+            <div className="p-1.5 bg-[#0F5E63] text-white rounded-full shrink-0">
               <Check className="h-4 w-4" />
             </div>
             <div className="min-w-0">
-              <p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Quotation Registered</p>
-              <p className="text-xs font-medium text-emerald-900 [overflow-wrap:anywhere]">{successMessage}</p>
+              <p className="text-xs font-bold uppercase tracking-wider text-[#0B4A4E]">Quotation Registered</p>
+              <p className="text-xs font-medium text-[#0B4A4E] [overflow-wrap:anywhere]">{successMessage}</p>
             </div>
           </div>
           <button
             onClick={() => setSuccessMessage(null)}
-            className="shrink-0 text-emerald-700 hover:text-emerald-950 p-2.5 sm:p-1.5 rounded-lg hover:bg-emerald-100 transition-colors"
+            className="shrink-0 text-[#0B4A4E] hover:text-[#0B4A4E] p-2.5 sm:p-1.5 rounded-lg hover:bg-[#E3EFEE] transition-colors"
             title="Dismiss confirmation"
           >
             <X className="h-4 w-4" />
@@ -932,7 +1224,7 @@ export default function ProposalsPage() {
       <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
             <input
               type="search"
               aria-label="Search proposals"
@@ -941,7 +1233,7 @@ export default function ProposalsPage() {
               onChange={(e) => {
                 setSearch(e.target.value);
               }}
-              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2 max-sm:relative lg:flex-nowrap">
@@ -1121,7 +1413,8 @@ export default function ProposalsPage() {
           lanes={PROPOSAL_LANES}
           laneOf={(i) => laneByKey.get(i.key) ?? 'PROPOSAL_REQUESTED'}
           storageKey="proposals"
-          defaultView="board"
+          defaultView="list"
+          list={proposalList}
           hideEmptyLanes={selectedStatus !== 'all'}
           summary={
             <span className="font-mono text-xs">
@@ -1171,24 +1464,24 @@ export default function ProposalsPage() {
               (formError || duplicateWarning) && (
                 <>
                   {formError && (
-                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 flex items-center gap-2">
-                      <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                    <div className="p-3 bg-[#FCE8EC] border border-[#F3C7CF] rounded-lg text-xs text-[#700F2D] flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-[#881337]" />
                       <span>{formError}</span>
                     </div>
                   )}
 
                   {duplicateWarning && (
-                    <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-lg text-xs space-y-2">
-                      <div className="flex items-start gap-2 text-amber-900">
-                        <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
+                    <div className="p-3.5 bg-[#FFF8EB] border border-[#E9C9B4] rounded-lg text-xs space-y-2">
+                      <div className="flex items-start gap-2 text-[#7C2D12]">
+                        <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-[#9A3412]" />
                         <div>
                           <span className="font-bold">Duplicate Proposal Detected: </span>
                           <span>{duplicateWarning.message}</span>
                         </div>
                       </div>
                       <div className="pt-1">
-                        <label className="text-[11px] font-semibold text-amber-950 block mb-1">
-                          Duplicate Override Reason <span className="text-red-600">*</span>
+                        <label className="text-[11px] font-semibold text-[#7C2D12] block mb-1">
+                          Duplicate Override Reason <span className="text-[#881337]">*</span>
                         </label>
                         <input
                           type="text"
@@ -1196,7 +1489,7 @@ export default function ProposalsPage() {
                           placeholder="e.g. New fiscal budget inquiry or distinct delivery scope"
                           value={duplicateOverrideReason}
                           onChange={(e) => setDuplicateOverrideReason(e.target.value)}
-                          className="w-full text-xs py-1.5 px-3 bg-white border border-amber-300 rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
+                          className="w-full text-xs py-1.5 px-3 bg-white border border-[#E9C9B4] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
                         />
                       </div>
                     </div>
@@ -1220,14 +1513,19 @@ export default function ProposalsPage() {
                   <div className="space-y-4">
                     <div className="space-y-1">
                       <label className="text-xs font-semibold text-[#14213D]">
-                        Customer / Organisation <span className="text-red-500">*</span>
+                        Customer / Organisation <span className="text-[#881337]">*</span>
                       </label>
                       <select
                         required
                         value={newProposal.organisation_id}
                         onChange={(e) => {
-                          setNewProposal({ ...newProposal, organisation_id: e.target.value });
+                          const orgId = e.target.value;
+                          setNewProposal({ ...newProposal, organisation_id: orgId, lead_id: '' });
                           setDuplicateWarning(null);
+                          // A customer with exactly one open lead: link it by default (the picker can still change it).
+                          loadLeadOptions(orgId).then((rows) => {
+                            if (rows.length === 1) setNewProposal((cur) => (cur.organisation_id === orgId && !cur.lead_id ? { ...cur, lead_id: rows[0].id } : cur));
+                          });
                         }}
                         className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
                       >
@@ -1240,10 +1538,18 @@ export default function ProposalsPage() {
                       </select>
                     </div>
 
+                    {newProposal.organisation_id && (
+                      <LeadSelect
+                        value={newProposal.lead_id}
+                        options={leadOptionsFor === newProposal.organisation_id ? leadOptions : []}
+                        onChange={(lead_id) => setNewProposal({ ...newProposal, lead_id })}
+                      />
+                    )}
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <label className="text-xs font-semibold text-[#14213D]">
-                          Sector / Department <span className="text-red-500">*</span>
+                          Sector / Department <span className="text-[#881337]">*</span>
                         </label>
                         <select
                           required
@@ -1278,7 +1584,7 @@ export default function ProposalsPage() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <label className="text-xs font-semibold text-[#14213D]">
-                          Product Required <span className="text-red-500">*</span>
+                          Product Required <span className="text-[#881337]">*</span>
                         </label>
                         <select
                           required
@@ -1298,13 +1604,10 @@ export default function ProposalsPage() {
                         </select>
                       </div>
 
-                      <Input
-                        label="Proposal Version"
-                        placeholder="e.g. v1.0"
-                        value={newProposal.version}
-                        onChange={(e) => setNewProposal({ ...newProposal, version: e.target.value })}
-                      />
+                      <Input label="Proposal Version" value="v1.0" readOnly disabled helperText="Set automatically" />
                     </div>
+
+                    <CommercialFields value={newProposal} onChange={(patch) => setNewProposal({ ...newProposal, ...patch })} />
 
                     <Textarea
                       label="Internal Remarks / Tender Specifications"
@@ -1324,7 +1627,7 @@ export default function ProposalsPage() {
                   <div className="space-y-4">
                     <div className="space-y-1">
                       <label className="text-xs font-semibold text-[#14213D]">
-                        Responsible Person (Owner) <span className="text-red-500">*</span>
+                        Responsible Person (Owner) <span className="text-[#881337]">*</span>
                       </label>
                       <select
                         required
@@ -1409,7 +1712,7 @@ export default function ProposalsPage() {
           isOpen={isDetailsOpen}
           onClose={() => setIsDetailsOpen(false)}
           title={`Proposal ${selectedProposal.proposal_number}`}
-          description={`Registered on ${new Date(selectedProposal.created_at).toLocaleDateString('en-GB')} by ${selectedProposal.requested_by_name || 'System'}`}
+          description={`Registered on ${formatDateIN(selectedProposal.created_at)} by ${selectedProposal.requested_by_name || 'System'}`}
           maxWidth="4xl"
         >
           <div className="space-y-6">
@@ -1426,27 +1729,33 @@ export default function ProposalsPage() {
                   title="Copy Proposal Number"
                 >
                   {copiedId === selectedProposal.proposal_number ? (
-                    <Check className="h-4 w-4 text-emerald-600" />
+                    <Check className="h-4 w-4 text-[#0F5E63]" />
                   ) : (
                     <Copy className="h-4 w-4" />
                   )}
                 </button>
                 <div className="mx-1 hidden h-4 w-px bg-[#DCD8CE] sm:block" />
                 {renderStatusBadge(selectedProposal.status)}
-                <span className="text-xs font-semibold px-2 py-0.5 bg-white border border-[#DCD8CE] rounded-md text-[#4A5568]">
+                <span
+                  className="font-mono text-xs font-semibold px-2 py-0.5 bg-white border border-[#DCD8CE] rounded-md text-[#4A5568]"
+                  title="Set automatically: every saved change adds .1, a customer revision starts the next major version"
+                >
                   Ver: {selectedProposal.version || 'v1.0'}
                 </span>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => openEditProposal(selectedProposal)}
-                  className="text-xs text-[#4A5568] hover:text-[#0F5E63]"
-                  title="Edit Proposal Metadata"
-                >
-                  <Edit2 className="h-3 w-3 mr-1" />
-                  <span>Edit</span>
-                </Button>
-                {['admin', 'management'].includes(user?.role || '') && (
+                {canEditProposal(selectedProposal) && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => openEditProposal(selectedProposal)}
+                    className="text-xs text-[#4A5568] hover:text-[#0F5E63]"
+                    title="Edit Proposal Metadata"
+                  >
+                    <Edit2 className="h-3 w-3 mr-1" />
+                    <span>Edit</span>
+                  </Button>
+                )}
+                {/* Same rule as the API: only management / admin, and never once the quote went to the customer. */}
+                {['admin', 'management'].includes(user?.role || '') && !selectedProposal.sent_date && (
                   <Button
                     variant="ghost"
                     size="xs"
@@ -1454,7 +1763,7 @@ export default function ProposalsPage() {
                       setDeleteError(null);
                       setIsDeleteConfirmOpen(true);
                     }}
-                    className="text-xs text-red-600 hover:text-red-800 hover:bg-red-50"
+                    className="text-xs text-[#881337] hover:text-[#700F2D] hover:bg-[#FCE8EC]"
                     title="Soft Delete Proposal"
                   >
                     <Trash2 className="h-3 w-3 mr-1" />
@@ -1465,7 +1774,7 @@ export default function ProposalsPage() {
 
               {/* Workflow advancement actions — phones: their own full-width row of 40px buttons */}
               <div className="flex w-full flex-wrap items-center gap-2 empty:hidden sm:w-auto">
-                {selectedProposal.status === 'PROPOSAL_REQUESTED' && (
+                {proposalLaneOf(selectedProposal.status) === 'PROPOSAL_REQUESTED' && canMove(selectedProposal, 'UNDER_PREPARATION') && (
                   <Button
                     variant="primary"
                     size="xs"
@@ -1477,7 +1786,7 @@ export default function ProposalsPage() {
                   </Button>
                 )}
 
-                {selectedProposal.status === 'UNDER_PREPARATION' && (
+                {proposalLaneOf(selectedProposal.status) === 'UNDER_PREPARATION' && canMove(selectedProposal, 'READY_FOR_REVIEW') && (
                   <Button
                     variant="primary"
                     size="xs"
@@ -1489,7 +1798,7 @@ export default function ProposalsPage() {
                   </Button>
                 )}
 
-                {selectedProposal.status === 'READY_FOR_REVIEW' && (() => {
+                {proposalLaneOf(selectedProposal.status) === 'READY_FOR_REVIEW' && (() => {
                   const isManagementOrAdmin = ['management', 'admin'].includes(user?.role || '');
                   const isCreator = Boolean(
                     user && (
@@ -1505,26 +1814,27 @@ export default function ProposalsPage() {
                   if (!isManagementOrAdmin) {
                     return (
                       <span className="text-[11px] text-[#4A5568] bg-[#FBFAF7] px-2.5 py-1 rounded border border-[#DCD8CE] italic">
-                        Awaiting Management / Admin Approval
+                        Awaiting management approval (only Management / Admin approve quotes)
                       </span>
                     );
                   }
 
                   if (isCreator) {
                     return (
-                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-medium" title="Dual-control policy: You created/authored this proposal and cannot approve your own quotation.">
-                        <AlertTriangle className="h-3 w-3 text-amber-600 shrink-0" />
+                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[10px] font-medium" title="Dual-control policy: You created/authored this proposal and cannot approve your own quotation.">
+                        <AlertTriangle className="h-3 w-3 text-[#9A3412] shrink-0" />
                         <span>Self-Approval Prohibited (Created by you)</span>
                       </div>
                     );
                   }
 
+                  if (!canMove(selectedProposal, 'APPROVED') && !canMove(selectedProposal, 'UNDER_PREPARATION')) return null;
                   return (
                     <div className="flex w-full items-center gap-2 sm:w-auto">
                       <Button
                         variant="outline"
                         size="xs"
-                        className={`${FLOW_BTN} text-red-700 border-red-200 hover:bg-red-50`}
+                        className={`${FLOW_BTN} text-[#700F2D] border-[#F3C7CF] hover:bg-[#FCE8EC]`}
                         onClick={() => initiateStatusChange('UNDER_PREPARATION')}
                       >
                         <X className="h-3.5 w-3.5 mr-1" />
@@ -1543,7 +1853,7 @@ export default function ProposalsPage() {
                   );
                 })()}
 
-                {selectedProposal.status === 'APPROVED' && (
+                {proposalLaneOf(selectedProposal.status) === 'APPROVED' && canMove(selectedProposal, 'SENT_TO_CUSTOMER') && (
                   <Button
                     variant="primary"
                     size="xs"
@@ -1555,7 +1865,7 @@ export default function ProposalsPage() {
                   </Button>
                 )}
 
-                {['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(selectedProposal.status) && (
+                {SENT_LANES.includes(proposalLaneOf(selectedProposal.status)) && canEditProposal(selectedProposal) && (
                   <>
                     <Button
                       variant="primary"
@@ -1578,28 +1888,55 @@ export default function ProposalsPage() {
                       <Plus className="h-3.5 w-3.5 mr-1" />
                       <span>Add Follow-up</span>
                     </Button>
-                    <Button
-                      variant="success"
-                      size="xs"
-                      className={FLOW_BTN}
-                      onClick={() => initiateStatusChange('CONVERTED')}
-                    >
-                      <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                      <span>Mark Converted</span>
-                    </Button>
-                    <Button
-                      variant="danger"
-                      size="xs"
-                      className={FLOW_BTN}
-                      onClick={() => initiateStatusChange('LOST')}
-                    >
-                      <X className="h-3.5 w-3.5 mr-1" />
-                      <span>Mark Lost</span>
-                    </Button>
+                    {canMove(selectedProposal, 'CONVERTED') && (
+                      <Button
+                        variant="success"
+                        size="xs"
+                        className={FLOW_BTN}
+                        onClick={() => initiateStatusChange('CONVERTED')}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                        <span>Mark Converted</span>
+                      </Button>
+                    )}
+                    {canMove(selectedProposal, 'LOST') && (
+                      <Button
+                        variant="danger"
+                        size="xs"
+                        className={FLOW_BTN}
+                        onClick={() => initiateStatusChange('LOST')}
+                      >
+                        <X className="h-3.5 w-3.5 mr-1" />
+                        <span>Mark Lost</span>
+                      </Button>
+                    )}
                   </>
+                )}
+
+                {/* DEF-070: a converted quote becomes a dispatch — opens the pre-filled delivery form */}
+                {proposalLaneOf(selectedProposal.status) === 'CONVERTED' && canOpen(user?.role, '/deliveries') && (
+                  <Link href={`/deliveries?proposal=${selectedProposal.id}`} className="grow basis-[8rem] sm:grow-0 sm:basis-auto">
+                    <Button variant="primary" size="xs" className={`${FLOW_BTN} w-full`}>
+                      <Package className="h-3.5 w-3.5 mr-1" />
+                      <span>Create dispatch</span>
+                    </Button>
+                  </Link>
                 )}
               </div>
             </div>
+
+            {/* Why there is nothing to do here: read-only outcome, or a colleague's proposal (DEF-008 / DEF-080) */}
+            {selectedProposal.is_terminal ? (
+              <InfoCallout variant="neutral" title="Read-only">
+                {selectedProposal.proposal_number} is {statusText(selectedProposal.status)}. Concluded proposals cannot be edited
+                {['management', 'admin'].includes(user?.role || '') ? ' — reopen it (within the reopen window) to make changes.' : '; management can reopen it if needed.'}
+              </InfoCallout>
+            ) : selectedProposal.can_edit === false ? (
+              <InfoCallout variant="info" title="View only">
+                This proposal belongs to {selectedProposal.responsible_name || selectedProposal.requested_by_name || 'another salesperson'}. Only the
+                requester, the responsible person, the follow-up owner, regional managers and management can change it.
+              </InfoCallout>
+            ) : null}
 
             {/* Visual Lifecycle Stepper */}
             <div className="p-3 sm:p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs">
@@ -1626,20 +1963,20 @@ export default function ProposalsPage() {
                         isCurrent
                           ? 'bg-[#E3EFEE] border-[#0F5E63] text-[#0F5E63] ring-2 ring-[#0F5E63]/20 shadow-xs'
                           : isDone
-                          ? 'bg-emerald-50/60 border-emerald-200 text-emerald-800'
-                          : 'bg-[#F8FAFC] border-[#DCD8CE] text-slate-400'
+                          ? 'bg-[#E3EFEE]/60 border-[#D0E5E3] text-[#0B4A4E]'
+                          : 'bg-[#FBFAF7] border-[#DCD8CE] text-[#6B7280]'
                       }`}
                     >
                       <div>
                         <div className="flex items-center justify-center mb-1">
                           {isDone ? (
-                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                            <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />
                           ) : (
                             <span
                               className={`h-4 w-4 rounded-full text-[10px] font-bold flex items-center justify-center ${
                                 isCurrent
                                   ? 'bg-[#0F5E63] text-white'
-                                  : 'bg-slate-200 text-slate-500'
+                                  : 'bg-[#DCD8CE] text-[#4A5568]'
                               }`}
                             >
                               {i + 1}
@@ -1677,7 +2014,7 @@ export default function ProposalsPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Customer & Product Card */}
                 <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] space-y-3">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] flex items-center gap-1.5 border-b border-[#F0F5FC] pb-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] flex items-center gap-1.5 border-b border-[#E3EFEE] pb-2">
                     <Building className="h-3.5 w-3.5 text-[#0F5E63]" />
                     <span>Customer & Product Specs</span>
                   </h4>
@@ -1695,13 +2032,22 @@ export default function ProposalsPage() {
                       ) : (
                         <span className="font-bold text-[#14213D] text-sm">{selectedProposal.organisation_name}</span>
                       )}
-                      {selectedProposal.lead_id && canOpen(user?.role, '/leads') && (
-                        <Link href={`/leads?open=${selectedProposal.lead_id}`} className="ml-2 text-[11px] font-semibold text-[#0F5E63] hover:underline">
-                          Source lead
-                        </Link>
+                      {placeText(selectedProposal.organisation_city, selectedProposal.organisation_state) && (
+                        <span className="text-[#4A5568] ml-2">({placeText(selectedProposal.organisation_city, selectedProposal.organisation_state)})</span>
                       )}
-                      {selectedProposal.organisation_city && (
-                        <span className="text-[#4A5568] ml-2">({selectedProposal.organisation_city}, {selectedProposal.organisation_state})</span>
+                    </div>
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Source Lead</span>
+                      {selectedProposal.lead_id ? (
+                        canOpen(user?.role, '/leads') ? (
+                          <Link href={`/leads?open=${selectedProposal.lead_id}`} className="font-semibold text-[#0F5E63] hover:underline">
+                            {selectedProposal.lead?.label || 'Open source lead'}
+                          </Link>
+                        ) : (
+                          <span className="font-medium text-[#14213D]">{selectedProposal.lead?.label || 'Linked lead'}</span>
+                        )
+                      ) : (
+                        <span className="text-[#4A5568]">Not linked to a lead</span>
                       )}
                     </div>
                     <div>
@@ -1726,7 +2072,7 @@ export default function ProposalsPage() {
 
                 {/* Timeline Card */}
                 <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] space-y-3">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] flex items-center gap-1.5 border-b border-[#F0F5FC] pb-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] flex items-center gap-1.5 border-b border-[#E3EFEE] pb-2">
                     <Calendar className="h-3.5 w-3.5 text-[#0F5E63]" />
                     <span>Milestones & Timeline</span>
                   </h4>
@@ -1734,19 +2080,19 @@ export default function ProposalsPage() {
                     <div>
                       <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Request Date</span>
                       <span className="font-medium text-[#14213D]">
-                        {selectedProposal.request_date ? new Date(selectedProposal.request_date).toLocaleDateString('en-GB') : '-'}
+                        {formatDateIN(selectedProposal.request_date)}
                       </span>
                     </div>
                     <div>
                       <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Required Completion</span>
                       <span className="font-medium text-[#14213D]">
-                        {selectedProposal.required_date ? new Date(selectedProposal.required_date).toLocaleDateString('en-GB') : '-'}
+                        {formatDateIN(selectedProposal.required_date)}
                       </span>
                     </div>
                     <div>
                       <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Approval Date</span>
                       <span className="font-medium text-[#14213D]">
-                        {selectedProposal.approved_at ? new Date(selectedProposal.approved_at).toLocaleDateString('en-GB') : '-'}
+                        {formatDateIN(selectedProposal.approved_at)}
                       </span>
                       {selectedProposal.approved_by_name && (
                         <span className="block text-[10px] text-[#4A5568]">by {selectedProposal.approved_by_name}</span>
@@ -1755,7 +2101,7 @@ export default function ProposalsPage() {
                     <div>
                       <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Sent to Customer</span>
                       <span className="font-medium text-[#14213D]">
-                        {selectedProposal.sent_date ? new Date(selectedProposal.sent_date).toLocaleDateString('en-GB') : '-'}
+                        {formatDateIN(selectedProposal.sent_date)}
                       </span>
                     </div>
                     <div>
@@ -1769,6 +2115,49 @@ export default function ProposalsPage() {
                   </div>
                 </Card>
 
+                {/* Commercial terms of the quote (DEF-029) — recorded, not generated */}
+                <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] md:col-span-2 space-y-3">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-[#4A5568] flex items-center gap-1.5 border-b border-[#E3EFEE] pb-2">
+                    <FileCheck className="h-3.5 w-3.5 text-[#0F5E63]" />
+                    <span>Commercial Terms</span>
+                  </h4>
+                  {!hasQuote(selectedProposal) && (
+                    <InfoCallout variant="warning" title="No quoted value yet">
+                      Enter the quoted value (₹) before this proposal is submitted for review — management cannot approve a quote without pricing.
+                    </InfoCallout>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Quoted Value</span>
+                      <span className="font-mono font-bold text-[#14213D] text-sm">
+                        {hasQuote(selectedProposal) ? formatINR(Number(selectedProposal.quoted_value)) : '—'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Quantity</span>
+                      <span className="font-mono text-[#14213D]">{selectedProposal.quantity ?? '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Margin</span>
+                      <span className="font-mono text-[#14213D]">
+                        {selectedProposal.margin_percent !== null && selectedProposal.margin_percent !== undefined ? `${Number(selectedProposal.margin_percent)}%` : '—'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Quote Valid Until</span>
+                      <span className="font-mono text-[#14213D]">{formatDateIN(selectedProposal.validity_date)}</span>
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Payment Terms</span>
+                      <span className="text-[#14213D] whitespace-pre-wrap">{selectedProposal.payment_terms || '—'}</span>
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Delivery Terms</span>
+                      <span className="text-[#14213D] whitespace-pre-wrap">{selectedProposal.delivery_terms || '—'}</span>
+                    </div>
+                  </div>
+                </Card>
+
                 {/* Outcome card if completed */}
                 {['CONVERTED', 'LOST', 'CLOSED'].includes(selectedProposal.status) && (
                   <Card padding="md" className="p-3 sm:p-5 border-[#DCD8CE] md:col-span-2 bg-[#FBFAF7]">
@@ -1778,23 +2167,25 @@ export default function ProposalsPage() {
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                       <div>
                         <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Final Status</span>
-                        <span className="font-black text-sm">{selectedProposal.status}</span>
+                        <span className="font-black text-sm">{statusText(selectedProposal.status)}</span>
                       </div>
                       {selectedProposal.lost_reason && (
                         <div>
                           <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Lost Reason</span>
-                          <span className="font-bold text-red-700">{selectedProposal.lost_reason}</span>
+                          <span className="font-bold text-[#700F2D]">{selectedProposal.lost_reason}</span>
                           {selectedProposal.lost_remarks && (
                             <p className="text-[11px] text-[#4A5568] mt-1">{selectedProposal.lost_remarks}</p>
                           )}
                         </div>
                       )}
-                      {selectedProposal.converted_to && (
+                      {(selectedProposal.converted_to || selectedProposal.conversion_reference) && (
                         <div>
                           <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Converted To</span>
-                          <span className="font-bold text-emerald-700">{selectedProposal.converted_to}</span>
-                          {selectedProposal.converted_reference && (
-                            <p className="text-[11px] text-[#4A5568] mt-1">{selectedProposal.converted_reference}</p>
+                          <span className="font-bold text-[#0B4A4E]">{selectedProposal.converted_to || 'Order'}</span>
+                          {(selectedProposal.conversion_reference || selectedProposal.converted_reference) && (
+                            <p className="text-[11px] text-[#4A5568] mt-1 font-mono">
+                              {selectedProposal.conversion_reference || selectedProposal.converted_reference}
+                            </p>
                           )}
                         </div>
                       )}
@@ -1820,7 +2211,7 @@ export default function ProposalsPage() {
                 to={{ kind: 'proposal', id: selectedProposal.id, organisationId: selectedProposal.customer_id || selectedProposal.organisation_id }}
                 sections={['tasks', 'demos', 'tenders', 'service']}
                 description="Follow-up tasks created from this proposal, and the customer's demos, tenders and service tickets."
-                addTask={{ title: `Proposal follow-up: ${selectedProposal.proposal_no || selectedProposal.proposal_number || ''}`.trim() }}
+                addTask={{ title: `Proposal follow-up: ${selectedProposal.proposal_number || selectedProposal.proposal_no || ''}`.trim() }}
               />
             )}
 
@@ -1828,35 +2219,46 @@ export default function ProposalsPage() {
             {detailsTab === 'followups' && (
               <div className="space-y-4">
                 {/* Active Follow-up Banner */}
-                <div className="p-3 bg-[#F8FAFC] border border-[#DCD8CE] rounded-xl flex flex-wrap items-center justify-between gap-2">
+                <div className="p-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-xl flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0 text-xs">
                     <span className="text-[#4A5568] block text-[10px] uppercase font-semibold">Current Follow-up Status</span>
                     <div className="font-semibold text-[#14213D] mt-0.5">
-                      Next Contact: {selectedProposal.next_followup ? new Date(selectedProposal.next_followup).toLocaleDateString('en-GB') : 'No date scheduled'}
+                      Next Contact: {selectedProposal.next_followup ? formatDateIN(selectedProposal.next_followup) : 'No date scheduled'}
                       {selectedProposal.followup_owner_name && (
                         <span className="text-[#4A5568] font-normal ml-2">(Owner: {selectedProposal.followup_owner_name})</span>
                       )}
                     </div>
                   </div>
-                  <Button
-                    variant="primary"
-                    size="xs"
-                    className="h-10 w-full text-xs sm:h-7 sm:w-auto sm:text-[11px]"
-                    onClick={() => {
-                      setFollowupForm({
-                        followup_date: istToday(),
-                        owner_id: selectedProposal.followup_owner_id || user?.id || '',
-                        remarks: '',
-                        outcome: '',
-                        next_followup_date: '',
-                      });
-                      setFollowupError(null);
+                  {/* DEF-079: customer follow-ups exist only once the quote has been sent */}
+                  {SENT_LANES.includes(proposalLaneOf(selectedProposal.status)) && canEditProposal(selectedProposal) ? (
+                    <Button
+                      variant="primary"
+                      size="xs"
+                      className="h-10 w-full text-xs sm:h-7 sm:w-auto sm:text-[11px]"
+                      onClick={() => {
+                        setFollowupForm({
+                          followup_date: istToday(),
+                          owner_id: selectedProposal.followup_owner_id || user?.id || '',
+                          remarks: '',
+                          outcome: '',
+                          next_followup_date: '',
+                        });
+                        setFollowupError(null);
                         setIsFollowupDialogOpen(true);
-                    }}
-                  >
-                    <Plus className="h-3.5 w-3.5 mr-1" />
-                    <span>Log New Follow-up</span>
-                  </Button>
+                      }}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                      <span>Log New Follow-up</span>
+                    </Button>
+                  ) : (
+                    <span className="text-[11px] text-[#4A5568] italic">
+                      {SENT_LANES.includes(proposalLaneOf(selectedProposal.status))
+                        ? 'Only the follow-up owner, responsible person or a manager can log follow-ups.'
+                        : ['CONVERTED', 'LOST', 'CLOSED'].includes(proposalLaneOf(selectedProposal.status))
+                          ? 'Concluded — no further follow-ups.'
+                          : 'Follow-ups start once the proposal is sent to the customer.'}
+                    </span>
+                  )}
                 </div>
 
                 {/* Follow-up Timeline Entries */}
@@ -1874,21 +2276,22 @@ export default function ProposalsPage() {
                         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 font-semibold text-[#14213D]">
                           <span className="flex items-center gap-1.5 text-[#0F5E63]">
                             <Calendar className="h-3.5 w-3.5" />
-                            {new Date(f.followup_date).toLocaleDateString('en-GB')}
+                            {formatDateIN(f.followup_date || f.contact_date)}
+                            {f.mode && <span className="text-[10px] font-normal text-[#4A5568]">· {f.mode}</span>}
                           </span>
                           <span className="text-[11px] font-normal text-[#4A5568]">
-                            Logged by {f.owner_name}
+                            Logged by {f.owner_name || f.logged_by_name || '—'}
                           </span>
                         </div>
-                        <p className="text-[#14213D] mt-1">{f.remarks}</p>
+                        <p className="text-[#14213D] mt-1">{f.remarks || f.summary}</p>
                         {f.outcome && (
-                          <div className="text-[11px] text-emerald-700 font-medium">
+                          <div className="text-[11px] text-[#0B4A4E] font-medium">
                             Result / Outcome: {f.outcome}
                           </div>
                         )}
                         {f.next_followup_date && (
                           <div className="text-[10px] text-[#4A5568]">
-                            Next Action Scheduled: {new Date(f.next_followup_date).toLocaleDateString('en-GB')}
+                            Next Action Scheduled: {formatDateIN(f.next_followup_date)}
                           </div>
                         )}
                       </div>
@@ -1916,19 +2319,24 @@ export default function ProposalsPage() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
-                          <span className="font-bold text-[#14213D]">{act.action}</span>
-                          <span className="text-[10px] text-[#4A5568]">
-                            {new Date(act.created_at).toLocaleString('en-GB')}
+                          <span className="font-bold text-[#14213D]">
+                            {act.action === 'CREATED' ? 'Proposal created' : 'Status changed'}
                           </span>
+                          <span className="font-mono text-[10px] text-[#4A5568]">{istDateTimeText(act.occurred_at || act.created_at)}</span>
                         </div>
-                        <div className="text-[#4A5568] mt-0.5">
-                          {act.new_value || act.old_value}
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          {act.action !== 'CREATED' && act.from_status && (
+                            <>
+                              <Badge variant={proposalBadge(act.from_status)} size="sm">{statusText(act.from_status)}</Badge>
+                              <ArrowRight className="h-3 w-3 text-[#4A5568]" />
+                            </>
+                          )}
+                          <Badge variant={proposalBadge(act.to_status)} size="sm">{statusText(act.to_status)}</Badge>
                         </div>
-                        {act.performed_by_name && (
-                          <div className="text-[10px] text-[#4A5568] mt-0.5 font-medium">
-                            by {act.performed_by_name}
-                          </div>
-                        )}
+                        {act.reason && <div className="text-[#4A5568] mt-1 break-words">{act.reason}</div>}
+                        <div className="text-[10px] text-[#4A5568] mt-0.5 font-medium">
+                          by {act.performed_by_name || act.actor_name || 'System'}
+                        </div>
                       </div>
                     </div>
                   ))
@@ -1943,8 +2351,18 @@ export default function ProposalsPage() {
       <Modal
         isOpen={isStatusDialogOpen}
         onClose={() => setIsStatusDialogOpen(false)}
-        title={`Advance Status: ${PROPOSAL_STATUS_LABELS[targetStatus] || targetStatus}`}
-        description="Verify milestone transition requirements."
+        title={
+          isRequestChanges
+            ? 'Request Changes'
+            : isBackToPreparation
+              ? 'Send Back to Preparation'
+              : `Advance Status: ${PROPOSAL_STATUS_LABELS[targetStatus] || targetStatus}`
+        }
+        description={
+          isRequestChanges
+            ? 'Return the quote to the preparer with the changes you need.'
+            : 'Verify milestone transition requirements.'
+        }
         maxWidth="md"
       >
         <form onSubmit={handleStatusSubmit} className="space-y-4">
@@ -1952,6 +2370,22 @@ export default function ProposalsPage() {
             <InfoCallout variant="danger" title="Could not save" onClose={() => setStatusError(null)}>
               {statusError}
             </InfoCallout>
+          )}
+          {(targetStatus === 'READY_FOR_REVIEW' || targetStatus === 'APPROVED') && selectedProposal && (
+            hasQuote(selectedProposal) ? (
+              <div className="rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] p-3 text-xs text-[#14213D]">
+                <span className="block text-[10px] font-semibold uppercase text-[#4A5568]">Quoted value</span>
+                <span className="font-mono text-sm font-bold">{formatINR(Number(selectedProposal.quoted_value))}</span>
+                {selectedProposal.quantity ? <span className="ml-2 text-[#4A5568]">· Qty {selectedProposal.quantity}</span> : null}
+                {selectedProposal.margin_percent !== null && selectedProposal.margin_percent !== undefined ? (
+                  <span className="ml-2 text-[#4A5568]">· Margin {Number(selectedProposal.margin_percent)}%</span>
+                ) : null}
+              </div>
+            ) : (
+              <InfoCallout variant="warning" title="Pricing missing">
+                This proposal has no quoted value. {canEditProposal(selectedProposal) ? 'Use Edit → Commercial terms to enter it first.' : 'Ask the responsible person to enter it first.'}
+              </InfoCallout>
+            )
           )}
           {targetStatus === 'SENT_TO_CUSTOMER' && (
             <Input
@@ -1964,12 +2398,22 @@ export default function ProposalsPage() {
               onChange={(e) => setStatusForm({ ...statusForm, sent_date: e.target.value })}
             />
           )}
+          {targetStatus === 'SENT_TO_CUSTOMER' && (
+            <Input
+              label="Email / Dispatch Reference"
+              required
+              placeholder="e.g. Email to DIG Procurement, 20-10-2026 or GeM bid ref"
+              helperText="How the quote reached the customer — kept on the proposal for follow-ups."
+              value={statusForm.reference}
+              onChange={(e) => setStatusForm({ ...statusForm, reference: e.target.value })}
+            />
+          )}
 
           {targetStatus === 'LOST' && (
             <>
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-[#14213D]">
-                  Lost Reason <span className="text-red-500">*</span>
+                  Lost Reason <span className="text-[#881337]">*</span>
                 </label>
                 <select
                   required
@@ -1995,16 +2439,18 @@ export default function ProposalsPage() {
 
           {targetStatus === 'CONVERTED' && (
             <>
-              <Input
-                label="Converted To / Order Reference"
-                placeholder="e.g. Purchase Order #PO-2026-881"
-                required
-                value={statusForm.converted_to}
+              {/* converted_to = what the quote became (order type); converted_reference = that order's number, which the
+                  dispatch is raised against (QA retest: the two labels used to be swapped). */}
+              <Select
+                label="Order Type"
+                value={statusForm.converted_to || 'Purchase Order'}
                 onChange={(e) => setStatusForm({ ...statusForm, converted_to: e.target.value })}
+                options={PROPOSAL_ORDER_TYPES.map((t) => ({ value: t, label: t }))}
               />
               <Input
-                label="Contract / GeM Number"
-                placeholder="e.g. GeM Contract GEMC-5116877"
+                label="PO / Supply Order / GeM Contract No."
+                placeholder="e.g. PO-2026-881 or GEMC-5116877"
+                required
                 value={statusForm.converted_reference}
                 onChange={(e) => setStatusForm({ ...statusForm, converted_reference: e.target.value })}
               />
@@ -2012,8 +2458,9 @@ export default function ProposalsPage() {
           )}
 
           <Textarea
-            label="Transition Remarks"
-            placeholder="Add optional notes for this status update..."
+            label={isRequestChanges ? 'Changes Requested' : isBackToPreparation ? 'Reason' : 'Transition Remarks'}
+            required={isBackToPreparation}
+            placeholder={isBackToPreparation ? 'What needs to change, and why…' : 'Add optional notes for this status update...'}
             value={statusForm.remarks}
             onChange={(e) => setStatusForm({ ...statusForm, remarks: e.target.value })}
           />
@@ -2055,7 +2502,7 @@ export default function ProposalsPage() {
               />
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-[#14213D]">
-                  Follow-up Owner <span className="text-red-500">*</span>
+                  Follow-up Owner <span className="text-[#881337]">*</span>
                 </label>
                 <select
                   required
@@ -2095,7 +2542,10 @@ export default function ProposalsPage() {
 
                 <Input
                   type="date"
-                  label="Next Follow-up Date (Optional)"
+                  label="Next Follow-up Date"
+                  required
+                  min={istToday()}
+                  helperText="When to contact the customer next (to close the proposal, use Mark Converted / Lost)"
                   value={followupForm.next_followup_date}
                   onChange={(e) => setFollowupForm({ ...followupForm, next_followup_date: e.target.value })}
                 />
@@ -2142,9 +2592,10 @@ export default function ProposalsPage() {
                   />
                   <Input
                     label="Proposal Version"
-                    placeholder="e.g. v1.1"
-                    value={editForm.version}
-                    onChange={(e) => setEditForm({ ...editForm, version: e.target.value })}
+                    value={selectedProposal.version || 'v1.0'}
+                    readOnly
+                    disabled
+                    helperText="Set automatically — saving changes makes it the next .1"
                   />
                 </div>
 
@@ -2165,6 +2616,23 @@ export default function ProposalsPage() {
                   onChange={(e) => setEditForm({ ...editForm, reference: e.target.value })}
                 />
               </div>
+            </FormSection>
+
+            <FormSection title="Commercial Terms" icon={<FileCheck />} description="The quote as prepared: price, quantity, margin, validity and terms. A quoted value is required before review.">
+              <CommercialFields
+                value={editForm}
+                onChange={(patch) => setEditForm({ ...editForm, ...patch })}
+                quoteRequired={!['PROPOSAL_REQUESTED', 'UNDER_PREPARATION'].includes(proposalLaneOf(selectedProposal.status))}
+              />
+            </FormSection>
+
+            <FormSection title="Source Lead" icon={<Briefcase />} description="The customer's lead / opportunity this quote answers.">
+              <LeadSelect
+                value={editForm.lead_id}
+                options={leadOptionsFor === (selectedProposal.customer_id || selectedProposal.organisation_id) ? leadOptions : []}
+                current={selectedProposal.lead}
+                onChange={(lead_id) => setEditForm({ ...editForm, lead_id })}
+              />
             </FormSection>
 
             <FormSection title="Owners & Notes" icon={<User />} description="Who prepares the quote, who follows up, and internal notes.">
@@ -2253,5 +2721,98 @@ export default function ProposalsPage() {
         </Modal>
       )}
     </PageContainer>
+  );
+}
+
+/** Source-lead picker (DEF-081): the customer's open leads; "None" keeps the proposal unlinked. */
+function LeadSelect({
+  value,
+  options,
+  current,
+  onChange,
+}: {
+  value: string;
+  options: any[];
+  current?: { id: string; label?: string } | null;
+  onChange: (leadId: string) => void;
+}) {
+  const list = current && !options.some((o) => o.id === current.id) ? [{ id: current.id, label: current.label || 'Current lead' }, ...options] : options;
+  return (
+    <Select
+      label="Source Lead / Opportunity"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      helperText={list.length ? 'The lead this quote answers — shown on the lead and in reports.' : 'This customer has no open lead you can link.'}
+      options={[{ value: '', label: list.length ? 'None (not from a lead)' : 'No open leads' }, ...list.map((o) => ({ value: o.id, label: o.label || o.id }))]}
+    />
+  );
+}
+
+/** Commercial terms of the quote (DEF-029). Amounts in ₹, margin in %. */
+function CommercialFields({
+  value,
+  onChange,
+  quoteRequired = false,
+}: {
+  value: CommercialForm;
+  onChange: (patch: Partial<CommercialForm>) => void;
+  quoteRequired?: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Input
+          label="Quoted Value (₹)"
+          inputMode="decimal"
+          required={quoteRequired}
+          placeholder="e.g. 12,50,000"
+          className="font-mono"
+          value={value.quoted_value}
+          onChange={(e) => onChange({ quoted_value: e.target.value })}
+          helperText={quoteRequired ? 'Required at this stage' : 'Required before review'}
+        />
+        <Input
+          label="Quantity"
+          type="number"
+          min={1}
+          step={1}
+          inputMode="numeric"
+          className="font-mono"
+          value={value.quantity}
+          onChange={(e) => onChange({ quantity: e.target.value })}
+        />
+        <Input
+          label="Margin (%)"
+          type="number"
+          min={-100}
+          max={100}
+          step="0.01"
+          inputMode="decimal"
+          className="font-mono"
+          value={value.margin_percent}
+          onChange={(e) => onChange({ margin_percent: e.target.value })}
+        />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Input
+          type="date"
+          label="Quote Valid Until"
+          value={value.validity_date}
+          onChange={(e) => onChange({ validity_date: e.target.value })}
+        />
+        <Input
+          label="Payment Terms"
+          placeholder="e.g. 90% on delivery, 10% after installation"
+          value={value.payment_terms}
+          onChange={(e) => onChange({ payment_terms: e.target.value })}
+        />
+        <Input
+          label="Delivery Terms"
+          placeholder="e.g. F.O.R destination, 60 days"
+          value={value.delivery_terms}
+          onChange={(e) => onChange({ delivery_terms: e.target.value })}
+        />
+      </div>
+    </div>
   );
 }

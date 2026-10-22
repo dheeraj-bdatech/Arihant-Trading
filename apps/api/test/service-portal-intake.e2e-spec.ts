@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { nameSimilarity, normalizePhone } from '../src/modules/service/service-portal.service';
 import { advanceTicket, validReport } from './helpers/service-flow';
+import { istDay } from './helpers/ist-date';
 
 /**
  * The public customer service-request form and everything it triggers. No customer login:
@@ -27,7 +28,7 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
   const nextIp = () => `10.77.${Math.floor(++ipSeq / 250)}.${(ipSeq % 250) + 1}`;
   const nextPhone = () => `9${randomInt(100000000, 999999999)}`;
   const uniq = () => `${Date.now().toString(36)}${randomInt(1000, 9999)}`;
-  const tomorrow = () => new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  const tomorrow = () => istDay(1);
   const api = () => request(app.getHttpServer());
   const auth = (who: string) => ({ Authorization: `Bearer ${tok[who]}` });
   const sql1 = async (q: string) => (await sql.raw(q).execute(db)).rows as any[];
@@ -701,7 +702,8 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
       const t = await mkTicket({ organisation_name: known.name, city: known.city });
       const engineer = (await sql1(`select full_name from users where id='${uid.svc}'`))[0].full_name as string;
       await patch(t.id, { status: 'assigned', assigned_to: uid.svc });
-      await patch(t.id, { status: 'visit_scheduled', planned_visit_date: tomorrow() });
+      // Work may start only on/after the scheduled visit day (IST), so the visit is today.
+      await patch(t.id, { status: 'visit_scheduled', planned_visit_date: istDay(0) });
       await patch(t.id, { status: 'in_progress' }, 'svc');
       await patch(t.id, { status: 'awaiting_part', remarks: 'INTERNAL-ONLY supplier delay: vendor ABC cannot ship until the 20th' }, 'svc');
       await api().post(`/api/service/tickets/${t.id}/comments`).set(auth('svc')).send({ body: 'SECRET internal engineer note about the customer', is_internal: true });

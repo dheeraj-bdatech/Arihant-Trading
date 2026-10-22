@@ -6,7 +6,7 @@ import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { addBusinessHours } from '../src/modules/service/service.core';
 import { SERVICE_TRANSITIONS, canTransitionService, allowedNextServiceStatuses, type ServiceStatus } from '@arihant/shared';
-import { advanceTicket, validReport } from './helpers/service-flow';
+import { advanceTicket, fileReport, istDay, validReport } from './helpers/service-flow';
 
 /**
  * Module 6 hardening: every rule from the spec's state machine, SLA clock, scoping and
@@ -25,8 +25,9 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
   let productId: string;
   let contactN: string;
 
-  const tomorrow = () => new Date(Date.now() + 86400000).toISOString().split('T')[0];
-  const yesterday = () => new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  // IST calendar days (the API's business calendar), not UTC ones
+  const tomorrow = () => istDay(1);
+  const yesterday = () => istDay(-1);
   const auth = (who: string) => ({ Authorization: `Bearer ${tok[who]}` });
   const api = () => request(app.getHttpServer());
 
@@ -73,7 +74,8 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
     await login('rmN', 'regmgr.north@arihant.com');
     await login('rmE', 'regmgr.east@arihant.com');
     await login('svc', 'service@arihant.com');
-    await login('svc2', 'service.field@arihant.com');
+    await login('svc2', 'service.field@arihant.com'); // field engineer reporting to svc (chief service engineer)
+    await login('svcNE', 'service.ne@arihant.com'); // engineer of another depot / zone
     await login('sales', 'sales.delhi@arihant.com');
     await login('salesE', 'sales.kolkata@arihant.com');
     await login('accounts', 'accounts@arihant.com');
@@ -132,18 +134,19 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
           if (to === 'closed') continue; // closing has its own rules (section 6)
 
           await sql1(
-            `update service_tickets set status='${from}', assigned_to='${uid.svc}', assigned_engineer_id='${uid.svc}', planned_visit_date=current_date + 1,
+            `update service_tickets set status='${from}', assigned_to='${uid.svc}', assigned_engineer_id='${uid.svc}', planned_visit_date='${istDay(0)}',
               closed_at=${from === 'closed' ? 'now()' : 'null'}, sla_pause_started_at=null, version=version+1 where id='${t.id}'`,
           );
           const body: Record<string, any> = {
             status: to,
             remarks: `ZZTEST matrix move ${from} to ${to} with a proper reason`,
             assigned_to: uid.svc,
-            planned_visit_date: tomorrow(),
+            planned_visit_date: istDay(0), // visit today: work may start on/after the visit day
           };
           const r = await patch(t.id, body);
 
-          const expectOk = to !== 'report_submitted' && canTransitionService(from, to);
+          // resolved is reached by filing the service report; with no report on file the API refuses it (QA DEF-065)
+          const expectOk = to !== 'report_submitted' && to !== 'resolved' && canTransitionService(from, to);
           const ok = r.status === 200;
           if (ok !== expectOk) mismatches.push(`${from} → ${to}: expected ${expectOk ? 200 : 400}, got ${r.status} ${JSON.stringify(r.body.message)}`);
           if (!ok && r.status !== 400) mismatches.push(`${from} → ${to}: expected a clean 400, got ${r.status}`);
@@ -165,8 +168,8 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       const t = await mk();
       const r = await patch(t.id, { status: 'resolved', remarks: 'Trying to skip the whole workflow' });
       expect(r.status).toBe(400);
-      expect(r.body.message).toContain('Cannot move a ticket from received to resolved');
-      expect(r.body.message).toContain('assigned');
+      expect(r.body.message).toContain('Cannot move a ticket from Complaint Received to Resolved');
+      expect(r.body.message).toContain('Engineer Assigned');
     });
 
     it('rejects an unknown status and a same-status no-op with a clear 400', async () => {
@@ -238,24 +241,68 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       }
     });
 
-    it('resolved needs rectification details or an existing report', async () => {
+    it('resolved needs a filed service report (with sign-off), never a rectification note alone (DEF-065)', async () => {
       const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
       expect((await patch(t.id, { status: 'resolved' })).status).toBe(400);
-      expect((await patch(t.id, { status: 'resolved', remarks: 'fixed' })).status).toBe(400);
-      const ok = await patch(t.id, { status: 'resolved', remarks: 'Replaced the drive board and load-tested for an hour' });
-      expect(ok.status).toBe(200);
-      const after = await get(t.id);
-      expect(after.resolved_at).toBeTruthy();
-      // going back to work clears resolved_at
+      const noteOnly = await patch(t.id, { status: 'resolved', remarks: 'Replaced the drive board and load-tested for an hour' });
+      expect(noteOnly.status).toBe(400);
+      expect(noteOnly.body.message).toContain('service report');
+
+      // filing the report resolves the ticket (resolved → report_submitted in one step)
+      await fileReport(app, t.id, tok.svc);
+      const filed = await get(t.id);
+      expect(filed.status).toBe('report_submitted');
+      expect(filed.resolved_at).toBeTruthy();
+      expect(filed.status_history.map((h: any) => h.to_status).slice(0, 2)).toEqual(['report_submitted', 'resolved']);
+
+      // with a filed report on record, re-work can be marked resolved again; going back to work clears resolved_at
+      expect((await patch(t.id, { status: 'in_progress', remarks: 'Customer asked for one more load test' })).status).toBe(200);
+      const again = await patch(t.id, { status: 'resolved', remarks: 'Load test passed again' });
+      expect(again.status).toBe(200);
+      expect((await get(t.id)).resolved_at).toBeTruthy();
       expect((await patch(t.id, { status: 'in_progress' }, 'svc')).status).toBe(200);
       expect((await get(t.id)).resolved_at).toBeNull();
     });
 
-    it('engineers may self-assign but not assign someone else; sales cannot change status at all', async () => {
+    it('a report returned for correction blocks resolving until the corrected report is filed', async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+      const rep = await fileReport(app, t.id, tok.svc);
+      const back = await api().post(`/api/service/tickets/${t.id}/reports/${rep.id}/review`).set(auth('rmN')).send({ approved: false, return_reason: 'Customer signature missing on page 2' });
+      expect(back.status).toBe(201);
+      expect((await get(t.id)).status).toBe('in_progress');
+      const r = await patch(t.id, { status: 'resolved', remarks: 'Trying to resolve on the returned report' });
+      expect(r.status).toBe(400);
+      expect(r.body.message).toContain('returned for correction');
+      await fileReport(app, t.id, tok.svc);
+      expect((await get(t.id)).status).toBe('report_submitted');
+    });
+
+    it('work cannot start before the scheduled visit day unless a manager overrides', async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'assigned');
+      expect((await patch(t.id, { status: 'visit_scheduled', planned_visit_date: istDay(2) })).status).toBe(200);
+      const early = await patch(t.id, { status: 'in_progress' }, 'svc');
+      expect(early.status).toBe(400);
+      expect(early.body.message).toContain('on or after that day');
+      expect((await patch(t.id, { status: 'in_progress', manager_override: true }, 'svc')).status).toBe(400); // engineers cannot override
+      expect((await patch(t.id, { status: 'in_progress', manager_override: true }, 'mgmt')).status).toBe(200);
+    });
+
+    it('a field engineer may only self-assign; a chief engineer dispatches his depot team only (DEF-064); sales cannot change status', async () => {
       const t = await mk();
-      const other = await patch(t.id, { status: 'assigned', assigned_to: uid.svc2 }, 'svc');
+      const other = await patch(t.id, { status: 'assigned', assigned_to: uid.svc }, 'svc2');
       expect(other.status).toBe(403);
-      expect((await patch(t.id, { status: 'assigned', assigned_to: uid.svc }, 'svc')).status).toBe(200);
+      // the chief cannot dispatch an engineer of another depot / zone
+      expect((await patch(t.id, { status: 'assigned', assigned_to: uid.svcNE }, 'svc')).status).toBe(403);
+      // the chief's assignable list is his team (incl. his reports), and he can dispatch to it
+      const team = await api().get('/api/service/engineers').set(auth('svc'));
+      expect(team.status).toBe(200);
+      const teamIds = team.body.map((e: any) => e.id);
+      expect(teamIds).toEqual(expect.arrayContaining([uid.svc, uid.svc2]));
+      expect(teamIds).not.toContain(uid.svcNE);
+      expect((await api().get('/api/service/engineers').set(auth('svc2'))).body.map((e: any) => e.id)).toEqual([uid.svc2]);
+      expect((await patch(t.id, { status: 'assigned', assigned_to: uid.svc2 }, 'svc')).status).toBe(200);
+      const t2 = await mk();
+      expect((await patch(t2.id, { status: 'assigned', assigned_to: uid.svc2 }, 'svc2')).status).toBe(200);
       expect((await patch(t.id, { status: 'cancelled', remarks: 'Sales trying to cancel' }, 'sales')).status).toBe(403);
       expect((await patch(t.id, { status: 'cancelled', remarks: 'Accounts trying to cancel' }, 'accounts')).status).toBe(403);
     });
@@ -661,7 +708,10 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       expect((await post({ ...base, is_chargeable: true }, 'svc')).status).toBe(403);
       expect((await post({ ...base, warranty_override: true }, 'svc')).status).toBe(403);
       expect((await post({ ...base, assigned_to: uid.svc }, 'sales')).status).toBe(403);
-      expect((await post({ ...base, assigned_to: uid.svc2 }, 'svc')).status).toBe(403);
+      expect((await post(base, 'sales')).status).toBe(403); // DEF-084: sales cannot log service tickets at all
+      expect((await post({ ...base, assigned_to: uid.svc }, 'svc2')).status).toBe(403); // field engineer: self only
+      expect((await post({ ...base, assigned_to: uid.svcNE }, 'svc')).status).toBe(403); // chief: own depot team only
+      expect((await post({ ...base, assigned_to: uid.svc2 }, 'svc')).status).toBe(201);
       const self = await post({ ...base, assigned_to: uid.svc }, 'svc');
       expect(self.status).toBe(201);
       expect(self.body.status).toBe('assigned');
@@ -781,7 +831,7 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
     it('a visit cannot be checked in while the ticket is waiting on something else it cannot resume from', async () => {
       const { t, v } = await scheduled();
       await checkIn(t, v);
-      await patch(t.id, { status: 'resolved', remarks: 'Fault rectified during the first visit' });
+      await fileReport(app, t.id, tok.svc); // fault rectified on the first visit: report filed → report_submitted
       const v2 = await api().post(`/api/service/tickets/${t.id}/visits`).set(auth('mgmt')).send({});
       const r = await checkIn(t, v2.body);
       expect(r.status).toBe(400);
@@ -986,11 +1036,17 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       expect((await api().post(`/api/service/tickets/${eTicket.id}/comments`).set(auth('rmN')).send({ body: 'cross-zone note' })).status).toBe(403);
     });
 
-    it('sales see their territory (and tickets they raised), not other regions', async () => {
+    it('sales see their territory (and tickets they raised earlier), not other regions; they cannot log tickets', async () => {
       expect((await api().get(`/api/service/tickets/${eTicket.id}`).set(auth('sales'))).status).toBe(403);
-      const mine = await mk({}, 'sales', orgN);
-      expect((await api().get(`/api/service/tickets/${mine.id}`).set(auth('sales'))).status).toBe(200);
-      expect((await api().get(`/api/service/tickets/${mine.id}`).set(auth('salesE'))).status).toBe(403);
+      // DEF-084: Sales has no Service Desk intake any more
+      expect((await api().post('/api/service/tickets').set(auth('sales')).send({ organisation_id: orgN, complaint: 'ZZTEST sales intake attempt' })).status).toBe(403);
+      const territory = await mk({}, 'mgmt', orgN);
+      expect((await api().get(`/api/service/tickets/${territory.id}`).set(auth('sales'))).status).toBe(200);
+      expect((await api().get(`/api/service/tickets/${territory.id}`).set(auth('salesE'))).status).toBe(403);
+      // a ticket sales raised before the change, outside their zone, stays visible to them
+      const raised = await mk({}, 'mgmt', orgE);
+      await sql1(`update service_tickets set created_by='${uid.sales}' where id='${raised.id}'`);
+      expect((await api().get(`/api/service/tickets/${raised.id}`).set(auth('sales'))).status).toBe(200);
     });
 
     it('an engineer opens only their own or unassigned tickets', async () => {
@@ -1061,12 +1117,18 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       }
     });
 
-    it('regional managers get zone-scoped numbers; engineers only see themselves', async () => {
+    it('regional managers get zone-scoped numbers; field engineers see only themselves, a chief his depot team', async () => {
       const all = (await api().get('/api/service/stats').set(auth('mgmt'))).body;
       const rm = (await api().get('/api/service/stats').set(auth('rmE'))).body;
       expect(rm.total).toBeLessThanOrEqual(all.total);
-      const eng = (await api().get('/api/service/stats').set(auth('svc'))).body;
-      expect(eng.employeeWorkload.every((e: any) => e.id === uid.svc)).toBe(true);
+      const eng = (await api().get('/api/service/stats').set(auth('svc2'))).body;
+      expect(eng.employeeWorkload.length).toBeGreaterThanOrEqual(1);
+      expect(eng.employeeWorkload.every((e: any) => e.id === uid.svc2)).toBe(true);
+      const chief = (await api().get('/api/service/stats').set(auth('svc'))).body;
+      const team = (await api().get('/api/service/engineers').set(auth('svc'))).body.map((e: any) => e.id);
+      expect(chief.employeeWorkload.map((e: any) => e.id)).toEqual(expect.arrayContaining([uid.svc, uid.svc2]));
+      expect(chief.employeeWorkload.every((e: any) => team.includes(e.id))).toBe(true);
+      expect(chief.employeeWorkload.map((e: any) => e.id)).not.toContain(uid.svcNE);
     });
 
     it('average closure time is measured on closed_at, never negative', async () => {
@@ -1142,13 +1204,13 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
   // ===========================================================================
   describe('15. Notifications', () => {
     it('a critical ticket alerts management, the zone regional manager and engineers', async () => {
-      const t = await mk({ priority: 'critical' }, 'sales', orgN);
+      const t = await mk({ priority: 'critical' }, 'demo', orgN); // demo team (N zone) logs it, e.g. after a failed trial
       const types = async (user: string) => (await sql1(`select type from notifications where entity_id='${t.id}' and user_id='${uid[user]}'`)).map((r) => r.type);
       await waitFor(async () => (await types('mgmt')).includes('service_ticket_created'));
       expect(await types('rmN')).toContain('service_ticket_created');
       expect(await types('svc')).toContain('service_ticket_created');
       expect(await types('rmE')).not.toContain('service_ticket_created'); // other zone is not spammed
-      expect(await types('sales')).not.toContain('service_ticket_created'); // never notify the actor
+      expect(await types('demo')).not.toContain('service_ticket_created'); // never notify the actor
     });
 
     it('assigning an engineer notifies exactly that engineer; reassigning tells the previous one', async () => {
@@ -1161,11 +1223,11 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
     });
 
     it('report filed → regional manager is asked to approve; closure → creator is told', async () => {
-      const t = await advanceTicket(app, (await mk({}, 'sales', orgN)).id, tok.mgmt, uid.svc, 'in_progress');
+      const t = await advanceTicket(app, (await mk({}, 'demo', orgN)).id, tok.mgmt, uid.svc, 'in_progress');
       await api().post(`/api/service/tickets/${t.id}/report`).set(auth('svc')).send(validReport());
       await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_report_submitted' and user_id='${uid.rmN}'`))[0]);
       await api().post(`/api/service/tickets/${t.id}/close`).set(auth('mgmt')).send({});
-      await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_closed' and user_id='${uid.sales}'`))[0]);
+      await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_closed' and user_id='${uid.demo}'`))[0]);
     });
   });
 });

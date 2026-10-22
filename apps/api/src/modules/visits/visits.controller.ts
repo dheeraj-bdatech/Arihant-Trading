@@ -8,6 +8,9 @@ import {
   Body,
   Query,
   UseGuards,
+  Injectable,
+  NotFoundException,
+  type PipeTransform,
 } from '@nestjs/common';
 import { VisitsService } from './visits.service.js';
 import {
@@ -27,6 +30,18 @@ import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import type { AuthUser } from '@arihant/shared';
+
+const UUID_PARAM = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** Route ids must be UUIDs: a malformed id (e.g. "undefined") is a clean 404, never a Postgres 500. */
+@Injectable()
+class VisitIdPipe implements PipeTransform<string, string> {
+  transform(value: string): string {
+    const id = String(value ?? '').trim();
+    if (!UUID_PARAM.test(id)) throw new NotFoundException(`Record ${value} not found`);
+    return id;
+  }
+}
 
 @Controller('visits')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -151,14 +166,14 @@ export class VisitsController {
 
   @Get('trips/:id')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin')
-  async findTripById(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+  async findTripById(@Param('id', VisitIdPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.visitsService.findTripById(id, user);
   }
 
   @Post('trips/:id/visits')
   @Roles('management', 'regional_manager', 'admin')
   async addVisitToTrip(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: AddVisitToTripDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -170,14 +185,14 @@ export class VisitsController {
   // -----------------------------------------------------------
   @Get('organisations/:orgId/history')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
-  async getCustomerVisitHistory(@Param('orgId') orgId: string) {
+  async getCustomerVisitHistory(@Param('orgId', VisitIdPipe) orgId: string) {
     return this.visitsService.getCustomerVisitHistory(orgId);
   }
 
   @Get('employees/:employeeId/activities')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin')
   async getEmployeeActivities(
-    @Param('employeeId') employeeId: string,
+    @Param('employeeId', VisitIdPipe) employeeId: string,
     @CurrentUser() user: AuthUser,
   ) {
     return this.visitsService.getEmployeeActivities(employeeId, user);
@@ -187,7 +202,7 @@ export class VisitsController {
   // SINGLE VISIT OPERATIONS
   // -----------------------------------------------------------
   @Get(':id')
-  async findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+  async findOne(@Param('id', VisitIdPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.visitsService.findOne(id, user);
   }
 
@@ -199,7 +214,7 @@ export class VisitsController {
 
   @Patch(':id')
   async update(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: UpdateVisitDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -208,7 +223,7 @@ export class VisitsController {
 
   @Post(':id/reschedule')
   async reschedule(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: RescheduleVisitDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -217,7 +232,7 @@ export class VisitsController {
 
   @Post(':id/cancel')
   async cancel(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: CancelVisitDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -226,7 +241,7 @@ export class VisitsController {
 
   @Delete(':id')
   async delete(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Query('reason') reason: string,
     @CurrentUser() user: AuthUser,
   ) {
@@ -235,7 +250,7 @@ export class VisitsController {
 
   @Post(':id/destination')
   async changeDestination(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: ChangeDestinationDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -244,7 +259,7 @@ export class VisitsController {
 
   @Patch(':id/status')
   async changeStatus(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: ChangeVisitStatusDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -254,7 +269,7 @@ export class VisitsController {
   @Post(':id/intervention')
   @Roles('management', 'regional_manager', 'admin')
   async addManagerIntervention(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: ManagerInterventionDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -264,7 +279,7 @@ export class VisitsController {
   @Post(':id/manager-intervention')
   @Roles('management', 'regional_manager', 'admin')
   async addManagerInterventionAlias(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: ManagerInterventionDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -273,7 +288,7 @@ export class VisitsController {
 
   @Post(':id/update')
   async submitUpdate(
-    @Param('id') id: string,
+    @Param('id', VisitIdPipe) id: string,
     @Body() dto: SubmitVisitUpdateDto,
     @CurrentUser() user: AuthUser,
   ) {
@@ -282,7 +297,7 @@ export class VisitsController {
 
   @Get(':id/audit')
   @Roles('management', 'regional_manager', 'sales', 'admin')
-  async getVisitAudit(@Param('id') id: string) {
+  async getVisitAudit(@Param('id', VisitIdPipe) id: string) {
     return this.visitsService.getVisitAudit(id);
   }
 }

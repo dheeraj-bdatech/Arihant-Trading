@@ -135,7 +135,7 @@ export function RevenueSplineChart({
 
       {/* Footer Info */}
       <div className="pt-2 border-t border-[#ECE9E2] flex items-center justify-between text-[11px] text-[#4A5568]">
-        <span className="flex items-center gap-1 text-emerald-600 font-semibold font-mono">
+        <span className="flex items-center gap-1 text-[#0F5E63] font-semibold font-mono">
           <TrendingUp className="w-3.5 h-3.5" /> +14.8% vs last week
         </span>
         <span className="font-mono text-[#14213D]">Daily Log Active</span>

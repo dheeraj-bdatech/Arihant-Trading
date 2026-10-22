@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { Check, Plus } from 'lucide-react';
-import { Button, Badge, Input } from '@/components/ui';
+import { Button, Badge, Input, formatDateIN } from '@/components/ui';
 import { api } from '@/lib/api';
 import { errMsg, MANAGER_ROLES, parsePartsReplaced } from './serviceHelpers';
 
@@ -68,7 +68,7 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-bold text-[#14213D]">By {rep.submitted_by_name || 'Service Engineer'}</span>
                 <div className="flex shrink-0 items-center gap-2">
-                  <span className="text-[#4A5568]">{new Date(rep.created_at).toLocaleDateString('en-IN')}</span>
+                  <span className="text-[#4A5568]">{formatDateIN(rep.created_at)}</span>
                   <Badge variant={rep.report_status === 'Approved' ? 'success' : rep.report_status === 'Returned for Correction' ? 'urgent' : 'warning'} size="sm">
                     {rep.report_status || 'Submitted'}
                   </Badge>
@@ -96,7 +96,7 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
                 {rep.further_work_required && (
                   <p className="rounded border border-[#F2B872] bg-[#FBEBDD] p-2 text-[#7C2D12]">
                     <strong>Further work:</strong> {rep.further_work_description}
-                    {rep.next_visit_date ? ` · next visit ${new Date(rep.next_visit_date).toLocaleDateString('en-IN')}` : ''}
+                    {rep.next_visit_date ? ` · next visit ${formatDateIN(rep.next_visit_date)}` : ''}
                   </p>
                 )}
                 {rep.report_url && (
@@ -105,7 +105,7 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
                   </p>
                 )}
                 {rep.return_reason && (
-                  <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                  <div className="rounded border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">
                     <strong>Correction required:</strong> {rep.return_reason}
                   </div>
                 )}
@@ -114,7 +114,7 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
               {rep.report_status === 'Submitted' && canReview && (
                 <div className="space-y-2 border-t border-[#ECE9E2] pt-2">
                   {error?.id === rep.id && (
-                    <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                    <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">
                       {error?.msg}
                     </div>
                   )}

@@ -58,11 +58,12 @@ export const StatCard: React.FC<StatCardProps> = ({
       {...props}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
-        <span className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-[#4A5568] line-clamp-2 leading-tight">
+        <span className="min-w-0 text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-[#4A5568] line-clamp-2 leading-tight">
           {displayLabel}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
-          {badge}
+          {/* phones: the swipe-strip tile is ~176px wide — the decorative badge would squeeze the label to "PQ TEN…" */}
+          {badge && <span className="max-sm:hidden">{badge}</span>}
           {icon && (
             <span className="kpi-icon p-1.5 rounded-[8px] bg-[#FBFAF7] border border-[#DCD8CE] text-[#0F5E63]">
               {icon}

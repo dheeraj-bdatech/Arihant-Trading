@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { ChevronRight, UserPlus, Globe2 } from 'lucide-react';
-import { Button, Badge, Input } from '@/components/ui';
+import { Button, Badge, Input, formatDateTimeIN } from '@/components/ui';
 import { api } from '@/lib/api';
 import { errMsg, statusLabel } from './serviceHelpers';
 
@@ -50,7 +50,7 @@ export const NotesTab: React.FC<{ ticket: any; onChanged: () => void | Promise<v
                     )}
                     {!fromCustomer && c.is_internal === false && <Badge variant="outline" size="sm">visible to customer</Badge>}
                   </span>
-                  <span className="text-[10px] text-[#4A5568]">{new Date(c.created_at).toLocaleString('en-IN')}</span>
+                  <span className="text-[10px] text-[#4A5568]">{formatDateTimeIN(c.created_at)}</span>
                 </div>
                 <p className="whitespace-pre-wrap text-[#14213D]">{c.body}</p>
               </div>
@@ -59,7 +59,7 @@ export const NotesTab: React.FC<{ ticket: any; onChanged: () => void | Promise<v
         </div>
       )}
       {error && (
-        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+        <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">
           {error}
         </div>
       )}
@@ -107,7 +107,7 @@ export const AuditTab: React.FC<{ ticket: any; engineerNames: Record<string, str
                   {r.data.reason && <p className="italic text-[#14213D]">“{r.data.reason}”</p>}
                   <span className="block text-[10px] text-[#4A5568]">By {r.data.changed_by_name || 'System / customer portal'}</span>
                 </div>
-                <span className="shrink-0 font-mono text-[10px] text-[#4A5568]">{new Date(r.at).toLocaleString('en-IN')}</span>
+                <span className="shrink-0 font-mono text-[10px] text-[#4A5568]">{formatDateTimeIN(r.at)}</span>
               </div>
             ) : (
               <div key={r.key} className="flex flex-col-reverse gap-1.5 rounded-xl border border-[#0F5E63]/25 bg-[#E3EFEE]/50 p-3 text-xs sm:flex-row sm:items-start sm:justify-between sm:gap-4">
@@ -120,7 +120,7 @@ export const AuditTab: React.FC<{ ticket: any; engineerNames: Record<string, str
                   </div>
                   {r.data.reason && <p className="italic text-[#14213D]">“{r.data.reason}”</p>}
                 </div>
-                <span className="shrink-0 font-mono text-[10px] text-[#4A5568]">{new Date(r.at).toLocaleString('en-IN')}</span>
+                <span className="shrink-0 font-mono text-[10px] text-[#4A5568]">{formatDateTimeIN(r.at)}</span>
               </div>
             ),
           )}

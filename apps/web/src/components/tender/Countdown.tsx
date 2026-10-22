@@ -52,7 +52,7 @@ export const DeadlineChip: React.FC<{ deadline?: string | Date | null; className
   if (!info) return <Badge variant="urgent" size="sm">CLOSING SOON</Badge>;
   return (
     <span
-      title={`Closes ${new Date(deadline as string).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`}
+      title={`Closes ${new Date(deadline as string).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' })}`}
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-bold tabular-nums ${TONE_CLS[info.tone]} ${className ?? ''}`}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-current" />

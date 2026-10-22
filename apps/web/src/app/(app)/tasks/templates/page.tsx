@@ -188,7 +188,7 @@ function RecurringTasks() {
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <TaskViewMenu />
           <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8578]" aria-hidden />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
             <input
               id="template-search"
               type="text"
@@ -196,10 +196,10 @@ function RecurringTasks() {
               placeholder="Search by title…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-9 text-xs text-[#14213D] placeholder:text-[#8A8578] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
+              className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-9 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
             />
             {search && (
-              <button type="button" aria-label="Clear search" onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8A8578] hover:text-[#14213D]">
+              <button type="button" aria-label="Clear search" onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B7280] hover:text-[#14213D]">
                 <X className="h-4 w-4" />
               </button>
             )}
@@ -342,7 +342,7 @@ function RecurringTasks() {
                       <TableCell className="max-w-[240px]">
                         <div className="font-medium text-[#14213D]">{t.schedule}</div>
                         <div className="text-[11px] text-[#4A5568]">{describeDue(t.due_offset_days, t.due_time)}</div>
-                        <div className="text-[11px] text-[#8A8578] font-mono">{period(t)}</div>
+                        <div className="text-[11px] text-[#6B7280] font-mono">{period(t)}</div>
                       </TableCell>
                       <TableCell>
                         <span className={t.assignee_active === false ? 'text-[#881337] line-through' : 'text-[#14213D]'}>{t.assignee_name || '—'}</span>
@@ -350,7 +350,7 @@ function RecurringTasks() {
                       <TableCell>
                         <PriorityBadge priority={t.priority} />
                       </TableCell>
-                      <TableCell>{t.status === 'active' ? <DueText deadline={t.next_deadline} open compact /> : <span className="text-[#8A8578]">—</span>}</TableCell>
+                      <TableCell>{t.status === 'active' ? <DueText deadline={t.next_deadline} open compact /> : <span className="text-[#6B7280]">—</span>}</TableCell>
                       <TableCell className="text-right font-mono tabular-nums">{t.instance_count}</TableCell>
                       <TableCell>
                         <TemplateStatusBadge status={t.status} />

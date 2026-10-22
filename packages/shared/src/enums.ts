@@ -62,6 +62,17 @@ export const LEAD_STATUSES: LeadStatus[] = [
   'won',
 ];
 
+/**
+ * Lead statuses that end the opportunity — won (converted / legacy won) or closed out (lost / legacy dropped).
+ * Every "active lead" count, owner lookup and pipeline filter excludes these.
+ */
+export const CLOSED_LEAD_STATUSES: readonly LeadStatus[] = ['converted', 'won', 'lost', 'dropped'];
+
+/** True when the status (any case; `lead_status` or legacy `status`) closes the lead. */
+export function isClosedLeadStatus(status: string | null | undefined): boolean {
+  return (CLOSED_LEAD_STATUSES as readonly string[]).includes(String(status || '').toLowerCase());
+}
+
 export type LeadLossReason =
   | 'price'
   | 'competitor'
@@ -871,3 +882,6 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
   },
 };
 
+
+/** What a won proposal turned into (stored in proposals.converted_to); the order number goes in conversion_reference. */
+export const PROPOSAL_ORDER_TYPES = ['Purchase Order', 'Supply Order', 'GeM Contract', 'Rate Contract', 'Work Order'] as const;

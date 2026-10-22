@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import type { ExpenseClaimStatus, ExpenseItemStatus } from '@arihant/shared';
+import type { ExpenseClaimStatus, ExpenseItemStatus, ExpenseStageBucket } from '@arihant/shared';
 
 export interface ExpenseCategory {
   id: string;
@@ -55,6 +55,8 @@ export interface ExpenseItem {
   attachments: ExpenseAttachment[];
   receipt_required: boolean;
   receipt_missing: boolean;
+  /** Dated after today (IST) — the server refuses submission, approval and payment until it is corrected. */
+  future_dated?: boolean;
   is_late: boolean;
   duplicate_flag: boolean;
 }
@@ -109,9 +111,21 @@ export interface ExpenseClaim {
   copied_from_claim_number?: string | null;
   version: number;
   item_count?: number;
+  /** Reviewer flags computed by the server (list rows and detail). */
+  future_dated_lines?: number;
+  receipt_missing_lines?: number;
   allowed_actions: string[];
   items?: ExpenseItem[];
   history?: ExpenseHistory[];
+}
+
+/** Totals for the whole filtered claim list. Bucket amounts partition total_claimed (they always add up to it). */
+export interface ClaimListTotals {
+  count: number;
+  total_claimed: number;
+  total_approved: number;
+  paid_amount?: number;
+  buckets?: Record<ExpenseStageBucket, { count: number; amount: number }>;
 }
 
 export interface Paged<T> {
@@ -120,7 +134,7 @@ export interface Paged<T> {
   page: number;
   limit: number;
   totalPages: number;
-  totals?: Record<string, number>;
+  totals?: ClaimListTotals;
 }
 
 export interface BadgeCounts {
