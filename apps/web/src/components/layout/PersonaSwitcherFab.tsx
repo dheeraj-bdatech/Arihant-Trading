@@ -38,7 +38,7 @@ const ROLE_SHORT_LABELS: Record<UserRole, string> = {
   admin: 'ADMIN',
 };
 
-/** Demo-only: hidden unless DEMO_PERSONAS_ENABLED (dev builds or NEXT_PUBLIC_ENABLE_DEMO_PERSONAS=true). */
+/** Shown for every user unless a deployment sets NEXT_PUBLIC_ENABLE_DEMO_PERSONAS=false (see DEMO_PERSONAS_ENABLED). */
 export const PersonaSwitcherFab: React.FC = () => (DEMO_PERSONAS_ENABLED ? <PersonaSwitcherPanel /> : null);
 
 const PersonaSwitcherPanel: React.FC = () => {
