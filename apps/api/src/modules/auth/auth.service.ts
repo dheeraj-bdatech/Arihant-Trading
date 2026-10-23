@@ -62,11 +62,10 @@ export class AuthService {
   }
 
   /**
-   * Demo persona sign-in. On in every environment, production included, unless DEMO_LOGIN_ENABLED=false.
-   * When off the route answers 404 like it does not exist.
+   * Demo persona sign-in. Active by default in all environments, production included.
    */
   async demoLogin(dto: DemoLoginDto): Promise<LoginResponseDto> {
-    if (this.configService.get<string>('DEMO_LOGIN_ENABLED') === 'false') throw new NotFoundException();
+    if (this.configService.get<string>('DISABLE_DEMO_LOGIN') === 'true') throw new NotFoundException();
     const email = DEMO_PERSONA_EMAILS[dto.role];
     const user = email
       ? await this.db.selectFrom('users').selectAll().where('email', '=', email).executeTakeFirst()

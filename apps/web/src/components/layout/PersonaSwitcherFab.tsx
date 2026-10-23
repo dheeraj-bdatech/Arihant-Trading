@@ -38,7 +38,7 @@ const ROLE_SHORT_LABELS: Record<UserRole, string> = {
   admin: 'ADMIN',
 };
 
-/** Shown for every user unless a deployment sets NEXT_PUBLIC_ENABLE_DEMO_PERSONAS=false (see DEMO_PERSONAS_ENABLED). */
+/** Fast role switcher FAB and pop-up modal, active by default in all environments. */
 export const PersonaSwitcherFab: React.FC = () => (DEMO_PERSONAS_ENABLED ? <PersonaSwitcherPanel /> : null);
 
 const PersonaSwitcherPanel: React.FC = () => {

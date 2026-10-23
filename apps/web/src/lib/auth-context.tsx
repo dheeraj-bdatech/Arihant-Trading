@@ -7,11 +7,10 @@ import { getSocket, disconnectSocket } from './socket';
 import type { AuthUser, UserRole } from '@arihant/shared';
 
 /**
- * Demo persona shortcuts (login quick-roles, persona switcher FAB, 403 role switch) are shown for every user in every
- * build, production included; a deployment hides them with NEXT_PUBLIC_ENABLE_DEMO_PERSONAS=false. They call
- * POST /auth/demo-login, which the API serves unless DEMO_LOGIN_ENABLED=false — no password is ever shipped to the browser.
+ * Demo persona shortcuts (login quick-roles, persona switcher FAB, 403 role switch) are enabled by default
+ * in every environment, production included.
  */
-export const DEMO_PERSONAS_ENABLED = process.env.NEXT_PUBLIC_ENABLE_DEMO_PERSONAS !== 'false';
+export const DEMO_PERSONAS_ENABLED = true;
 
 export const PRESET_ROLE_USERS: Record<
   UserRole,
