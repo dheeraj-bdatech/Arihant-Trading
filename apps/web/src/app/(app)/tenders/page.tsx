@@ -354,8 +354,11 @@ export default function TendersPage() {
   const [pageNotice, setPageNotice] = useState<{ type: 'success' | 'danger'; text: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // The Approvals Inbox reports its total (same server query as the KPI) so every count on screen agrees.
+  // The Approvals Inbox reports its total (same server rule as the KPI) so every count on screen agrees. The inbox is
+  // never filtered, so its total only stands in for the KPI while no register filter narrows the KPIs.
+  const registerFiltersActive = useRef(false);
   const handleInboxCount = useCallback((count: number) => {
+    if (registerFiltersActive.current) return;
     setDashboardStats((prev: any) => (prev?.pending_approvals === count ? prev : { ...prev, pending_approvals: count }));
   }, []);
 
@@ -382,11 +385,13 @@ export default function TendersPage() {
     }
   };
 
-  // 2. Fetch Executive Dashboard Metrics
+  // 2. Fetch Executive Dashboard Metrics — over the register's active filters (see `filterParams`).
+  const dashboardRequest = useRef(0);
   const fetchDashboardStats = async () => {
+    const request = ++dashboardRequest.current;
     try {
-      const res = await api.get('/tenders/dashboard');
-      if (res) {
+      const res = await api.get('/tenders/dashboard', filterParams);
+      if (res && request === dashboardRequest.current) {
         setDashboardStats(res);
       }
     } catch (err) {
@@ -454,29 +459,26 @@ export default function TendersPage() {
 
   // 4. Tenders register (server-side search, filters and sort), one page per request, appended as
   // the register scrolls. `fetchTenders` re-reads the pages already loaded, in place.
+  // The active filters go to both GET /tenders and GET /tenders/dashboard, so the KPI cards and menu counts follow them.
+  const filterParams = useMemo(() => {
+    const params: Record<string, string> = {};
+    if (search.trim()) params.search = search.trim();
+    if (statusFilter) params.status = statusFilter;
+    if (categoryFilter) params.category = categoryFilter;
+    if (zoneFilter) params.zone_id = zoneFilter;
+    if (deadlineFilter) params.deadline = deadlineFilter;
+    if (user?.role === 'sales' && user?.id) {
+      params.assigned_to = user.id;
+    } else if (assignedFilter) {
+      params.assigned_to = assignedFilter;
+    }
+    return params;
+  }, [search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, assignedFilter, user?.role, user?.id]);
+  registerFiltersActive.current = Object.keys(filterParams).length > 0;
+
   const fetchTendersPage = useCallback(
-    (page: number) => {
-      const params: any = {
-        page,
-        limit: TENDERS_PAGE_SIZE,
-        sortBy,
-        sortOrder,
-      };
-
-      if (search.trim()) params.search = search.trim();
-      if (statusFilter) params.status = statusFilter;
-      if (categoryFilter) params.category = categoryFilter;
-      if (zoneFilter) params.zone = zoneFilter;
-      if (deadlineFilter) params.deadline = deadlineFilter;
-      if (user?.role === 'sales' && user?.id) {
-        params.assigned_to = user.id;
-      } else if (assignedFilter) {
-        params.assigned_to = assignedFilter;
-      }
-
-      return api.get('/tenders', params);
-    },
-    [search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, assignedFilter, sortBy, sortOrder, user?.role, user?.id],
+    (page: number) => api.get('/tenders', { page, limit: TENDERS_PAGE_SIZE, sortBy, sortOrder, ...filterParams }),
+    [filterParams, sortBy, sortOrder],
   );
   const tendersList = useInfiniteList<any>(fetchTendersPage);
   const { rows: tenders, total: totalCount, loading: isLoading, refresh: fetchTenders } = tendersList;
@@ -494,9 +496,14 @@ export default function TendersPage() {
   // Initial load
   useEffect(() => {
     fetchMasters();
-    fetchDashboardStats();
     fetchReports();
   }, []);
+
+  // KPI cards and menu counts follow the filters: refetch (debounced, so typing a search is one request) on every change.
+  useEffect(() => {
+    const timer = setTimeout(fetchDashboardStats, 300);
+    return () => clearTimeout(timer);
+  }, [filterParams]);
 
   // Real-time Event-Driven Synchronization via Socket.IO
   useEffect(() => {
@@ -849,7 +856,7 @@ export default function TendersPage() {
   // Helper to open Win/Loss Outcome Modal with prefilled tender data (§26)
   const openOutcomeModal = (tender: any) => {
     setSelectedTender(tender);
-    // The dossier's Lifecycle cards ("Declare L1 & Won" / "Declare L2 / Lost") open this form pre-set to their verdict.
+    // The dossier's Lifecycle cards ("Result: Won" / "Result: Lost") open this form pre-set to their verdict.
     setOutcomeResult(tender?.preset_result === 'lost' ? 'lost' : 'won');
     setOutcomeValueLakh(
       tender.estimated_value_lakh || tender.estimated_value
@@ -1105,11 +1112,14 @@ export default function TendersPage() {
 
   // Stage counts available from the dashboard stats (shown inside the Stage dropdown)
   const stageCounts: Record<string, number | undefined> = {
-    awaiting_approval: dashboardStats.awaiting_approval || 0,
-    under_preparation: dashboardStats.under_preparation || 0,
-    submitted: dashboardStats.submitted || dashboardStats.tenders_submitted || 0,
-    won: dashboardStats.won || dashboardStats.tenders_won || 0,
-    lost: dashboardStats.lost || dashboardStats.tenders_lost || 0,
+    identified: dashboardStats.identified ?? 0,
+    awaiting_approval: dashboardStats.awaiting_approval ?? 0,
+    rejected_internally: dashboardStats.rejected_internally ?? 0,
+    under_preparation: dashboardStats.under_preparation ?? 0,
+    submitted: dashboardStats.submitted ?? 0,
+    won: dashboardStats.won ?? dashboardStats.tenders_won ?? 0,
+    lost: dashboardStats.lost ?? dashboardStats.tenders_lost ?? 0,
+    on_hold: dashboardStats.on_hold_tenders ?? 0,
   };
 
   const winRate = Number(dashboardStats.win_rate !== undefined ? dashboardStats.win_rate : (dashboardStats.win_rate_percentage || 0)).toFixed(1);
@@ -1272,18 +1282,18 @@ export default function TendersPage() {
     if (tender.status === 'identified') {
       primary = isManagement
         ? { label: 'Review', icon: <ShieldCheck />, onClick: open }
-        : { label: 'Submit for review', icon: <Send />, onClick: () => handleQuickRequestApproval(tender) };
+        : { label: 'Submit for Internal Review', icon: <Send />, onClick: () => handleQuickRequestApproval(tender) };
     } else if (tender.status === 'awaiting_approval' && isManagement) {
       primary = { label: 'Review', icon: <ShieldCheck />, onClick: open };
     } else if (tender.status === 'under_preparation') {
       primary = {
-        label: isPqTender ? 'Submit PQ' : 'Submit bid',
+        label: isPqTender ? 'Mark PQ Submitted' : 'Mark Tender Submitted',
         icon: <CheckCircle2 />,
         onClick: () => {
           setSelectedTender(tender);
           setTargetTransitionStatus(isPqTender ? 'pq_submitted' : 'submitted');
           setTransitionSubmissionDate(istToday());
-          setTransitionRemarks(isPqTender ? 'Pre-qualification dossier submitted on government portal.' : 'Technical and financial bids submitted on GeM portal.');
+          setTransitionRemarks(isPqTender ? 'PQ submitted on the portal.' : 'Tender submitted on the portal.');
           setActionError(null);
           setIsTransitionOpen(true);
         },
@@ -1295,7 +1305,7 @@ export default function TendersPage() {
       !(tender.status === 'submitted' && bidStillOpen(tender))
     ) {
       primary = {
-        label: 'Record outcome',
+        label: 'Record Result',
         icon: <Award />,
         onClick: () => openOutcomeModal(tender),
       };
@@ -1628,7 +1638,7 @@ export default function TendersPage() {
                     { key: '', label: 'All deadlines', count: undefined },
                     { key: 'urgent_48h', label: 'Closing ≤ 48h', count: dashboardStats.urgent_deadlines || 0 },
                     { key: 'upcoming_7d', label: 'Due ≤ 7 days', count: dashboardStats.upcoming_deadlines || 0 },
-                    { key: 'overdue', label: 'Overdue submissions', count: undefined },
+                    { key: 'overdue', label: 'Overdue submissions', count: dashboardStats.overdue_tenders || 0 },
                   ].map((o) => ({
                     ...o,
                     key: o.key || 'all',
@@ -1700,7 +1710,7 @@ export default function TendersPage() {
                 { key: '', label: 'All categories', count: undefined },
                 { key: 'pq', label: 'PQ (Pre-Qualification)', count: dashboardStats.pq_count || dashboardStats.pq_tenders || 0 },
                 { key: 'general_mha', label: 'General / MHA', count: dashboardStats.general_mha_count || dashboardStats.general_mha_tenders || 0 },
-                { key: 'other', label: 'Other Defence / Govt', count: undefined },
+                { key: 'other', label: 'Other Defence / Govt', count: dashboardStats.other_count || dashboardStats.other_tenders || 0 },
               ].map((o) => ({
                 ...o,
                 key: o.key || 'all',
@@ -1714,12 +1724,12 @@ export default function TendersPage() {
             <FilterMenu
               label="Zone"
               icon={<MapPin />}
-              options={['', 'North', 'South', 'East', 'West', 'Central'].map((z) => ({
-                key: z || 'all',
-                label: z ? `${z} Zone` : 'All zones',
-                active: zoneFilter === z,
+              options={[{ id: '', name: '' }, ...zonesMaster].map((z: any) => ({
+                key: z.id || 'all',
+                label: z.id ? `${z.name} Zone` : 'All zones',
+                active: zoneFilter === z.id,
                 onSelect: () => {
-                  setZoneFilter(z);
+                  setZoneFilter(z.id);
                 },
               }))}
             />
@@ -2468,7 +2478,7 @@ export default function TendersPage() {
                       </Button>
                       {canRecordOutcome && (
                         <Button size="xs" variant="primary" leftIcon={<Award className="h-3.5 w-3.5" />} onClick={() => openOutcomeModal(t)}>
-                          Record outcome
+                          Record Result
                         </Button>
                       )}
                     </div>
@@ -3026,8 +3036,8 @@ export default function TendersPage() {
                 value={outcomeResult}
                 onChange={(e) => setOutcomeResult(e.target.value as any)}
                 options={[
-                  { value: 'won', label: 'WON - Order Awarded to Arihant (Ranked L1)' },
-                  { value: 'lost', label: 'LOST - Awarded to Competitor or Disqualified' },
+                  { value: 'won', label: 'Won – order awarded to Arihant' },
+                  { value: 'lost', label: 'Lost – awarded to a competitor, or not qualified at PQ / technical stage' },
                 ]}
               />
               <Input

@@ -16,6 +16,8 @@ import {
   ChangeLeadStatusDto,
   AssignLeadDto,
   AddProductInterestDto,
+  LeadFilterQueryDto,
+  LeadListQueryDto,
 } from './leads.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -30,8 +32,8 @@ export class LeadsController {
 
   @Get('dashboard')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
-  async getDashboard(@CurrentUser() user: AuthUser) {
-    return this.leadsService.getDashboard(user);
+  async getDashboard(@Query() query: LeadFilterQueryDto, @CurrentUser() user: AuthUser) {
+    return this.leadsService.getDashboard(query, user);
   }
 
   // Executive Intelligence Reports — sales get their own data (scoped in the service, QA DEF-052)
@@ -75,48 +77,8 @@ export class LeadsController {
 
   @Get()
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
-  async findAll(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('search') search?: string,
-    @Query('lead_status') leadStatus?: string,
-    @Query('lead_type') leadType?: string,
-    @Query('status') status?: string,
-    @Query('category') category?: string,
-    @Query('probability') probability?: string,
-    @Query('assigned_to') assignedTo?: string,
-    @Query('regional_manager_id') regionalManagerId?: string,
-    @Query('organisation_id') orgId?: string,
-    @Query('sector') sector?: string,
-    @Query('zone_id') zoneId?: string,
-    @Query('region_id') regionId?: string,
-    @Query('followup') followup?: 'due_today' | 'overdue' | 'upcoming' | 'no_followup',
-    @Query('sort_by') sortBy?: 'next_followup' | 'last_interaction' | 'created_at' | 'organisation',
-    @Query('sort_dir') sortDir?: 'asc' | 'desc',
-    @CurrentUser() user?: AuthUser,
-  ) {
-    return this.leadsService.findAll(
-      {
-        page,
-        limit,
-        search,
-        lead_status: leadStatus,
-        lead_type: leadType,
-        status,
-        category,
-        probability,
-        assigned_to: assignedTo,
-        regional_manager_id: regionalManagerId,
-        organisation_id: orgId,
-        sector,
-        zone_id: zoneId,
-        region_id: regionId,
-        followup,
-        sort_by: sortBy,
-        sort_dir: sortDir,
-      },
-      user!,
-    );
+  async findAll(@Query() query: LeadListQueryDto, @CurrentUser() user: AuthUser) {
+    return this.leadsService.findAll(query, user);
   }
 
   @Get(':id')

@@ -14,7 +14,7 @@ import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { AppEvents } from '../../common/events/event-names.js';
 import { ServiceService } from '../service/service.service.js';
-import type { Database, AuthUser, PaginatedResult } from '@arihant/shared';
+import type { Database, AuthUser, PaginatedResult, DemoStatus } from '@arihant/shared';
 import type {
   CreateDemoDto,
   UpdateDemoDto,
@@ -30,7 +30,25 @@ import type {
   SubmitDemoOutcomeDto,
   CreateEquipmentDto,
   UpdateEquipmentDto,
+  DemoQueryDto,
 } from './demos.dto.js';
+import { containsPattern } from '../../common/utils/like-pattern.js';
+
+const DEMO_STATUS_VALUES: DemoStatus[] = [
+  'requested', 'under_planning', 'team_assigned', 'equipment_reserved', 'confirmed', 'completed', 'cancelled', 'rescheduled',
+];
+
+/**
+ * "Pending requests" — the demo coordinator's planning queue (MODULE_3 §4.1–4.2): open demos whose date is not
+ * (re)confirmed yet. A rescheduled demo is back in it: its next step is "re-verify specialist & unit; confirm date".
+ */
+export const DEMO_PENDING_STATUSES: DemoStatus[] = ['requested', 'under_planning', 'team_assigned', 'equipment_reserved', 'rescheduled'];
+
+/** "Active pipeline" — every open demo: the pending requests plus confirmed ones (all but completed / cancelled). */
+export const DEMO_ACTIVE_STATUSES: DemoStatus[] = [...DEMO_PENDING_STATUSES, 'confirmed'];
+
+/** A filter dimension a breakdown can leave out (see DemosService.demoScope). */
+type DemoFilterDimension = 'status' | 'location' | 'outcome';
 
 function formatDateOnly(d: any, fallback: string = ''): string {
   if (!d) return fallback;
@@ -334,37 +352,19 @@ export class DemosService {
   // 2. DEMO PIPELINE & CRUD
   // =========================================================================
 
-  async findAllDemos(
-    query: {
-      page?: number;
-      limit?: number;
-      search?: string;
-      status?: string;
-      assigned_to?: string;
-      requested_by?: string;
-      organisation_id?: string;
-      lead_id?: string;
-      tender_id?: string;
-      service_ticket_id?: string;
-      product_id?: string;
-      location?: string;
-      date_from?: string;
-      date_to?: string;
-    },
-    user: AuthUser,
-  ): Promise<PaginatedResult<any>> {
-    const { page, limit, offset } = getPaginationParams(query);
-
+  /**
+   * The demo register's scope: the caller's RBAC visibility plus the register filters. The list, its counts
+   * (getDemoSummary) and the analytics all start here, so a figure on screen always counts the rows the list shows.
+   * `except` drops the filter on one dimension, so a breakdown by that dimension (e.g. the Status menu's counts)
+   * shows every value of it rather than only the selected one.
+   */
+  private demoScope(query: DemoQueryDto, user: AuthUser, except?: DemoFilterDimension) {
     let baseQuery = this.db
       .selectFrom('demos')
       .innerJoin('organisations', 'demos.organisation_id', 'organisations.id')
       .leftJoin('products', 'demos.product_id', 'products.id')
       .leftJoin('users as requestedUser', 'demos.requested_by', 'requestedUser.id')
-      .leftJoin('users as assignee', 'demos.assigned_to', 'assignee.id')
-      .leftJoin('users as serviceEngineer', 'demos.service_engineer_id', 'serviceEngineer.id')
-      .leftJoin('service_tickets', 'demos.service_ticket_id', 'service_tickets.id')
-      .leftJoin('visits', 'demos.visit_id', 'visits.id')
-      .leftJoin('tenders', 'demos.tender_id', 'tenders.id');
+      .leftJoin('users as assignee', 'demos.assigned_to', 'assignee.id');
 
     // Role-based visibility
     if (user.role === 'sales') {
@@ -394,24 +394,23 @@ export class DemosService {
       }
     }
 
-    if (query.status) {
-      baseQuery = baseQuery.where('demos.status', '=', query.status as any);
+    if (query.status && except !== 'status') {
+      const statuses = query.status.split(',').map((st) => st.trim()).filter(Boolean);
+      const unknown = statuses.filter((st) => !DEMO_STATUS_VALUES.includes(st as DemoStatus));
+      if (unknown.length) throw new BadRequestException(`Unknown demo status: ${unknown.join(', ')}`);
+      if (statuses.length) baseQuery = baseQuery.where('demos.status', 'in', statuses as DemoStatus[]);
     }
 
-    if (query.assigned_to) {
-      baseQuery = baseQuery.where('demos.assigned_to', '=', query.assigned_to);
-    }
-
-    if (query.requested_by) {
-      baseQuery = baseQuery.where('demos.requested_by', '=', query.requested_by);
-    }
-
-    if (query.organisation_id) {
-      baseQuery = baseQuery.where('demos.organisation_id', '=', query.organisation_id);
-    }
-
-    // Cross-module lookups: demos for a lead, a tender, or the demo a service ticket came from.
-    for (const [param, column] of [['lead_id', 'demos.lead_id'], ['tender_id', 'demos.tender_id'], ['service_ticket_id', 'demos.service_ticket_id']] as const) {
+    // Id filters, incl. the cross-module lookups: demos for a lead, a tender, or the demo a service ticket came from.
+    for (const [param, column] of [
+      ['assigned_to', 'demos.assigned_to'],
+      ['requested_by', 'demos.requested_by'],
+      ['organisation_id', 'demos.organisation_id'],
+      ['product_id', 'demos.product_id'],
+      ['lead_id', 'demos.lead_id'],
+      ['tender_id', 'demos.tender_id'],
+      ['service_ticket_id', 'demos.service_ticket_id'],
+    ] as const) {
       const value = query[param];
       if (!value) continue;
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
@@ -420,51 +419,49 @@ export class DemosService {
       baseQuery = baseQuery.where(column, '=', value);
     }
 
-    if (query.product_id) {
-      baseQuery = baseQuery.where('demos.product_id', '=', query.product_id);
-    }
-
-    if (query.location) {
+    if (query.location && except !== 'location') {
       baseQuery = baseQuery.where('demos.location', '=', query.location);
     }
 
-    if (query.date_from) {
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          eb('demos.confirmed_date', '>=', query.date_from!),
-          eb.and([
-            eb('demos.confirmed_date', 'is', null),
-            eb('demos.requested_date', '>=', query.date_from!),
-          ]),
-        ]),
-      );
+    // The demo's day is its confirmed date, else the requested one: DATE columns, so both bounds are whole IST
+    // calendar days and inclusive (a demo on the "to" day is in range).
+    for (const [param, op] of [['date_from', '>='], ['date_to', '<=']] as const) {
+      if (!query[param]) continue;
+      const day = calendarDay(query[param]);
+      if (!day) throw new BadRequestException(`${param} must be a date (YYYY-MM-DD)`);
+      baseQuery = baseQuery.where(sql<boolean>`coalesce(demos.confirmed_date, demos.requested_date) ${sql.raw(op)} ${day}::date`);
     }
 
-    if (query.date_to) {
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          eb('demos.confirmed_date', '<=', query.date_to!),
-          eb.and([
-            eb('demos.confirmed_date', 'is', null),
-            eb('demos.requested_date', '<=', query.date_to!),
-          ]),
-        ]),
+    if ((query.result || query.failure_reason) && except !== 'outcome') {
+      baseQuery = baseQuery.where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom('demo_outcomes')
+            .select('demo_outcomes.id')
+            .whereRef('demo_outcomes.demo_id', '=', 'demos.id')
+            .$if(Boolean(query.result), (qb) => qb.where('demo_outcomes.result', '=', query.result!))
+            .$if(Boolean(query.failure_reason), (qb) => qb.where('demo_outcomes.failure_reason', '=', query.failure_reason!)),
+        ),
       );
     }
 
     if (query.search) {
-      const s = `%${query.search.toLowerCase()}%`;
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          sql<boolean>`lower(demos.demo_no) like ${s}`,
-          sql<boolean>`lower(organisations.name) like ${s}`,
-          sql<boolean>`lower(demos.location) like ${s}`,
-          sql<boolean>`lower(products.name) like ${s}`,
-          sql<boolean>`lower(requestedUser.full_name) like ${s}`,
-          sql<boolean>`lower(assignee.full_name) like ${s}`,
-        ]),
-      );
+      const s = containsPattern(query.search);
+      // sql.ref quotes the camelCase aliases ("requestedUser"); unquoted, Postgres folds them and the query fails.
+      const columns = ['demos.demo_no', 'organisations.name', 'demos.location', 'products.name', 'requestedUser.full_name', 'assignee.full_name'];
+      baseQuery = baseQuery.where((eb) => eb.or(columns.map((c) => sql<boolean>`lower(${sql.ref(c)}) like ${s}`)));
     }
+
+    return baseQuery;
+  }
+
+  async findAllDemos(query: DemoQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams({ page: Number(query.page), limit: Number(query.limit) });
+
+    const baseQuery = this.demoScope(query, user)
+      .leftJoin('users as serviceEngineer', 'demos.service_engineer_id', 'serviceEngineer.id')
+      .leftJoin('service_tickets', 'demos.service_ticket_id', 'service_tickets.id')
+      .leftJoin('visits', 'demos.visit_id', 'visits.id')
+      .leftJoin('tenders', 'demos.tender_id', 'tenders.id');
 
     const countRes = await baseQuery
       .select(sql<number>`count(demos.id)::int`.as('total'))
@@ -518,6 +515,8 @@ export class DemosService {
         sql<string>`coalesce(tenders.tender_number, tenders.tender_no)`.as('tender_no'),
       ])
       .orderBy(sql`coalesce(demos.confirmed_date, demos.requested_date)`, 'desc')
+      .orderBy('demos.created_at', 'desc')
+      .orderBy('demos.id')
       .limit(limit)
       .offset(offset)
       .execute();
@@ -593,6 +592,49 @@ export class DemosService {
     }));
 
     return buildPaginatedResult(enhancedDemos, total, page, limit);
+  }
+
+  /**
+   * Counts of the demo register under its current filters, for the page's menus, view counts and KPI cards.
+   * `total` applies every filter (it is the list's total). Each breakdown applies every filter except its own
+   * dimension, so e.g. the status counts still show every status while one status is selected.
+   */
+  async getDemoSummary(query: DemoQueryDto, user: AuthUser) {
+    const countOf = sql<number>`count(distinct demos.id)::int`;
+    const [totalRow, statusRows, locationRows, resultRows] = await Promise.all([
+      this.demoScope(query, user).select(countOf.as('count')).executeTakeFirst(),
+      this.demoScope(query, user, 'status').select(['demos.status', countOf.as('count')]).groupBy('demos.status').execute(),
+      this.demoScope(query, user, 'location')
+        .where('demos.location', 'is not', null)
+        .where('demos.location', '!=', '')
+        .select(['demos.location', countOf.as('count')])
+        .groupBy('demos.location')
+        .execute(),
+      this.demoScope(query, user, 'outcome')
+        .innerJoin('demo_outcomes', 'demo_outcomes.demo_id', 'demos.id')
+        .where('demo_outcomes.result', 'is not', null)
+        .select(['demo_outcomes.result', countOf.as('count')])
+        .groupBy('demo_outcomes.result')
+        .execute(),
+    ]);
+
+    const by_status: Record<string, number> = {};
+    for (const r of statusRows) by_status[r.status] = r.count;
+    const by_location: Record<string, number> = {};
+    for (const r of locationRows) by_location[r.location!] = r.count;
+    const by_result: Record<string, number> = { success: 0, fail: 0, partial: 0 };
+    for (const r of resultRows) by_result[r.result!] = r.count;
+    const sumOf = (statuses: DemoStatus[]) => statuses.reduce((n, st) => n + (by_status[st] || 0), 0);
+
+    return {
+      total: totalRow?.count || 0,
+      status_total: sumOf(DEMO_STATUS_VALUES),
+      by_status,
+      by_location,
+      by_result,
+      pending_requests: sumOf(DEMO_PENDING_STATUSES),
+      active_pipeline: sumOf(DEMO_ACTIVE_STATUSES),
+    };
   }
 
   /**
@@ -2339,53 +2381,25 @@ export class DemosService {
   // 7. MANAGEMENT ANALYTICS (§19)
   // =========================================================================
 
-  async getAnalytics(user: AuthUser) {
-    // A regional manager analyses their own zone (or region) plus demos they raised; everyone else sees the company.
-    // The equipment fleet is shared stock, so it stays company-wide.
-    const territory = user.role === 'regional_manager' && (user.zone_id || user.region_id)
-      ? user.zone_id
-        ? sql`o.zone_id = ${user.zone_id}`
-        : sql`o.region_id = ${user.region_id}`
-      : null;
-    const inScope = (column: string) =>
-      territory
-        ? sql<boolean>`${sql.ref(column)} in (select d.id from demos d join organisations o on o.id = d.organisation_id where ${territory} or d.requested_by = ${user.id})`
-        : sql<boolean>`true`;
+  async getAnalytics(user: AuthUser, query: DemoQueryDto = {}) {
+    // Same scope as the register: RBAC (a regional manager sees their zone or region plus demos they raised) and the
+    // page's filters. Outcome breakdowns leave out the outcome filter (they are that dimension); the equipment fleet
+    // is shared stock, so it stays company-wide.
+    const inScope = (column: string, except?: DemoFilterDimension) =>
+      sql<boolean>`${sql.ref(column)} in (${this.demoScope(query, user, except).select('demos.id')})`;
 
-    // Total counts by status
-    const statusCounts = await this.db
-      .selectFrom('demos')
-      .where(inScope('demos.id'))
-      .select([
-        sql<number>`count(*)::int`.as('total_demos'),
-        sql<number>`count(*) filter (where status = 'completed')::int`.as('completed_demos'),
-        sql<number>`count(*) filter (where status = 'cancelled')::int`.as('cancelled_demos'),
-        sql<number>`count(*) filter (where status = 'rescheduled')::int`.as('rescheduled_demos'),
-        sql<number>`count(*) filter (where status in ('requested', 'under_planning', 'team_assigned', 'equipment_reserved', 'confirmed'))::int`.as('active_pipeline'),
-      ])
-      .executeTakeFirst();
-
-    // Outcomes counts: success vs fail
-    const outcomeCounts = await this.db
-      .selectFrom('demo_outcomes')
-      .where(inScope('demo_outcomes.demo_id'))
-      .select([
-        sql<number>`count(*) filter (where result = 'success')::int`.as('successful'),
-        sql<number>`count(*) filter (where result = 'fail')::int`.as('unsuccessful'),
-        sql<number>`count(*) filter (where result = 'partial')::int`.as('partial'),
-      ])
-      .executeTakeFirst();
-
-    const successful = outcomeCounts?.successful || 0;
-    const unsuccessful = outcomeCounts?.unsuccessful || 0;
-    const partial = outcomeCounts?.partial || 0;
+    // Status and outcome counts are the register's own summary, so these KPIs match the list and its menus.
+    const summary = await this.getDemoSummary(query, user);
+    const successful = summary.by_result.success || 0;
+    const unsuccessful = summary.by_result.fail || 0;
+    const partial = summary.by_result.partial || 0;
     const totalOutcomes = successful + unsuccessful + partial;
     const successRate = totalOutcomes > 0 ? Math.round((successful / totalOutcomes) * 100) : 0;
 
     // Structured failure reasons breakdown
     const failureBreakdownRows = await this.db
       .selectFrom('demo_outcomes')
-      .where(inScope('demo_outcomes.demo_id'))
+      .where(inScope('demo_outcomes.demo_id', 'outcome'))
       .select([
         'failure_reason',
         sql<number>`count(*)::int`.as('count'),
@@ -2417,7 +2431,7 @@ export class DemosService {
     // Competitor involvement distribution
     const competitorRows = await this.db
       .selectFrom('demo_outcomes')
-      .where(inScope('demo_outcomes.demo_id'))
+      .where(inScope('demo_outcomes.demo_id', 'outcome'))
       .select([
         'competitor_involved',
         sql<number>`count(*)::int`.as('count'),
@@ -2432,7 +2446,7 @@ export class DemosService {
     // Decision-maker attendance correlation
     const dmStats = await this.db
       .selectFrom('demo_outcomes')
-      .where(inScope('demo_outcomes.demo_id'))
+      .where(inScope('demo_outcomes.demo_id', 'outcome'))
       .select([
         sql<number>`count(*) filter (where decision_maker_present = true)::int`.as('dm_present_total'),
         sql<number>`count(*) filter (where decision_maker_present = true and result = 'success')::int`.as('dm_present_success'),
@@ -2458,7 +2472,7 @@ export class DemosService {
       ])
       .where('demo_outcomes.result', '=', 'fail')
       .where('demo_outcomes.failure_reason', 'is not', null)
-      .where(inScope('demo_outcomes.demo_id'))
+      .where(inScope('demo_outcomes.demo_id', 'outcome'))
       .groupBy(['products.name', 'demo_outcomes.failure_reason'])
       .orderBy('fail_count', 'desc')
       .limit(6)
@@ -2466,11 +2480,12 @@ export class DemosService {
 
     return {
       overview: {
-        total_demos: statusCounts?.total_demos || 0,
-        completed_demos: statusCounts?.completed_demos || 0,
-        cancelled_demos: statusCounts?.cancelled_demos || 0,
-        rescheduled_demos: statusCounts?.rescheduled_demos || 0,
-        active_pipeline: statusCounts?.active_pipeline || 0,
+        total_demos: summary.total,
+        completed_demos: summary.by_status.completed || 0,
+        cancelled_demos: summary.by_status.cancelled || 0,
+        rescheduled_demos: summary.by_status.rescheduled || 0,
+        active_pipeline: summary.active_pipeline,
+        pending_requests: summary.pending_requests,
         successful,
         unsuccessful,
         partial,

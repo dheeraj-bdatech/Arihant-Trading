@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
-import type { AuthUser, ProposalStatus, UserRole } from '@arihant/shared';
+import { formatINR, type AuthUser, type ProposalStatus, type UserRole } from '@arihant/shared';
 import { calendarDay, isoDaysBetween, todayInKolkata } from '../../common/utils/ist-date.util.js';
 
 export const TERMINAL_PROPOSAL_STATUSES: ProposalStatus[] = ['CONVERTED', 'LOST', 'CLOSED'];
@@ -12,6 +12,24 @@ export const TERMINAL_PROPOSAL_STATUSES: ProposalStatus[] = ['CONVERTED', 'LOST'
 /** The proposal number every screen, notification and task shows (PROP-2026-1076); PRP-… is the internal canonical id. */
 export function proposalDisplayNo(p: { proposal_number?: string | null; proposal_no?: string | null } | null | undefined): string {
   return p?.proposal_number || p?.proposal_no || '';
+}
+
+export const DEFAULT_MANAGEMENT_APPROVAL_THRESHOLD = 1000000;
+
+/** ₹ value from the settings at or above which a proposal is "major" and goes to Management. */
+export function managementApprovalThreshold(settings?: { management_approval_threshold?: number | string | null } | null): number {
+  const n = Number(settings?.management_approval_threshold);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_MANAGEMENT_APPROVAL_THRESHOLD;
+}
+
+/**
+ * Who approves this proposal: 'management' for major proposals (quoted value at or above the threshold), 'regional'
+ * (the Regional Manager of the customer's region) for the rest. The service stamps `approval_band` on the row, also
+ * sending a regional proposal to Management when its region has no active Regional Manager.
+ */
+export function approvalBandOf(proposal: any, settings?: ProposalSettingsConfig | null): 'management' | 'regional' {
+  if (proposal?.approval_band === 'management' || proposal?.approval_band === 'regional') return proposal.approval_band;
+  return Number(proposal?.quoted_value) >= managementApprovalThreshold(settings) ? 'management' : 'regional';
 }
 
 /** True when the proposal carries a commercial value (₹ quoted amount above zero). */
@@ -41,6 +59,8 @@ export interface TransitionContext {
 export interface ProposalSettingsConfig {
   allow_self_approval?: boolean;
   allow_fast_track?: boolean;
+  /** ₹ quoted value at or above which Management approves; below it the region's Regional Manager does. */
+  management_approval_threshold?: number | string | null;
   reopen_window_days?: number;
   default_follow_up_days?: number;
   business_timezone?: string;
@@ -179,6 +199,10 @@ export class ProposalsWorkflowService {
     const isResponsible = userId === responsibleId;
     const isRequester = userId === (proposal.requested_by_id || proposal.requested_by);
     const isFollowUpOwner = userId === (proposal.follow_up_owner_id || proposal.followup_owner_id);
+    // Review decisions follow the value band: Management for major proposals, the region's RM for the rest (Admin
+    // can always act as the system override).
+    const band = approvalBandOf(proposal, settings);
+    const isBandApprover = role === 'admin' || (band === 'management' ? role === 'management' : isRegionalMgr);
 
     // Terminal statuses can only be reopened by manager or admin within reopen window
     if (this.isTerminal(current)) {
@@ -200,13 +224,13 @@ export class ProposalsWorkflowService {
     for (const target of potential) {
       if (target === 'UNDER_PREPARATION') {
         if (current === 'REQUESTED') {
-          // Guard: responsible person must be set to start preparation
-          if (responsibleId && (isResponsible || isAdminOrMgmt || isRegionalMgr || isSales || isTender)) {
+          // The responsible team starts preparing (Admin as override); Management / RM do not start someone else's work.
+          if (responsibleId && (isResponsible || role === 'admin')) {
             allowed.push('UNDER_PREPARATION');
           }
         } else if (current === 'READY_FOR_REVIEW') {
-          // Reviewer requesting changes - management and admin only
-          if (isAdminOrMgmt) {
+          // The reviewer for this value band requests changes.
+          if (isBandApprover) {
             allowed.push('UNDER_PREPARATION');
           }
         } else if (current === 'APPROVED') {
@@ -221,12 +245,16 @@ export class ProposalsWorkflowService {
           }
         }
       } else if (target === 'READY_FOR_REVIEW') {
-        if (isResponsible || isAdminOrMgmt || isRegionalMgr) {
+        // T3: the preparer hands the proposal over — the responsible person, or whoever registered the request — and
+        // Admin as the system override. Management / RM review it (approve / request changes); they do not submit
+        // someone else's proposal unless it is their own.
+        const isCreator = userId === proposal.created_by_id || userId === proposal.created_by;
+        if (isResponsible || isRequester || isCreator || role === 'admin') {
           allowed.push('READY_FOR_REVIEW');
         }
       } else if (target === 'APPROVED') {
-        // Approver check: management and admin only (anti-self-approval: not the one who created/requested/authored it)
-        if (isAdminOrMgmt) {
+        // Approver for this value band (anti-self-approval: not the one who created/requested/authored it)
+        if (isBandApprover) {
           const isCreator =
             userId === proposal.created_by_id ||
             userId === proposal.created_by ||
@@ -324,9 +352,15 @@ export class ProposalsWorkflowService {
     // Check transition allowed list
     if (!allowed.includes(target)) {
       if (target === 'APPROVED') {
-        if (role !== 'admin' && role !== 'management') {
+        const band = approvalBandOf(proposal, settings);
+        const limit = formatINR(managementApprovalThreshold(settings));
+        const isBandApprover = role === 'admin' || (band === 'management' ? role === 'management' : role === 'regional_manager');
+        if (!isBandApprover) {
           throw new ForbiddenException({
-            message: 'Only Top Management and System Administrator can approve proposals.',
+            message:
+              band === 'management'
+                ? `Proposals of ${limit} or more are approved by Management / Admin.`
+                : `Proposals below ${limit} are approved by the Regional Manager of the customer's region; only major proposals come to Management.`,
             allowed_transitions: allowed,
           });
         }
@@ -342,6 +376,32 @@ export class ProposalsWorkflowService {
             allowed_transitions: allowed,
           });
         }
+      }
+
+      if (target === 'READY_FOR_REVIEW' && current === 'UNDER_PREPARATION') {
+        throw new ForbiddenException({
+          message:
+            'Only the person preparing this proposal (responsible person) or whoever registered the request can submit it for review. Management reviews it: approve or request changes.',
+          allowed_transitions: allowed,
+        });
+      }
+
+      if (target === 'UNDER_PREPARATION' && current === 'REQUESTED' && responsibleId) {
+        throw new ForbiddenException({
+          message: 'Preparation is started by the responsible person for this proposal (or Admin). Management reviews it later.',
+          allowed_transitions: allowed,
+        });
+      }
+
+      if (target === 'UNDER_PREPARATION' && current === 'READY_FOR_REVIEW') {
+        const limit = formatINR(managementApprovalThreshold(settings));
+        throw new ForbiddenException({
+          message:
+            approvalBandOf(proposal, settings) === 'management'
+              ? `Changes on proposals of ${limit} or more are requested by Management / Admin.`
+              : `Changes on proposals below ${limit} are requested by the Regional Manager of the customer's region.`,
+          allowed_transitions: allowed,
+        });
       }
 
       if (target === 'UNDER_PREPARATION' && current === 'REQUESTED' && !responsibleId) {

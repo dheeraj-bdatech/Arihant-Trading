@@ -10,13 +10,20 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
-import { PROPOSAL_ORDER_TYPES, type Database, type AuthUser, type PaginatedResult } from '@arihant/shared';
+import {
+  PROPOSAL_ORDER_TYPES,
+  type Database,
+  type AuthUser,
+  type DeliveryStatus,
+  type PaginatedResult,
+} from '@arihant/shared';
 import {
   CreateDeliveryDto,
   UpdateDeliveryStatusDto,
   DeliveryQueryDto,
   UUID_REGEX,
 } from './deliveries.dto.js';
+import { containsPattern } from '../../common/utils/like-pattern.js';
 
 /** Consignment milestones in the only order they can be recorded (cancellation aside). */
 const DELIVERY_FLOW = ['scheduled', 'dispatched', 'in_transit', 'delivered', 'installed', 'handover_completed'] as const;
@@ -30,6 +37,13 @@ const DELIVERY_LABEL: Record<string, string> = {
   cancelled: 'Cancelled',
 };
 const label = (status: string) => DELIVERY_LABEL[status] || status;
+const DELIVERY_STATUSES: readonly DeliveryStatus[] = [...DELIVERY_FLOW, 'cancelled'];
+/** `status=a,b` → the known milestones it names (unknown keys are dropped, never sent to the enum column). */
+const parseStatuses = (value: string): DeliveryStatus[] =>
+  value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s): s is DeliveryStatus => (DELIVERY_STATUSES as readonly string[]).includes(s));
 
 /** A calendar value (DATE column, ISO instant or 'YYYY-MM-DD') as DD/MM/YYYY for user-facing messages. */
 function dmy(value: unknown): string {
@@ -52,9 +66,11 @@ export class DeliveriesService {
     }
   }
 
-  async findAll(query: DeliveryQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
-    const { page, limit, offset } = getPaginationParams(query);
-
+  /**
+   * The register's rows: role scope + every filter in `query`. The list and its KPI counts both read from here,
+   * so they always agree. `ignoreStatus` drops the status filter (the per-status counts are that dimension).
+   */
+  private filteredDeliveries(query: DeliveryQueryDto, user: AuthUser, { ignoreStatus = false } = {}) {
     let baseQuery = this.db
       .selectFrom('deliveries')
       .innerJoin('organisations', 'deliveries.organisation_id', 'organisations.id')
@@ -77,8 +93,12 @@ export class DeliveriesService {
       baseQuery = baseQuery.where('organisations.zone_id', '=', user.zone_id);
     }
 
-    if (query.status) {
-      baseQuery = baseQuery.where('deliveries.status', '=', query.status as any);
+    // One milestone or several, comma-separated ("In transit" card = dispatched,in_transit).
+    if (query.status && !ignoreStatus) {
+      const statuses = parseStatuses(query.status);
+      baseQuery = statuses.length
+        ? baseQuery.where('deliveries.status', 'in', statuses)
+        : baseQuery.where(sql<boolean>`false`);
     }
 
     if (query.organisation_id) {
@@ -108,7 +128,7 @@ export class DeliveriesService {
     }
 
     if (query.search) {
-      const s = `%${query.search.toLowerCase()}%`;
+      const s = containsPattern(query.search);
       baseQuery = baseQuery.where((eb) =>
         eb.or([
           sql<boolean>`lower(deliveries.delivery_no) like ${s}`,
@@ -119,6 +139,13 @@ export class DeliveriesService {
         ]),
       );
     }
+
+    return baseQuery;
+  }
+
+  async findAll(query: DeliveryQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams(query);
+    const baseQuery = this.filteredDeliveries(query, user);
 
     const countRes = await baseQuery
       .select(sql<number>`count(deliveries.id)::int`.as('total'))
@@ -465,38 +492,29 @@ export class DeliveriesService {
     return { success: true, message: 'Delivery cancelled successfully' };
   }
 
-  async getDeliveryMetrics(user: AuthUser) {
-    let baseQuery = this.db
-      .selectFrom('deliveries')
-      .innerJoin('organisations', 'deliveries.organisation_id', 'organisations.id');
+  /**
+   * KPI counts for the register: same role scope and filters as findAll, per milestone. The status filter is
+   * ignored (the counts are that dimension), so picking a status never zeroes the other cards.
+   */
+  async getDeliveryMetrics(user: AuthUser, query: DeliveryQueryDto = {}) {
+    const rows = await this.filteredDeliveries(query, user, { ignoreStatus: true })
+      .select(['deliveries.status', sql<number>`count(deliveries.id)::int`.as('c')])
+      .groupBy('deliveries.status')
+      .execute();
 
-    if (user.role === 'regional_manager' && user.zone_id) {
-      baseQuery = baseQuery.where('organisations.zone_id', '=', user.zone_id);
-    }
-
-    const [
-      totalRes,
-      scheduledRes,
-      inTransitRes,
-      deliveredRes,
-      installedRes,
-      completedRes,
-    ] = await Promise.all([
-      baseQuery.select(sql<number>`count(deliveries.id)::int`.as('c')).executeTakeFirst(),
-      baseQuery.select(sql<number>`count(deliveries.id)::int`.as('c')).where('deliveries.status', '=', 'scheduled').executeTakeFirst(),
-      baseQuery.select(sql<number>`count(deliveries.id)::int`.as('c')).where('deliveries.status', '=', 'in_transit').executeTakeFirst(),
-      baseQuery.select(sql<number>`count(deliveries.id)::int`.as('c')).where('deliveries.status', '=', 'delivered').executeTakeFirst(),
-      baseQuery.select(sql<number>`count(deliveries.id)::int`.as('c')).where('deliveries.status', '=', 'installed').executeTakeFirst(),
-      baseQuery.select(sql<number>`count(deliveries.id)::int`.as('c')).where('deliveries.status', '=', 'handover_completed').executeTakeFirst(),
-    ]);
+    const byStatus = Object.fromEntries(DELIVERY_STATUSES.map((s) => [s, 0])) as Record<DeliveryStatus, number>;
+    for (const r of rows) byStatus[r.status] = r.c;
 
     return {
-      total: totalRes?.c || 0,
-      scheduled: scheduledRes?.c || 0,
-      inTransit: inTransitRes?.c || 0,
-      delivered: deliveredRes?.c || 0,
-      installed: installedRes?.c || 0,
-      handoverCompleted: completedRes?.c || 0,
+      total: rows.reduce((sum, r) => sum + r.c, 0),
+      scheduled: byStatus.scheduled,
+      dispatched: byStatus.dispatched,
+      inTransit: byStatus.in_transit,
+      delivered: byStatus.delivered,
+      installed: byStatus.installed,
+      handoverCompleted: byStatus.handover_completed,
+      cancelled: byStatus.cancelled,
+      byStatus,
     };
   }
 }

@@ -9,7 +9,8 @@ import {
   Logger,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Kysely, sql } from 'kysely';
+import { Kysely, sql, type RawBuilder } from 'kysely';
+import { isUUID } from 'class-validator';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { assertRegionScope, checkRegionScope, assertNotSelfApproval } from '../../common/utils/scope.util.js';
@@ -70,6 +71,7 @@ import {
   CreateRegionMappingDto,
 } from './tenders.dto.js';
 import { teamIds } from '../dashboard/dashboard-metrics.js';
+import { containsPattern } from '../../common/utils/like-pattern.js';
 
 /**
  * QA DEF-037 / DEF-038: a regional manager's bids are their zone's bids plus bids owned by their field team (reps'
@@ -96,8 +98,8 @@ function tenderReportScope(user: AuthUser) {
 }
 
 /** §27 report definitions — one source for the dashboard and every pipeline report. */
-const TENDER_TERMINAL_STATUSES = ['won', 'partially_won', 'lost', 'cancelled', 'rejected_internally', 'pq_not_qualified', 'technically_disqualified', 'not_submitted'];
-const TENDER_SUBMITTED_STATUSES = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'reverse_auction', 'won', 'partially_won', 'lost'];
+const TENDER_TERMINAL_STATUSES = ['won', 'lost', 'cancelled', 'rejected_internally'];
+const TENDER_SUBMITTED_STATUSES = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'];
 const TENDER_WORKED_UPON_STATUSES = ['under_preparation', ...TENDER_SUBMITTED_STATUSES];
 /** Pre-submission stages: the only ones whose submission deadline can still be missed (B2/B3). */
 const TENDER_PRE_SUBMISSION_STATUSES = ['identified', 'awaiting_approval', 'under_preparation', 'pq_qualified'];
@@ -106,13 +108,14 @@ const TERMINAL_SQL = sqlList(TENDER_TERMINAL_STATUSES);
 const SUBMITTED_SQL = sqlList(TENDER_SUBMITTED_STATUSES);
 const WORKED_UPON_SQL = sqlList(TENDER_WORKED_UPON_STATUSES);
 const PRE_SUBMISSION_SQL = sqlList(TENDER_PRE_SUBMISSION_STATUSES);
+/** Approvals Inbox rule: awaiting approval and not on hold. Shared by the inbox and the Pending Approvals KPI. */
+const TENDER_PENDING_APPROVAL_SQL = sql<boolean>`tenders.status = 'awaiting_approval' and coalesce(tenders.on_hold, false) = false`;
 
 /** Stages that need the bids opened, so a submitted bid can only reach them after its closing time. */
 const BID_OPENING_TARGETS: StandardTenderStatus[] = [
   'TECHNICAL_EVALUATION',
   'COMMERCIAL_EVALUATION',
   'WON',
-  'PARTIALLY_WON',
   'LOST',
 ];
 
@@ -589,12 +592,70 @@ export class TendersService {
   // 2. Tender Register & CRUD
   // =========================================================================
 
-  async findAll(query: TenderQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
-    const { page, limit, offset } = getPaginationParams({
-      page: Number(query.page || 1),
-      limit: Number(query.limit || 20),
-    });
+  /**
+   * Rows matching one Stage-filter option. On Hold is the `on_hold` flag (the held bid keeps its stage in `status`),
+   * so `on_hold` matches held bids and every other stage leaves them out — a held bid is On Hold, not in its old stage.
+   */
+  private tenderStageMatch(status: string) {
+    const raw = status.toLowerCase().trim();
+    if (raw === 'on_hold') return sql<boolean>`coalesce(tenders.on_hold, false) = true`;
 
+    let match;
+    if (raw === 'results') {
+      match = sql`tenders.status in ${sqlList(['won', 'lost', 'technical_eval', 'commercial_eval'])}`;
+    } else if (raw === 'under_preparation') {
+      match = sql`tenders.status in ${sqlList(['under_preparation', 'pq_submitted', 'pq_qualified'])}`;
+    } else if (raw.includes(',')) {
+      const statuses = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      match = sql`tenders.status::text in (${sql.join(statuses)})`;
+    } else {
+      const norm = this.workflowService.normalizeStatus(status);
+      const leg = this.workflowService.toLegacyStatus(status);
+      match = sql`(tenders.status::text = ${norm.toLowerCase()} or tenders.status::text = ${leg} or upper(tenders.status::text) = ${norm})`;
+    }
+    return sql<boolean>`(${match}) and coalesce(tenders.on_hold, false) = false`;
+  }
+
+  /** Rows matching one Deadline-filter option: pre-submission bids only (a submitted bid has no open submission deadline). */
+  private tenderDeadlineMatch(deadline: string, now: Date) {
+    const from = now.toISOString();
+    let window;
+    if (deadline === 'due_today') {
+      // "Today" is the IST calendar day (the server clock is UTC).
+      const istToday = todayInKolkata(now);
+      window = sql`tenders.submission_deadline >= ${istDateTime(istToday, '00:00:00').toISOString()} and tenders.submission_deadline <= ${istEndOfDay(istToday).toISOString()}`;
+    } else if (deadline === 'urgent_48h') {
+      // §24 "Urgent closing (≤ 48 hours)" — the same window as the main dashboard's "Close ≤ 48h".
+      const until = new Date(now.getTime() + TENDER_URGENT_HOURS * 3600 * 1000).toISOString();
+      window = sql`tenders.submission_deadline >= ${from} and tenders.submission_deadline <= ${until}`;
+    } else if (deadline === 'upcoming_7d') {
+      const until = new Date(now.getTime() + TENDER_UPCOMING_DAYS * 24 * 3600 * 1000).toISOString();
+      window = sql`tenders.submission_deadline >= ${from} and tenders.submission_deadline <= ${until}`;
+    } else if (deadline === 'overdue') {
+      window = sql`tenders.submission_deadline < ${from}`;
+    } else {
+      return null;
+    }
+    return sql<boolean>`tenders.status in ${PRE_SUBMISSION_SQL} and ${window}`;
+  }
+
+  /** Rows matching one Category-filter option (the tender's category enum or its master category code). */
+  private tenderCategoryMatch(category: string) {
+    const cat = category.toLowerCase().trim();
+    return sql<boolean>`(tenders.category::text = ${cat} or lower(tender_categories.code) = ${cat})`;
+  }
+
+  /**
+   * The tender register in the caller's scope with the list filters applied — one source for the list and for the
+   * /tenders/dashboard counts. `except` leaves one filter dimension out, so the counts of that dimension's options
+   * (stage, deadline or category) are not narrowed by the option currently picked.
+   */
+  private filteredTenders(
+    query: TenderQueryDto,
+    user: AuthUser,
+    except?: 'status' | 'deadline' | 'category',
+    now: Date = new Date(),
+  ) {
     let baseQuery = this.db
       .selectFrom('tenders')
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
@@ -621,8 +682,13 @@ export class TendersService {
     }
 
     // Direct filters
-    const zoneId = query.zone_id || query.zone;
-    if (zoneId) baseQuery = baseQuery.where('tenders.zone_id', '=', zoneId);
+    const zone = (query.zone_id || query.zone || '').trim();
+    if (zone) {
+      // A zone id, or a zone name / code ("North", "NE") — never a uuid cast error.
+      baseQuery = isUUID(zone)
+        ? baseQuery.where('tenders.zone_id', '=', zone)
+        : baseQuery.where(sql<boolean>`(lower(zones.name) = ${zone.toLowerCase()} or lower(zones.code) = ${zone.toLowerCase()})`);
+    }
 
     const regionId = query.region_id || query.region;
     if (regionId) baseQuery = baseQuery.where('tenders.region_id', '=', regionId);
@@ -631,7 +697,7 @@ export class TendersService {
     if (orgId) baseQuery = baseQuery.where('tenders.organisation_id', '=', orgId);
 
     if (query.organisation) {
-      const orgStr = `%${query.organisation.toLowerCase().trim()}%`;
+      const orgStr = containsPattern(query.organisation);
       baseQuery = baseQuery.where((eb) =>
         eb.or([
           sql<boolean>`lower(tenders.organisation) like ${orgStr}`,
@@ -645,45 +711,12 @@ export class TendersService {
     if (query.city) baseQuery = baseQuery.where('tenders.city', '=', query.city);
     if (query.state) baseQuery = baseQuery.where('tenders.state', '=', query.state);
 
-    if (query.status) {
-      const statusRaw = query.status.toLowerCase().trim();
-      if (statusRaw === 'results') {
-        baseQuery = baseQuery.where('tenders.status', 'in', [
-          'won',
-          'lost',
-          'technical_eval',
-          'commercial_eval',
-        ]);
-      } else if (statusRaw === 'under_preparation') {
-        baseQuery = baseQuery.where('tenders.status', 'in', [
-          'under_preparation',
-          'pq_submitted',
-          'pq_qualified',
-        ]);
-      } else if (statusRaw.includes(',')) {
-        const statuses = statusRaw.split(',').map((s) => s.trim()).filter(Boolean);
-        baseQuery = baseQuery.where('tenders.status', 'in', statuses as any);
-      } else {
-        const norm = this.workflowService.normalizeStatus(query.status);
-        const leg = this.workflowService.toLegacyStatus(query.status);
-        baseQuery = baseQuery.where((eb) =>
-          eb.or([
-            eb('tenders.status', '=', norm.toLowerCase() as any),
-            eb('tenders.status', '=', leg as any),
-            eb(sql`upper(tenders.status)`, '=', norm),
-          ]),
-        );
-      }
+    if (query.status?.trim() && except !== 'status') {
+      baseQuery = baseQuery.where(this.tenderStageMatch(query.status));
     }
 
-    if (query.category) {
-      const cat = query.category.toLowerCase().trim();
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          eb('tenders.category', '=', cat as any),
-          eb(sql`lower(tender_categories.code)`, '=', cat),
-        ]),
-      );
+    if (query.category?.trim() && except !== 'category') {
+      baseQuery = baseQuery.where(this.tenderCategoryMatch(query.category));
     }
 
     const assigned = query.assigned_to || query.assignedPerson;
@@ -701,40 +734,12 @@ export class TendersService {
       );
     }
 
-    // Deadlines filtering — pre-submission bids only (a submitted bid has no open submission deadline)
-    if (query.deadline) {
-      const now = new Date();
-      if (query.deadline === 'due_today') {
-        // "Today" is the IST calendar day (the server clock is UTC).
-        const istToday = todayInKolkata(now);
-        const startOfDay = istDateTime(istToday, '00:00:00').toISOString();
-        const endOfDay = istEndOfDay(istToday).toISOString();
-        baseQuery = baseQuery
-          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
-          .where('tenders.submission_deadline', '>=', startOfDay)
-          .where('tenders.submission_deadline', '<=', endOfDay);
-      } else if (query.deadline === 'urgent_48h') {
-        const urgent48 = new Date(now.getTime() + TENDER_URGENT_HOURS * 3600 * 1000).toISOString();
-        baseQuery = baseQuery
-          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
-          .where('tenders.submission_deadline', '>=', now.toISOString())
-          .where('tenders.submission_deadline', '<=', urgent48);
-      } else if (query.deadline === 'upcoming_7d') {
-        const upcoming7d = new Date(now.getTime() + TENDER_UPCOMING_DAYS * 24 * 3600 * 1000).toISOString();
-        baseQuery = baseQuery
-          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
-          .where('tenders.submission_deadline', '>=', now.toISOString())
-          .where('tenders.submission_deadline', '<=', upcoming7d);
-      } else if (query.deadline === 'overdue') {
-        baseQuery = baseQuery
-          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
-          .where('tenders.submission_deadline', '<', now.toISOString());
-      }
-    }
+    const deadlineMatch = query.deadline && except !== 'deadline' ? this.tenderDeadlineMatch(query.deadline, now) : null;
+    if (deadlineMatch) baseQuery = baseQuery.where(deadlineMatch);
 
     // Search query
     if (query.search && query.search.trim()) {
-      const s = `%${query.search.toLowerCase().trim()}%`;
+      const s = containsPattern(query.search);
       baseQuery = baseQuery.where((eb) =>
         eb.or([
           sql<boolean>`lower(coalesce(tenders.tender_number, tenders.tender_no)) like ${s}`,
@@ -756,6 +761,17 @@ export class TendersService {
         baseQuery = baseQuery.where(sql<boolean>`${sql.ref(dateCol)} <= ${query.to_date}`);
       }
     }
+
+    return baseQuery;
+  }
+
+  async findAll(query: TenderQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams({
+      page: Number(query.page || 1),
+      limit: Number(query.limit || 20),
+    });
+
+    const baseQuery = this.filteredTenders(query, user);
 
     const countRes = await baseQuery
       .select(sql<number>`count(tenders.id)::int`.as('total'))
@@ -1532,7 +1548,7 @@ export class TendersService {
   private assertBoqEditable(tender: { status?: string | null }, opts?: { allowAwardFields?: boolean }) {
     if (!this.isClosedStatus(tender.status)) return;
     const status = this.workflowService.normalizeStatus(tender.status as string);
-    if (opts?.allowAwardFields && (status === 'WON' || status === 'PARTIALLY_WON')) return;
+    if (opts?.allowAwardFields && status === 'WON') return;
     throw new BadRequestException(
       `Line items are locked: the tender is ${this.workflowService.getStatusLabel(status)} (closed). Reopen the tender to change its BOQ.`,
     );
@@ -1704,6 +1720,13 @@ export class TendersService {
       await this.logActivity(id, 'TEAM_REASSIGNED', 'Updated tender team ownership / assignment', user.id);
     }
 
+    const { updated_at, last_activity_at, version, assigned_person_id, owner, ...businessFields } = updatePayload;
+    const diff = this.changedFields(existing, businessFields);
+    if (diff) {
+      const teamOnly = Object.keys(diff.next).every((k) => k === 'assigned_to' || k === 'tender_owner_id');
+      this.audit(user.id, id, teamOnly ? 'tender_reassigned' : 'tender_updated', diff.previous, diff.next);
+    }
+
     return this.findOne(id);
   }
 
@@ -1730,6 +1753,7 @@ export class TendersService {
       })
       .execute();
 
+    this.audit(user.id, id, 'tender_deleted', { status: existing.status, is_deleted: false }, { is_deleted: true });
     return { success: true };
   }
 
@@ -2037,11 +2061,8 @@ export class TendersService {
       case 'TENDER_SUBMITTED':
         return AppEvents.TENDER_SUBMITTED;
       case 'WON':
-      case 'PARTIALLY_WON':
         return AppEvents.TENDER_WON;
       case 'LOST':
-      case 'PQ_NOT_QUALIFIED':
-      case 'TECHNICALLY_DISQUALIFIED':
         return AppEvents.TENDER_LOST;
       case 'CANCELLED':
         return AppEvents.TENDER_CANCELLED;
@@ -2133,6 +2154,7 @@ export class TendersService {
         .execute();
     });
 
+    this.audit(user.id, id, 'tender_put_on_hold', { status: existing.status, on_hold: false }, { status: existing.status, on_hold: true, reason: dto.reason || null });
     return this.findOne(id);
   }
 
@@ -2190,6 +2212,7 @@ export class TendersService {
         .execute();
     });
 
+    this.audit(user.id, id, 'tender_resumed', { status: existing.status, on_hold: true }, { status: restoredStatus, on_hold: false });
     return this.findOne(id);
   }
 
@@ -2375,6 +2398,13 @@ export class TendersService {
       }
     });
 
+    this.audit(
+      user.id,
+      id,
+      'tender_deadline_changed',
+      { submission_deadline: existing.submission_deadline ? oldDeadline.toISOString() : null },
+      { submission_deadline: newDeadline.toISOString(), reason: dto.reason.trim() },
+    );
     return this.findOne(id);
   }
 
@@ -2389,9 +2419,9 @@ export class TendersService {
       throw new ConflictException('This tender was updated by someone else – refresh');
     }
 
-    const outcome = dto.outcome.toLowerCase().trim() as 'won' | 'lost' | 'partially_won';
-    if (outcome !== 'won' && outcome !== 'lost' && outcome !== 'partially_won') {
-      throw new BadRequestException('Outcome must be "won", "lost", or "partially_won"');
+    const outcome = dto.outcome.toLowerCase().trim() as 'won' | 'lost';
+    if (outcome !== 'won' && outcome !== 'lost') {
+      throw new BadRequestException('Outcome must be "won" or "lost"');
     }
 
     // Rule: "Allowed only if the tender has a PQ_SUBMITTED or TENDER_SUBMITTED entry in history."
@@ -2446,11 +2476,11 @@ export class TendersService {
 
     // Rule: WON requires value > 0 when require_won_value is on
     const settings = await this.getSettings();
-    const targetStatus = outcome === 'won' ? 'WON' : outcome === 'partially_won' ? 'PARTIALLY_WON' : 'LOST';
+    const targetStatus = outcome === 'won' ? 'WON' : 'LOST';
 
     const tenderVal = dto.value !== undefined ? dto.value : ((dto as any).value_lakh ? Number((dto as any).value_lakh) * 100000 : undefined);
 
-    if (outcome === 'won' || outcome === 'partially_won') {
+    if (outcome === 'won') {
       if (settings?.require_won_value) {
         if (!tenderVal || tenderVal <= 0) {
           throw new BadRequestException('Won value is required and must be greater than zero');
@@ -2459,7 +2489,7 @@ export class TendersService {
     }
 
     // A PBG request raised with the win must carry its amount (instruments are never zero / negative).
-    if ((outcome === 'won' || outcome === 'partially_won') && (dto as any).pbg_required) {
+    if (outcome === 'won' && (dto as any).pbg_required) {
       const pbg = Number((dto as any).pbg_amount);
       if (!Number.isFinite(pbg) || pbg <= 0) {
         throw new BadRequestException('PBG amount must be greater than zero when a PBG is required.');
@@ -2540,7 +2570,7 @@ export class TendersService {
           result: outcome.toUpperCase(),
           result_date: resultDayStr,
           value: tenderVal || null,
-          awarded_value: (dto as any).awarded_value || (outcome === 'won' || outcome === 'partially_won' ? tenderVal : null),
+          awarded_value: (dto as any).awarded_value || (outcome === 'won' ? tenderVal : null),
           awarded_line_items: (dto as any).awarded_line_items ? JSON.stringify((dto as any).awarded_line_items) : ('[]' as any),
           order_number: (dto as any).order_number || (dto as any).po_number || null,
           loa_number: (dto as any).loa_number || null,
@@ -2581,7 +2611,7 @@ export class TendersService {
       }
 
       // Finance Integration: If won and PBG required, create PBG instrument request
-      if ((outcome === 'won' || outcome === 'partially_won') && (dto as any).pbg_required) {
+      if (outcome === 'won' && (dto as any).pbg_required) {
         await trx
           .insertInto('tender_financial_instruments')
           .values({
@@ -2787,6 +2817,7 @@ export class TendersService {
         .execute();
     });
 
+    this.audit(user.id, id, 'tender_reopened', { status: existing.status }, { status: legacyTarget, reason: dto.reason.trim() });
     return this.findOne(id);
   }
 
@@ -3196,6 +3227,25 @@ export class TendersService {
     });
   }
 
+  /** Blueprint §47 / PRD: important tender changes go to the immutable audit trail (user, action, previous → new, time). */
+  private audit(actorId: string, tenderId: string, action: string, previousValue: Record<string, any> | null, newValue: Record<string, any> | null) {
+    this.eventEmitter.emit('audit.log', { actorId, entityType: 'tender', entityId: tenderId, action, previousValue, newValue });
+  }
+
+  /** The fields of `after` whose value differs from `before`, split into { previous, next } halves for the audit row. */
+  private changedFields(before: Record<string, any>, after: Record<string, any>) {
+    const norm = (v: any) => (v === undefined || v === null || v === '' ? null : v instanceof Date ? v.toISOString() : String(v));
+    const previous: Record<string, any> = {};
+    const next: Record<string, any> = {};
+    for (const [key, value] of Object.entries(after)) {
+      if (norm(before[key]) !== norm(value)) {
+        previous[key] = before[key] ?? null;
+        next[key] = value ?? null;
+      }
+    }
+    return Object.keys(next).length ? { previous, next } : null;
+  }
+
   private async logActivity(
     tenderId: string,
     eventType: string,
@@ -3224,52 +3274,63 @@ export class TendersService {
   // 6. Reports & Dashboards (Section 6)
   // =========================================================================
 
-  async getDashboard(user: AuthUser) {
-    // Run alert engine check on load
-    await this.runHourlyDeadlineAlerts().catch((e) => this.logger.warn(`Alert check warning: ${e.message}`));
-
-    let baseQuery = this.db
-      .selectFrom('tenders')
-      .where('tenders.is_deleted', '=', false);
-
-    if (user.role === 'regional_manager') {
-      baseQuery = baseQuery.where(rmTenderScope(user));
-    } else if (user.role === 'sales') {
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          eb('tenders.assigned_to', '=', user.id),
-          eb('tenders.owner', '=', user.id),
-          eb('tenders.tender_owner_id', '=', user.id),
-          eb('tenders.created_by', '=', user.id),
-        ]),
-      );
+  /**
+   * Register KPIs and filter-menu counts. Takes the list's filter query and applies the same filter builder, so every
+   * count follows the active filters — except its own dimension: stage counts (and Total) ignore the stage pick,
+   * deadline counts the deadline pick, category counts the category pick, so choosing one option never zeroes the rest.
+   */
+  async getDashboard(user: AuthUser, query: TenderQueryDto = {}) {
+    // Run alert engine check on page load only — filtered refetches fire on every filter change.
+    const isFiltered = Object.values(query).some((v) => v !== undefined && v !== null && v !== '');
+    if (!isFiltered) {
+      await this.runHourlyDeadlineAlerts().catch((e) => this.logger.warn(`Alert check warning: ${e.message}`));
     }
 
-    const metrics = await baseQuery
-      .select([
-        sql<number>`count(tenders.id)::int`.as('total_tenders'),
-        sql<number>`count(case when tenders.status in ('identified') then 1 end)::int`.as('identified'),
-        sql<number>`count(case when tenders.status in ('awaiting_approval') then 1 end)::int`.as('awaiting_approval'),
-        sql<number>`count(case when tenders.status in ('rejected_internally') then 1 end)::int`.as('rejected_internally'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'pq_submitted', 'pq_qualified') then 1 end)::int`.as('under_preparation'),
-        sql<number>`count(case when tenders.status in ('submitted') then 1 end)::int`.as('submitted'),
-        sql<number>`count(case when tenders.status in ('won', 'lost', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('result_tracking'),
-        sql<number>`count(case when tenders.category::text ilike 'pq%' then 1 end)::int`.as('pq_tenders'),
-        sql<number>`count(case when tenders.category::text = 'general_mha' then 1 end)::int`.as('general_mha_tenders'),
-        sql<number>`count(case when tenders.category::text not ilike 'pq%' and tenders.category::text <> 'general_mha' then 1 end)::int`.as('other_tenders'),
-        sql<number>`count(case when tenders.status in ${WORKED_UPON_SQL} then 1 end)::int`.as('worked_upon'),
-        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('tenders_submitted'),
-        sql<number>`count(case when tenders.status in ('won') then 1 end)::int`.as('tenders_won'),
-        sql<number>`count(case when tenders.status in ('lost') then 1 end)::int`.as('tenders_lost'),
-        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending_tenders'),
-        sql<number>`count(case when tenders.on_hold = true then 1 end)::int`.as('on_hold_tenders'),
-        sql<number>`count(case when tenders.status in ('under_preparation') then 1 end)::int`.as('incomplete_preparation'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('result_followups'),
-        sql<number>`count(case when tenders.status in ${PRE_SUBMISSION_SQL} and tenders.submission_deadline is not null and tenders.submission_deadline >= NOW() and tenders.submission_deadline <= NOW() + make_interval(hours => 24) then 1 end)::int`.as('urgent_deadlines'),
-        sql<number>`count(case when tenders.status in ${PRE_SUBMISSION_SQL} and tenders.submission_deadline is not null and tenders.submission_deadline < NOW() then 1 end)::int`.as('overdue_tenders'),
-        sql<number>`count(case when tenders.status in ${PRE_SUBMISSION_SQL} and tenders.submission_deadline is not null and tenders.submission_deadline >= NOW() and tenders.submission_deadline <= NOW() + make_interval(days => 7) then 1 end)::int`.as('upcoming_deadlines'),
-      ])
-      .executeTakeFirst();
+    const now = new Date();
+    const countWhere = (cond: RawBuilder<boolean>) => sql<number>`count(case when ${cond} then 1 end)::int`;
+    const stage = (key: string) => countWhere(this.tenderStageMatch(key));
+    const deadline = (key: string) => countWhere(this.tenderDeadlineMatch(key, now)!);
+    const category = (key: string) => countWhere(this.tenderCategoryMatch(key));
+
+    const [stageMetrics, deadlineMetrics, categoryMetrics] = await Promise.all([
+      this.filteredTenders(query, user, 'status', now)
+        .select([
+          sql<number>`count(tenders.id)::int`.as('total_tenders'),
+          stage('identified').as('identified'),
+          stage('awaiting_approval').as('awaiting_approval'),
+          // Same predicate as the Approvals Inbox (pendingApprovalsQuery), so unfiltered they always agree.
+          countWhere(TENDER_PENDING_APPROVAL_SQL).as('pending_approvals'),
+          stage('rejected_internally').as('rejected_internally'),
+          stage('under_preparation').as('under_preparation'),
+          stage('submitted').as('submitted'),
+          stage('results').as('result_tracking'),
+          stage('won').as('tenders_won'),
+          stage('lost').as('tenders_lost'),
+          stage('on_hold').as('on_hold_tenders'),
+          sql<number>`count(case when tenders.status in ${WORKED_UPON_SQL} then 1 end)::int`.as('worked_upon'),
+          sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('tenders_submitted'),
+          sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending_tenders'),
+          sql<number>`count(case when tenders.status in ('under_preparation') then 1 end)::int`.as('incomplete_preparation'),
+          sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('result_followups'),
+        ])
+        .executeTakeFirst(),
+      this.filteredTenders(query, user, 'deadline', now)
+        .select([
+          deadline('urgent_48h').as('urgent_deadlines'),
+          deadline('upcoming_7d').as('upcoming_deadlines'),
+          deadline('overdue').as('overdue_tenders'),
+          deadline('due_today').as('due_today'),
+        ])
+        .executeTakeFirst(),
+      this.filteredTenders(query, user, 'category', now)
+        .select([
+          category('pq').as('pq_tenders'),
+          category('general_mha').as('general_mha_tenders'),
+          category('other').as('other_tenders'),
+        ])
+        .executeTakeFirst(),
+    ]);
+    const metrics = { ...stageMetrics, ...deadlineMetrics, ...categoryMetrics };
 
     let portalIssuesQuery = this.db
       .selectFrom('tender_portal_issues')
@@ -3295,8 +3356,6 @@ export class TendersService {
     }
 
     const portalIssuesCount = await portalIssuesQuery.executeTakeFirst();
-    // Same query as the Approvals Inbox, so the KPI, the View-menu count and the inbox heading always agree.
-    const pendingApprovalCount = await this.countPendingApprovals(user);
 
     const won = metrics?.tenders_won || 0;
     const lost = metrics?.tenders_lost || 0;
@@ -3316,7 +3375,7 @@ export class TendersService {
       // 6-stage lifecycle counts
       identified: metrics?.identified || 0,
       stage_1_identified: metrics?.identified || 0,
-      pending_approvals: pendingApprovalCount,
+      pending_approvals: metrics?.pending_approvals || 0,
       awaiting_approval: metrics?.awaiting_approval || 0,
       stage_2_review: metrics?.awaiting_approval || 0,
       rejected_internally: metrics?.rejected_internally || 0,
@@ -3340,6 +3399,7 @@ export class TendersService {
       upcoming_deadlines: metrics?.upcoming_deadlines || 0,
       urgent_deadlines: metrics?.urgent_deadlines || 0,
       overdue_tenders: metrics?.overdue_tenders || 0,
+      due_today: metrics?.due_today || 0,
       result_followups: metrics?.result_followups || 0,
       open_portal_issues: portalIssuesCount?.count || 0,
       win_rate: winRate,
@@ -3491,7 +3551,7 @@ export class TendersService {
       if (TENDER_SUBMITTED_STATUSES.includes(status)) g.submitted += 1;
       if (!TENDER_TERMINAL_STATUSES.includes(status)) g.pending += 1;
 
-      if (status === 'won' || status === 'partially_won') {
+      if (status === 'won') {
         g.won += 1;
         g.won_value += Number(t.result_value || t.tender_value || 0);
       } else if (status === 'lost') {
@@ -3873,8 +3933,7 @@ export class TendersService {
     let q = this.db
       .selectFrom('tenders')
       .where('tenders.is_deleted', '=', false)
-      .where('tenders.status', '=', 'awaiting_approval')
-      .where((eb) => eb.or([eb('tenders.on_hold', '=', false), eb('tenders.on_hold', 'is', null)]));
+      .where(TENDER_PENDING_APPROVAL_SQL);
 
     if (user.role === 'regional_manager') {
       q = q.where(rmTenderScope(user));
@@ -4813,6 +4872,12 @@ export class TendersService {
       `${dto.instrument_type} of ₹${dto.amount} logged (${dto.status || 'Requested'})`,
       user.id,
     );
+    this.audit(user.id, tenderId, 'financial_instrument_added', null, {
+      instrument_type: inst.instrument_type,
+      amount: inst.amount,
+      status: inst.status,
+      reference_number: inst.reference_number,
+    });
     return inst;
   }
 
@@ -4840,6 +4905,13 @@ export class TendersService {
     if (dto.finance_owner_id !== undefined) updateData.finance_owner_id = dto.finance_owner_id;
     if (dto.remarks !== undefined) updateData.remarks = dto.remarks;
 
+    const before = await this.db
+      .selectFrom('tender_financial_instruments')
+      .selectAll()
+      .where('id', '=', instrumentId)
+      .where('tender_id', '=', tenderId)
+      .executeTakeFirst();
+
     const updated = await this.db
       .updateTable('tender_financial_instruments')
       .set(updateData)
@@ -4855,6 +4927,11 @@ export class TendersService {
       `${updated.instrument_type} updated to status "${updated.status}"`,
       user.id,
     );
+    const { updated_at, ...instrumentFields } = updateData;
+    const diff = before ? this.changedFields(before as Record<string, any>, instrumentFields) : null;
+    if (diff) {
+      this.audit(user.id, tenderId, 'financial_instrument_updated', { instrument_type: updated.instrument_type, ...diff.previous }, { instrument_type: updated.instrument_type, ...diff.next });
+    }
     return updated;
   }
 
@@ -5207,8 +5284,8 @@ export class TendersService {
     const tender = await this.findOne(tenderId, user);
     const norm = this.workflowService.normalizeStatus(tender.status);
 
-    if (norm !== 'WON' && norm !== 'PARTIALLY_WON') {
-      throw new BadRequestException('Sales Orders can only be generated from WON or PARTIALLY_WON tenders');
+    if (norm !== 'WON') {
+      throw new BadRequestException('Sales Orders can only be generated from WON tenders');
     }
 
     // The delivery belongs to the buying customer; a tender captured by name only must be linked first.
@@ -5275,7 +5352,6 @@ export class TendersService {
       'submitted',
       'technical_eval',
       'commercial_eval',
-      'reverse_auction',
     ];
 
     let baseQuery = this.db

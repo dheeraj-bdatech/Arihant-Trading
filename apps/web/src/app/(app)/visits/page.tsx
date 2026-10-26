@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { availableFirst, fleetHint, kitForProduct, kitValue, unitHint } from '@/app/(app)/demos/_lib/fleet';
 import type { SelectOption } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
@@ -50,6 +50,7 @@ import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useOpenParam } from '@/lib/use-open-param';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { GuardedLink } from '@/components/links/GuardedLink';
 import {
   Button,
@@ -91,6 +92,8 @@ const REPORT_PENDING = ['planned', 'modified', 'rescheduled'];
 // Visit day has passed but no report yet (the API sets report_overdue; derive it for older payloads).
 const isReportOverdue = (v: any) =>
   v?.report_overdue ?? (REPORT_PENDING.includes(v?.status) && (calendarDay(v?.planned_date) || '') < istToday());
+// The visit register is read page by page (the API caps a page at 100).
+const VISITS_PAGE_SIZE = 50;
 const fmtDay = (d: string) => {
   const [y, m, dd] = d.split('-');
   return `${dd}/${m}/${y}`;
@@ -112,7 +115,6 @@ export default function VisitsPage() {
   const [openVisitId, setOpenVisitId] = useState<string | null>(null);
 
   // Core Data
-  const [visits, setVisits] = useState<any[]>([]);
   const [trips, setTrips] = useState<any[]>([]);
   const [managerData, setManagerData] = useState<any | null>(null);
   const [organisations, setOrganisations] = useState<any[]>([]);
@@ -123,7 +125,6 @@ export default function VisitsPage() {
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   const [employeeActivities, setEmployeeActivities] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
 
   // Filters
   const [filterSearch, setFilterSearch] = useState('');
@@ -135,6 +136,40 @@ export default function VisitsPage() {
   const [filterTravelOnly, setFilterTravelOnly] = useState(false);
   const [filterDemoOnly, setFilterDemoOnly] = useState(false);
   const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
+  // The search box applies on Enter
+  const [appliedSearch, setAppliedSearch] = useState('');
+
+  // The visit register: filtered and paged on the API, loaded as the reader scrolls
+  const listFilters = useMemo(
+    () => ({
+      search: appliedSearch || undefined,
+      status: filterStatus || undefined,
+      assigned_to: filterEmployee || undefined,
+      dateFrom: filterDateFrom || undefined,
+      dateTo: filterDateTo || undefined,
+      travel_required: filterTravelOnly ? 'true' : undefined,
+      demo_required: filterDemoOnly ? 'true' : undefined,
+    }),
+    [appliedSearch, filterStatus, filterEmployee, filterDateFrom, filterDateTo, filterTravelOnly, filterDemoOnly],
+  );
+  const fetchVisitsPage = useCallback(
+    (page: number) => api.get('/visits', { ...listFilters, page, limit: VISITS_PAGE_SIZE }),
+    [listFilters],
+  );
+  const visitsList = useInfiniteList<any>(fetchVisitsPage);
+  const { rows: visits, total: visitsTotal, loading: visitsLoading } = visitsList;
+
+  // KPI cards: counted on the API over the same scope and filters as the list (not from the loaded page)
+  const [stats, setStats] = useState({ total: 0, today: 0, directives: 0, completed: 0, overdue: 0, upcoming: 0 });
+  const statsGen = useRef(0);
+  const fetchStats = useCallback(async () => {
+    const g = ++statsGen.current;
+    const res = await api.get('/visits/stats', listFilters).catch(() => null);
+    if (res && g === statsGen.current) setStats(res);
+  }, [listFilters]);
+  useEffect(() => {
+    fetchStats();
+  }, [fetchStats]);
 
   // Modals
   const [isScheduleOpen, setIsScheduleOpen] = useState(false);
@@ -387,21 +422,10 @@ export default function VisitsPage() {
   // -------------------------------------------------------------
   // Load All Master and Module Data
   // -------------------------------------------------------------
+  // (the visit register itself is useInfiniteList above)
   const fetchData = async () => {
     try {
-      setIsLoading(true);
-
-      const [visitsRes, tripsRes, orgsRes, prodsRes, usersRes, demoEquipRes] = await Promise.all([
-        api.get('/visits', {
-          limit: 100,
-          search: filterSearch || undefined,
-          status: filterStatus || undefined,
-          assigned_to: filterEmployee || undefined,
-          dateFrom: filterDateFrom || undefined,
-          dateTo: filterDateTo || undefined,
-          travel_required: filterTravelOnly ? 'true' : undefined,
-          demo_required: filterDemoOnly ? 'true' : undefined,
-        }),
+      const [tripsRes, orgsRes, prodsRes, usersRes, demoEquipRes] = await Promise.all([
         api.get('/visits/trips'),
         api.get('/organisations', { limit: 100 }),
         api.get('/products', { limit: 100 }).catch(() => api.get('/masters/products')).catch(() => []),
@@ -409,7 +433,6 @@ export default function VisitsPage() {
         api.get('/demos/equipment').catch(() => []),
       ]);
 
-      setVisits(visitsRes.data || []);
       setTrips(tripsRes || []);
       setOrganisations(orgsRes.data || []);
       setProducts(Array.isArray(prodsRes) ? prodsRes : (prodsRes?.data || []));
@@ -438,10 +461,10 @@ export default function VisitsPage() {
       }
     } catch (err) {
       console.error('Failed to load visit planning data:', err);
-    } finally {
-      setIsLoading(false);
     }
   };
+  // After an action: the page data, the visit register (pages loaded so far) and the KPI counts
+  const reloadAll = () => Promise.all([fetchData(), visitsList.refresh(), fetchStats()]);
 
   useEffect(() => {
     fetchData();
@@ -632,7 +655,7 @@ export default function VisitsPage() {
         lodging_required: false,
         stay_nights: '1',
       });
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to schedule field visit.');
     } finally {
@@ -663,7 +686,7 @@ export default function VisitsPage() {
         base_location: '',
         notes: '',
       });
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to create tour program.');
     } finally {
@@ -700,7 +723,7 @@ export default function VisitsPage() {
         instructions: '',
         reason: 'Customer is in the same operational area',
       });
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to add customer visit to trip.');
     } finally {
@@ -740,7 +763,7 @@ export default function VisitsPage() {
         start_time: '14:30',
         end_time: '16:00',
       });
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to attach manager directive.');
     } finally {
@@ -772,7 +795,7 @@ export default function VisitsPage() {
 
       setIsRescheduleOpen(false);
       setRescheduleData({ new_date: '', start_time: '', end_time: '', reason: '' });
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to reschedule visit.');
     } finally {
@@ -793,7 +816,7 @@ export default function VisitsPage() {
 
       setIsCancelOpen(false);
       setCancelReason('');
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to cancel visit.');
     } finally {
@@ -815,7 +838,7 @@ export default function VisitsPage() {
 
       setIsDestinationOpen(false);
       setNewDestination({ new_location: '', reason: '' });
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to update destination.');
     } finally {
@@ -858,7 +881,7 @@ export default function VisitsPage() {
         followup_date: '',
         remarks: '',
       });
-      await fetchData();
+      await reloadAll();
     } catch (err: any) {
       setActionError(err.message || 'Failed to submit post-visit update.');
     } finally {
@@ -910,16 +933,14 @@ export default function VisitsPage() {
     filterSearch || filterStatus || filterEmployee || filterDateFrom || filterDateTo || filterTravelOnly || filterDemoOnly,
   );
   const handleClearFilters = () => {
-    const searchOnly = Boolean(filterSearch) && !filterStatus && !filterEmployee && !filterDateFrom && !filterDateTo && !filterTravelOnly && !filterDemoOnly;
     setFilterSearch('');
+    setAppliedSearch('');
     setFilterStatus('');
     setFilterEmployee('');
     setFilterDateFrom('');
     setFilterDateTo('');
     setFilterTravelOnly(false);
     setFilterDemoOnly(false);
-    // Search alone doesn't trigger the effect, so refetch explicitly in that case.
-    if (searchOnly) fetchData();
   };
 
   // Which filters the current view uses: the visit list uses all of them; the team activity board is fetched with
@@ -934,13 +955,15 @@ export default function VisitsPage() {
     ? hasActiveFilters
     : isTeamView && Boolean(filterStatus || filterEmployee || datesActive);
   const canSeeTeamActivity = hasRole(['management', 'regional_manager', 'admin']);
+  // The "Today's Visits" card's filter is on
+  const todayFilterOn = filterStatus === 'open' && filterDateFrom === istToday() && filterDateTo === istToday();
   const viewOptions: FilterMenuOption[] = [
     {
       key: 'my_visits',
       // The list is scoped by role on the API: everyone's for management/admin, the territory's for an RM
       label: hasRole(['management', 'admin']) ? 'All visits' : hasRole('regional_manager') ? 'Territory visits' : 'My visits',
       icon: <Calendar />,
-      count: visits.length || undefined,
+      count: visitsTotal || undefined,
     },
     ...(canSeeTeamActivity ? [{ key: 'manager_dashboard', label: 'Team activity', icon: <Shield /> }] : []),
     { key: 'trips', label: 'Trips & multi-stop plans', icon: <Route />, count: trips.length || undefined },
@@ -1184,18 +1207,6 @@ export default function VisitsPage() {
       onOpen: () => setOpenVisitId(v.id),
     };
   });
-
-  // KPI Calculations
-  const stats = useMemo(() => {
-    const total = visits.length;
-    // "Today's visits" = planned on today's IST date (planned_date may arrive as an ISO instant).
-    const today = istToday();
-    const todayCount = visits.filter((v) => calendarDay(v.planned_date) === today).length;
-    const directives = visits.filter((v) => v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention') || v.assigned_by_manager).length;
-    const completed = visits.filter((v) => v.status === 'completed').length;
-    const overdue = visits.filter(isReportOverdue).length;
-    return { total, todayCount, directives, completed, overdue };
-  }, [visits]);
 
   // ── Row action openers (shared by "My Visits" and manager tables) ──
   const openAlsoMeet = (v: any) => {
@@ -1524,10 +1535,19 @@ export default function VisitsPage() {
 
         <StatCard
           label="Today's Visits"
-          value={stats.todayCount}
+          value={stats.today}
           valueColor="emerald"
-          subtext="Active deployments today"
+          subtext="Open visits planned today"
           icon={<Clock className="h-4 w-4 text-[#0F5E63]" />}
+          className={todayFilterOn ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+          onClick={() => {
+            // Same rule as the count: open visits (planned / modified / rescheduled) planned for today (IST)
+            if (!todayFilterOn && !showListFilters) setActiveTab('my_visits');
+            const today = istToday();
+            setFilterStatus(todayFilterOn ? '' : 'open');
+            setFilterDateFrom(todayFilterOn ? '' : today);
+            setFilterDateTo(todayFilterOn ? '' : today);
+          }}
         />
 
         <StatCard
@@ -1568,7 +1588,7 @@ export default function VisitsPage() {
                 value={filterSearch}
                 onChange={(e) => setFilterSearch(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') fetchData();
+                  if (e.key === 'Enter') setAppliedSearch(filterSearch.trim());
                 }}
                 className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
               />
@@ -1586,6 +1606,7 @@ export default function VisitsPage() {
                   { key: 'planned', label: 'Planned' },
                   { key: 'modified', label: 'Modified' },
                   { key: 'rescheduled', label: 'Rescheduled' },
+                  { key: 'open', label: 'Open (not yet reported)' },
                   { key: 'overdue', label: 'Report overdue', count: stats.overdue || undefined },
                   { key: 'completed', label: 'Completed', count: stats.completed },
                   { key: 'not_completed', label: 'Not completed' },
@@ -1714,7 +1735,7 @@ export default function VisitsPage() {
       {/* TAB CONTENT: MY VISITS */}
       {activeTab === 'my_visits' && (
         <div className="space-y-3.5">
-          {!isLoading && stats.overdue > 0 && filterStatus !== 'overdue' && (
+          {!visitsLoading && stats.overdue > 0 && filterStatus !== 'overdue' && (
             <InfoCallout variant="warning" title={`${stats.overdue} visit report${stats.overdue === 1 ? '' : 's'} overdue`}>
               {stats.overdue === 1 ? 'A visit' : 'Some visits'} dated before today {stats.overdue === 1 ? 'is' : 'are'} still open.{' '}
               {hasRole('management')
@@ -1725,7 +1746,7 @@ export default function VisitsPage() {
               </button>
             </InfoCallout>
           )}
-          {isLoading ? (
+          {visitsLoading ? (
             <PageLoader label="Loading field visits" />
           ) : visits.length === 0 ? (
             <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
@@ -1742,9 +1763,13 @@ export default function VisitsPage() {
                 laneOf={(i) => visitToneById.get(i.key) || 'upcoming'}
                 list={<ul className="space-y-2">{[...upcomingVisits, ...pastVisits].map(renderVisitRow)}</ul>}
                 calendar={<VisitCalendar visits={visits} toneOf={visitTone} onOpen={(v) => setOpenVisitId(v.id)} />}
+                onLoadMore={visitsList.loadMore}
+                hasMore={visitsList.hasMore}
+                loadingMore={visitsList.loadingMore}
                 summary={
                   <>
-                    <span className="font-mono font-semibold text-[#14213D]">{visits.length}</span> visits · {upcomingVisits.length} upcoming
+                    {visits.length < visitsTotal && <><span className="font-mono font-semibold text-[#14213D]">{visits.length}</span> of </>}
+                    <span className="font-mono font-semibold text-[#14213D]">{visitsTotal}</span> visits · {stats.upcoming} upcoming
                     {stats.overdue ? <span className="font-semibold text-[#9A3412]"> · {stats.overdue} report{stats.overdue === 1 ? '' : 's'} overdue</span> : null}
                   </>
                 }

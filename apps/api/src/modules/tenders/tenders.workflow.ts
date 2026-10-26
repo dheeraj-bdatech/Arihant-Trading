@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, ForbiddenException, ConflictException } from '@nestjs/common';
 import type { AuthUser, TenderStatus } from '@arihant/shared';
 
+/** The 13 tender stages of PRD §23 (frozen in SCOPE_FREEZE §2.1 and MODULE_4 §2). */
 export type StandardTenderStatus =
   | 'IDENTIFIED'
   | 'AWAITING_INTERNAL_APPROVAL'
@@ -8,29 +9,16 @@ export type StandardTenderStatus =
   | 'UNDER_PREPARATION'
   | 'PQ_SUBMITTED'
   | 'PQ_QUALIFIED'
-  | 'PQ_NOT_QUALIFIED'
   | 'TENDER_SUBMITTED'
   | 'TECHNICAL_EVALUATION'
-  | 'TECHNICALLY_DISQUALIFIED'
   | 'COMMERCIAL_EVALUATION'
-  | 'REVERSE_AUCTION'
   | 'WON'
-  | 'PARTIALLY_WON'
   | 'LOST'
   | 'CANCELLED'
-  | 'ON_HOLD'
-  | 'NOT_SUBMITTED';
+  | 'ON_HOLD';
 
-export const TERMINAL_STATUSES: StandardTenderStatus[] = [
-  'WON',
-  'PARTIALLY_WON',
-  'LOST',
-  'CANCELLED',
-  'REJECTED_INTERNALLY',
-  'PQ_NOT_QUALIFIED',
-  'TECHNICALLY_DISQUALIFIED',
-  'NOT_SUBMITTED',
-];
+/** Closed stages. Rejected Internally is not one: it can be re-submitted for approval (MODULE_4 §2). */
+export const TERMINAL_STATUSES: StandardTenderStatus[] = ['WON', 'LOST', 'CANCELLED'];
 
 @Injectable()
 export class TendersWorkflowService {
@@ -47,21 +35,18 @@ export class TendersWorkflowService {
       UNDER_PREPARATION: 'UNDER_PREPARATION',
       PQ_SUBMITTED: 'PQ_SUBMITTED',
       PQ_QUALIFIED: 'PQ_QUALIFIED',
-      PQ_NOT_QUALIFIED: 'PQ_NOT_QUALIFIED',
       SUBMITTED: 'TENDER_SUBMITTED',
       TENDER_SUBMITTED: 'TENDER_SUBMITTED',
       TECHNICAL_EVAL: 'TECHNICAL_EVALUATION',
       TECHNICAL_EVALUATION: 'TECHNICAL_EVALUATION',
-      TECHNICALLY_DISQUALIFIED: 'TECHNICALLY_DISQUALIFIED',
       COMMERCIAL_EVAL: 'COMMERCIAL_EVALUATION',
       COMMERCIAL_EVALUATION: 'COMMERCIAL_EVALUATION',
-      REVERSE_AUCTION: 'REVERSE_AUCTION',
       WON: 'WON',
-      PARTIALLY_WON: 'PARTIALLY_WON',
       LOST: 'LOST',
       CANCELLED: 'CANCELLED',
       ON_HOLD: 'ON_HOLD',
-      NOT_SUBMITTED: 'NOT_SUBMITTED',
+      // Pre-PRD codes (PQ_NOT_QUALIFIED, REVERSE_AUCTION, PARTIALLY_WON …) are rejected: migration 036 folded stored
+      // rows into PRD stages, and a retired code must never silently become another stage.
     };
 
     if (map[s]) return map[s];
@@ -80,18 +65,13 @@ export class TendersWorkflowService {
       UNDER_PREPARATION: 'under_preparation',
       PQ_SUBMITTED: 'pq_submitted',
       PQ_QUALIFIED: 'pq_qualified',
-      PQ_NOT_QUALIFIED: 'pq_not_qualified',
       TENDER_SUBMITTED: 'submitted',
       TECHNICAL_EVALUATION: 'technical_eval',
-      TECHNICALLY_DISQUALIFIED: 'technically_disqualified',
       COMMERCIAL_EVALUATION: 'commercial_eval',
-      REVERSE_AUCTION: 'reverse_auction',
       WON: 'won',
-      PARTIALLY_WON: 'partially_won',
       LOST: 'lost',
       CANCELLED: 'cancelled',
       ON_HOLD: 'on_hold',
-      NOT_SUBMITTED: 'not_submitted',
     };
     return map[s] || 'identified';
   }
@@ -108,114 +88,36 @@ export class TendersWorkflowService {
       UNDER_PREPARATION: 'Under Preparation',
       PQ_SUBMITTED: 'PQ Submitted',
       PQ_QUALIFIED: 'PQ Qualified',
-      PQ_NOT_QUALIFIED: 'PQ Not Qualified',
       TENDER_SUBMITTED: 'Tender Submitted',
       TECHNICAL_EVALUATION: 'Technical Evaluation',
-      TECHNICALLY_DISQUALIFIED: 'Technically Disqualified',
       COMMERCIAL_EVALUATION: 'Commercial Evaluation',
-      REVERSE_AUCTION: 'Reverse Auction',
       WON: 'Won',
-      PARTIALLY_WON: 'Partially Won',
       LOST: 'Lost',
       CANCELLED: 'Cancelled',
       ON_HOLD: 'On Hold',
-      NOT_SUBMITTED: 'Not Submitted',
     };
     return labels[norm] || norm;
   }
 
   /**
-   * Valid transition matrix as per Module 4 spec:
-   * From -> Allowed Target Statuses
+   * Valid transition matrix (PRD §22–23, MODULE_4 §2): From -> Allowed Target Statuses.
+   * Not qualifying at PQ or technical stage is recorded as Lost with an Eligibility / Technical reason; a bid Arihant
+   * drops is Cancelled. On Hold is the `on_hold` flag set by hold/resume, never a target here.
    */
   private readonly allowedTransitions: Record<StandardTenderStatus, StandardTenderStatus[]> = {
-    IDENTIFIED: [
-      'AWAITING_INTERNAL_APPROVAL',
-      'UNDER_PREPARATION',
-      'REJECTED_INTERNALLY',
-      'CANCELLED',
-    ],
-    AWAITING_INTERNAL_APPROVAL: [
-      'UNDER_PREPARATION',
-      'REJECTED_INTERNALLY',
-      'IDENTIFIED',
-      'CANCELLED',
-    ],
-    REJECTED_INTERNALLY: [
-      'AWAITING_INTERNAL_APPROVAL', // Resubmit for Approval creates round 2
-      'CANCELLED',
-    ],
-    UNDER_PREPARATION: [
-      'PQ_SUBMITTED',
-      'TENDER_SUBMITTED',
-      'NOT_SUBMITTED',
-      'ON_HOLD',
-      'CANCELLED',
-    ],
-    PQ_SUBMITTED: [
-      'PQ_QUALIFIED',
-      'PQ_NOT_QUALIFIED',
-      'LOST',
-      'ON_HOLD',
-      'CANCELLED',
-    ],
-    PQ_QUALIFIED: [
-      'TENDER_SUBMITTED',
-      'WON',
-      'ON_HOLD',
-      'CANCELLED',
-    ],
-    PQ_NOT_QUALIFIED: [], // Terminal; counted as Lost
-    TENDER_SUBMITTED: [
-      'TECHNICAL_EVALUATION',
-      'COMMERCIAL_EVALUATION',
-      'WON',
-      'PARTIALLY_WON',
-      'LOST',
-      'ON_HOLD',
-      'CANCELLED',
-    ],
-    TECHNICAL_EVALUATION: [
-      'COMMERCIAL_EVALUATION',
-      'TECHNICALLY_DISQUALIFIED',
-      'LOST',
-      'ON_HOLD',
-      'CANCELLED',
-    ],
-    TECHNICALLY_DISQUALIFIED: [], // Terminal; counted as Lost
-    COMMERCIAL_EVALUATION: [
-      'REVERSE_AUCTION',
-      'WON',
-      'PARTIALLY_WON',
-      'LOST',
-      'ON_HOLD',
-      'CANCELLED',
-    ],
-    REVERSE_AUCTION: [
-      'WON',
-      'PARTIALLY_WON',
-      'LOST',
-      'ON_HOLD',
-      'CANCELLED',
-    ],
-    WON: [], // Terminal
-    PARTIALLY_WON: [], // Terminal
-    LOST: [], // Terminal
-    CANCELLED: [], // Terminal
-    ON_HOLD: [
-      'IDENTIFIED',
-      'AWAITING_INTERNAL_APPROVAL',
-      'UNDER_PREPARATION',
-      'PQ_SUBMITTED',
-      'PQ_QUALIFIED',
-      'TENDER_SUBMITTED',
-      'TECHNICAL_EVALUATION',
-      'COMMERCIAL_EVALUATION',
-      'REVERSE_AUCTION',
-      'CANCELLED',
-      'NOT_SUBMITTED',
-    ],
-    NOT_SUBMITTED: [], // Terminal
+    IDENTIFIED: ['AWAITING_INTERNAL_APPROVAL', 'UNDER_PREPARATION', 'REJECTED_INTERNALLY', 'CANCELLED'],
+    AWAITING_INTERNAL_APPROVAL: ['UNDER_PREPARATION', 'REJECTED_INTERNALLY', 'IDENTIFIED', 'CANCELLED'],
+    REJECTED_INTERNALLY: ['AWAITING_INTERNAL_APPROVAL', 'CANCELLED'], // Re-submit for approval opens a new round
+    UNDER_PREPARATION: ['PQ_SUBMITTED', 'TENDER_SUBMITTED', 'CANCELLED'],
+    PQ_SUBMITTED: ['PQ_QUALIFIED', 'LOST', 'CANCELLED'],
+    PQ_QUALIFIED: ['UNDER_PREPARATION', 'TENDER_SUBMITTED', 'CANCELLED'],
+    TENDER_SUBMITTED: ['TECHNICAL_EVALUATION', 'COMMERCIAL_EVALUATION', 'WON', 'LOST', 'CANCELLED'],
+    TECHNICAL_EVALUATION: ['COMMERCIAL_EVALUATION', 'LOST', 'CANCELLED'],
+    COMMERCIAL_EVALUATION: ['WON', 'LOST', 'CANCELLED'],
+    WON: [],
+    LOST: [],
+    CANCELLED: [],
+    ON_HOLD: [],
   };
 
   /**
@@ -304,13 +206,11 @@ export class TendersWorkflowService {
 
     // Check transition matrix
     if (!this.canTransition(from, to)) {
-      if (options?.isRecordResultAction && (to === 'WON' || to === 'LOST' || to === 'PARTIALLY_WON')) {
+      if (options?.isRecordResultAction && (to === 'WON' || to === 'LOST')) {
         const evaluationStages: StandardTenderStatus[] = [
-          'PQ_QUALIFIED',
           'TENDER_SUBMITTED',
           'TECHNICAL_EVALUATION',
           'COMMERCIAL_EVALUATION',
-          'REVERSE_AUCTION',
         ];
         if (!evaluationStages.includes(from)) {
           throw new BadRequestException(
@@ -422,24 +322,11 @@ export class TendersWorkflowService {
       }
     }
 
-    // Rule: WON, PARTIALLY_WON, and LOST can only be set through Record Result form
-    if ((to === 'WON' || to === 'LOST' || to === 'PARTIALLY_WON') && !options?.isRecordResultAction) {
+    // Rule: WON and LOST can only be set through Record Result form (PRD §26 win/loss capture)
+    if ((to === 'WON' || to === 'LOST') && !options?.isRecordResultAction) {
       throw new BadRequestException(
         `Setting status to "${this.getStatusLabel(to)}" is only permitted through the "Record Result" form.`,
       );
-    }
-
-    // Rule: PQ not qualified moves to LOST with reason PQ_NOT_QUALIFIED
-    if (from === 'PQ_SUBMITTED' && to === 'LOST') {
-      const reasons = options?.loss_reasons || (options?.loss_reason ? [options.loss_reason] : []);
-      if (!reasons.includes('PQ_NOT_QUALIFIED') && !reasons.includes('ELIGIBILITY')) {
-        // Warning or assert
-      }
-    }
-
-    // Rule: Pure empanelment PQ can be WON from PQ_QUALIFIED
-    if (from === 'PQ_QUALIFIED' && to === 'WON') {
-      // Allowed for empanelment
     }
 
     return { from, to };

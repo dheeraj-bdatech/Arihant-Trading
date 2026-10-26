@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Transaction } from 'kysely';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Kysely, sql } from 'kysely';
+import { Kysely, sql, type RawBuilder } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
 import { AppEvents } from '../../common/events/event-names.js';
@@ -31,12 +31,53 @@ import type {
   UpdateLeadDto,
   ChangeLeadStatusDto,
   AssignLeadDto,
+  LeadFilterQueryDto,
+  LeadListQueryDto,
 } from './leads.dto.js';
+import { containsPattern } from '../../common/utils/like-pattern.js';
 
 /** Roles a lead may be owned by: the field sales team and Regional Managers (QA DEF-060). */
 const LEAD_OWNER_ROLES: UserRole[] = ['sales', 'regional_manager'];
 /** Closed lead statuses as a SQL text[] parameter (see CLOSED_LEAD_STATUSES). */
 const CLOSED_STATUS_LIST: string[] = [...CLOSED_LEAD_STATUSES];
+/** A lead's stage, lower-cased: `lead_status`, else the legacy `status`; a lead with neither is new. */
+const LEAD_STAGE = sql<string>`lower(coalesce(leads.lead_status, leads.status, 'new'))`;
+/** Open (not closed) leads — the active-lead definition behind the counts. */
+const LEAD_IS_OPEN = sql<boolean>`${LEAD_STAGE} <> all(${CLOSED_STATUS_LIST}::text[])`;
+/** Stages whose count folds in a legacy status, so filtering by the stage lists what its card counts. */
+const LEAD_STAGE_ALIASES: Record<string, string[]> = { converted: ['converted', 'won'], lost: ['lost', 'dropped'] };
+/** Follow-up filters answered from the follow-up queue: the due date of a pending follow-up versus today. */
+const FOLLOWUP_DUE_OPERATOR: Record<string, '=' | '<' | '>'> = { due_today: '=', overdue: '<', upcoming: '>' };
+
+/** A lead source as a slug: lower case, each run of other characters one underscore ('GeM / Direct' → gem_direct). */
+const sourceSlug = (source: string) => source.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+const LEAD_SOURCE_SLUG = sql<string>`trim(both '_' from regexp_replace(lower(leads.source), '[^a-z0-9]+', '_', 'g'))`;
+
+/** A filter dimension a KPI count represents (and so ignores, see filteredLeadsQuery). */
+type LeadFilterDimension = 'status' | 'lead_type' | 'followup';
+
+/** The lead is in this stage (aliases included). */
+const leadStatusIs = (status: string) => {
+  const target = status.toLowerCase();
+  return sql<boolean>`${LEAD_STAGE} = any(${LEAD_STAGE_ALIASES[target] ?? [target]}::text[])`;
+};
+
+/** The lead is of this type; a lead without one is fresh. */
+const leadTypeIs = (type: string) => sql<boolean>`coalesce(leads.lead_type, 'fresh') = ${type}`;
+
+/**
+ * Follow-up status of a lead, from the follow-up queue (Module 1 §7: pending follow-ups, overdue once past their due
+ * date). due_today / overdue / upcoming count open leads only; no_followup is a lead with no pending follow-up.
+ */
+const leadFollowupIs = (followup: string, today: string) => {
+  if (followup === 'no_followup') {
+    return sql<boolean>`not exists (select 1 from follow_ups fu where fu.lead_id = leads.id and fu.status = 'pending')`;
+  }
+  const op = FOLLOWUP_DUE_OPERATOR[followup];
+  if (!op) return null;
+  return sql<boolean>`(${LEAD_IS_OPEN} and exists (select 1 from follow_ups fu where fu.lead_id = leads.id and fu.status = 'pending' and fu.due_date ${sql.raw(op)} ${today}::date))`;
+};
+
 /** Roles that may supervise a lead as its Regional Manager. */
 const LEAD_RM_ROLES: UserRole[] = ['regional_manager', 'management'];
 /** A double-submitted form arrives within this window; the second request returns the lead the first one created. */
@@ -54,31 +95,12 @@ export class LeadsService {
     private readonly workflowService: LeadWorkflowService,
   ) {}
 
-  async findAll(
-    query: {
-      page?: number;
-      limit?: number;
-      search?: string;
-      lead_status?: string;
-      lead_type?: string;
-      status?: string;
-      category?: string;
-      probability?: string;
-      assigned_to?: string;
-      regional_manager_id?: string;
-      organisation_id?: string;
-      sector?: string;
-      zone_id?: string;
-      region_id?: string;
-      followup?: 'due_today' | 'overdue' | 'upcoming' | 'no_followup';
-      sort_by?: 'next_followup' | 'last_interaction' | 'created_at' | 'organisation';
-      sort_dir?: 'asc' | 'desc';
-    },
-    user: AuthUser,
-  ): Promise<PaginatedResult<any>> {
-    const { page, limit, offset } = getPaginationParams(query);
-    const today = todayInKolkata();
-
+  /**
+   * The lead register query: role territory scope plus every active filter. The list and its KPI counts
+   * (getDashboard) both start here, so a card always counts what clicking it lists. `omit` drops the one filter
+   * dimension a count represents (status counts ignore the status filter, so picking one stage keeps the others).
+   */
+  private filteredLeadsQuery(query: LeadFilterQueryDto, user: AuthUser, omit?: LeadFilterDimension) {
     let baseQuery = this.db
       .selectFrom('leads')
       .innerJoin('organisations', 'leads.organisation_id', 'organisations.id')
@@ -106,7 +128,7 @@ export class LeadsService {
     }
 
     if (query.search) {
-      const s = `%${query.search.toLowerCase()}%`;
+      const s = containsPattern(query.search);
       baseQuery = baseQuery.where((eb) =>
         eb.or([
           sql<boolean>`lower(organisations.name) like ${s}`,
@@ -122,20 +144,13 @@ export class LeadsService {
       );
     }
 
-    if (query.lead_status) {
-      const target = query.lead_status.toLowerCase();
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          sql<boolean>`lower(coalesce(leads.lead_status, '')) = ${target}`,
-          sql<boolean>`lower(coalesce(leads.status, '')) = ${target}`,
-        ]),
-      );
-    } else if (query.status) {
-      baseQuery = baseQuery.where('leads.status', '=', query.status);
+    const statusTarget = query.lead_status || query.status;
+    if (statusTarget && omit !== 'status') {
+      baseQuery = baseQuery.where(leadStatusIs(statusTarget));
     }
 
-    if (query.lead_type) {
-      baseQuery = baseQuery.where('leads.lead_type', '=', query.lead_type as any);
+    if (query.lead_type && omit !== 'lead_type') {
+      baseQuery = baseQuery.where(leadTypeIs(query.lead_type));
     }
 
     if (query.category) {
@@ -144,6 +159,11 @@ export class LeadsService {
 
     if (query.probability) {
       baseQuery = baseQuery.where('leads.probability', '=', query.probability as any);
+    }
+
+    // Sources are matched as slugs, so legacy labels ('Field Visit', 'GeM / Direct') match field_visit / gem_direct
+    if (query.source) {
+      baseQuery = baseQuery.where(sql<boolean>`${LEAD_SOURCE_SLUG} = ${sourceSlug(query.source)}`);
     }
 
     if (query.assigned_to) {
@@ -170,31 +190,17 @@ export class LeadsService {
       baseQuery = baseQuery.where('organisations.region_id', '=', query.region_id);
     }
 
-    // Follow-up status filter
-    if (query.followup === 'due_today') {
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          sql<boolean>`(leads.next_followup_at AT TIME ZONE 'Asia/Kolkata')::date = ${today}::date`,
-          sql<boolean>`leads.next_followup_date = ${today}`,
-        ]),
-      );
-    } else if (query.followup === 'overdue') {
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          sql<boolean>`(leads.next_followup_at AT TIME ZONE 'Asia/Kolkata')::date < ${today}::date`,
-          sql<boolean>`leads.next_followup_date < ${today}`,
-        ]),
-      );
-    } else if (query.followup === 'upcoming') {
-      baseQuery = baseQuery.where((eb) =>
-        eb.or([
-          sql<boolean>`(leads.next_followup_at AT TIME ZONE 'Asia/Kolkata')::date > ${today}::date`,
-          sql<boolean>`leads.next_followup_date > ${today}`,
-        ]),
-      );
-    } else if (query.followup === 'no_followup') {
-      baseQuery = baseQuery.where('leads.next_followup_at', 'is', null).where('leads.next_followup_date', 'is', null);
+    if (query.followup && omit !== 'followup') {
+      const condition = leadFollowupIs(query.followup, todayInKolkata());
+      if (condition) baseQuery = baseQuery.where(condition);
     }
+
+    return baseQuery;
+  }
+
+  async findAll(query: LeadListQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams(query);
+    const baseQuery = this.filteredLeadsQuery(query, user);
 
     const countRes = await baseQuery
       .select(sql<number>`count(leads.id)::int`.as('total'))
@@ -1425,73 +1431,52 @@ export class LeadsService {
     return { success: true };
   }
 
-  async getDashboard(user: AuthUser) {
-    let baseLeads = this.db
-      .selectFrom('leads')
-      .leftJoin('organisations', 'leads.organisation_id', 'organisations.id')
-      .leftJoin('users as assignee', 'leads.assigned_to', 'assignee.id');
-
-    if (user.role === 'sales') {
-      baseLeads = baseLeads.where('leads.assigned_to', '=', user.id);
-    } else if (user.role === 'regional_manager' && user.region_id) {
-      baseLeads = baseLeads.where((eb) =>
-        eb.or([
-          eb('organisations.region_id', '=', user.region_id),
-          eb('leads.regional_manager_id', '=', user.id),
-          eb('leads.assigned_to', '=', user.id),
-          eb('assignee.reporting_manager_id', '=', user.id),
-        ]),
-      );
-    }
-
+  /**
+   * Lead KPI counts under the register's filters (the same query as findAll). Each count ignores only the filter
+   * dimension it represents: stage counts ignore the stage filter, fresh / re-approached the type filter, follow-up
+   * counts the follow-up filter. Totals and pipeline value apply every filter, so total_leads equals the list total.
+   */
+  async getDashboard(query: LeadFilterQueryDto, user: AuthUser) {
     const today = todayInKolkata();
+    const countWhere = (condition: RawBuilder<boolean>) => sql<number>`count(case when ${condition} then 1 end)::int`;
 
-    const stats = await baseLeads
-      .select([
-        sql<number>`count(leads.id)::int`.as('total_leads'),
-        sql<number>`count(case when coalesce(leads.lead_type, 'fresh') = 'fresh' then 1 end)::int`.as('fresh_leads'),
-        sql<number>`count(case when leads.lead_type = 're_approached' then 1 end)::int`.as('re_approached_leads'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status, 'new')) = 'new' then 1 end)::int`.as('new_leads'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'contacted' then 1 end)::int`.as('contacted'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'qualified' then 1 end)::int`.as('qualified'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'follow_up' then 1 end)::int`.as('follow_up'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'demo' then 1 end)::int`.as('demo'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'proposal' then 1 end)::int`.as('proposal'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'tender_discussion' then 1 end)::int`.as('tender_discussion'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'negotiation' then 1 end)::int`.as('negotiation'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) in ('converted', 'won') then 1 end)::int`.as('converted'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) in ('lost', 'dropped') then 1 end)::int`.as('lost'),
-        sql<number>`count(case when lower(coalesce(leads.lead_status, leads.status)) = 'on_hold' then 1 end)::int`.as('on_hold'),
-        sql<number>`coalesce(sum(leads.value_lakh), 0)::float`.as('pipeline_value_lakh'),
-      ])
-      .executeTakeFirst();
-
-    // Follow-ups summary
-    let followUpQuery = this.db
-      .selectFrom('follow_ups')
-      .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id')
-      .leftJoin('users as assignee', 'follow_ups.assigned_to', 'assignee.id');
-
-    if (user.role === 'sales') {
-      followUpQuery = followUpQuery.where('follow_ups.assigned_to', '=', user.id);
-    } else if (user.role === 'regional_manager' && user.region_id) {
-      followUpQuery = followUpQuery.where((eb) =>
-        eb.or([
-          eb('organisations.region_id', '=', user.region_id),
-          eb('follow_ups.assigned_to', '=', user.id),
-          eb('assignee.reporting_manager_id', '=', user.id),
-        ]),
-      );
-    }
-
-    const followUpStats = await followUpQuery
-      .select([
-        sql<number>`count(case when follow_ups.status = 'pending' and follow_ups.due_date = ${today}::date then 1 end)::int`.as('due_today'),
-        sql<number>`count(case when follow_ups.status = 'pending' and follow_ups.due_date < ${today}::date then 1 end)::int`.as('overdue'),
-        sql<number>`count(case when follow_ups.status = 'pending' and follow_ups.due_date > ${today}::date then 1 end)::int`.as('upcoming'),
-        sql<number>`count(case when follow_ups.status = 'completed' then 1 end)::int`.as('completed'),
-      ])
-      .executeTakeFirst();
+    const [totals, typeStats, stats, leadFollowUps] = await Promise.all([
+      this.filteredLeadsQuery(query, user)
+        .select([
+          sql<number>`count(leads.id)::int`.as('total_leads'),
+          sql<number>`coalesce(sum(leads.value_lakh), 0)::float`.as('pipeline_value_lakh'),
+        ])
+        .executeTakeFirst(),
+      this.filteredLeadsQuery(query, user, 'lead_type')
+        .select([
+          countWhere(leadTypeIs('fresh')).as('fresh_leads'),
+          countWhere(leadTypeIs('re_approached')).as('re_approached_leads'),
+        ])
+        .executeTakeFirst(),
+      this.filteredLeadsQuery(query, user, 'status')
+        .select([
+          countWhere(LEAD_IS_OPEN).as('active_leads'),
+          countWhere(leadStatusIs('new')).as('new_leads'),
+          countWhere(leadStatusIs('contacted')).as('contacted'),
+          countWhere(leadStatusIs('qualified')).as('qualified'),
+          countWhere(leadStatusIs('follow_up')).as('follow_up'),
+          countWhere(leadStatusIs('demo')).as('demo'),
+          countWhere(leadStatusIs('proposal')).as('proposal'),
+          countWhere(leadStatusIs('tender_discussion')).as('tender_discussion'),
+          countWhere(leadStatusIs('negotiation')).as('negotiation'),
+          countWhere(leadStatusIs('converted')).as('converted'),
+          countWhere(leadStatusIs('lost')).as('lost'),
+          countWhere(leadStatusIs('on_hold')).as('on_hold'),
+        ])
+        .executeTakeFirst(),
+      this.filteredLeadsQuery(query, user, 'followup')
+        .select([
+          countWhere(leadFollowupIs('due_today', today)!).as('due_today'),
+          countWhere(leadFollowupIs('overdue', today)!).as('overdue'),
+          countWhere(leadFollowupIs('upcoming', today)!).as('upcoming'),
+        ])
+        .executeTakeFirst(),
+    ]);
 
     // Customer accounts count — the same territorial scope as the Customer Register list (QA DEF-034)
     let orgQuery = this.db.selectFrom('organisations').where('organisations.id', '<>', '00000000-0000-4000-8000-0000000000a1');
@@ -1504,18 +1489,18 @@ export class LeadsService {
       .executeTakeFirst();
     const totalCustomers = Number(orgStats?.total_customers) || 0;
 
-    const totalLeads = Number(stats?.total_leads) || 0;
-    const freshLeads = Number(stats?.fresh_leads) || 0;
-    const reApproachedLeads = Number(stats?.re_approached_leads) || 0;
+    const totalLeads = Number(totals?.total_leads) || 0;
+    const freshLeads = Number(typeStats?.fresh_leads) || 0;
+    const reApproachedLeads = Number(typeStats?.re_approached_leads) || 0;
     const convertedLeads = Number(stats?.converted) || 0;
     const lostLeads = Number(stats?.lost) || 0;
-    const activeLeads = Math.max(0, totalLeads - convertedLeads - lostLeads);
-    const pipelineValueLakh = Math.round((Number(stats?.pipeline_value_lakh) || 0) * 100) / 100;
+    const activeLeads = Number(stats?.active_leads) || 0;
+    const pipelineValueLakh = Math.round((Number(totals?.pipeline_value_lakh) || 0) * 100) / 100;
 
-    const dueToday = Number(followUpStats?.due_today) || 0;
-    const overdue = Number(followUpStats?.overdue) || 0;
-    const upcoming = Number(followUpStats?.upcoming) || 0;
-    const completed = Number(followUpStats?.completed) || 0;
+    // Leads with a pending follow-up in the queue — the same definition as the `followup` list filter
+    const dueToday = Number(leadFollowUps?.due_today) || 0;
+    const overdue = Number(leadFollowUps?.overdue) || 0;
+    const upcoming = Number(leadFollowUps?.upcoming) || 0;
 
     return {
       // Top-level counts for direct card bindings (both snake_case and camelCase)
@@ -1567,7 +1552,6 @@ export class LeadsService {
           dueToday,
           overdue,
           upcoming,
-          completed,
         },
       },
     };

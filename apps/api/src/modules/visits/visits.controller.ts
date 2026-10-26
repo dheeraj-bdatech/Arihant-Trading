@@ -86,6 +86,29 @@ export class VisitsController {
   }
 
   // -----------------------------------------------------------
+  // VISITS: KPI counts over the same scope and filters as the list
+  // -----------------------------------------------------------
+  @Get('stats')
+  @Roles('management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin')
+  async getStats(
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('assigned_to') assigned_to?: string,
+    @Query('organisation_id') organisation_id?: string,
+    @Query('trip_id') trip_id?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('travel_required') travel_required?: boolean | string,
+    @Query('demo_required') demo_required?: boolean | string,
+    @CurrentUser() user?: AuthUser,
+  ) {
+    return this.visitsService.getStats(
+      { search, status, assigned_to, organisation_id, trip_id, dateFrom, dateTo, travel_required, demo_required },
+      user!,
+    );
+  }
+
+  // -----------------------------------------------------------
   // UPCOMING FIELD ACTIVITY (Manager Dashboard / Team View)
   // -----------------------------------------------------------
   @Get('upcoming')

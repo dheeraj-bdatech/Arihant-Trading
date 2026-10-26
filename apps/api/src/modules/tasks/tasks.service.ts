@@ -680,7 +680,7 @@ export class TasksService {
           .limit(25);
         if (id) q = q.where('id', '=', id);
         else {
-          q = q.where('status', 'not in', ['lost', 'cancelled', 'rejected_internally', 'not_submitted', 'technically_disqualified', 'pq_not_qualified'] as any);
+          q = q.where('status', 'not in', ['lost', 'cancelled', 'rejected_internally'] as any);
           if (search) q = q.where(sql<boolean>`(lower(coalesce(tender_no, '')) like ${like} or lower(coalesce(organisation, '')) like ${like})`);
         }
         return q.execute();

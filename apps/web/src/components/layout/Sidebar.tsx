@@ -28,6 +28,7 @@ import {
   Users,
   MessageSquarePlus,
   TrendingUp,
+  History,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -547,6 +548,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               badgeVariant: 'urgent',
             },
             {
+              label: 'Audit Logs',
+              href: '/audit',
+              icon: History,
+              moduleKey: 'admin',
+              badge: '§47',
+              badgeVariant: 'cyber',
+            },
+            {
               label: 'Consolidated Audit Reports',
               href: '/reports',
               icon: FileSpreadsheet,
@@ -770,6 +779,14 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               href: '/tasks',
               icon: CheckSquare,
               moduleKey: 'tasks',
+            },
+            {
+              label: 'Audit Logs',
+              href: '/audit',
+              icon: History,
+              moduleKey: 'admin',
+              badge: '§47',
+              badgeVariant: 'cyber',
             },
             {
               label: 'Administration & Masters',

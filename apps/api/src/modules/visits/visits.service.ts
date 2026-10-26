@@ -9,7 +9,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Kysely, sql } from 'kysely';
+import { Kysely, sql, type Expression, type SqlBool } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { AppEvents } from '../../common/events/event-names.js';
@@ -28,6 +28,21 @@ import type {
   CreateTripDto,
   AddVisitToTripDto,
 } from './visits.dto.js';
+import { containsPattern } from '../../common/utils/like-pattern.js';
+
+/** The visit register's filters (query string of GET /visits and GET /visits/stats). */
+export type VisitListFilters = {
+  search?: string;
+  /** A visit status, or the pseudo-statuses 'open' / 'overdue'. */
+  status?: string;
+  assigned_to?: string;
+  organisation_id?: string;
+  trip_id?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  travel_required?: boolean | string;
+  demo_required?: boolean | string;
+};
 
 /** Visit statuses that still expect the field report (the meeting has not been reported or called off). */
 const REPORT_PENDING_STATUSES = ['planned', 'modified', 'rescheduled'] as const;
@@ -300,37 +315,18 @@ export class VisitsService {
   }
 
   // -------------------------------------------------------------
-  // FIND ALL VISITS (Paginated, Filtered, Role Scoped)
+  // VISIT LIST FILTERS (shared by the list and its KPI counts)
   // -------------------------------------------------------------
-  async findAll(
-    query: {
-      page?: number;
-      limit?: number;
-      search?: string;
-      status?: string;
-      assigned_to?: string;
-      organisation_id?: string;
-      trip_id?: string;
-      dateFrom?: string;
-      dateTo?: string;
-      travel_required?: boolean | string;
-      demo_required?: boolean | string;
-    },
-    user: AuthUser,
-  ): Promise<PaginatedResult<any>> {
-    const { page, limit, offset } = getPaginationParams(query);
-
+  /**
+   * The visit register's role scope plus its filters. The list and /visits/stats both start here, so a KPI
+   * card and the list it filters always count the same rows. Pseudo-statuses: 'open' = still to be visited /
+   * reported (planned, modified, rescheduled); 'overdue' = open and the visit day (IST) has passed.
+   */
+  private visitListQuery(query: VisitListFilters, user: AuthUser) {
     let baseQuery = this.db
       .selectFrom('visits')
       .innerJoin('organisations', 'visits.organisation_id', 'organisations.id')
-      .leftJoin('products', 'visits.product_id', 'products.id')
-      .leftJoin('contacts', 'visits.contact_id', 'contacts.id')
-      .leftJoin('trips', 'visits.trip_id', 'trips.id')
-      .leftJoin('users as assignee', 'visits.assigned_to', 'assignee.id')
-      .leftJoin('users as planner', 'visits.planned_by', 'planner.id')
-      .leftJoin('users as manager', 'visits.assigned_by_manager', 'manager.id')
-      .leftJoin('users as serviceEngineer', 'visits.service_engineer_id', 'serviceEngineer.id')
-      .leftJoin('demos', 'demos.visit_id', 'visits.id');
+      .leftJoin('users as assignee', 'visits.assigned_to', 'assignee.id');
 
     if (user.role === 'sales' || user.role === 'demo_team') {
       baseQuery = baseQuery.where('visits.assigned_to', '=', user.id);
@@ -354,6 +350,8 @@ export class VisitsService {
       baseQuery = baseQuery
         .where('visits.status', 'in', [...REPORT_PENDING_STATUSES])
         .where('visits.planned_date', '<', todayInKolkata());
+    } else if (query.status === 'open') {
+      baseQuery = baseQuery.where('visits.status', 'in', [...REPORT_PENDING_STATUSES]);
     } else if (query.status) {
       baseQuery = baseQuery.where('visits.status', '=', query.status as any);
     }
@@ -389,7 +387,7 @@ export class VisitsService {
     }
 
     if (query.search) {
-      const s = `%${query.search.toLowerCase()}%`;
+      const s = containsPattern(query.search);
       baseQuery = baseQuery.where((eb) =>
         eb.or([
           sql<boolean>`lower(organisations.name) like ${s}`,
@@ -400,10 +398,63 @@ export class VisitsService {
       );
     }
 
-    const countRes = await baseQuery
-      .select(sql<number>`count(visits.id)::int`.as('total'))
-      .executeTakeFirst();
-    const total = countRes?.total || 0;
+    return baseQuery;
+  }
+
+  /** Visits matching the list filters (plus an optional extra condition), counted once each. */
+  private async countVisits(query: VisitListFilters, user: AuthUser, extra?: Expression<SqlBool>): Promise<number> {
+    let q = this.visitListQuery(query, user);
+    if (extra) q = q.where(extra);
+    const row = await q.select(sql<number>`count(distinct visits.id)::int`.as('total')).executeTakeFirst();
+    return row?.total || 0;
+  }
+
+  // -------------------------------------------------------------
+  // VISIT KPIs (same scope and filters as the list)
+  // -------------------------------------------------------------
+  /**
+   * KPI counts for the visit register. Each count applies every active list filter except the dimension it
+   * stands for, so clicking a card (which sets that dimension) lists exactly that many visits:
+   *  - total / directives / upcoming: all filters
+   *  - today: open visits planned for today (IST) — replaces the status and date filters
+   *  - completed / overdue: replace the status filter
+   */
+  async getStats(query: VisitListFilters, user: AuthUser) {
+    const today = todayInKolkata();
+    const pending = [...REPORT_PENDING_STATUSES];
+    const [total, todayCount, completed, overdue, directives, upcoming] = await Promise.all([
+      this.countVisits(query, user),
+      this.countVisits({ ...query, status: 'open', dateFrom: today, dateTo: today }, user),
+      this.countVisits({ ...query, status: 'completed' }, user),
+      this.countVisits({ ...query, status: 'overdue' }, user),
+      // Also-meet / manager directive (same test the page used on each row)
+      this.countVisits(
+        query,
+        user,
+        sql<SqlBool>`(visits.manager_assigned = true or visits.assigned_by_manager is not null
+          or visits.remarks like '%Manager Directive%' or visits.remarks like '%Manager Intervention%')`,
+      ),
+      this.countVisits(query, user, sql<SqlBool>`(visits.status in (${sql.join(pending)}) and visits.planned_date >= ${today}::date)`),
+    ]);
+    return { total, today: todayCount, completed, overdue, directives, upcoming, today_date: today };
+  }
+
+  // -------------------------------------------------------------
+  // FIND ALL VISITS (Paginated, Filtered, Role Scoped)
+  // -------------------------------------------------------------
+  async findAll(query: VisitListFilters & { page?: number; limit?: number }, user: AuthUser): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams(query);
+
+    const total = await this.countVisits(query, user);
+
+    const baseQuery = this.visitListQuery(query, user)
+      .leftJoin('products', 'visits.product_id', 'products.id')
+      .leftJoin('contacts', 'visits.contact_id', 'contacts.id')
+      .leftJoin('trips', 'visits.trip_id', 'trips.id')
+      .leftJoin('users as planner', 'visits.planned_by', 'planner.id')
+      .leftJoin('users as manager', 'visits.assigned_by_manager', 'manager.id')
+      .leftJoin('users as serviceEngineer', 'visits.service_engineer_id', 'serviceEngineer.id')
+      .leftJoin('demos', 'demos.visit_id', 'visits.id');
 
     const visits = await baseQuery
       .select([
@@ -1674,7 +1725,7 @@ export class VisitsService {
       baseQuery = baseQuery.where('visits.organisation_id', '=', query.organisation_id);
     }
     if (query.location) {
-      const loc = `%${query.location.toLowerCase()}%`;
+      const loc = containsPattern(query.location);
       baseQuery = baseQuery.where(sql<boolean>`lower(visits.location) like ${loc}`);
     }
     if (query.status === 'overdue') {
@@ -1682,6 +1733,8 @@ export class VisitsService {
       baseQuery = baseQuery
         .where('visits.status', 'in', [...REPORT_PENDING_STATUSES])
         .where('visits.planned_date', '<', today);
+    } else if (query.status === 'open') {
+      baseQuery = baseQuery.where('visits.status', 'in', [...REPORT_PENDING_STATUSES]);
     } else if (query.status) {
       baseQuery = baseQuery.where('visits.status', '=', query.status as any);
     }

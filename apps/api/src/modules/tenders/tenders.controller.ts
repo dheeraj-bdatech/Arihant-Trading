@@ -255,8 +255,9 @@ export class TendersController {
 
   @Get('dashboard')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
-  async getDashboard(@CurrentUser() user: AuthUser) {
-    return this.tendersService.getDashboard(user);
+  async getDashboard(@Query() query: TenderQueryDto, @CurrentUser() user: AuthUser) {
+    // Same filter query as GET /tenders, so the register KPIs follow the active filters.
+    return this.tendersService.getDashboard(user, query);
   }
 
   @Get('approvals-inbox')

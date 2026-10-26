@@ -1048,6 +1048,8 @@ export interface ProposalSettingsTable {
   reopen_window_days: Generated<number>;
   allow_self_approval: Generated<boolean>;
   allow_fast_track: Generated<boolean>;
+  /** Quoted value (₹) at or above which Management approves; below it the region's Regional Manager does. */
+  management_approval_threshold: ColumnType<string, number | string | undefined, number | string>;
   digest_time: Generated<string>;
   proposal_number_format: Generated<string>;
   lost_reason_codes: Generated<any>;

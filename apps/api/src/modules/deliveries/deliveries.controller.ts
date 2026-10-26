@@ -26,10 +26,10 @@ import type { AuthUser } from '@arihant/shared';
 export class DeliveriesController {
   constructor(private readonly deliveriesService: DeliveriesService) {}
 
+  /** KPI counts for the register: takes the list's filters and role scope (anyone who can list can count). */
   @Get('metrics')
-  @Roles('management', 'regional_manager', 'admin', 'service_team', 'demo_team')
-  async getMetrics(@CurrentUser() user: AuthUser) {
-    return this.deliveriesService.getDeliveryMetrics(user);
+  async getMetrics(@Query() query: DeliveryQueryDto, @CurrentUser() user: AuthUser) {
+    return this.deliveriesService.getDeliveryMetrics(user, query);
   }
 
   @Get()

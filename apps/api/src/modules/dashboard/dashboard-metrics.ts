@@ -34,9 +34,9 @@ export const LEAD_VALUE = sql`greatest(coalesce(l.value_lakh, 0), 0)`;
 
 /* ---------------------------------------------------------------- tenders -- */
 /** Decided or abandoned bids: no deadline left to chase, not counted as live. */
-export const TENDER_DONE = ['won', 'lost', 'cancelled', 'not_submitted', 'rejected_internally', 'partially_won', 'technically_disqualified', 'pq_not_qualified'];
+export const TENDER_DONE = ['won', 'lost', 'cancelled', 'rejected_internally'];
 /** A deadline is only something to chase until the bid is in: done tenders plus bids already submitted. */
-export const TENDER_NOT_CHASING = [...TENDER_DONE, 'submitted', 'technical_eval', 'commercial_eval', 'reverse_auction'];
+export const TENDER_NOT_CHASING = [...TENDER_DONE, 'submitted', 'technical_eval', 'commercial_eval'];
 export const TENDER_DEADLINE = sql`coalesce(t.submission_deadline, t.bid_closing_date)`;
 export const TENDER_ROW = sql`coalesce(t.is_deleted, false) = false`;
 export const TENDER_CHASING = sql`t.status <> all(${TENDER_NOT_CHASING}::text[])`;

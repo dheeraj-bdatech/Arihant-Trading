@@ -10,7 +10,7 @@ import { TASK_DB } from './task-db.js';
 import { TaskAccessService } from './task-access.service.js';
 import { readBool, readText, readUuid, readUuidList, type FieldErrors } from './task-common.js';
 
-export const CLOSED_TENDER_STATUSES = ['lost', 'cancelled', 'rejected_internally', 'not_submitted', 'technically_disqualified', 'pq_not_qualified'];
+export const CLOSED_TENDER_STATUSES = ['lost', 'cancelled', 'rejected_internally'];
 export const CLOSED_SERVICE_STATUSES = ['closed', 'cancelled'];
 
 export interface TaskLinks {

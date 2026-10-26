@@ -47,7 +47,7 @@ import {
   Award,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { formatINR, formatTaskDate, formatTaskDateTime } from '@arihant/shared';
+import { formatINR, formatTaskDate, formatTaskDateTime, TENDER_STATUS_LABELS } from '@arihant/shared';
 import { istToday, istNowLocalInput, fromIstLocalInput, toIstLocalInput } from '@/lib/ist-date';
 
 /** Server-computed submission readiness (GET /tenders/:id → document_readiness). */
@@ -63,11 +63,131 @@ interface DocumentReadiness {
 
 const SUBMISSION_STAGES = ['submitted', 'pq_submitted'];
 /** Closed stages: the BOQ, deadline countdown and lifecycle are frozen (mirrors the API's terminal statuses). */
-const CLOSED_STAGES = ['won', 'partially_won', 'lost', 'cancelled', 'rejected_internally', 'pq_not_qualified', 'technically_disqualified', 'not_submitted'];
+const CLOSED_STAGES = ['won', 'lost', 'cancelled', 'rejected_internally'];
 /** Stages where the submission deadline still drives a live countdown (the bid has not gone in yet). */
 const PRE_SUBMISSION_STAGES = ['identified', 'awaiting_approval', 'under_preparation', 'pq_qualified', 'on_hold'];
 /** Lifecycle cards that declare a verdict: the API only accepts these through the Record outcome form. */
-const RESULT_TARGETS = ['won', 'lost', 'partially_won'];
+const RESULT_TARGETS = ['won', 'lost'];
+/** Stages with something to link (shown on Overview): a Sales Order from an award, a General tender from a PQ qualification. */
+const LINKABLE_STAGES = ['won', 'pq_qualified'];
+/** Lifecycle card that lifts a hold (POST /resume restores the stage the tender was held at). */
+const RESUME_TARGET = 'resume';
+
+type DossierTransition = {
+  status: string;
+  label: string;
+  variant: 'primary' | 'secondary' | 'success' | 'warning' | 'danger';
+  description: string;
+  defaultRemarks: string;
+};
+
+/** PRD §22 tracker: Identified → Submitted for Internal Review → Approved / Rejected → Tender Preparation → Submitted → Result Tracking. */
+const PRD_STEPS: { label: string; reachedAt: string[] }[] = [
+  { label: '1. Tender Identified', reachedAt: ['identified', 'awaiting_approval', 'rejected_internally', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'] },
+  { label: '2. Internal Review', reachedAt: ['awaiting_approval', 'rejected_internally', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'] },
+  { label: '3. Approved / Rejected', reachedAt: ['rejected_internally', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'] },
+  { label: '4. Tender Preparation', reachedAt: ['under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'] },
+  { label: '5. Submitted', reachedAt: ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'] },
+  { label: '6. Result Tracking', reachedAt: ['technical_eval', 'commercial_eval', 'won', 'lost'] },
+];
+
+const HOLD: DossierTransition = {
+  status: 'on_hold',
+  label: 'Put On Hold',
+  variant: 'warning',
+  description: 'Freeze the tender at this stage (corrigendum, court stay, budget freeze). Resume returns it here.',
+  defaultRemarks: 'Put on hold pending clarifications.',
+};
+const CANCEL: DossierTransition = {
+  status: 'cancelled',
+  label: 'Cancelled',
+  variant: 'danger',
+  description: 'Buyer cancelled the procurement, or Arihant formally dropped the tender.',
+  defaultRemarks: 'Tender cancelled.',
+};
+const RESULT_WON: DossierTransition = {
+  status: 'won',
+  label: 'Result: Won',
+  variant: 'success',
+  description: 'Record the award: product, region, responsible person, category, result date and value (PRD §26).',
+  defaultRemarks: '',
+};
+const RESULT_LOST: DossierTransition = {
+  status: 'lost',
+  label: 'Result: Lost',
+  variant: 'danger',
+  description: 'Record why: pricing, technical, eligibility, documentation, competitor or other (PRD §26).',
+  defaultRemarks: '',
+};
+
+/**
+ * Next stages offered from each PRD §23 stage (mirrors the API state machine in tenders.workflow.ts).
+ * A held tender keeps its stage; the only moves are Resume and Cancelled.
+ */
+function prdTransitions(status: string, category: string, onHold: boolean): DossierTransition[] {
+  if (onHold) {
+    return [
+      { status: RESUME_TARGET, label: 'Resume', variant: 'primary', description: 'Lift the hold and continue from the stage the tender was held at.', defaultRemarks: '' },
+      CANCEL,
+    ];
+  }
+  const isPq = (category || '').toLowerCase().includes('pq');
+  switch ((status || '').toLowerCase()) {
+    case 'identified':
+      return [
+        { status: 'awaiting_approval', label: 'Submit for Internal Review', variant: 'primary', description: 'Send to the authorised person (Management) for an approve / reject decision.', defaultRemarks: 'Submitted for internal review.' },
+        HOLD,
+        CANCEL,
+      ];
+    case 'rejected_internally':
+      return [
+        { status: 'awaiting_approval', label: 'Re-submit for Internal Review', variant: 'primary', description: 'Clarified; ask the authorised person to decide again (new approval round).', defaultRemarks: 'Re-submitted for internal review with clarifications.' },
+        CANCEL,
+      ];
+    case 'under_preparation':
+      return [
+        isPq
+          ? { status: 'pq_submitted', label: 'PQ Submitted', variant: 'primary', description: 'Pre-qualification documents submitted on the portal.', defaultRemarks: 'PQ submitted on the portal.' }
+          : { status: 'submitted', label: 'Tender Submitted', variant: 'primary', description: 'Tender submitted on the portal before the submission deadline.', defaultRemarks: 'Tender submitted on the portal.' },
+        HOLD,
+        CANCEL,
+      ];
+    case 'pq_submitted':
+      return [
+        { status: 'pq_qualified', label: 'PQ Qualified', variant: 'success', description: 'Buyer qualified Arihant at the pre-qualification stage.', defaultRemarks: 'Arihant qualified at PQ.' },
+        { ...RESULT_LOST, description: 'Not qualified at PQ: record it as Lost with reason Eligibility (PRD §26).' },
+        HOLD,
+        CANCEL,
+      ];
+    case 'pq_qualified':
+      return [
+        { status: 'submitted', label: 'Tender Submitted', variant: 'primary', description: 'Main tender submitted on the portal after PQ clearance.', defaultRemarks: 'Tender submitted on the portal after PQ.' },
+        { status: 'under_preparation', label: 'Back to Tender Preparation', variant: 'secondary', description: 'Prepare the main tender documents after PQ clearance.', defaultRemarks: 'Preparing the main tender after PQ.' },
+        HOLD,
+        CANCEL,
+      ];
+    case 'submitted':
+      return [
+        { status: 'technical_eval', label: 'Technical Evaluation', variant: 'primary', description: 'Buyer opened the technical bid.', defaultRemarks: 'Technical evaluation started by the buyer.' },
+        { status: 'commercial_eval', label: 'Commercial Evaluation', variant: 'secondary', description: 'Buyer opened the price bid directly.', defaultRemarks: 'Commercial evaluation started by the buyer.' },
+        RESULT_WON,
+        RESULT_LOST,
+        HOLD,
+        CANCEL,
+      ];
+    case 'technical_eval':
+      return [
+        { status: 'commercial_eval', label: 'Commercial Evaluation', variant: 'primary', description: 'Technically qualified; price bid opened.', defaultRemarks: 'Technically qualified; commercial evaluation started.' },
+        { ...RESULT_LOST, description: 'Not qualified technically: record it as Lost with reason Technical (PRD §26).' },
+        HOLD,
+        CANCEL,
+      ];
+    case 'commercial_eval':
+      return [RESULT_WON, RESULT_LOST, HOLD, CANCEL];
+    default:
+      return [];
+  }
+}
 
 /**
  * A deadline instant as IST date + time. Legacy date-only deadlines were stored as UTC midnight (05:30 IST);
@@ -163,20 +283,8 @@ export function TenderDossierModal({
       setIsReassigning(false);
     }
   };
-  const [activeTab, setActiveTab] = useState<
-    | 'overview'
-    | 'line_items'
-    | 'approvals'
-    | 'transitions'
-    | 'documents'
-    | 'corrigenda'
-    | 'finance'
-    | 'portal_issues'
-    | 'discussion'
-    | 'result'
-    | 'linked'
-    | 'timeline'
-  >('overview');
+  // Five tabs, grouped by what the user is doing with the tender (PRD §19–27).
+  const [activeTab, setActiveTab] = useState<'overview' | 'transitions' | 'preparation' | 'discussion' | 'history'>('overview');
 
   // Lifecycle Transitions state
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -190,15 +298,28 @@ export function TenderDossierModal({
     setIsTransitioning(true);
     setFeedbackMsg(null);
     setTransitionError(null);
+    const remarks = transitionNotes || defaultRemarks || `Transitioned to ${targetStatus.replace(/_/g, ' ')}`;
     try {
-      await api.post(`/tenders/${tender.id}/transitions`, {
-        target_status: targetStatus,
-        remarks: transitionNotes || defaultRemarks || `Transitioned to ${targetStatus.replace(/_/g, ' ')}`,
-        submission_date: targetStatus === 'submitted' ? portalSubmissionDate : undefined,
-      });
+      // On Hold is a flag over the current stage (hold / resume), not a stage of its own.
+      if (targetStatus === 'on_hold') {
+        await api.post(`/tenders/${tender.id}/hold`, { reason: remarks });
+      } else if (targetStatus === RESUME_TARGET) {
+        await api.post(`/tenders/${tender.id}/resume`, {});
+      } else {
+        await api.post(`/tenders/${tender.id}/transitions`, {
+          target_status: targetStatus,
+          remarks,
+          submission_date: SUBMISSION_STAGES.includes(targetStatus) ? portalSubmissionDate : undefined,
+        });
+      }
       setFeedbackMsg({
         type: 'success',
-        text: `Tender successfully advanced to ${targetStatus.replace(/_/g, ' ').toUpperCase()}.`,
+        text:
+          targetStatus === 'on_hold'
+            ? 'Tender put on hold.'
+            : targetStatus === RESUME_TARGET
+              ? 'Tender resumed at its previous stage.'
+              : `Tender moved to ${TENDER_STATUS_LABELS[targetStatus] || targetStatus.replace(/_/g, ' ')}.`,
       });
       setSelectedNextStatus('');
       setTransitionNotes('');
@@ -212,186 +333,17 @@ export function TenderDossierModal({
     }
   };
 
-  const getAllowedDossierTransitions = (status: string, category: string) => {
-    const norm = (status || '').toLowerCase();
-    const isPq = (category || '').toLowerCase().includes('pq');
-
-    switch (norm) {
-      case 'identified':
-        return [
-          {
-            status: 'awaiting_approval',
-            label: 'Submit for Internal Approval',
-            variant: 'primary' as const,
-            description: 'Request executive review & participation clearance from Management.',
-            defaultRemarks: 'Submitted tender for executive management review.',
-          },
-        ];
-      case 'awaiting_approval':
-      case 'under_review':
-        return [];
-      case 'under_preparation':
-        if (isPq) {
-          return [
-            {
-              status: 'pq_submitted',
-              label: 'Submit Pre-Qualification (PQ)',
-              variant: 'primary' as const,
-              description: 'Record PQ eligibility dossier uploaded on GeM/CPPP portal.',
-              defaultRemarks: 'Pre-qualification dossier submitted on government portal.',
-            },
-            {
-              status: 'submitted',
-              label: 'Submit Bid Directly',
-              variant: 'secondary' as const,
-              description: 'Advance directly if PQ was bypassed or already cleared.',
-              defaultRemarks: 'Technical and commercial bids submitted.',
-            },
-            {
-              status: 'on_hold',
-              label: 'Put On Hold',
-              variant: 'warning' as const,
-              description: 'Temporarily freeze preparation pending departmental clarifications.',
-              defaultRemarks: 'Put on hold pending clarifications.',
-            },
-          ];
-        }
-        return [
-          {
-            status: 'submitted',
-            label: 'Submit Tender Bid',
-            variant: 'primary' as const,
-            description: 'Upload encrypted technical & financial envelopes on GeM.',
-            defaultRemarks: 'Tender bids uploaded to GeM with digital signature token.',
-          },
-          {
-            status: 'on_hold',
-            label: 'Put On Hold',
-            variant: 'warning' as const,
-            description: 'Temporarily freeze preparation.',
-            defaultRemarks: 'Put on hold pending clarifications.',
-          },
-        ];
-      case 'pq_submitted':
-        return [
-          {
-            status: 'pq_qualified',
-            label: 'Mark PQ Qualified',
-            variant: 'success' as const,
-            description: 'Buyer committee accepted credentials; eligible for commercial bidding.',
-            defaultRemarks: 'Buyer published PQ minutes; Arihant officially qualified.',
-          },
-          {
-            status: 'pq_not_qualified',
-            label: 'Mark PQ Not Qualified',
-            variant: 'danger' as const,
-            description: 'Buyer rejected credentials during pre-qualification screening.',
-            defaultRemarks: 'Disqualified in PQ screening.',
-          },
-          {
-            status: 'on_hold',
-            label: 'Put On Hold',
-            variant: 'warning' as const,
-            description: 'Pre-qualification proceedings stayed or extended.',
-            defaultRemarks: 'PQ evaluation delayed by department.',
-          },
-        ];
-      case 'pq_qualified':
-        return [
-          {
-            status: 'submitted',
-            label: 'Submit Commercial & Technical Envelopes',
-            variant: 'primary' as const,
-            description: 'Submit main price envelopes on portal.',
-            defaultRemarks: 'Commercial envelope submitted on portal following PQ clearance.',
-          },
-          {
-            status: 'under_preparation',
-            label: 'Return to Preparation',
-            variant: 'secondary' as const,
-            description: 'Assemble additional compliance items.',
-            defaultRemarks: 'Returned to preparation.',
-          },
-        ];
-      case 'submitted':
-        return [
-          {
-            status: 'technical_eval',
-            label: 'Enter Technical Evaluation',
-            variant: 'primary' as const,
-            description: 'Buyer opened technical envelope; sample trials & tests active.',
-            defaultRemarks: 'Technical evaluation initiated by buyer.',
-          },
-          {
-            status: 'commercial_eval',
-            label: 'Enter Commercial Evaluation',
-            variant: 'secondary' as const,
-            description: 'Direct commercial opening.',
-            defaultRemarks: 'Commercial envelopes opened.',
-          },
-          {
-            status: 'lost',
-            label: 'Disqualified in Preliminary Screening',
-            variant: 'danger' as const,
-            description: 'Rejected before technical committee.',
-            defaultRemarks: 'Disqualified in preliminary evaluation.',
-          },
-        ];
-      case 'technical_eval':
-        return [
-          {
-            status: 'commercial_eval',
-            label: 'Advance to Commercial Evaluation',
-            variant: 'primary' as const,
-            description: 'Technical compliance and field trials successfully cleared.',
-            defaultRemarks: 'Technical evaluation and trial report cleared; commercial opened.',
-          },
-          {
-            status: 'technically_disqualified',
-            label: 'Disqualified in Technical Evaluation',
-            variant: 'danger' as const,
-            description: 'Field trial or spec non-compliance rejection.',
-            defaultRemarks: 'Disqualified during technical evaluation.',
-          },
-        ];
-      case 'commercial_eval':
-        return [
-          {
-            status: 'won',
-            label: 'Declare L1 & Won',
-            variant: 'success' as const,
-            description: 'Arihant awarded lowest bidder; contract award confirmed.',
-            defaultRemarks: 'Declared L1 bidder and contract awarded.',
-          },
-          {
-            status: 'lost',
-            label: 'Declare L2 / Lost',
-            variant: 'danger' as const,
-            description: 'Competitor placed lower bid or won contract.',
-            defaultRemarks: 'Lost in commercial evaluation to competitor.',
-          },
-        ];
-      case 'on_hold':
-        return [
-          {
-            status: 'under_preparation',
-            label: 'Resume Preparation',
-            variant: 'primary' as const,
-            description: 'Remove hold and resume bid preparation.',
-            defaultRemarks: 'Hold lifted; resumed preparation.',
-          },
-          {
-            status: 'cancelled',
-            label: 'Cancel Tender',
-            variant: 'danger' as const,
-            description: 'Formally withdraw or cancel bid.',
-            defaultRemarks: 'Tender cancelled by department or withdrawn.',
-          },
-        ];
-      default:
-        return [];
-    }
-  };
+  // Before the bid closes, evaluation and result stages cannot be used yet (bids open only after closing), so they are
+  // not offered as cards; the "Bids not opened yet" note names them instead.
+  const getAllowedDossierTransitions = (status: string, category: string) =>
+    prdTransitions(status, category, Boolean(tender?.on_hold)).filter(
+      (tr) => !(awaitingBidOpening && BID_OPENING_STAGES.includes(tr.status)),
+    );
+  const stagesAfterClosing = awaitingBidOpening
+    ? prdTransitions(tender?.status, tender?.category, false)
+        .filter((tr) => BID_OPENING_STAGES.includes(tr.status))
+        .map((tr) => tr.label)
+    : [];
 
   // Sub-action modal states
   const [isAddLineItemOpen, setIsAddLineItemOpen] = useState(false);
@@ -507,6 +459,8 @@ export function TenderDossierModal({
       setAttachedFileName('');
       setAttachedDriveUrl('');
       setIsEditingDriveFolder(false);
+      // Each tender opens on Overview, not on the tab left open for the previous one.
+      setActiveTab('overview');
       loadTender();
     } else {
       setTender(null);
@@ -844,6 +798,31 @@ export function TenderDossierModal({
   // Same roles as DELETE /tenders/:id/line-items/:itemId (sales only on their own tenders — enforced by the API).
   const canDeleteLineItems =
     !boqLocked && ['management', 'regional_manager', 'tender_team', 'sales', 'admin'].includes(currentUser?.role);
+  // Five tabs grouped by what the user is doing (PRD §19–27): Overview (details, decision, links), Lifecycle (stages,
+  // deadline & corrigenda, result), Preparation (documents, BOQ, EMD / PBG), Discussion (comments, portal issues), History.
+  const visibleTabs = (t: any) => {
+    const readiness = t?.document_readiness;
+    const openIssues = (t?.portal_issues || []).filter((i: any) => !['RESOLVED', 'CLOSED'].includes(String(i.status || '').toUpperCase())).length;
+    return [
+      { id: 'overview', label: 'Overview', icon: <FileText className="h-3.5 w-3.5" /> },
+      { id: 'transitions', label: 'Lifecycle', icon: <ArrowRight className="h-3.5 w-3.5" /> },
+      {
+        id: 'preparation',
+        label: 'Preparation',
+        icon: <Paperclip className="h-3.5 w-3.5" />,
+        count: readiness?.checklist_created ? `${t?.document_completion_percentage ?? 0}%` : undefined,
+        tone: readiness?.checklist_created && readiness?.all_mandatory_ready ? 'done' : 'neutral',
+      },
+      {
+        id: 'discussion',
+        label: 'Discussion',
+        icon: <MessageSquare className="h-3.5 w-3.5" />,
+        count: (t?.comments?.length || 0) + openIssues || undefined,
+        tone: openIssues > 0 ? 'alert' : 'neutral',
+      },
+      { id: 'history', label: 'History', icon: <Calendar className="h-3.5 w-3.5" /> },
+    ] as { id: typeof activeTab; label: string; icon: React.ReactNode; count?: number | string; tone?: 'neutral' | 'done' | 'alert' }[];
+  };
   const openAddLineItem = () => {
     setLineItemError(null);
     setIsAddLineItemOpen(true);
@@ -965,80 +944,48 @@ export function TenderDossierModal({
             </div>
           </div>
 
-          {/* 11 Dossier Tabs Strip */}
-          {/* pinned under the dialog header so the sections stay reachable while a long tab scrolls (phones especially) */}
+          {/* Dossier tabs: segmented control, pinned under the dialog header so the sections stay reachable while a
+              long tab scrolls (phones especially) */}
           <ScrollStrip
             role="tablist"
             aria-label="Dossier sections"
             activeKey={activeTab}
-            wrapperClassName="sticky -top-4 z-10 -mx-4 border-b border-[#DCD8CE] bg-[var(--th-pop,#FBFAF7)] px-4 pt-1 sm:-top-5 sm:-mx-5 sm:px-5"
-            className="gap-1 pb-1 select-none"
+            wrapperClassName="sticky -top-4 z-10 -mx-4 bg-[var(--th-pop,#FBFAF7)] px-4 py-2 sm:-top-5 sm:-mx-5 sm:px-5"
+            className="gap-1 rounded-[10px] border border-[#DCD8CE] bg-white p-1 select-none"
           >
-            {[
-              { id: 'overview', label: 'Overview', icon: <FileText className="h-3.5 w-3.5" /> },
-              {
-                id: 'line_items',
-                label: `Line Items (${tender.line_items?.length || 0})`,
-                icon: <ShoppingBag className="h-3.5 w-3.5" />,
-              },
-              {
-                id: 'approvals',
-                label: 'Approvals',
-                icon: <CheckCircle2 className="h-3.5 w-3.5" />,
-                badge: tender.approvals?.length || null,
-              },
-              {
-                id: 'transitions',
-                label: 'Lifecycle',
-                icon: <ArrowRight className="h-3.5 w-3.5" />,
-              },
-              {
-                id: 'documents',
-                label: tender.document_readiness?.checklist_created
-                  ? `Documents (${tender.document_completion_percentage ?? 0}%)`
-                  : 'Documents (not initialised)',
-                icon: <Paperclip className="h-3.5 w-3.5" />,
-              },
-              {
-                id: 'corrigenda',
-                label: `Corrigenda (${tender.corrigenda?.length || 0})`,
-                icon: <Clock className="h-3.5 w-3.5" />,
-              },
-              {
-                id: 'finance',
-                label: 'EMD / PBG',
-                icon: <DollarSign className="h-3.5 w-3.5" />,
-              },
-              {
-                id: 'portal_issues',
-                label: `Portal Issues (${tender.portal_issues?.length || 0})`,
-                icon: <AlertTriangle className="h-3.5 w-3.5" />,
-              },
-              {
-                id: 'discussion',
-                label: `Discussion (${tender.comments?.length || 0})`,
-                icon: <MessageSquare className="h-3.5 w-3.5" />,
-              },
-              { id: 'result', label: 'Win / Loss', icon: <ShieldAlert className="h-3.5 w-3.5" /> },
-              { id: 'linked', label: 'Linked Records', icon: <Layers className="h-3.5 w-3.5" /> },
-              { id: 'timeline', label: 'Audit Timeline', icon: <Calendar className="h-3.5 w-3.5" /> },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={activeTab === tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center space-x-1.5 px-3 py-2 text-xs font-semibold rounded-t-lg transition-all border-b-2 whitespace-nowrap cursor-pointer ${
-                  activeTab === tab.id
-                    ? 'border-[#0F5E63] text-[#0F5E63] bg-white shadow-xs'
-                    : 'border-transparent text-[#4A5568] hover:text-[#14213D] hover:bg-white/50'
-                }`}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-              </button>
-            ))}
+            {visibleTabs(tender).map((tab) => {
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-[8px] px-3.5 py-1.5 text-xs transition-all duration-150 cursor-pointer ${
+                    active
+                      ? 'bg-[#E3EFEE] font-semibold text-[#0F5E63] shadow-xs'
+                      : 'font-medium text-[#4A5568] hover:bg-[#F6F5F1] hover:text-[#14213D]'
+                  }`}
+                >
+                  <span className="shrink-0">{tab.icon}</span>
+                  <span>{tab.label}</span>
+                  {tab.count !== undefined && (
+                    <span
+                      className={`rounded-full px-1.5 py-px font-mono text-[10px] leading-4 ${
+                        tab.tone === 'alert'
+                          ? 'bg-[#FBEBDD] text-[#9A3412]'
+                          : tab.tone === 'done'
+                            ? 'bg-[#0F5E63] text-white'
+                            : 'bg-[#ECE9E2] text-[#4A5568]'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </ScrollStrip>
 
           {/* TAB 1: OVERVIEW */}
@@ -1099,16 +1046,18 @@ export function TenderDossierModal({
                 <Card className="p-3.5 space-y-2 border-[#DCD8CE]">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-[#4A5568] uppercase block">Financials & Team</span>
-                    {canReassign && (
-                      <button
-                        type="button"
-                        onClick={handleOpenReassign}
-                        className="text-[11px] font-semibold text-[#0F5E63] hover:underline flex items-center gap-1 cursor-pointer"
-                      >
-                        <UserCheck className="w-3.5 h-3.5" />
-                        Reassign Team
-                      </button>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {canReassign && (
+                        <button
+                          type="button"
+                          onClick={handleOpenReassign}
+                          className="text-[11px] font-semibold text-[#0F5E63] hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <UserCheck className="w-3.5 h-3.5" />
+                          Reassign Team
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="space-y-1">
                     <p className="text-[11px] text-[#4A5568]">
@@ -1278,188 +1227,46 @@ export function TenderDossierModal({
                     </div>
                   </div>
                 )}
-              </Card>
-            </div>
-          )}
-
-          {/* TAB 2: LINE ITEMS */}
-          {activeTab === 'line_items' && (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
-                <div className="min-w-[12rem] flex-1">
-                  <h4 className="font-serif font-bold text-sm text-[#14213D]">Tender Products & BOQ Specifications</h4>
-                  <p className="text-[11px] text-[#4A5568]">Products linked to this tender with catalogue and GeM compliance checks</p>
-                </div>
-                {!boqLocked && (
-                  <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={openAddLineItem}>
-                    Add Line Item
-                  </Button>
-                )}
-              </div>
-
-              {boqLocked && (
-                <InfoCallout variant="neutral" title="BOQ locked">
-                  This tender is closed ({(tender.status || '').replace(/_/g, ' ').toUpperCase()}); line items can no longer be added, edited or removed.
-                </InfoCallout>
-              )}
-
-              {tender.line_items && tender.line_items.length > 0 ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Product / Description</TableHead>
-                      <TableHead>GeM Status</TableHead>
-                      <TableHead>Quantity</TableHead>
-                      <TableHead>Compliance</TableHead>
-                      <TableHead>Quoted Unit Price</TableHead>
-                      <TableHead>Quoted Total</TableHead>
-                      {canDeleteLineItems && <TableHead className="text-right">Action</TableHead>}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tender.line_items.map((item: any) => (
-                      <TableRow key={item.id}>
-                        <TableCell>
-                          <span className="font-semibold text-xs block text-[#14213D]">{item.product_name || item.product_description}</span>
-                          {item.specification_summary && (
-                            <span className="text-[10px] text-[#4A5568] line-clamp-1">{item.specification_summary}</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {item.product_gem_listed ? (
-                            <Badge variant="success" size="sm">GeM Listed</Badge>
-                          ) : (
-                            <Badge variant="danger" size="sm" title="Suggested to raise portal issue if portal requires listing">
-                              Not on GeM
+                {/* Approval history (PRD §22): every internal-review round with its decision, kept with the decision itself. */}
+                {tender.approvals && tender.approvals.length > 0 && (
+                  <div className="mt-4 space-y-2 border-t border-[#ECE9E2] pt-3">
+                    <h5 className="text-[11px] font-semibold uppercase tracking-wide text-[#4A5568]">Approval history</h5>
+                    <div className="space-y-2">
+                      {tender.approvals.map((app: any, idx: number) => (
+                        <Card key={app.id || idx} className="p-3 border-[#DCD8CE]">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center space-x-2">
+                              <UserCheck className="h-4 w-4 text-[#0F5E63]" />
+                              <span className="font-semibold text-xs text-[#14213D]">
+                                Round {app.approval_round || idx + 1}: {app.approver_name || 'Designated Approver'}
+                              </span>
+                            </div>
+                            <Badge
+                              variant={
+                                app.status === 'APPROVED'
+                                  ? 'success'
+                                  : app.status === 'REJECTED'
+                                  ? 'danger'
+                                  : app.status === 'PENDING' || !app.status
+                                  ? 'warning'
+                                  : 'default'
+                              }
+                              size="sm"
+                            >
+                              {app.status === 'WITHDRAWN' || app.status === 'SUPERSEDED' ? 'CLOSED' : app.status || 'PENDING'}
                             </Badge>
+                          </div>
+                          {app.decision_reason && (
+                            <p className="text-[11px] text-[#4A5568] mt-1 pl-6">
+                              <strong>Note:</strong> {app.decision_reason}
+                            </p>
                           )}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs font-semibold">
-                          {item.quantity} {item.unit || 'Nos'}
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={
-                              item.is_compliant === 'Yes'
-                                ? 'success'
-                                : item.is_compliant === 'No'
-                                ? 'danger'
-                                : item.is_compliant === 'Partial'
-                                ? 'warning'
-                                : 'default'
-                            }
-                            size="sm"
-                          >
-                            {item.is_compliant}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {item.quoted_unit_price ? `₹ ${Number(item.quoted_unit_price).toLocaleString('en-IN')}` : '—'}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">
-                          {item.quoted_total ? `₹ ${Number(item.quoted_total).toLocaleString('en-IN')}` : '—'}
-                        </TableCell>
-                        {canDeleteLineItems && (
-                          <TableCell className="text-right">
-                            <Button variant="ghost" size="xs" className="text-[#9A3412]" onClick={() => setLineItemToDelete(item)}>
-                              Remove
-                            </Button>
-                          </TableCell>
-                        )}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : (
-                <EmptyState
-                  title="No line items configured"
-                  description="Add equipment and specifications to verify GeM catalogue compatibility."
-                  action={boqLocked ? undefined : <Button variant="outline" size="sm" onClick={openAddLineItem}>Add First Item</Button>}
-                />
-              )}
-            </div>
-          )}
-
-          {/* TAB 3: APPROVALS */}
-          {activeTab === 'approvals' && (
-            <div className="space-y-4">
-              <div className="p-3.5 rounded-xl bg-[#E3EFEE] border border-[#0F5E63]/20 flex items-center justify-between">
-                <div>
-                  <h4 className="font-semibold text-xs text-[#0F5E63]">Central Decision Protocol (Zero WhatsApp Policy)</h4>
-                  <p className="text-[11px] text-[#4A5568]">Every tender go/no-go approval is immutably logged with approver identity and timestamp.</p>
-                </div>
-                {tender.status === 'identified' && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    leftIcon={<Send className="h-3.5 w-3.5" />}
-                    onClick={async () => {
-                      if (!tender.assigned_to && !tender.assigned_person_id) {
-                        setFeedbackMsg({
-                          type: 'error',
-                          text: 'Assign a salesperson (Overview → Reassign Team) before submitting this tender for approval.',
-                        });
-                        return;
-                      }
-                      setActionLoading(true);
-                      try {
-                        await api.post(`/tenders/${tender.id}/approval-request`, { remarks: 'Official approval requested' });
-                        await loadTender();
-                        onTenderUpdated?.();
-                        setFeedbackMsg({ type: 'success', text: 'Approval request submitted to designated authorities' });
-                      } catch (err: any) {
-                        setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to submit for approval' });
-                      } finally {
-                        setActionLoading(false);
-                      }
-                    }}
-                  >
-                    Submit for Approval
-                  </Button>
+                        </Card>
+                      ))}
+                    </div>
+                  </div>
                 )}
-              </div>
-
-              {tender.approvals && tender.approvals.length > 0 ? (
-                <div className="space-y-2">
-                  {tender.approvals.map((app: any, idx: number) => (
-                    <Card key={app.id || idx} className="p-3 border-[#DCD8CE]">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-2">
-                          <UserCheck className="h-4 w-4 text-[#0F5E63]" />
-                          <span className="font-semibold text-xs text-[#14213D]">
-                            Round {app.approval_round || idx + 1}: {app.approver_name || 'Designated Approver'}
-                          </span>
-                        </div>
-                        <Badge
-                          variant={
-                            app.status === 'APPROVED'
-                              ? 'success'
-                              : app.status === 'REJECTED'
-                              ? 'danger'
-                              : app.status === 'PENDING' || !app.status
-                              ? 'warning'
-                              : 'default'
-                          }
-                          size="sm"
-                        >
-                          {app.status === 'WITHDRAWN' || app.status === 'SUPERSEDED' ? 'CLOSED' : app.status || 'PENDING'}
-                        </Badge>
-                      </div>
-                      {app.decision_reason && (
-                        <p className="text-[11px] text-[#4A5568] mt-1 pl-6">
-                          <strong>Note:</strong> {app.decision_reason}
-                        </p>
-                      )}
-                    </Card>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState
-                  title="No approval rounds recorded"
-                  description="Submit this tender for approval when all mandatory parameters are completed."
-                />
-              )}
+              </Card>
             </div>
           )}
 
@@ -1484,31 +1291,29 @@ export function TenderDossierModal({
                   }
                   size="md"
                 >
-                  Current: {tender.status?.replace(/_/g, ' ').toUpperCase()}
+                  Current: {(TENDER_STATUS_LABELS[tender.status] || tender.status?.replace(/_/g, ' '))?.toUpperCase()}{tender.on_hold ? ' · ON HOLD' : ''}
                 </Badge>
               </div>
 
-              {/* Visual 6-Step Tracker */}
+              {/* PRD §22 six-step tracker */}
               <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-1 text-center text-[10px] font-semibold">
-                  <div className={`p-2 rounded ${['identified', 'awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
-                    1. Identified
-                  </div>
-                  <div className={`p-2 rounded ${['awaiting_approval', 'under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
-                    2. Approval
-                  </div>
-                  <div className={`p-2 rounded ${['under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
-                    3. Preparation
-                  </div>
-                  <div className={`p-2 rounded ${['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
-                    4. PQ Phase
-                  </div>
-                  <div className={`p-2 rounded ${['submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(tender.status) ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
-                    5. Submitted
-                  </div>
-                  <div className={`p-2 rounded ${['won', 'lost'].includes(tender.status) ? (tender.status === 'won' ? 'bg-[#0F5E63] text-white' : 'bg-[#881337] text-white') : 'bg-[#DCD8CE] text-[#4A5568]'}`}>
-                    6. Result
-                  </div>
+                  {PRD_STEPS.map((step, i) => {
+                    const status = (tender.status || '').toLowerCase();
+                    const reached = step.reachedAt.includes(status);
+                    const isLast = i === PRD_STEPS.length - 1;
+                    const failed = (i === 2 && status === 'rejected_internally') || (isLast && status === 'lost');
+                    return (
+                      <div
+                        key={step.label}
+                        className={`p-2 rounded ${
+                          failed ? 'bg-[#881337] text-white' : reached ? 'bg-[#0F5E63] text-white' : 'bg-[#DCD8CE] text-[#4A5568]'
+                        }`}
+                      >
+                        {step.label}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1520,20 +1325,20 @@ export function TenderDossierModal({
                     <span className="font-bold text-xs">Awaiting Executive Management Signoff</span>
                   </div>
                   <p className="text-xs text-[#7C2D12] leading-relaxed">
-                    This tender is currently undergoing Internal Review. To authorize participation and advance to <strong>Under Preparation</strong>, please switch to the <strong>Approvals</strong> tab above.
+                    Submitted for internal review. The authorised person (Management / Admin) approves it to <strong>Under Preparation</strong> or rejects it with a reason in the <strong>Decision</strong> panel on the Overview tab.
                   </p>
                   <Button
                     size="xs"
                     variant="primary"
                     className="bg-[#9A3412] hover:bg-[#7C2D12] text-white"
-                    onClick={() => setActiveTab('approvals')}
+                    onClick={() => setActiveTab('overview')}
                   >
-                    Go to Approvals Tab
+                    Go to Decision
                   </Button>
                 </div>
               ) : getAllowedDossierTransitions(tender.status, tender.category).length === 0 ? (
                 <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-[#14213D] text-xs">
-                  This tender is in a terminal state (<strong>{tender.status?.toUpperCase()}</strong>). No further stage advancements are permitted.
+                  This tender is closed (<strong>{(TENDER_STATUS_LABELS[tender.status] || tender.status)?.toUpperCase()}</strong>). No further stage changes are permitted.
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -1555,7 +1360,7 @@ export function TenderDossierModal({
                       ) : (
                         <button
                           type="button"
-                          onClick={() => setActiveTab('documents')}
+                          onClick={() => setActiveTab('preparation')}
                           className="text-[#9A3412] hover:underline font-semibold text-[11px] flex items-center gap-1 cursor-pointer"
                         >
                           {docReadiness?.checklist_created ? 'Review Incomplete Documents' : 'Initialise Checklist'} <ArrowRight className="h-3 w-3" />
@@ -1572,31 +1377,26 @@ export function TenderDossierModal({
 
                   <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
                     <span className="text-xs text-[#14213D] font-bold block uppercase tracking-wide">
-                      Permitted Stage Advancements ({getAllowedDossierTransitions(tender.status, tender.category).length})
+                      Next PRD Stages ({getAllowedDossierTransitions(tender.status, tender.category).length})
                     </span>
                     {awaitingBidOpening && (
                       <InfoCallout variant="warning" title="Bids not opened yet">
-                        Evaluation and result stages unlock after the bid closes on {formatDeadline(tender.submission_deadline || tender.bid_closing_date)}.
-                        Bids are opened only after closing; record a corrigendum if the closing date changed.
+                        Bids open after the bid closes on {formatDeadline(tender.submission_deadline || tender.bid_closing_date)}. Then you can
+                        move to {stagesAfterClosing.join(', ')}. Until then the tender can only be put on hold or cancelled; record a
+                        corrigendum if the closing date changed.
                       </InfoCallout>
                     )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {getAllowedDossierTransitions(tender.status, tender.category).map((tr) => {
-                        const lockedUntilClosing = awaitingBidOpening && BID_OPENING_STAGES.includes(tr.status);
                         return (
                         <div
                           key={tr.status}
-                          aria-disabled={lockedUntilClosing || undefined}
-                          title={lockedUntilClosing ? 'Available after the bid closing date' : undefined}
                           className={`p-3.5 rounded-xl border transition-all ${
-                            lockedUntilClosing
-                              ? 'cursor-not-allowed opacity-60 border-[#DCD8CE] bg-[#FBFAF7]'
-                              : selectedNextStatus === tr.status
-                                ? 'cursor-pointer border-[#0F5E63] bg-[#E3EFEE]/40 ring-1 ring-[#0F5E63]'
-                                : 'cursor-pointer border-[#DCD8CE] hover:border-[#0F5E63]/50 bg-white'
+                            selectedNextStatus === tr.status
+                              ? 'cursor-pointer border-[#0F5E63] bg-[#E3EFEE]/40 ring-1 ring-[#0F5E63]'
+                              : 'cursor-pointer border-[#DCD8CE] hover:border-[#0F5E63]/50 bg-white'
                           }`}
                           onClick={() => {
-                            if (lockedUntilClosing) return;
                             setTransitionError(null);
                             // Won / Lost are recorded only through the Record outcome form (award value, date, reasons).
                             if (RESULT_TARGETS.includes(tr.status)) {
@@ -1619,11 +1419,6 @@ export function TenderDossierModal({
                             </Badge>
                           </div>
                           <p className="text-[11px] text-[#4A5568] leading-relaxed">{tr.description}</p>
-                          {lockedUntilClosing && (
-                            <p className="mt-1 text-[11px] font-semibold text-[#9A3412]">
-                              Locked until the bid closes ({formatDeadline(tender.submission_deadline || tender.bid_closing_date)}).
-                            </p>
-                          )}
                         </div>
                         );
                       })}
@@ -1634,7 +1429,7 @@ export function TenderDossierModal({
                     <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#0F5E63]/30 space-y-3 animate-in fade-in duration-200">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-xs text-[#0F5E63]">
-                          Advancement Confirmation: {selectedNextStatus.replace(/_/g, ' ').toUpperCase()}
+                          Confirm: {(selectedNextStatus === 'on_hold' ? 'Put On Hold' : selectedNextStatus === RESUME_TARGET ? 'Resume' : TENDER_STATUS_LABELS[selectedNextStatus] || selectedNextStatus.replace(/_/g, ' '))?.toUpperCase()}
                         </span>
                         <Button
                           size="xs"
@@ -1645,7 +1440,7 @@ export function TenderDossierModal({
                         </Button>
                       </div>
 
-                      {selectedNextStatus === 'submitted' && (
+                      {SUBMISSION_STAGES.includes(selectedNextStatus) && (
                         <Input
                           label="Portal Submission Date"
                           type="date"
@@ -1656,11 +1451,11 @@ export function TenderDossierModal({
                       )}
 
                       <Input
-                        label="Transition Directives & Remarks"
+                        label="Remarks"
                         value={transitionNotes}
                         onChange={(e) => setTransitionNotes(e.target.value)}
                         placeholder="e.g. PQ eligibility dossier submitted on government portal."
-                        helperText="Mandatory audit log remarks recording this lifecycle transition."
+                        helperText="Saved on the tender's audit timeline with this stage change."
                         required
                       />
 
@@ -1672,18 +1467,69 @@ export function TenderDossierModal({
                           onClick={() => handlePerformTransition(selectedNextStatus, transitionNotes)}
                           leftIcon={<ArrowRight className="h-3.5 w-3.5" />}
                         >
-                          Confirm & Advance Stage
+                          Confirm
                         </Button>
                       </div>
                     </div>
                   )}
                 </div>
               )}
+
+              {/* Deadline management (PRD §24): corrigenda live with the stage they affect. */}
+              <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-[12rem] flex-1">
+                    <span className="text-xs text-[#14213D] font-bold block uppercase tracking-wide">
+                      Deadline &amp; Corrigenda ({tender.corrigenda?.length || 0})
+                    </span>
+                    <p className="text-[11px] text-[#4A5568]">
+                      Submission deadline: <span className="font-mono text-[#14213D]">{formatDeadline(tender.submission_deadline)}</span>. A
+                      corrigendum records the portal extension and moves the deadline.
+                    </p>
+                  </div>
+                  {!CLOSED_STAGES.includes((tender.status || '').toLowerCase()) && (
+                    <Button variant="secondary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => {
+                      setCorrigendumError(null);
+                      // Pre-fill with the current deadline as IST wall clock, so editing keeps the time the user sees.
+                      setNewCorrigendum((prev) => ({ ...prev, new_deadline: prev.new_deadline || toIstLocalInput(tender.submission_deadline) }));
+                      setIsCorrigendumOpen(true);
+                    }}>
+                      Add Corrigendum
+                    </Button>
+                  )}
+                </div>
+                {tender.corrigenda && tender.corrigenda.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Corrigendum No.</TableHead>
+                        <TableHead>Issued Date</TableHead>
+                        <TableHead>Old Deadline</TableHead>
+                        <TableHead>New Deadline</TableHead>
+                        <TableHead>Summary</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {tender.corrigenda.map((c: any) => (
+                        <TableRow key={c.id}>
+                          <TableCell className="font-bold font-mono text-xs text-[#14213D]">{c.corrigendum_number}</TableCell>
+                          <TableCell className="font-mono text-xs">{c.issued_date ? formatTaskDate(c.issued_date) : 'N/A'}</TableCell>
+                          <TableCell className="font-mono text-xs text-[#4A5568]">{formatDeadline(c.old_deadline)}</TableCell>
+                          <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">{formatDeadline(c.new_deadline)}</TableCell>
+                          <TableCell className="text-xs text-[#4A5568]">{c.summary || 'Deadline extended'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <p className="text-[11px] text-[#6B7280]">No corrigenda recorded.</p>
+                )}
+              </div>
             </div>
           )}
 
           {/* TAB 4: DOCUMENTS CHECKLIST */}
-          {activeTab === 'documents' && (
+          {activeTab === 'preparation' && (
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                 <div>
@@ -2116,59 +1962,104 @@ export function TenderDossierModal({
           )}
 
           {/* TAB 5: CORRIGENDA */}
-          {activeTab === 'corrigenda' && (
-            <div className="space-y-4">
+          {/* PREPARATION: Bill of Quantities */}
+          {activeTab === 'preparation' && (
+            <div className="space-y-3 mt-6 border-t border-[#ECE9E2] pt-5">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
                 <div className="min-w-[12rem] flex-1">
-                  <h4 className="font-serif font-bold text-sm text-[#14213D]">Corrigenda & Deadline Extensions</h4>
-                  <p className="text-[11px] text-[#4A5568]">Official portal corrigenda history. Modifying deadline preserves original submission date.</p>
+                  <h4 className="font-serif font-bold text-sm text-[#14213D]">Tender Products & BOQ Specifications</h4>
+                  <p className="text-[11px] text-[#4A5568]">Products linked to this tender with catalogue and GeM compliance checks</p>
                 </div>
-                <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => {
-                  setCorrigendumError(null);
-                  // Pre-fill with the current deadline as IST wall clock, so editing keeps the time the user sees.
-                  setNewCorrigendum((prev) => ({ ...prev, new_deadline: prev.new_deadline || toIstLocalInput(tender.submission_deadline) }));
-                  setIsCorrigendumOpen(true);
-                }}>
-                  Add Corrigendum
-                </Button>
+                {!boqLocked && (
+                  <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={openAddLineItem}>
+                    Add Line Item
+                  </Button>
+                )}
               </div>
 
-              {tender.corrigenda && tender.corrigenda.length > 0 ? (
+              {boqLocked && (
+                <InfoCallout variant="neutral" title="BOQ locked">
+                  This tender is closed ({(tender.status || '').replace(/_/g, ' ').toUpperCase()}); line items can no longer be added, edited or removed.
+                </InfoCallout>
+              )}
+
+              {tender.line_items && tender.line_items.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Corrigendum No.</TableHead>
-                      <TableHead>Issued Date</TableHead>
-                      <TableHead>Old Deadline</TableHead>
-                      <TableHead>New Deadline</TableHead>
-                      <TableHead>Summary</TableHead>
+                      <TableHead>Product / Description</TableHead>
+                      <TableHead>GeM Status</TableHead>
+                      <TableHead>Quantity</TableHead>
+                      <TableHead>Compliance</TableHead>
+                      <TableHead>Quoted Unit Price</TableHead>
+                      <TableHead>Quoted Total</TableHead>
+                      {canDeleteLineItems && <TableHead className="text-right">Action</TableHead>}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {tender.corrigenda.map((c: any) => (
-                      <TableRow key={c.id}>
-                        <TableCell className="font-bold font-mono text-xs text-[#14213D]">{c.corrigendum_number}</TableCell>
-                        <TableCell className="font-mono text-xs">{c.issued_date ? formatTaskDate(c.issued_date) : 'N/A'}</TableCell>
-                        <TableCell className="font-mono text-xs text-[#4A5568]">{formatDeadline(c.old_deadline)}</TableCell>
-                        <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">{formatDeadline(c.new_deadline)}</TableCell>
-                        <TableCell className="text-xs text-[#4A5568]">{c.summary || 'Deadline extended'}</TableCell>
+                    {tender.line_items.map((item: any) => (
+                      <TableRow key={item.id}>
+                        <TableCell>
+                          <span className="font-semibold text-xs block text-[#14213D]">{item.product_name || item.product_description}</span>
+                          {item.specification_summary && (
+                            <span className="text-[10px] text-[#4A5568] line-clamp-1">{item.specification_summary}</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {item.product_gem_listed ? (
+                            <Badge variant="success" size="sm">GeM Listed</Badge>
+                          ) : (
+                            <Badge variant="danger" size="sm" title="Suggested to raise portal issue if portal requires listing">
+                              Not on GeM
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs font-semibold">
+                          {item.quantity} {item.unit || 'Nos'}
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant={
+                              item.is_compliant === 'Yes'
+                                ? 'success'
+                                : item.is_compliant === 'No'
+                                ? 'danger'
+                                : item.is_compliant === 'Partial'
+                                ? 'warning'
+                                : 'default'
+                            }
+                            size="sm"
+                          >
+                            {item.is_compliant}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {item.quoted_unit_price ? `₹ ${Number(item.quoted_unit_price).toLocaleString('en-IN')}` : '—'}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs font-bold text-[#0F5E63]">
+                          {item.quoted_total ? `₹ ${Number(item.quoted_total).toLocaleString('en-IN')}` : '—'}
+                        </TableCell>
+                        {canDeleteLineItems && (
+                          <TableCell className="text-right">
+                            <Button variant="ghost" size="xs" className="text-[#9A3412]" onClick={() => setLineItemToDelete(item)}>
+                              Remove
+                            </Button>
+                          </TableCell>
+                        )}
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
               ) : (
-                <EmptyState
-                  title="No corrigenda recorded"
-                  description="Log any portal extensions or specification amendments received from the department."
-                />
+                <p className="text-[11px] text-[#6B7280]">No BOQ line items yet. Add them only if the tender has a bill of quantities.</p>
               )}
             </div>
           )}
 
           {/* TAB 6: FINANCIAL INSTRUMENTS */}
-          {activeTab === 'finance' && (
-            <div className="space-y-4">
+          {activeTab === 'preparation' && (
+            <div className="space-y-4 mt-6 border-t border-[#ECE9E2] pt-5">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
                 <div className="min-w-[12rem] flex-1">
@@ -2233,7 +2124,7 @@ export function TenderDossierModal({
           )}
 
           {/* TAB 7: PORTAL ISSUES */}
-          {activeTab === 'portal_issues' && (
+          {activeTab === 'discussion' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 {/* the heading keeps ~12rem; on a phone the action button drops below it instead of squeezing */}
@@ -2278,7 +2169,7 @@ export function TenderDossierModal({
 
           {/* TAB 8: DISCUSSION */}
           {activeTab === 'discussion' && (
-            <div className="space-y-4">
+            <div className="space-y-4 mt-6 border-t border-[#ECE9E2] pt-5">
               <div>
                 <h4 className="font-serif font-bold text-sm text-[#14213D]">Collaborative Discussion (WhatsApp Replacement)</h4>
                 <p className="text-[11px] text-[#4A5568]">Team discussions, technical clarifications, and executive notes are saved permanently.</p>
@@ -2321,9 +2212,9 @@ export function TenderDossierModal({
           )}
 
           {/* TAB 9: RESULT & POST-MORTEM */}
-          {activeTab === 'result' && (
-            <div className="space-y-4">
-              {['won', 'WON', 'lost', 'LOST', 'partially_won', 'PARTIALLY_WON'].includes(tender.status) ? (
+          {activeTab === 'transitions' && ['won', 'lost'].includes((tender.status || '').toLowerCase()) && (
+            <div className="space-y-4 mt-6 border-t border-[#ECE9E2] pt-5">
+              {['won', 'WON', 'lost', 'LOST'].includes(tender.status) ? (
                 <Card className="p-4 space-y-3 border-[#DCD8CE]">
                   <div className="flex items-center justify-between">
                     <h4 className="font-serif font-bold text-sm text-[#14213D]">Declared Tender Outcome</h4>
@@ -2383,7 +2274,7 @@ export function TenderDossierModal({
                       ? `The bid is submitted. The result can be recorded after the bid closes on ${formatDeadline(tender.submission_deadline || tender.bid_closing_date)}.`
                       : AWAITING_RESULT.includes(tender.status)
                       ? 'The bid is submitted. Record the outcome (won or lost) once the buyer declares the result.'
-                      : 'Outcomes (Won, Lost, Partially Won) can be officially recorded once commercial evaluation concludes.'
+                      : 'Results (Won / Lost) can be recorded once the tender is submitted and the bids are opened.'
                   }
                   action={
                     onRecordOutcome && AWAITING_RESULT.includes(tender.status) && !awaitingBidOpening ? (
@@ -2398,8 +2289,8 @@ export function TenderDossierModal({
           )}
 
           {/* TAB 10: LINKED RECORDS */}
-          {activeTab === 'linked' && (
-            <div className="space-y-4">
+          {activeTab === 'overview' && LINKABLE_STAGES.includes((tender.status || '').toLowerCase()) && (
+            <div className="space-y-4 mt-6 border-t border-[#ECE9E2] pt-5">
               <div>
                 <h4 className="font-serif font-bold text-sm text-[#14213D]">Inter-Module Operational Links</h4>
                 <p className="text-[11px] text-[#4A5568]">Seamless linkages between PQ tenders, General Bids, Sales Orders, and Warranties.</p>
@@ -2431,7 +2322,7 @@ export function TenderDossierModal({
                   <p className="text-[11px] text-[#4A5568]">
                     Automatically populates Deliveries & Sales Pipeline with awarded items, customer site, and warranty terms.
                   </p>
-                  {['won', 'WON', 'partially_won', 'PARTIALLY_WON'].includes(tender.status) ? (
+                  {['won', 'WON'].includes(tender.status) ? (
                     <Button
                       variant="success"
                       size="sm"
@@ -2442,7 +2333,7 @@ export function TenderDossierModal({
                       Create Sales Order
                     </Button>
                   ) : (
-                    <p className="text-[11px] text-[#4A5568] italic">Available when tender status is WON or PARTIALLY_WON.</p>
+                    <p className="text-[11px] text-[#4A5568] italic">Available when the tender is Won.</p>
                   )}
                 </Card>
               </div>
@@ -2457,7 +2348,7 @@ export function TenderDossierModal({
           )}
 
           {/* TAB 11: AUDIT TIMELINE */}
-          {activeTab === 'timeline' && (
+          {activeTab === 'history' && (
             <div className="space-y-3">
               <div>
                 <h4 className="font-serif font-bold text-sm text-[#14213D]">Immutable Audit Log & Stage Transitions</h4>

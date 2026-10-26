@@ -125,6 +125,7 @@ export class DeliveryQueryDto {
   @IsOptional()
   search?: string;
 
+  /** One milestone or several, comma-separated (e.g. `dispatched,in_transit`). */
   @IsString()
   @IsOptional()
   status?: string;

@@ -21,6 +21,7 @@ export const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] 
   { path: '/tasks', name: 'Task & Productivity Management', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/reports', name: 'Consolidated Reporting & Exports', roles: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'] },
   { path: '/admin', name: 'Administration & System Audit', roles: ['management', 'admin'] },
+  { path: '/audit', name: 'Audit Logs', roles: ['management', 'admin'] },
 ];
 
 /** The rule guarding a pathname, or undefined when every signed-in role may open it. */

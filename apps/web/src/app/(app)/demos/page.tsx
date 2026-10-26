@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
 import Link from 'next/link';
@@ -48,6 +48,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useOpenParam } from '@/lib/use-open-param';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { DemoCalendar } from './_lib/DemoCalendar';
 import { canRead } from '@/lib/module-access';
 import { canOpen } from '@/lib/route-access';
@@ -177,6 +178,10 @@ const demoStatusLabel = (status?: string) =>
   DEMO_STATUSES.find((s) => s.key === status)?.label || String(status || 'Unknown').replace(/_/g, ' ');
 // Register list: demo date stays plain once the demo is closed out (same set as the card's due date).
 const DEMO_DONE = ['completed', 'cancelled', 'failed', 'closed'];
+// "Pending requests" = the coordinator's planning queue: open demos whose date is not (re)confirmed yet
+// (MODULE_3 §4.1–4.2). Same set as DEMO_PENDING_STATUSES in demos.service.ts, which also counts it.
+const DEMO_PENDING_STATUSES = ['requested', 'under_planning', 'team_assigned', 'equipment_reserved', 'rescheduled'];
+const DEMOS_PAGE_SIZE = 50;
 type BadgeVariant = NonNullable<BadgeProps['variant']>;
 const DEMO_STATUS_BADGE: Record<string, BadgeVariant> = {
   requested: 'warning',
@@ -355,6 +360,54 @@ function DemosPageContent() {
   const [filterFailureReason, setFilterFailureReason] = useState('');
   const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
 
+  // The register's filters, applied by the API to the list, its counts (/demos/summary) and the analytics KPIs.
+  const filterParams = useMemo(() => {
+    const params: Record<string, string> = {};
+    if (filterSearch.trim()) params.search = filterSearch.trim();
+    if (filterStatus) params.status = filterStatus;
+    if (filterProduct) params.product_id = filterProduct;
+    if (filterLocation) params.location = filterLocation;
+    if (filterDateFrom) params.date_from = filterDateFrom;
+    if (filterDateTo) params.date_to = filterDateTo;
+    if (filterResult) params.result = filterResult;
+    if (filterFailureReason) params.failure_reason = filterFailureReason;
+    return params;
+  }, [filterSearch, filterStatus, filterProduct, filterLocation, filterDateFrom, filterDateTo, filterResult, filterFailureReason]);
+
+  // Pipeline register: one server page per request, appended as the register scrolls.
+  const fetchPipelinePage = useCallback(
+    (page: number) => api.get('/demos', { ...filterParams, page, limit: DEMOS_PAGE_SIZE }),
+    [filterParams],
+  );
+  const pipelineList = useInfiniteList<any>(fetchPipelinePage);
+  const filteredDemos = pipelineList.rows;
+
+  // Coordinator planning queue: the pending requests under the same filters. The queue is a status set, so the
+  // status filter does not narrow it (its count, summary.pending_requests, ignores it too).
+  const fetchQueuePage = useCallback(
+    (page: number) => {
+      const { status: _status, ...rest } = filterParams;
+      return api.get('/demos', { ...rest, status: DEMO_PENDING_STATUSES.join(','), page, limit: DEMOS_PAGE_SIZE });
+    },
+    [filterParams],
+  );
+  const queueList = useInfiniteList<any>(fetchQueuePage);
+  const coordinatorDemos = queueList.rows;
+
+  // Counts for the menus, view counts and KPI cards, from the server under the same filters as the list.
+  const [demoSummary, setDemoSummary] = useState<any | null>(null);
+  const loadFilteredCounts = useCallback(async () => {
+    const [summaryRes, analyticsRes] = await Promise.all([
+      api.get('/demos/summary', filterParams).catch(() => null),
+      canRead(user?.role, 'demoAnalytics') ? api.get('/demos/analytics', filterParams).catch(() => null) : Promise.resolve(null),
+    ]);
+    if (summaryRes) setDemoSummary(summaryRes);
+    if (analyticsRes) setAnalyticsData(analyticsRes);
+  }, [filterParams, user?.role]);
+  useEffect(() => {
+    loadFilteredCounts();
+  }, [loadFilteredCounts]);
+
   // Live Equipment Availability Checker State
   const [availFilterProduct, setAvailFilterProduct] = useState('');
   const [availFilterLocation, setAvailFilterLocation] = useState('');
@@ -489,7 +542,14 @@ function DemosPageContent() {
   // DATA FETCHING
   // =========================================================================
 
-  const fetchDemosData = async () => {
+  // Unfiltered data for the other views; `withFiltered` also re-reads the filtered register, queue and counts
+  // (after an action). The first load skips them: their own effects load them.
+  const fetchDemosData = async (withFiltered = true) => {
+    if (withFiltered) {
+      void pipelineList.refresh();
+      void queueList.refresh();
+      void loadFilteredCounts();
+    }
     try {
       setIsLoading(true);
       setActionError(null);
@@ -499,7 +559,6 @@ function DemosPageContent() {
         equipRes,
         orgsRes,
         productsRes,
-        analyticsRes,
         teamRes,
         serviceRes,
       ] = await Promise.all([
@@ -507,7 +566,6 @@ function DemosPageContent() {
         api.get('/demos/equipment'),
         api.get('/organisations', { limit: 100 }),
         api.get('/masters/products'),
-        canRead(user?.role, 'demoAnalytics') ? api.get('/demos/analytics').catch(() => null) : Promise.resolve(null),
         api.get('/demos/team/availability').catch(() => []),
         api.get('/users', { role: 'service_team' }).catch(() => ({ data: [] })),
       ]);
@@ -518,7 +576,6 @@ function DemosPageContent() {
       setProducts(productsRes || []);
       setTeamMembers(teamRes || []);
       setServiceEngineers(serviceRes.data || serviceRes || []);
-      if (analyticsRes) setAnalyticsData(analyticsRes);
     } catch (err: any) {
       console.error('Failed to load demo data:', err);
       setActionError(err.message || 'Failed to load demo data.');
@@ -528,7 +585,7 @@ function DemosPageContent() {
   };
 
   useEffect(() => {
-    fetchDemosData();
+    fetchDemosData(false);
   }, []);
 
   // Fetch Team availability whenever team modal opens or date changes
@@ -580,52 +637,12 @@ function DemosPageContent() {
     }
   };
 
-  // Filtered Demos for pipeline
-  const filteredDemos = useMemo(() => {
-    return demos.filter((demo) => {
-      if (filterStatus && demo.status !== filterStatus) return false;
-      if (filterProduct && demo.product_id !== filterProduct) return false;
-      if (filterLocation && !demo.location?.toLowerCase().includes(filterLocation.toLowerCase())) {
-        return false;
-      }
-      if (filterDateFrom) {
-        const d = demo.confirmed_date || demo.requested_date;
-        if (d && d < filterDateFrom) return false;
-      }
-      if (filterDateTo) {
-        const d = demo.confirmed_date || demo.requested_date;
-        if (d && d > filterDateTo) return false;
-      }
-      if (filterResult && demo.outcome?.result !== filterResult) return false;
-      if (filterFailureReason && demo.outcome?.failure_reason !== filterFailureReason) return false;
-      if (filterSearch) {
-        const s = filterSearch.toLowerCase();
-        const match =
-          demo.demo_no?.toLowerCase().includes(s) ||
-          demo.organisation_name?.toLowerCase().includes(s) ||
-          demo.product_name?.toLowerCase().includes(s) ||
-          demo.location?.toLowerCase().includes(s) ||
-          demo.requested_by_name?.toLowerCase().includes(s) ||
-          demo.assignee_name?.toLowerCase().includes(s);
-        if (!match) return false;
-      }
-      return true;
-    });
-  }, [
-    demos,
-    filterStatus,
-    filterProduct,
-    filterLocation,
-    filterDateFrom,
-    filterDateTo,
-    filterResult,
-    filterFailureReason,
-    filterSearch,
-  ]);
 
 
   // Pipeline filter-row helpers
-  const demoLocations = Array.from(new Set(demos.map((d) => d.location).filter(Boolean) as string[])).sort();
+  // Locations under the other filters (server counts), plus the selected one even if nothing matches it now.
+  const locationCounts: Record<string, number> = demoSummary?.by_location || {};
+  const demoLocations = Array.from(new Set([...Object.keys(locationCounts), ...(filterLocation ? [filterLocation] : [])])).sort();
   const hasPipelineFilters = Boolean(
     filterSearch || filterStatus || filterProduct || filterLocation || filterDateFrom || filterDateTo || filterResult || filterFailureReason,
   );
@@ -643,9 +660,6 @@ function DemosPageContent() {
     failSearchQuery || failReasonFilter !== 'all' || failEscortFilter !== 'all' || failServiceTicketFilter !== 'all',
   );
 
-  const coordinatorDemos = demos.filter((d) =>
-    ['requested', 'under_planning', 'team_assigned', 'equipment_reserved'].includes(d.status),
-  );
 
 
 
@@ -1867,9 +1881,14 @@ function DemosPageContent() {
   }
 
   // The View menu (first control of the filter row) replaces the old row of view tabs.
-  const pendingPlanningCount = demos.filter((d) => ['requested', 'under_planning'].includes(d.status)).length;
+  // Server counts under the active filters; a count leaves out its own dimension (the queue ignores the status filter).
+  const pendingPlanningCount: number = demoSummary?.pending_requests ?? queueList.total;
+  const statusCounts: Record<string, number> = demoSummary?.by_status || {};
+  const resultCounts: Record<string, number> = demoSummary?.by_result || {};
+  // The register's filters drive the pipeline list, the coordinator queue and the analytics, so they show on those views.
+  const showRegisterFilters = activeTab === 'pipeline' || activeTab === 'coordinator' || activeTab === 'analytics';
   const viewOptions = [
-    { key: 'pipeline', label: 'Demo pipeline & requests', icon: <Layers />, count: demos.length },
+    { key: 'pipeline', label: 'Demo pipeline & requests', icon: <Layers />, count: pipelineList.total },
     { key: 'my_demos', label: 'My demos', icon: <Users />, count: myDemosList.length },
     { key: 'coordinator', label: 'Coordinator planning queue', icon: <Wrench />, count: pendingPlanningCount },
     { key: 'failures', label: 'Field failures & incidents', icon: <AlertTriangle />, count: failedDemos.length, urgent: true },
@@ -1976,7 +1995,7 @@ function DemosPageContent() {
       <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <FilterMenu label="View" icon={<LayoutList />} neutralKeys={[]} options={viewOptions} className="shrink-0" />
-          {activeTab === 'pipeline' && (
+          {showRegisterFilters && (
             <>
               <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
@@ -1990,20 +2009,22 @@ function DemosPageContent() {
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
-                <FilterMenu
-                  label="Status"
-                  icon={<Layers />}
-                  options={[
-                    { key: '', label: 'All statuses' },
-                    ...DEMO_STATUSES,
-                  ].map((o) => ({
-                    ...o,
-                    count: o.key ? demos.filter((d) => d.status === o.key).length : demos.length,
-                    active: filterStatus === o.key,
-                    onSelect: () => setFilterStatus(o.key),
-                  }))}
-                  neutralKeys={['']}
-                />
+                {activeTab !== 'coordinator' && (
+                  <FilterMenu
+                    label="Status"
+                    icon={<Layers />}
+                    options={[
+                      { key: '', label: 'All statuses' },
+                      ...DEMO_STATUSES,
+                    ].map((o) => ({
+                      ...o,
+                      count: o.key ? statusCounts[o.key] || 0 : demoSummary?.status_total,
+                      active: filterStatus === o.key,
+                      onSelect: () => setFilterStatus(o.key),
+                    }))}
+                    neutralKeys={['']}
+                  />
+                )}
                 <FilterMenu
                   label="Product"
                   icon={<Package />}
@@ -2026,7 +2047,7 @@ function DemosPageContent() {
                     ...demoLocations.map((loc) => ({
                       key: loc,
                       label: loc,
-                      count: demos.filter((d) => d.location === loc).length,
+                      count: locationCounts[loc] || 0,
                       active: filterLocation === loc,
                       onSelect: () => setFilterLocation(loc),
                     })),
@@ -2039,13 +2060,13 @@ function DemosPageContent() {
                   neutralKeys={['']}
                   options={[
                     { key: '', label: 'All outcomes', active: !filterResult, onSelect: () => { setFilterResult(''); setFilterFailureReason(''); } },
-                    { key: 'success', label: 'Successful pass', active: filterResult === 'success', onSelect: () => { setFilterResult('success'); setFilterFailureReason(''); } },
-                    { key: 'partial', label: 'Partial trial', active: filterResult === 'partial', onSelect: () => { setFilterResult('partial'); setFilterFailureReason(''); } },
+                    { key: 'success', label: 'Successful pass', count: resultCounts.success || 0, active: filterResult === 'success', onSelect: () => { setFilterResult('success'); setFilterFailureReason(''); } },
+                    { key: 'partial', label: 'Partial trial', count: resultCounts.partial || 0, active: filterResult === 'partial', onSelect: () => { setFilterResult('partial'); setFilterFailureReason(''); } },
                     {
                       key: 'fail',
                       label: 'Failed (any reason)',
                       urgent: true,
-                      count: demos.filter((d) => d.outcome?.result === 'fail').length,
+                      count: resultCounts.fail || 0,
                       active: filterResult === 'fail' && !filterFailureReason,
                       onSelect: () => { setFilterResult('fail'); setFilterFailureReason(''); },
                     },
@@ -2143,7 +2164,7 @@ function DemosPageContent() {
           )}
         </div>
 
-        {activeTab === 'pipeline' && isDateFilterOpen && (
+        {showRegisterFilters && isDateFilterOpen && (
           <div className="flex flex-wrap items-center gap-3 border-t border-[#ECE9E2] pt-2.5 text-xs">
             <span className="font-semibold text-[#4A5568]">Demo date (confirmed or requested)</span>
             <label className="flex items-center gap-1.5 text-[#4A5568]">
@@ -2208,7 +2229,9 @@ function DemosPageContent() {
       {activeTab === 'pipeline' && (
         <div className="space-y-4">
           {/* Demos Table */}
-          {filteredDemos.length === 0 ? (
+          {pipelineList.loading && filteredDemos.length === 0 ? (
+            <PageLoader label="Loading demonstrations" rows={3} />
+          ) : filteredDemos.length === 0 ? (
             <EmptyState
               icon={<Box className="h-6 w-6" />}
               title="No Demonstrations Found"
@@ -2325,11 +2348,14 @@ function DemosPageContent() {
                   laneOf={(i) => statusById.get(i.key) || ''}
                   summary={
                     <>
-                      <span className="font-mono font-semibold text-[#14213D]">{filteredDemos.length}</span> of {demos.length} demos
-                      {pendingPlanningCount ? ` · ${pendingPlanningCount} awaiting planning` : ''}
+                      <span className="font-mono font-semibold text-[#14213D]">{filteredDemos.length}</span> of {pipelineList.total} demos
+                      {pendingPlanningCount ? ` · ${pendingPlanningCount} pending requests` : ''}
                     </>
                   }
                   empty="No demonstrations match the selected filters."
+                  onLoadMore={pipelineList.loadMore}
+                  hasMore={pipelineList.hasMore}
+                  loadingMore={pipelineList.loadingMore}
                 />
               );
             })()
@@ -2421,22 +2447,32 @@ function DemosPageContent() {
             </div>
             <div className="flex items-center gap-2">
               <Badge variant="warning">
-                {demos.filter((d) => ['requested', 'under_planning'].includes(d.status)).length} Pending
-                Review
+                {pendingPlanningCount} Pending
               </Badge>
             </div>
           </div>
 
-          {coordinatorDemos.length === 0 ? (
+          {queueList.loading && coordinatorDemos.length === 0 ? (
+            <PageLoader label="Loading planning queue" rows={3} />
+          ) : coordinatorDemos.length === 0 ? (
             <EmptyState
               icon={<CheckCircle2 className="h-6 w-6" />}
               title="Planning Queue Is Clear"
-              description="No demonstrations are currently awaiting planning, team assignment or equipment reservation."
+              description={
+                hasPipelineFilters
+                  ? 'No pending requests match the selected filters.'
+                  : 'No demonstrations are currently awaiting planning, team assignment, equipment reservation or date confirmation.'
+              }
             />
           ) : (
             (
             <div className="grid grid-cols-1 gap-4">
               {coordinatorDemos.map((demo) => renderCoordinatorCard(demo))}
+              {queueList.hasMore && (
+                <Button variant="secondary" size="sm" isLoading={queueList.loadingMore} onClick={queueList.loadMore} className="justify-self-center">
+                  Load more ({coordinatorDemos.length} of {queueList.total})
+                </Button>
+              )}
             </div>
           )
           )}

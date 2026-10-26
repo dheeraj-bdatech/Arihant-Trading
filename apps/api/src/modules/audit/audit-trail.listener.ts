@@ -33,8 +33,8 @@ const TENDER_DECISIONS: Record<string, string> = {
  * Target stages of a tender move that TendersService.transitionTender (lifecycleEventFor) also announces with a
  * specific decision event (tender.approval_requested / approved / preparation_started / rejected / pq_submitted /
  * pq_qualified / submitted / won / lost / cancelled). Their generic tender.status_changed is not written, so each
- * decision is one audit row; stages without a decision event (technical / commercial evaluation, reverse auction,
- * back to identified, not submitted …) keep their tender_stage_changed row. Used only for events queued before the
+ * decision is one audit row; stages without a decision event (technical / commercial evaluation,
+ * back to identified …) keep their tender_stage_changed row. Used only for events queued before the
  * status_changed payload carried `decisionEvent`.
  */
 const TENDER_STAGES_WITH_DECISION_EVENT = new Set([
@@ -45,10 +45,7 @@ const TENDER_STAGES_WITH_DECISION_EVENT = new Set([
   'PQ_QUALIFIED',
   'TENDER_SUBMITTED',
   'WON',
-  'PARTIALLY_WON',
   'LOST',
-  'PQ_NOT_QUALIFIED',
-  'TECHNICALLY_DISQUALIFIED',
   'CANCELLED',
 ]);
 

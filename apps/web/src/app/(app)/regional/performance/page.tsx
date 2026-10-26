@@ -100,7 +100,7 @@ const GROUPS: { name: string; cols: Col[] }[] = [
       { label: 'PQ', title: 'PQ tenders identified in the period', get: (f) => f.tender.pq },
       { label: 'Gen/MHA', title: 'General / MHA tenders identified in the period', get: (f) => f.tender.general_mha },
       { label: 'Submitted', title: 'Bids submitted in the period', get: (f) => f.tender.submitted },
-      { label: 'Won', title: 'Won / partially won, result in the period', get: (f) => f.tender.won },
+      { label: 'Won', title: 'Won, result in the period', get: (f) => f.tender.won },
       { label: 'Lost', title: 'Lost / disqualified, result in the period', get: (f) => f.tender.lost },
       { label: 'Win %', title: 'Won ÷ (won + lost)', get: (f) => pct(f.tender.win_rate) },
     ],

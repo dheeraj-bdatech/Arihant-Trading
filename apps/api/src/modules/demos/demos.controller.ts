@@ -27,6 +27,7 @@ import {
   SubmitDemoOutcomeDto,
   CreateEquipmentDto,
   UpdateEquipmentDto,
+  DemoQueryDto,
 } from './demos.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -110,52 +111,25 @@ export class DemosController {
 
   @Get('analytics')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
-  async getAnalytics(@CurrentUser() user: AuthUser) {
-    return this.demosService.getAnalytics(user);
+  async getAnalytics(@Query() query: DemoQueryDto, @CurrentUser() user: AuthUser) {
+    return this.demosService.getAnalytics(user, query);
   }
 
   // =========================================================================
   // Demo requests endpoints
   // =========================================================================
 
+  /** Counts of the register under the same filters as GET /demos (status / location / outcome breakdowns). */
+  @Get('summary')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
+  async getDemoSummary(@Query() query: DemoQueryDto, @CurrentUser() user: AuthUser) {
+    return this.demosService.getDemoSummary(query, user);
+  }
+
   @Get()
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
-  async findAllDemos(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('search') search?: string,
-    @Query('status') status?: string,
-    @Query('assigned_to') assigned_to?: string,
-    @Query('requested_by') requested_by?: string,
-    @Query('organisation_id') organisation_id?: string,
-    @Query('product_id') product_id?: string,
-    @Query('location') location?: string,
-    @Query('date_from') date_from?: string,
-    @Query('date_to') date_to?: string,
-    @Query('lead_id') lead_id?: string,
-    @Query('tender_id') tender_id?: string,
-    @Query('service_ticket_id') service_ticket_id?: string,
-    @CurrentUser() user?: AuthUser,
-  ) {
-    return this.demosService.findAllDemos(
-      {
-        page,
-        limit,
-        search,
-        status,
-        assigned_to,
-        requested_by,
-        organisation_id,
-        lead_id,
-        tender_id,
-        service_ticket_id,
-        product_id,
-        location,
-        date_from,
-        date_to,
-      },
-      user!,
-    );
+  async findAllDemos(@Query() query: DemoQueryDto, @CurrentUser() user: AuthUser) {
+    return this.demosService.findAllDemos(query, user);
   }
 
   @Get(':id')

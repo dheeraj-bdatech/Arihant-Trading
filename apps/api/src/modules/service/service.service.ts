@@ -77,17 +77,43 @@ const SYSTEM_TICKET_PREFIX = /^TCK-/i;
 /** Holding organisation for complaints from a customer not yet in the master (same record the portal uses). */
 const UNVERIFIED_ORG_ID = '00000000-0000-4000-8000-0000000000a1';
 
+/**
+ * Service Desk pipeline stages (§32): each groups raw statuses, legacy aliases included. `completed` is the
+ * "Completed & Signed" KPI (work done, whether or not the manager has closed it yet); it overlaps
+ * `reports` and `closed` on purpose.
+ */
+const TICKET_STAGES: Record<string, string[]> = {
+  open: ['received', 'new', 'created'],
+  assigned: ['assigned', 'visit_scheduled'],
+  in_progress: ['in_progress'],
+  awaiting: ['awaiting_part', 'awaiting_customer', 'on_hold'],
+  escalated: ['escalated', 'revisit_required', 'revisit', 'reopened'],
+  reports: ['report_submitted', 'resolved'],
+  closed: ['closed', 'cancelled'],
+  completed: ['resolved', 'report_submitted', 'closed'],
+};
+
 export type TicketListFilters = {
   search?: string;
   status?: string;
+  /** Pipeline stage key from TICKET_STAGES. */
+  stage?: string;
   priority?: string;
   assigned_to?: string;
   complaint_source?: string;
+  /** Open, clock running, and the visit date or the SLA resolution deadline has passed. */
   overdue?: string | boolean;
+  /** Open, clock running, SLA resolution deadline passed (the "SLA Breached" KPI). */
+  sla_breached?: string | boolean;
   unassigned?: string | boolean;
   repeat?: string | boolean;
+  /** Still-live tickets logged against the unverified-customer holding record (closed/cancelled excluded). */
   unverified?: string | boolean;
+  /** Portal requests still waiting for triage: source Customer Portal, stage `open`. */
+  portal?: string | boolean;
 };
+/** The single-select "Flags" filters: a flag count ignores these so its own flag does not zero the others. */
+const FLAG_FILTERS = ['overdue', 'sla_breached', 'unassigned', 'repeat', 'unverified', 'portal'] as const;
 
 export interface CoreCreateInput {
   organisationId: string;
@@ -330,6 +356,11 @@ export class ServiceService {
       const legacy = wanted === 'received' ? ['received', 'new', 'created'] : wanted === 'revisit_required' ? ['revisit_required', 'revisit'] : [wanted];
       b = b.where('service_tickets.status', 'in', legacy as any);
     }
+    if (query.stage) {
+      const statuses = TICKET_STAGES[query.stage];
+      if (!statuses) throw new BadRequestException(`stage must be one of: ${Object.keys(TICKET_STAGES).join(', ')}`);
+      b = b.where('service_tickets.status', 'in', statuses as any);
+    }
     if (query.priority) b = b.where('service_tickets.priority', '=', query.priority as any);
     if (query.assigned_to) {
       if (!UUID_REGEX.test(query.assigned_to)) throw new BadRequestException('assigned_to must be a valid UUID');
@@ -338,7 +369,18 @@ export class ServiceService {
     if (query.complaint_source) b = b.where('service_tickets.complaint_source', '=', query.complaint_source);
     if (truthy(query.unassigned)) b = b.where('service_tickets.assigned_to', 'is', null);
     if (truthy(query.repeat)) b = b.where('service_tickets.is_repeat_complaint', '=', true);
-    if (truthy(query.unverified)) b = b.where('service_tickets.claimed_organisation_name', 'is not', null);
+    if (truthy(query.unverified)) {
+      b = b.where('service_tickets.claimed_organisation_name', 'is not', null).where('service_tickets.status', 'not in', ['closed', 'cancelled'] as any);
+    }
+    if (truthy(query.portal)) {
+      b = b.where('service_tickets.complaint_source', '=', 'Customer Portal').where('service_tickets.status', 'in', TICKET_STAGES.open as any);
+    }
+    if (truthy(query.sla_breached)) {
+      b = b
+        .where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any)
+        .where('service_tickets.status', 'not in', SERVICE_SLA_PAUSE_STATUSES as any)
+        .where('service_tickets.sla_resolution_due_at', '<', new Date());
+    }
     if (truthy(query.overdue)) {
       b = b
         .where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any)
@@ -370,22 +412,7 @@ export class ServiceService {
   // =========================================================================
   // 1. Ticket Query & Retrieval
   // =========================================================================
-  async findAllTickets(
-    query: {
-      page?: number;
-      limit?: number;
-      search?: string;
-      status?: string;
-      priority?: string;
-      assigned_to?: string;
-      complaint_source?: string;
-      overdue?: string | boolean;
-      unassigned?: string | boolean;
-      repeat?: string | boolean;
-      unverified?: string | boolean;
-    },
-    user: AuthUser,
-  ): Promise<PaginatedResult<any>> {
+  async findAllTickets(query: TicketListFilters & { page?: number; limit?: number }, user: AuthUser): Promise<PaginatedResult<any>> {
     this.assertViewRole(user);
     const { page, limit, offset } = getPaginationParams(query);
 
@@ -1845,53 +1872,44 @@ export class ServiceService {
     this.assertViewRole(user);
     const today = this.todayIst();
     const open = SERVICE_DONE_STATUSES as any;
-    const pausable = SERVICE_SLA_PAUSE_STATUSES as any;
 
-    // Same scope + filters as the ticket list, so the tiles count exactly the tickets the list shows.
-    const q = () =>
+    // Same scope + filters (and the same builder) as the ticket list, so a tile counts exactly what the list
+    // shows once that tile is clicked. Each count drops only its own dimension: stage/status counts ignore the
+    // stage filter, flag counts ignore the flag filters, so picking one tile does not zero the others.
+    const q = (f: TicketListFilters) =>
       this.applyTicketFilters(
         this.db
           .selectFrom('service_tickets')
           .innerJoin('organisations', 'service_tickets.organisation_id', 'organisations.id')
           .where('service_tickets.deleted_at', 'is', null),
-        filters,
+        f,
         user,
       );
+    const noStage: TicketListFilters = { ...filters, stage: undefined, status: undefined };
+    const noFlags: TicketListFilters = { ...filters };
+    for (const k of FLAG_FILTERS) delete noFlags[k];
     const count = sql<number>`count(service_tickets.id)::int`;
+    const countOf = (f: TicketListFilters) => q(f).select(count.as('c')).executeTakeFirst();
 
-    const [total, fresh, pending, assigned, overdue, awaitingParts, completed, critical, repeat, closure, slaBreached, portalNew, unverified, workloadRows, engineers] = await Promise.all([
-      q().select(count.as('c')).executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.status', 'in', ['received', 'new', 'created']).executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.status', 'not in', open).executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.assigned_to', 'is not', null).where('service_tickets.status', 'not in', open).executeTakeFirst(),
-      q()
-        .select(count.as('c'))
-        .where('service_tickets.status', 'not in', open)
-        .where('service_tickets.status', 'not in', pausable)
-        .where((eb) => eb.or([eb('service_tickets.planned_visit_date', '<', today as any), eb('service_tickets.sla_resolution_due_at', '<', new Date())]))
-        .executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.status', '=', 'awaiting_part').executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.status', 'in', ['resolved', 'report_submitted', 'closed']).executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.priority', '=', 'critical').where('service_tickets.status', 'not in', open).executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.is_repeat_complaint', '=', true).executeTakeFirst(),
+    const [byStatus, assigned, overdue, critical, repeat, closure, slaBreached, portalNew, unverified, workloadRows, engineers] = await Promise.all([
+      q(noStage).select(['service_tickets.status', count.as('c')]).groupBy('service_tickets.status').execute(),
+      q(noStage).select(count.as('c')).where('service_tickets.assigned_to', 'is not', null).where('service_tickets.status', 'not in', open).executeTakeFirst(),
+      countOf({ ...noFlags, overdue: true }),
+      q(noStage).select(count.as('c')).where('service_tickets.priority', '=', 'critical').where('service_tickets.status', 'not in', open).executeTakeFirst(),
+      countOf({ ...noFlags, repeat: true }),
       // §34 average closure time: closed tickets only, from when the complaint was received (a back-dated
       // received day counts from 09:00 IST that day, as the SLA clock does) to closure.
-      q()
+      q(noStage)
         .select(
           sql<number>`coalesce(round(avg(greatest(extract(epoch from (service_tickets.closed_at - (case when service_tickets.received_date is not null and service_tickets.received_date < (service_tickets.created_at at time zone 'Asia/Kolkata')::date then (service_tickets.received_date + time '09:00') at time zone 'Asia/Kolkata' else service_tickets.created_at end))), 0) / 86400)::numeric, 1), 0)::float`.as('avg_days'),
         )
         .where('service_tickets.status', '=', 'closed')
         .where('service_tickets.closed_at', 'is not', null)
         .executeTakeFirst(),
-      q()
-        .select(count.as('c'))
-        .where('service_tickets.status', 'not in', open)
-        .where('service_tickets.status', 'not in', pausable)
-        .where('service_tickets.sla_resolution_due_at', '<', new Date())
-        .executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.complaint_source', '=', 'Customer Portal').where('service_tickets.status', 'in', ['received', 'new', 'created']).executeTakeFirst(),
-      q().select(count.as('c')).where('service_tickets.claimed_organisation_name', 'is not', null).where('service_tickets.status', 'not in', ['closed', 'cancelled']).executeTakeFirst(),
-      q()
+      countOf({ ...noFlags, sla_breached: true }),
+      countOf({ ...noFlags, portal: true }),
+      countOf({ ...noFlags, unverified: true }),
+      q(noStage)
         .innerJoin('users', 'service_tickets.assigned_to', 'users.id')
         .select([
           'users.id as employee_id',
@@ -1932,15 +1950,23 @@ export class ServiceService {
       })
       .sort((a, b) => b.activeTickets - a.activeTickets || a.name.localeCompare(b.name));
 
+    // Stage counts (pipeline tabs + stage tiles) from one status breakdown, bucketed by the same TICKET_STAGES
+    // map the `stage` filter uses.
+    const statusCount = (statuses: readonly string[]) => byStatus.reduce((n, r) => n + (statuses.includes(String(r.status)) ? r.c : 0), 0);
+    const stageCounts: Record<string, number> = { all: byStatus.reduce((n, r) => n + r.c, 0) };
+    for (const [stage, statuses] of Object.entries(TICKET_STAGES)) stageCounts[stage] = statusCount(statuses);
+    const pending = stageCounts.all - statusCount(SERVICE_DONE_STATUSES);
+
     return {
-      total: total?.c || 0,
-      newTickets: fresh?.c || 0,
-      pendingTickets: pending?.c || 0,
+      total: stageCounts.all,
+      newTickets: stageCounts.open,
+      pendingTickets: pending,
       assignedTickets: assigned?.c || 0,
       overdueTickets: overdue?.c || 0,
-      awaitingParts: awaitingParts?.c || 0,
-      completedTickets: completed?.c || 0,
-      resolvedTickets: completed?.c || 0,
+      awaitingParts: statusCount(['awaiting_part']),
+      completedTickets: stageCounts.completed,
+      resolvedTickets: stageCounts.completed,
+      stageCounts,
       criticalTickets: critical?.c || 0,
       repeatComplaints: repeat?.c || 0,
       avgClosureDays: closure?.avg_days || 0,

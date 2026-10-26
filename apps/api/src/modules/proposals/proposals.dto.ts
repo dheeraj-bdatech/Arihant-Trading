@@ -717,6 +717,10 @@ export class ProposalQueryDto {
 
   @IsString()
   @IsOptional()
+  upcoming?: string;
+
+  @IsString()
+  @IsOptional()
   without_follow_up?: string;
 
   @IsString()
@@ -871,6 +875,12 @@ export class ProposalSettingsDto {
   @IsBoolean()
   @IsOptional()
   allow_fast_track?: boolean;
+
+  /** ₹ quoted value at or above which a proposal needs Management approval (below: the region's Regional Manager). */
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  management_approval_threshold?: number;
 
   @IsString()
   @IsOptional()

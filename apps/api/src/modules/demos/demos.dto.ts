@@ -428,3 +428,76 @@ export class UpdateEquipmentDto {
   @IsOptional()
   remarks?: string;
 }
+
+/**
+ * Filters of the demo register (GET /demos), its counts (GET /demos/summary) and analytics (GET /demos/analytics).
+ * Every param must be declared here: the global ValidationPipe whitelists query DTOs, so an undeclared one is dropped.
+ * Values are checked in DemosService (UUIDs, statuses, IST calendar days) so a bad one is a 400, never a Postgres 500.
+ */
+export class DemoQueryDto {
+  @IsOptional()
+  page?: number | string;
+
+  @IsOptional()
+  limit?: number | string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  /** One status, or several comma-separated (e.g. `requested,under_planning`). */
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @IsOptional()
+  @IsString()
+  assigned_to?: string;
+
+  @IsOptional()
+  @IsString()
+  requested_by?: string;
+
+  @IsOptional()
+  @IsString()
+  organisation_id?: string;
+
+  @IsOptional()
+  @IsString()
+  lead_id?: string;
+
+  @IsOptional()
+  @IsString()
+  tender_id?: string;
+
+  @IsOptional()
+  @IsString()
+  service_ticket_id?: string;
+
+  @IsOptional()
+  @IsString()
+  product_id?: string;
+
+  @IsOptional()
+  @IsString()
+  location?: string;
+
+  /** Demo day (confirmed, else requested) from this IST calendar day, inclusive. */
+  @IsOptional()
+  @IsString()
+  date_from?: string;
+
+  /** Demo day (confirmed, else requested) up to this IST calendar day, inclusive. */
+  @IsOptional()
+  @IsString()
+  date_to?: string;
+
+  /** Recorded outcome: success / fail / partial. */
+  @IsOptional()
+  @IsIn(['success', 'fail', 'partial'])
+  result?: DemoResult;
+
+  @IsOptional()
+  @IsString()
+  failure_reason?: string;
+}

@@ -10,7 +10,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Kysely, sql, Transaction } from 'kysely';
+import { Kysely, sql, Transaction, type Expression } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { addIsoDays, calendarDay, isoDaysBetween, todayInKolkata } from '../../common/utils/ist-date.util.js';
@@ -23,7 +23,14 @@ import {
   formatISTDate,
   CLOSED_LEAD_STATUSES,
 } from '@arihant/shared';
-import { ProposalsWorkflowService, proposalDisplayNo, hasQuotedValue, TERMINAL_PROPOSAL_STATUSES, type ProposalSettingsConfig } from './proposals.workflow.js';
+import {
+  ProposalsWorkflowService,
+  proposalDisplayNo,
+  hasQuotedValue,
+  managementApprovalThreshold,
+  TERMINAL_PROPOSAL_STATUSES,
+  type ProposalSettingsConfig,
+} from './proposals.workflow.js';
 import { AppEvents } from '../../common/events/event-names.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
 import { ProposalTimelineProjection } from './consumers/timeline.projection.js';
@@ -51,6 +58,7 @@ import {
   ProposalSettingsDto,
   ImportProposalSheetDto,
 } from './proposals.dto.js';
+import { containsPattern } from '../../common/utils/like-pattern.js';
 
 /** Human status names for server messages. */
 const PROPOSAL_STATUS_TEXT: Record<string, string> = {
@@ -64,6 +72,27 @@ const PROPOSAL_STATUS_TEXT: Record<string, string> = {
   CONVERTED: 'Converted',
   LOST: 'Lost',
   CLOSED: 'Closed',
+};
+
+const DISPATCHED_PROPOSAL_STATUSES = ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'sent', 'followup_required'];
+const CLOSED_PROPOSAL_STATUSES = ['CONVERTED', 'LOST', 'CLOSED', 'converted', 'lost', 'closed'];
+
+/** Follow-up filter flags on ProposalQueryDto; at most one is sent at a time by the register. */
+const FOLLOW_UP_BUCKETS = ['due_today', 'overdue', 'upcoming', 'without_follow_up', 'stale'] as const;
+type FollowUpBucket = (typeof FOLLOW_UP_BUCKETS)[number];
+type FollowUpContext = { today: string; timezone: string; noFollowUpDays: number };
+
+/** Dashboard status cards → stored status values (upper-cased) they count. */
+const STATUS_COUNT_BUCKETS: Record<string, string[]> = {
+  proposal_requested: ['REQUESTED', 'PROPOSAL_REQUESTED'],
+  pending_preparation: ['UNDER_PREPARATION'],
+  ready_for_review: ['READY_FOR_REVIEW'],
+  approved: ['APPROVED'],
+  sent_to_customer: ['SENT_TO_CUSTOMER', 'SENT'],
+  followup_required: ['FOLLOW_UP_REQUIRED', 'FOLLOWUP_REQUIRED'],
+  converted: ['CONVERTED'],
+  closed: ['CLOSED'],
+  lost: ['LOST'],
 };
 
 /** v1.0 → v1.1, v2.3 → v2.4; anything unparseable restarts at v<major>.1 (DEF-080). */
@@ -95,6 +124,7 @@ export const DEFAULT_PROPOSAL_SETTINGS = {
   reopen_window_days: 30,
   allow_self_approval: false,
   allow_fast_track: false,
+  management_approval_threshold: 1000000,
   digest_time: '09:00',
   proposal_number_format: 'PRP-YYYY-NNNNN',
   lost_reason_codes: [
@@ -161,6 +191,27 @@ export class ProposalsService {
   /**
    * Fetch current system settings for proposals
    */
+  /** Regions that have an active Regional Manager (who approves that region's below-threshold proposals). */
+  private async regionsWithRm(): Promise<Set<string>> {
+    const rows = await this.db
+      .selectFrom('users')
+      .select('region_id')
+      .where('role', '=', 'regional_manager')
+      .where('is_active', '=', true)
+      .where('region_id', 'is not', null)
+      .execute();
+    return new Set(rows.map((r) => String(r.region_id)));
+  }
+
+  /**
+   * Approval band of a proposal: 'management' when its quoted value is at or above the threshold, or when the
+   * customer's region has no active Regional Manager to approve it; otherwise 'regional'.
+   */
+  private approvalBand(p: any, settings: any, rmRegions: Set<string>): 'management' | 'regional' {
+    if (Number(p.quoted_value) >= managementApprovalThreshold(settings)) return 'management';
+    return p.organisation_region_id && rmRegions.has(String(p.organisation_region_id)) ? 'regional' : 'management';
+  }
+
   async getSettings(): Promise<any> {
     try {
       let settings = await this.db
@@ -215,12 +266,16 @@ export class ProposalsService {
   }
 
   /**
-   * List proposals with server-side search, filtering, territorial scoping, and sorting
+   * Scoped + filtered proposals query shared by the register (findAll) and the dashboard counts.
+   * `ignore` drops one filter dimension so a count can be taken across that dimension
+   * (status counts ignore the status filter, follow-up counts ignore the follow-up filter).
    */
-  async findAll(query: ProposalQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
-    const { page, limit, offset } = getPaginationParams(query);
-    const settings = await this.getSettings();
-
+  private buildProposalQuery(
+    query: ProposalQueryDto,
+    user: AuthUser,
+    settings: any,
+    ignore?: 'status' | 'followup',
+  ) {
     let baseQuery = this.db
       .selectFrom('proposals')
       .innerJoin('organisations', (join) =>
@@ -283,7 +338,7 @@ export class ProposalsService {
     }
 
     // Status filter
-    if (query.status && query.status !== 'all') {
+    if (ignore !== 'status' && query.status && query.status !== 'all') {
       const statuses = this.getStatusArray(query.status);
       baseQuery = baseQuery.where('proposals.status', 'in', statuses as any);
     }
@@ -337,48 +392,15 @@ export class ProposalsService {
       );
     }
 
-    // Flag filters (E44, 6a-f)
-    const today = new Intl.DateTimeFormat('en-CA', {
-      timeZone: settings?.business_timezone || 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date());
-
-    if (query.due_today === 'true' || query.due_today === '1') {
-      baseQuery = baseQuery
-        .where('proposals.status', 'in', ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'sent', 'followup_required'] as any)
-        .where((eb) =>
-          eb.or([eb('proposals.next_follow_up_date', '=', today), eb('proposals.next_followup', '=', today)]),
-        );
-    }
-
-    if (query.overdue === 'true' || query.overdue === '1') {
-      baseQuery = baseQuery
-        .where('proposals.status', 'in', ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'sent', 'followup_required'] as any)
-        .where((eb) =>
-          eb.or([eb('proposals.next_follow_up_date', '<', today), eb('proposals.next_followup', '<', today)]),
-        );
-    }
-
-    if (query.without_follow_up === 'true' || query.without_follow_up === '1') {
-      const noFuDays = settings?.no_follow_up_after_days ?? 7;
-      baseQuery = baseQuery
-        .where('proposals.status', 'in', ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'sent', 'followup_required'] as any)
-        .where((eb) =>
-          eb.or([
-            eb('proposals.next_follow_up_date', 'is', null),
-            eb('proposals.follow_up_owner_id', 'is', null),
-            eb('proposals.owner_inactive_flag', '=', true),
-            eb('proposals.follow_up_count', '=', 0),
-          ]),
-        );
-    }
-
-    if (query.stale === 'true' || query.stale === '1') {
-      baseQuery = baseQuery
-        .where('proposals.status', 'not in', ['CONVERTED', 'LOST', 'CLOSED', 'converted', 'lost', 'closed'] as any)
-        .where(sql<boolean>`proposals.last_activity_at <= NOW() - make_interval(days => ${PROPOSAL_INACTIVITY_DAYS})`);
+    // Follow-up buckets (6a-6d, E44) — the same predicates feed the dashboard counts
+    if (ignore !== 'followup') {
+      const ctx = this.followUpContext(settings);
+      for (const bucket of FOLLOW_UP_BUCKETS) {
+        const flag = query[bucket];
+        if (flag === 'true' || flag === '1') {
+          baseQuery = baseQuery.where(this.followUpPredicate(bucket, ctx));
+        }
+      }
     }
 
     if (query.urgent === 'true' || query.urgent === '1') {
@@ -400,6 +422,8 @@ export class ProposalsService {
     if (query.to_required_date) baseQuery = baseQuery.where('proposals.required_date', '<=', query.to_required_date);
     if (query.from_sent_date) baseQuery = baseQuery.where('proposals.sent_date', '>=', query.from_sent_date);
     if (query.to_sent_date) baseQuery = baseQuery.where('proposals.sent_date', '<=', query.to_sent_date);
+    if (query.from_outcome_date) baseQuery = baseQuery.where('proposals.outcome_date', '>=', query.from_outcome_date);
+    if (query.to_outcome_date) baseQuery = baseQuery.where('proposals.outcome_date', '<=', query.to_outcome_date);
     if (query.from_next_follow_up) {
       baseQuery = baseQuery.where((eb) =>
         eb.or([
@@ -419,7 +443,7 @@ export class ProposalsService {
 
     // Free-text search (E10)
     if (query.search && query.search.trim()) {
-      const s = `%${query.search.trim().toLowerCase()}%`;
+      const s = containsPattern(query.search);
       baseQuery = baseQuery.where((eb) =>
         eb.or([
           sql<boolean>`LOWER(proposals.proposal_number) LIKE ${s}`,
@@ -433,6 +457,58 @@ export class ProposalsService {
         ]),
       );
     }
+
+
+    return baseQuery;
+  }
+
+  /** Business-timezone "today" and thresholds the follow-up buckets are evaluated against (E44). */
+  private followUpContext(settings: any): FollowUpContext {
+    const timezone = settings?.business_timezone || 'Asia/Kolkata';
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+    return { today, timezone, noFollowUpDays: settings?.no_follow_up_after_days ?? 7 };
+  }
+
+  /**
+   * One definition per follow-up bucket (MODULE_5 §5.1), used both as the register filter and
+   * as the dashboard count, so a card's number always equals the rows it filters to.
+   */
+  private followUpPredicate(bucket: FollowUpBucket, { today, timezone, noFollowUpDays }: FollowUpContext) {
+    const dispatched = sql`proposals.status IN (${sql.join(DISPATCHED_PROPOSAL_STATUSES)})`;
+    const nextFollowUp = sql`COALESCE(proposals.next_follow_up_date, proposals.next_followup)`;
+    switch (bucket) {
+      case 'due_today':
+        return sql<boolean>`(${dispatched} AND ${nextFollowUp} = ${today}::date)`;
+      case 'overdue':
+        return sql<boolean>`(${dispatched} AND ${nextFollowUp} < ${today}::date)`;
+      case 'upcoming':
+        return sql<boolean>`(${dispatched} AND ${nextFollowUp} > ${today}::date)`;
+      case 'without_follow_up':
+        return sql<boolean>`(${dispatched} AND (
+          ${nextFollowUp} IS NULL
+          OR proposals.owner_inactive_flag = true
+          OR (proposals.sent_date < ${today}::date - ${noFollowUpDays}::int AND COALESCE(proposals.follow_up_count, 0) = 0)
+        ))`;
+      case 'stale':
+        // Old proposals without movement: open and no meaningful activity for 7+ calendar days (E45)
+        return sql<boolean>`(proposals.status NOT IN (${sql.join(CLOSED_PROPOSAL_STATUSES)})
+          AND (COALESCE(proposals.last_activity_at, proposals.created_at) AT TIME ZONE ${timezone})::date
+            <= ${today}::date - ${PROPOSAL_INACTIVITY_DAYS}::int)`;
+    }
+  }
+
+  /**
+   * List proposals with server-side search, filtering, territorial scoping, and sorting
+   */
+  async findAll(query: ProposalQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams(query);
+    const settings = await this.getSettings();
+    const baseQuery = this.buildProposalQuery(query, user, settings);
 
     const countRes = await baseQuery
       .select(sql<number>`count(proposals.id)::int`.as('total'))
@@ -512,6 +588,7 @@ export class ProposalsService {
         'organisations.name as organisation_name',
         'organisations.city as organisation_city',
         'organisations.state as organisation_state',
+        'organisations.region_id as organisation_region_id',
         'products.name as product_name',
         'requested_user.full_name as requested_by_name',
         'responsible_user.full_name as responsible_name',
@@ -522,8 +599,9 @@ export class ProposalsService {
       .offset(offset)
       .execute();
 
-    // Attach calculated allowed_transitions for current user
-    const enriched = items.map((p) => ({
+    // Attach the approval band and the calculated allowed_transitions for the current user
+    const rmRegions = await this.regionsWithRm();
+    const enriched = items.map((raw) => ({ ...raw, approval_band: this.approvalBand(raw, settings, rmRegions) })).map((p) => ({
       ...p,
       proposal_no: p.proposal_no || p.proposal_number,
       is_terminal: this.workflowService.isTerminal(p.status),
@@ -718,6 +796,8 @@ export class ProposalsService {
       : null;
 
     const isTerminal = this.workflowService.isTerminal(proposal.status);
+    // Who approves this proposal (value band; Management when the customer's region has no active RM).
+    (proposal as any).approval_band = this.approvalBand(proposal, settings, await this.regionsWithRm());
     return {
       ...proposal,
       proposal_no: proposal.proposal_no || proposal.proposal_number,
@@ -2650,68 +2730,43 @@ export class ProposalsService {
   /**
    * Executive Dashboard Statistics (Section 6 & E44-E49)
    */
-  async getDashboardStats(user: AuthUser): Promise<any> {
+  async getDashboardStats(user: AuthUser, query: ProposalQueryDto = {}): Promise<any> {
     const settings = await this.getSettings();
-    const tz = settings?.business_timezone || 'Asia/Kolkata';
-    const today = new Intl.DateTimeFormat('en-CA', {
-      timeZone: tz,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date());
+    const ctx = this.followUpContext(settings);
+    const { today } = ctx;
+    const countIf = (cond: Expression<any>) => sql<number>`(count(proposals.id) FILTER (WHERE ${cond}))::int`;
 
-    let baseQuery = this.db
-      .selectFrom('proposals')
-      .innerJoin('organisations', (join) =>
-        join.on((eb) =>
-          eb.or([
-            eb('proposals.customer_id', '=', eb.ref('organisations.id')),
-            eb('proposals.organisation_id', '=', eb.ref('organisations.id')),
-          ]),
+    // Status cards: every active filter except status (same builder + RBAC scope as the register).
+    const statusCounts = await this.buildProposalQuery(query, user, settings, 'status')
+      .select([
+        sql<number>`count(proposals.id)::int`.as('total_proposals'),
+        ...Object.entries(STATUS_COUNT_BUCKETS).map(([key, statuses]) =>
+          countIf(sql`UPPER(proposals.status) IN (${sql.join(statuses)})`).as(key),
         ),
-      )
-      .where('proposals.is_deleted', '=', false);
+      ])
+      .executeTakeFirst();
 
-    // Visibility scoping
-    const role = (user.role || '').toLowerCase();
-    const isGlobal = role === 'admin' || role === 'management';
-    if (!isGlobal) {
-      if (role === 'regional_manager' && user.region_id) {
-        baseQuery = baseQuery.where('organisations.region_id', '=', user.region_id);
-      } else {
-        baseQuery = baseQuery.where((eb) => {
-          const conds = [
-            eb('proposals.responsible_person_id', '=', user.id),
-            eb('proposals.responsible_id', '=', user.id),
-            eb('proposals.requested_by_id', '=', user.id),
-            eb('proposals.requested_by', '=', user.id),
-            eb('proposals.follow_up_owner_id', '=', user.id),
-            eb('proposals.followup_owner_id', '=', user.id),
-          ];
-          if (user.region_id) {
-            conds.push(eb('organisations.region_id', '=', user.region_id));
-          }
-          return eb.or(conds);
-        });
-      }
-    }
+    // Follow-up cards: every active filter except the follow-up bucket; same predicates as the filter.
+    const followUpCounts = await this.buildProposalQuery(query, user, settings, 'followup')
+      .select([
+        countIf(this.followUpPredicate('due_today', ctx)).as('due_today'),
+        countIf(this.followUpPredicate('overdue', ctx)).as('overdue'),
+        countIf(this.followUpPredicate('upcoming', ctx)).as('upcoming'),
+        countIf(this.followUpPredicate('without_follow_up', ctx)).as('no_followup'),
+        countIf(this.followUpPredicate('stale', ctx)).as('old_no_movement'),
+      ])
+      .executeTakeFirst();
 
-    const allProposals = await baseQuery.selectAll('proposals').execute();
+    // Remaining operational flags (6f) are not filter dimensions: computed over all active filters.
+    const allProposals = await this.buildProposalQuery(query, user, settings)
+      .selectAll('proposals')
+      .select('organisations.region_id as organisation_region_id')
+      .execute();
+    const rmRegions = await this.regionsWithRm();
+    // The approval queue counts what waits on this user: major proposals for Management, the region's smaller ones
+    // for a Regional Manager, all of them for Admin.
+    const queueBand = user.role === 'management' ? 'management' : user.role === 'regional_manager' ? 'regional' : null;
 
-    let proposal_requested = 0;
-    let pending_preparation = 0;
-    let ready_for_review = 0;
-    let approved = 0;
-    let sent_to_customer = 0;
-    let followup_required = 0;
-    let converted = 0;
-    let closed = 0;
-    let lost = 0;
-
-    let due_today = 0;
-    let overdue = 0;
-    let no_followup = 0;
-    let old_no_movement = 0;
     let unassigned = 0;
     let prep_overdue = 0;
     let required_date_approaching = 0;
@@ -2719,29 +2774,13 @@ export class ProposalsService {
     let owner_inactive = 0;
     let suggest_closure = 0;
 
-    const dispatchedStatuses = ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'sent', 'followup_required'];
-    const closedStatuses = ['CONVERTED', 'LOST', 'CLOSED', 'converted', 'lost', 'closed'];
-
-    const noFuThreshold = settings?.no_follow_up_after_days ?? 7;
     const suggestClosureDays = settings?.suggest_closure_after_days ?? 60;
     const warningDays = settings?.required_date_warning_days ?? 2;
-    const now = new Date();
 
     for (const p of allProposals) {
       const status = (p.status || '').toUpperCase();
-
-      if (status === 'REQUESTED' || status === 'PROPOSAL_REQUESTED') proposal_requested++;
-      else if (status === 'UNDER_PREPARATION') pending_preparation++;
-      else if (status === 'READY_FOR_REVIEW') ready_for_review++;
-      else if (status === 'APPROVED') approved++;
-      else if (status === 'SENT_TO_CUSTOMER' || status === 'SENT') sent_to_customer++;
-      else if (status === 'FOLLOW_UP_REQUIRED' || status === 'FOLLOWUP_REQUIRED') followup_required++;
-      else if (status === 'CONVERTED') converted++;
-      else if (status === 'CLOSED') closed++;
-      else if (status === 'LOST') lost++;
-
-      const isDispatched = dispatchedStatuses.includes(p.status || '');
-      const isClosed = closedStatuses.includes(p.status || '');
+      const isDispatched = DISPATCHED_PROPOSAL_STATUSES.includes(p.status || '');
+      const isClosed = CLOSED_PROPOSAL_STATUSES.includes(p.status || '');
 
       // Unassigned (6f)
       if ((status === 'REQUESTED' || status === 'PROPOSAL_REQUESTED') && !p.responsible_person_id && !p.responsible_id) {
@@ -2764,7 +2803,7 @@ export class ProposalsService {
       }
 
       // Pending approval queue (6f)
-      if (status === 'READY_FOR_REVIEW') {
+      if (status === 'READY_FOR_REVIEW' && (!queueBand || this.approvalBand(p, settings, rmRegions) === queueBand)) {
         pending_approval_queue++;
       }
 
@@ -2773,60 +2812,18 @@ export class ProposalsService {
         owner_inactive++;
       }
 
-      // Follow-up buckets (6a, 6b, 6c)
-      if (isDispatched) {
-        const fuDate = calendarDay((p.next_follow_up_date || p.next_followup) as any);
-        if (fuDate === today) due_today++;
-        else if (fuDate && fuDate < today) overdue++;
-
-        // Without follow-up (6a)
-        const isOwnerInactive = p.owner_inactive_flag;
-        let sentDaysAgo = 0;
-        if (p.sent_date) {
-          sentDaysAgo = isoDaysBetween(calendarDay(p.sent_date as any) || today, today);
-        }
-        if (!fuDate || isOwnerInactive || (sentDaysAgo > noFuThreshold && (p.follow_up_count || 0) === 0)) {
-          no_followup++;
-        }
-
-        // Suggest closure (6f, E41)
-        if (sentDaysAgo >= suggestClosureDays && !isClosed) {
+      // Suggest closure (6f, E41)
+      if (isDispatched && p.sent_date) {
+        const sentDaysAgo = isoDaysBetween(calendarDay(p.sent_date as any) || today, today);
+        if (sentDaysAgo >= suggestClosureDays) {
           suggest_closure++;
-        }
-      }
-
-      // Stale without movement (6d, E45)
-      if (!isClosed) {
-        let thresh = 7;
-        if (status.includes('REQUESTED')) thresh = settings?.stale_requested_days ?? 2;
-        else if (status === 'UNDER_PREPARATION') thresh = settings?.stale_preparation_days ?? 7;
-        else if (status === 'READY_FOR_REVIEW') thresh = settings?.stale_review_days ?? 2;
-        else if (status === 'APPROVED') thresh = settings?.stale_approved_days ?? 2;
-        else if (isDispatched) thresh = settings?.stale_followup_days ?? 21;
-
-        const lastActive = p.last_activity_at ? new Date(p.last_activity_at) : new Date(p.created_at);
-        const inactiveDays = Math.floor((now.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24));
-        if (inactiveDays >= thresh) {
-          old_no_movement++;
         }
       }
     }
 
     return {
-      total_proposals: allProposals.length,
-      proposal_requested,
-      pending_preparation,
-      ready_for_review,
-      approved,
-      sent_to_customer,
-      followup_required,
-      converted,
-      closed,
-      lost,
-      due_today,
-      overdue,
-      no_followup,
-      old_no_movement,
+      ...statusCounts,
+      ...followUpCounts,
       unassigned,
       prep_overdue,
       required_date_approaching,
@@ -3351,8 +3348,9 @@ export class ProposalsService {
         return this.markLost(
           id,
           {
-            lost_reason_code: dto.lost_reason || 'Other',
-            lost_reason_text: dto.lost_remarks || dto.lost_reason || 'Lost',
+            // No fallbacks: reason and explanation are mandatory (E29) and validateTransition rejects empty ones.
+            lost_reason_code: dto.lost_reason || '',
+            lost_reason_text: dto.lost_remarks || '',
             remarks: dto.remarks,
           },
           user,
@@ -3362,7 +3360,8 @@ export class ProposalsService {
           id,
           {
             closure_reason_code: 'Other',
-            closure_reason_text: dto.remarks || 'Closed',
+            // Closure remarks are mandatory (E28): never substitute a placeholder.
+            closure_reason_text: dto.remarks || '',
           },
           user,
         );

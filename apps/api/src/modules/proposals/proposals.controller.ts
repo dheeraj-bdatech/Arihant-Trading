@@ -78,8 +78,8 @@ export class ProposalsController {
   // =========================================================================
   @Get('dashboard')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin', 'accounts')
-  async getDashboardStats(@CurrentUser() user: AuthUser) {
-    return this.proposalsService.getDashboardStats(user);
+  async getDashboardStats(@Query() query: ProposalQueryDto, @CurrentUser() user: AuthUser) {
+    return this.proposalsService.getDashboardStats(user, query);
   }
 
   @Get('reports/outcome')
@@ -236,7 +236,8 @@ export class ProposalsController {
   }
 
   @Post(':id/approve')
-  @Roles('management', 'admin')
+  // Management / Admin for major proposals, the region's Regional Manager below the threshold (ProposalsWorkflowService).
+  @Roles('management', 'regional_manager', 'admin')
   async approve(
     @Param('id') id: string,
     @Body() dto: ApproveProposalDto,
@@ -252,7 +253,8 @@ export class ProposalsController {
   }
 
   @Post(':id/request-changes')
-  @Roles('management', 'admin')
+  // Management / Admin for major proposals, the region's Regional Manager below the threshold (ProposalsWorkflowService).
+  @Roles('management', 'regional_manager', 'admin')
   async requestChanges(
     @Param('id') id: string,
     @Body() dto: RequestChangesDto,

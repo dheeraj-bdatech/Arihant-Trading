@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Truck,
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { useOpenParam } from '@/lib/use-open-param';
 import { userWithRole } from '@/lib/role-label';
 import { PROPOSAL_ORDER_TYPES } from '@arihant/shared';
@@ -62,6 +63,10 @@ const allowedDeliveryStatuses = (current?: string) => {
   const next = idx >= 0 ? DELIVERY_FLOW[idx + 1] : undefined;
   return [current, next, 'cancelled'].filter((s, i, a): s is string => !!s && a.indexOf(s) === i);
 };
+// "In Transit" card: consignments that have left the depot but not reached site (dispatched + in transit).
+const IN_TRANSIT_FILTER = 'dispatched,in_transit';
+const DELIVERIES_PAGE_SIZE = 25;
+type DeliveryMetrics = { total: number; byStatus: Record<string, number> };
 const deliveryStatusLabel = (status?: string) =>
   DELIVERY_STATUSES.find((s) => s.key === status)?.label || String(status || 'Unknown').replace(/_/g, ' ');
 
@@ -96,11 +101,9 @@ const deliveryBadge = (status?: string): BadgeVariant => DELIVERY_BADGE[String(s
 export default function DeliveriesPage() {
   const { user } = useAuth();
   const router = useRouter();
-  const [deliveries, setDeliveries] = useState<any[]>([]);
   const [organisations, setOrganisations] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   // Deep link from linked-records panels: /deliveries?search=<SO / delivery no>
@@ -189,7 +192,7 @@ export default function DeliveriesPage() {
     if (!newDelivery.organisation_id || !canRead(user?.role, 'tenders')) return;
     api
       .get('/tenders', { organisation_id: newDelivery.organisation_id, limit: 50 })
-      .then((res: any) => setOrgTenders((res?.data || []).filter((t: any) => ['won', 'partially_won', 'WON', 'PARTIALLY_WON'].includes(t.status))))
+      .then((res: any) => setOrgTenders((res?.data || []).filter((t: any) => ['won', 'WON'].includes(t.status))))
       .catch(() => setOrgTenders([]));
   }, [newDelivery.organisation_id, user?.role]);
 
@@ -206,23 +209,42 @@ export default function DeliveriesPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const fetchDeliveries = async () => {
+  // Register: one page per request, appended as the reader scrolls (the API caps a page at 100 rows).
+  const fetchDeliveriesPage = useCallback(
+    (page: number) => {
+      const params: any = { page, limit: DELIVERIES_PAGE_SIZE };
+      if (activeTab !== 'all') params.status = activeTab;
+      if (searchQuery.trim()) params.search = searchQuery.trim();
+      return api.get('/deliveries', params);
+    },
+    [activeTab, searchQuery],
+  );
+  const deliveriesList = useInfiniteList<any>(fetchDeliveriesPage);
+  const { rows: deliveries, total, loading: isLoading } = deliveriesList;
+
+  // KPI cards + status menu counts: counted by the API over the same scope and filters as the register,
+  // except status (each count is a status), so picking a status never zeroes the other cards.
+  const [metrics, setMetrics] = useState<DeliveryMetrics | null>(null);
+  const metricsGen = useRef(0);
+  const fetchMetrics = useCallback(async () => {
+    const g = ++metricsGen.current;
+    const params: any = {};
+    if (searchQuery.trim()) params.search = searchQuery.trim();
     try {
-      setIsLoading(true);
-      const params: any = { limit: 100 };
-      if (activeTab !== 'all') {
-        params.status = activeTab;
-      }
-      if (searchQuery.trim()) {
-        params.search = searchQuery.trim();
-      }
-      const res = await api.get('/deliveries', params);
-      setDeliveries(res.data || []);
+      const res = await api.get<DeliveryMetrics>('/deliveries/metrics', params);
+      if (g === metricsGen.current) setMetrics(res);
     } catch (err) {
-      console.error('Failed to load deliveries:', err);
-    } finally {
-      setIsLoading(false);
+      console.error('Failed to load delivery metrics:', err);
     }
+  }, [searchQuery]);
+  useEffect(() => {
+    fetchMetrics();
+  }, [fetchMetrics]);
+
+  // After a create / milestone update: re-read the pages already loaded (in place) and the counts.
+  const fetchDeliveries = () => {
+    deliveriesList.refresh();
+    fetchMetrics();
   };
 
   const fetchDependencies = async () => {
@@ -243,10 +265,6 @@ export default function DeliveriesPage() {
   useEffect(() => {
     fetchDependencies();
   }, []);
-
-  useEffect(() => {
-    fetchDeliveries();
-  }, [activeTab, searchQuery]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -409,13 +427,13 @@ export default function DeliveriesPage() {
     };
   };
 
+  const byStatus = metrics?.byStatus ?? {};
+  const statusCount = (key: string) => key.split(',').reduce((n, s) => n + (byStatus[s] ?? 0), 0);
   const counts = {
-    all: deliveries.length,
-    scheduled: deliveries.filter((d) => d.status === 'scheduled').length,
-    in_transit: deliveries.filter((d) => ['dispatched', 'in_transit'].includes(d.status)).length,
-    delivered: deliveries.filter((d) => d.status === 'delivered').length,
-    installed: deliveries.filter((d) => d.status === 'installed').length,
-    handover_completed: deliveries.filter((d) => d.status === 'handover_completed').length,
+    all: metrics?.total ?? 0,
+    scheduled: statusCount('scheduled'),
+    in_transit: statusCount(IN_TRANSIT_FILTER),
+    closed: statusCount('delivered,installed,handover_completed'),
   };
   const hasActiveFilters = activeTab !== 'all' || Boolean(searchQuery);
 
@@ -565,13 +583,14 @@ export default function DeliveriesPage() {
         />
         <StatCard
           title="In Transit"
+          subtext="Dispatched + in transit"
           value={counts.in_transit}
           icon={<Package size={16} />}
           variant="rose"
-          className={activeTab === 'in_transit' ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
-          onClick={() => setActiveTab((cur) => (cur === 'in_transit' ? 'all' : 'in_transit'))}
+          className={activeTab === IN_TRANSIT_FILTER ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+          onClick={() => setActiveTab((cur) => (cur === IN_TRANSIT_FILTER ? 'all' : IN_TRANSIT_FILTER))}
         />
-        <StatCard title="Delivered / Closed" value={counts.delivered + counts.installed + counts.handover_completed} icon={<CheckCircle2 size={16} />} variant="emerald" />
+        <StatCard title="Delivered / Closed" value={counts.closed} icon={<CheckCircle2 size={16} />} variant="emerald" />
       </StatGrid>
 
       {/* One filter row: search + status dropdown. */}
@@ -594,12 +613,13 @@ export default function DeliveriesPage() {
               icon={<Layers />}
               options={[
                 { key: 'all', label: 'All orders', count: counts.all },
-                { key: 'scheduled', label: 'Scheduled', count: counts.scheduled },
-                { key: 'in_transit', label: 'In transit', count: counts.in_transit },
-                { key: 'delivered', label: 'Delivered', count: counts.delivered },
-                { key: 'installed', label: 'Installed', count: counts.installed },
-                { key: 'handover_completed', label: 'Handover completed', count: counts.handover_completed },
-              ].map((o) => ({ ...o, active: activeTab === o.key, onSelect: () => setActiveTab(o.key) }))}
+                ...DELIVERY_STATUSES.map((s) => ({ ...s, count: statusCount(s.key) })),
+              ].map((o) => ({
+                ...o,
+                // The In Transit card's filter (dispatched + in transit) shows as both of its milestones.
+                active: o.key === activeTab || (o.key !== 'all' && activeTab.split(',').includes(o.key)),
+                onSelect: () => setActiveTab(o.key),
+              }))}
             />
             {hasActiveFilters && (
               <Button
@@ -649,10 +669,16 @@ export default function DeliveriesPage() {
               laneOf={(i) => statusById.get(i.key) || ''}
               summary={
                 <>
-                  <span className="font-mono font-semibold text-[#14213D]">{counts.all}</span> consignments · {counts.scheduled} scheduled · {counts.in_transit} in transit
+                  <span className="font-mono font-semibold text-[#14213D]">
+                    {deliveries.length === total ? total : `${deliveries.length} of ${total}`}
+                  </span>{' '}
+                  {total === 1 ? 'consignment' : 'consignments'}
                 </>
               }
               empty="No delivery consignments match your criteria."
+              onLoadMore={deliveriesList.loadMore}
+              hasMore={deliveriesList.hasMore}
+              loadingMore={deliveriesList.loadingMore}
             />
           );
         })()

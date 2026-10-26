@@ -175,6 +175,8 @@ const priorityBadge = (p?: string | null): BadgeVariant => (p === 'critical' || 
 const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
 
 type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link' | 'reassign'; ticket: any; target?: ServiceStatus };
+/** "Flags" dropdown: single-select; each key is a server-side list filter of the same name. */
+type FlagKey = 'all' | 'portal' | 'unassigned' | 'sla_breached' | 'repeat' | 'unverified';
 
 export default function ServicePage() {
   const { user } = useAuth();
@@ -183,20 +185,18 @@ export default function ServicePage() {
 
   // Data states
   const [tickets, setTickets] = useState<any[]>([]);
+  const [ticketTotal, setTicketTotal] = useState(0);
   const [stats, setStats] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('all');
 
-  // Filters (all applied server-side except the pipeline tabs)
+  // Filters (all applied server-side, the pipeline stage included)
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
-  const [unassignedFilter, setUnassignedFilter] = useState(false);
-  const [overdueFilter, setOverdueFilter] = useState(false);
-  const [repeatFilter, setRepeatFilter] = useState(false);
-  const [unverifiedFilter, setUnverifiedFilter] = useState(false);
+  const [activeFlag, setActiveFlag] = useState<FlagKey>('all');
 
   // Reference data
   const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
@@ -225,24 +225,27 @@ export default function ServicePage() {
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  // Fetch tickets & stats — both with the same filters, so the KPI tiles count exactly what the list shows.
+  // Fetch tickets & stats — both with the same filters. The API counts each tile/stage without its own
+  // dimension, so a tile's number is exactly what the list totals once that tile is clicked.
+  const fetchSeq = useRef(0);
   const fetchData = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     try {
       setLoadError(null);
       const filters = {
+        stage: activeTab !== 'all' ? activeTab : undefined,
         priority: priorityFilter !== 'all' ? priorityFilter : undefined,
         complaint_source: sourceFilter !== 'all' ? sourceFilter : undefined,
-        unassigned: unassignedFilter ? 'true' : undefined,
-        overdue: overdueFilter ? 'true' : undefined,
-        repeat: repeatFilter ? 'true' : undefined,
-        unverified: unverifiedFilter ? 'true' : undefined,
+        ...(activeFlag !== 'all' ? { [activeFlag]: 'true' } : {}),
         search: debouncedSearch || undefined,
       };
       const [ticketsRes, statsRes] = await Promise.all([
         api.get('/service/tickets', { ...filters, limit: 100 }),
         api.get('/service/stats', filters).catch(() => null),
       ]);
+      if (seq !== fetchSeq.current) return; // filters changed meanwhile: a newer response owns the screen
       setTickets(ticketsRes.data || []);
+      setTicketTotal(ticketsRes.total ?? (ticketsRes.data || []).length);
       // No stats (endpoint failed): drop stale numbers so the tiles fall back to counts over the loaded list.
       setStats(statsRes || null);
     } catch (err) {
@@ -251,7 +254,7 @@ export default function ServicePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [priorityFilter, sourceFilter, unassignedFilter, overdueFilter, repeatFilter, unverifiedFilter, debouncedSearch]);
+  }, [activeTab, priorityFilter, sourceFilter, activeFlag, debouncedSearch]);
 
   useEffect(() => {
     fetchData();
@@ -267,7 +270,8 @@ export default function ServicePage() {
     }
   }, [role]);
 
-  // Pipeline tabs (§32) are client-side over the filtered list
+  // Pipeline stages (§32): the API filters by `stage` and counts each one (stats.stageCounts). This mirror of
+  // its stage map only places loaded tickets into board lanes, and backs the counts if stats failed to load.
   const matchesTab = useCallback((tab: string, status: string) => {
     const s = normalizeServiceStatus(status);
     if (tab === 'all') return true;
@@ -278,60 +282,25 @@ export default function ServicePage() {
     if (tab === 'escalated') return ['escalated', 'revisit_required', 'reopened'].includes(s);
     if (tab === 'reports') return ['report_submitted', 'resolved'].includes(s);
     if (tab === 'closed') return ['closed', 'cancelled'].includes(s);
+    if (tab === 'completed') return ['resolved', 'report_submitted', 'closed'].includes(s);
     return s === tab;
   }, []);
-  const displayedTickets = useMemo(() => tickets.filter((t) => matchesTab(activeTab, t.status)), [tickets, activeTab, matchesTab]);
+  // the API already applied every filter, the stage included
+  const displayedTickets = tickets;
 
-  const tabCount = (tab: string) => tickets.filter((t) => matchesTab(tab, t.status)).length;
+  const tabCount = (tab: string): number =>
+    stats?.stageCounts?.[tab] ?? (tab === 'all' ? tickets.length : tickets.filter((t) => matchesTab(tab, t.status)).length);
 
-  const anyFilter = sourceFilter !== 'all' || priorityFilter !== 'all' || unassignedFilter || overdueFilter || repeatFilter || unverifiedFilter || activeTab !== 'all' || !!searchQuery;
+  const anyFilter = sourceFilter !== 'all' || priorityFilter !== 'all' || activeFlag !== 'all' || activeTab !== 'all' || !!searchQuery;
   const clearFilters = () => {
     setSourceFilter('all');
     setPriorityFilter('all');
-    setUnassignedFilter(false);
-    setOverdueFilter(false);
-    setRepeatFilter(false);
-    setUnverifiedFilter(false);
+    setActiveFlag('all');
     setSearchQuery('');
     setActiveTab('all');
   };
-  const applyStatFilter = (kind: 'portal' | 'breached' | 'unverified') => {
-    clearFilters();
-    if (kind === 'portal') {
-      setSourceFilter('Customer Portal');
-      setActiveTab('open');
-    } else if (kind === 'breached') setOverdueFilter(true);
-    else setUnverifiedFilter(true);
-  };
-
-  // "Flags" dropdown: single-select over the quick toggles (and the old portal-triage tile)
-  type FlagKey = 'all' | 'portal' | 'unassigned' | 'overdue' | 'repeat' | 'unverified';
-  const activeFlag: FlagKey =
-    sourceFilter === 'Customer Portal' && activeTab === 'open'
-      ? 'portal'
-      : unassignedFilter
-      ? 'unassigned'
-      : overdueFilter
-      ? 'overdue'
-      : repeatFilter
-      ? 'repeat'
-      : unverifiedFilter
-      ? 'unverified'
-      : 'all';
-  const pickFlag = (key: FlagKey) => {
-    if (activeFlag === 'portal' && key !== 'portal') {
-      setSourceFilter('all');
-      setActiveTab('all');
-    }
-    setUnassignedFilter(key === 'unassigned');
-    setOverdueFilter(key === 'overdue');
-    setRepeatFilter(key === 'repeat');
-    setUnverifiedFilter(key === 'unverified');
-    if (key === 'portal') {
-      setSourceFilter('Customer Portal');
-      setActiveTab('open');
-    }
-  };
+  /** Flag tiles / "Flags" menu: single-select, click the active one again to clear. Other filters stay. */
+  const pickFlag = (key: FlagKey) => setActiveFlag((cur) => (cur === key ? 'all' : key));
   /** KPI tile that switches the stage filter (click again to clear). */
   const toggleStage = (tab: string) => setActiveTab((cur) => (cur === tab ? 'all' : tab));
 
@@ -344,6 +313,8 @@ export default function ServicePage() {
     { id: 'escalated', label: 'Escalated / revisit' },
     { id: 'reports', label: 'Reports filed' },
     { id: 'closed', label: 'Closed / cancelled' },
+    // the "Completed & Signed" tile: resolved + report filed + closed (overlaps the two stages above)
+    { id: 'completed', label: 'Completed & signed' },
   ];
   const SOURCES: { key: string; label: string }[] = [
     { key: 'all', label: 'All channels' },
@@ -356,6 +327,7 @@ export default function ServicePage() {
     { key: 'Field Visit', label: 'Field inspection discovery' },
     { key: 'Walk-in', label: 'Depot walk-in' },
     { key: 'WhatsApp', label: 'WhatsApp hotline' },
+    { key: 'Auto-PM', label: 'Auto preventive maintenance' },
   ];
   const PRIORITIES: { key: string; label: string }[] = [
     { key: 'all', label: 'All priorities' },
@@ -498,13 +470,15 @@ export default function ServicePage() {
   const activeRing = (on: boolean) => `cursor-pointer transition-shadow hover:shadow-md ${on ? 'ring-2 ring-[#0F5E63]' : ''}`;
 
   /* --------------------------- record views mapping --------------------------- */
-  const lanes = STAGES.filter((s) => s.id !== 'all').map((s) => ({ key: s.id, label: s.label, tone: toneFor(s.label) }));
+  const lanes = STAGES.filter((s) => s.id !== 'all' && s.id !== 'completed').map((s) => ({ key: s.id, label: s.label, tone: toneFor(s.label) }));
   const stageOf = (status: string) => lanes.find((l) => matchesTab(l.key, status))?.key ?? 'open';
   const laneByKey = new Map<string, string>(displayedTickets.map((t) => [String(t.id), stageOf(t.status)]));
   const laneOf = (item: RecordItem) => laneByKey.get(item.key) ?? 'open';
   /** Same rule as the dossier: open, clock running, resolution deadline passed. */
   const slaBreached = (t: any) => !isFinished(t.status) && !isSlaPaused(t) && !!t.sla_resolution_due_at && new Date(t.sla_resolution_due_at).getTime() < Date.now();
-  const breachedCount = displayedTickets.filter(slaBreached).length;
+  // exact server count when the list's filters are the tile's (no other flag); else over the loaded rows
+  const breachedCount: number =
+    stats && (activeFlag === 'all' || activeFlag === 'sla_breached') ? stats.slaBreached : displayedTickets.filter(slaBreached).length;
   const fmtDay = (v: unknown) => (v ? formatDateIN(v as string) : '—');
 
   const recordItems: RecordItem[] = displayedTickets.map((t) => {
@@ -671,7 +645,7 @@ export default function ServicePage() {
           tabIndex={0}
           onClick={() => toggleStage('open')}
           onKeyDown={(e) => e.key === 'Enter' && toggleStage('open')}
-          className={activeRing(activeTab === 'open' && activeFlag !== 'portal')}
+          className={activeRing(activeTab === 'open')}
         />
         <StatCard
           label="Pending Queue"
@@ -682,14 +656,14 @@ export default function ServicePage() {
         <StatCard
           label="SLA Breached"
           value={stats?.slaBreached ?? 0}
-          subtext={`${stats?.overdueTickets ?? 0} past planned visit date`}
+          subtext={`${stats?.overdueTickets ?? 0} overdue incl. missed visit dates`}
           icon={<AlertTriangle className="h-5 w-5 text-[#9A3412]" />}
           variant="amber"
           role="button"
           tabIndex={0}
-          onClick={() => (overdueFilter ? setOverdueFilter(false) : applyStatFilter('breached'))}
-          onKeyDown={(e) => e.key === 'Enter' && (overdueFilter ? setOverdueFilter(false) : applyStatFilter('breached'))}
-          className={activeRing(overdueFilter)}
+          onClick={() => pickFlag('sla_breached')}
+          onKeyDown={(e) => e.key === 'Enter' && pickFlag('sla_breached')}
+          className={activeRing(activeFlag === 'sla_breached')}
         />
         <StatCard
           label="Awaiting Parts / Spares"
@@ -706,10 +680,10 @@ export default function ServicePage() {
           variant="emerald"
           role="button"
           tabIndex={0}
-          onClick={() => toggleStage('closed')}
-          onKeyDown={(e) => e.key === 'Enter' && toggleStage('closed')}
+          onClick={() => toggleStage('completed')}
+          onKeyDown={(e) => e.key === 'Enter' && toggleStage('completed')}
           // phones (2-column grid): the fifth tile spans the row instead of sitting alone at half width
-          className={`col-span-2 md:col-span-1 ${activeRing(activeTab === 'closed')}`}
+          className={`col-span-2 md:col-span-1 ${activeRing(activeTab === 'completed')}`}
         />
       </StatGrid>
 
@@ -737,7 +711,7 @@ export default function ServicePage() {
               options={STAGES.map((s) => ({
                 key: s.id,
                 label: s.label,
-                count: s.id === 'all' ? tickets.length : tabCount(s.id),
+                count: tabCount(s.id),
                 active: activeTab === s.id,
                 onSelect: () => setActiveTab(s.id),
               }))}
@@ -760,10 +734,7 @@ export default function ServicePage() {
               options={SOURCES.map((s) => ({
                 ...s,
                 active: sourceFilter === s.key,
-                onSelect: () => {
-                  if (activeFlag === 'portal') setActiveTab('all');
-                  setSourceFilter(s.key);
-                },
+                onSelect: () => setSourceFilter(s.key),
               }))}
             />
             <FilterMenu
@@ -775,14 +746,14 @@ export default function ServicePage() {
                 { key: 'all', label: 'No flag filter', icon: undefined, count: undefined },
                 { key: 'portal', label: 'Portal requests to triage', icon: <Globe2 />, count: stats?.portalNew ?? undefined },
                 { key: 'unassigned', label: 'Unassigned', icon: <User />, count: undefined },
-                { key: 'overdue', label: 'Overdue / SLA breached', icon: <AlertTriangle />, count: stats?.slaBreached ?? undefined },
+                { key: 'sla_breached', label: 'SLA breached', icon: <AlertTriangle />, count: stats?.slaBreached ?? undefined },
                 { key: 'repeat', label: 'Repeat complaints', icon: <Repeat />, count: stats?.repeatComplaints ?? undefined },
                 { key: 'unverified', label: 'Unverified customer', icon: <ShieldQuestion />, count: stats?.unverifiedCustomers ?? undefined },
               ].map((f) => ({
                 ...f,
-                urgent: f.key === 'overdue',
+                urgent: f.key === 'sla_breached',
                 active: activeFlag === f.key,
-                onSelect: () => pickFlag(f.key as FlagKey),
+                onSelect: () => setActiveFlag(f.key as FlagKey),
               }))}
             />
             {anyFilter && (
@@ -821,7 +792,7 @@ export default function ServicePage() {
           empty="No tickets match the current filters."
           summary={
             <>
-              {anyFilter ? `${displayedTickets.length} of ${tickets.length} tickets` : `${displayedTickets.length} ticket${displayedTickets.length === 1 ? '' : 's'}`}
+              {ticketTotal > tickets.length ? `Showing ${tickets.length} of ${ticketTotal} tickets` : `${ticketTotal} ticket${ticketTotal === 1 ? '' : 's'}`}
               {breachedCount > 0 && <span className="font-semibold text-[#881337]"> · {breachedCount} SLA breached</span>}
             </>
           }

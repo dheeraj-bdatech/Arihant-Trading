@@ -38,8 +38,8 @@ export class ServiceController {
   @Get('stats')
   @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
   async getDashboardStats(@Query() query: Record<string, any>, @CurrentUser() user: AuthUser) {
-    // Optional list filters (search, priority, source, unassigned, overdue, repeat, unverified): the KPI tiles
-    // then count exactly what the ticket list shows.
+    // Takes the same filters as the ticket list (search, stage, priority, source and the flags): each KPI tile
+    // and stage count then matches the list total once its own filter is applied.
     return this.serviceService.getDashboardStats(user, query);
   }
 

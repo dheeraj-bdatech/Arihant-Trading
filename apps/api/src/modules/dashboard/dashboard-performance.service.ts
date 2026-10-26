@@ -28,12 +28,9 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 /** People evaluated per salesperson (Blueprint §44: "sales reps and regional managers"). */
 const EVALUATED_ROLES = ['sales', 'regional_manager'];
 /** Tender statuses at or past submission (the bid went in). */
-const TENDER_SUBMITTED = [
-  'pq_submitted', 'pq_qualified', 'pq_not_qualified', 'submitted', 'technical_eval', 'technically_disqualified',
-  'commercial_eval', 'reverse_auction', 'won', 'partially_won', 'lost',
-];
-const TENDER_WON = ['won', 'partially_won'];
-const TENDER_LOST = ['lost', 'technically_disqualified', 'pq_not_qualified'];
+const TENDER_SUBMITTED = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'];
+const TENDER_WON = ['won'];
+const TENDER_LOST = ['lost'];
 
 /** IST calendar day of a timestamptz column. */
 const istDay = (col: Cond) => sql`(${col} at time zone 'Asia/Kolkata')::date`;

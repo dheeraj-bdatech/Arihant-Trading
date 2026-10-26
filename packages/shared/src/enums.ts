@@ -131,18 +131,13 @@ export type TenderStatus =
   | 'under_preparation'
   | 'pq_submitted'
   | 'pq_qualified'
-  | 'pq_not_qualified'
   | 'submitted'
   | 'technical_eval'
-  | 'technically_disqualified'
   | 'commercial_eval'
-  | 'reverse_auction'
   | 'won'
-  | 'partially_won'
   | 'lost'
   | 'cancelled'
-  | 'on_hold'
-  | 'not_submitted';
+  | 'on_hold';
 
 export const TENDER_STATUSES: TenderStatus[] = [
   'identified',
@@ -151,18 +146,13 @@ export const TENDER_STATUSES: TenderStatus[] = [
   'under_preparation',
   'pq_submitted',
   'pq_qualified',
-  'pq_not_qualified',
   'submitted',
   'technical_eval',
-  'technically_disqualified',
   'commercial_eval',
-  'reverse_auction',
   'won',
-  'partially_won',
   'lost',
   'cancelled',
   'on_hold',
-  'not_submitted',
 ];
 
 export const TENDER_UPCOMING_DAYS = 7;
@@ -237,11 +227,10 @@ export const TENDER_PORTAL_ISSUE_CATEGORIES: TenderPortalIssueCategory[] = [
   'Other',
 ];
 
-export type TenderResultOutcome = 'Won' | 'Lost' | 'Partially Won' | 'Cancelled by Organisation' | 'No Result Declared';
+export type TenderResultOutcome = 'Won' | 'Lost' | 'Cancelled by Organisation' | 'No Result Declared';
 export const TENDER_RESULT_OUTCOMES: TenderResultOutcome[] = [
   'Won',
   'Lost',
-  'Partially Won',
   'Cancelled by Organisation',
   'No Result Declared',
 ];
@@ -277,30 +266,20 @@ export const TENDER_STATUS_LABELS: Record<string, string> = {
   PQ_SUBMITTED: 'PQ Submitted',
   pq_qualified: 'PQ Qualified',
   PQ_QUALIFIED: 'PQ Qualified',
-  pq_not_qualified: 'PQ Not Qualified',
-  PQ_NOT_QUALIFIED: 'PQ Not Qualified',
   submitted: 'Tender Submitted',
   TENDER_SUBMITTED: 'Tender Submitted',
   technical_eval: 'Technical Evaluation',
   TECHNICAL_EVALUATION: 'Technical Evaluation',
-  technically_disqualified: 'Technically Disqualified',
-  TECHNICALLY_DISQUALIFIED: 'Technically Disqualified',
   commercial_eval: 'Commercial Evaluation',
   COMMERCIAL_EVALUATION: 'Commercial Evaluation',
-  reverse_auction: 'Reverse Auction',
-  REVERSE_AUCTION: 'Reverse Auction',
   won: 'Won',
   WON: 'Won',
-  partially_won: 'Partially Won',
-  PARTIALLY_WON: 'Partially Won',
   lost: 'Lost',
   LOST: 'Lost',
   cancelled: 'Cancelled',
   CANCELLED: 'Cancelled',
   on_hold: 'On Hold',
   ON_HOLD: 'On Hold',
-  not_submitted: 'Not Submitted',
-  NOT_SUBMITTED: 'Not Submitted',
 };
 
 export type VisitStatus =

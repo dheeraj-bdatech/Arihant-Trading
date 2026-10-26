@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import React, { useState, useEffect, useTransition, useCallback } from 'react';
+import React, { useState, useEffect, useTransition, useCallback, useMemo, useRef } from 'react';
 import {
   Bell,
   FileSpreadsheet,
@@ -191,7 +191,7 @@ const PROPOSAL_PRE_SEND = ['PROPOSAL_REQUESTED', 'UNDER_PREPARATION', 'READY_FOR
 const SORT_FIELDS = [
   { key: 'updated_at', label: 'Recently updated' },
   { key: 'request_date', label: 'Request date' },
-  { key: 'required_date', label: 'Due date' },
+  { key: 'required_date', label: 'Required date' },
   { key: 'sent_date', label: 'Sent date' },
   { key: 'next_followup', label: 'Next follow-up' },
   { key: 'proposal_number', label: 'Proposal no.' },
@@ -200,6 +200,22 @@ const SORT_FIELDS = [
 
 /** Proposals fetched per request while the register scrolls. */
 const PROPOSALS_PAGE_SIZE = 25;
+
+// Follow-up menu key → the flag the API filters on (ProposalQueryDto).
+const FOLLOWUP_FILTER_FLAGS: Record<string, string> = {
+  overdue: 'overdue',
+  due_today: 'due_today',
+  upcoming: 'upcoming',
+  no_followup: 'without_follow_up',
+  old_inactivity: 'stale',
+};
+// Date-field choice → the API's `from_<x>` / `to_<x>` range params.
+const DATE_RANGE_PARAMS: Record<string, string> = {
+  request_date: 'request_date',
+  required_date: 'required_date',
+  sent_date: 'sent_date',
+  next_followup: 'next_follow_up',
+};
 
 export default function ProposalsPage() {
   const { user } = useAuth();
@@ -276,7 +292,7 @@ export default function ProposalsPage() {
   const [targetStatus, setTargetStatus] = useState<string>('');
   const [statusForm, setStatusForm] = useState({
     sent_date: istToday(),
-    lost_reason: (PROPOSAL_LOST_REASONS[0] || 'Other') as ProposalLostReason,
+    lost_reason: '' as ProposalLostReason | '',
     lost_remarks: '',
     converted_to: '',
     converted_reference: '',
@@ -373,39 +389,20 @@ export default function ProposalsPage() {
     }
   };
 
-  // Fetch Dashboard Stats
-  const fetchStats = async () => {
-    try {
-      const res = await api.get('/proposals/dashboard');
-      if (res) setStats(res);
-    } catch (err) {
-      console.error('Failed to load proposal stats:', err);
-    }
-  };
-
-  // Proposals register with complete multi-column filters and sorting, one page per request,
-  // appended as the register scrolls. `fetchProposals` re-reads the pages already loaded, in place.
-  const fetchProposalsPage = useCallback((page: number) => {
-    const params: any = {
-      page,
-      limit: PROPOSALS_PAGE_SIZE,
-      sort_by: sortBy,
-      sort_order: sortOrder,
-    };
-
+  // Active filters as API query params — shared by the register and the KPI cards so both count the same rows.
+  const filterParams = useMemo(() => {
+    const params: Record<string, string> = {};
     if (search.trim()) params.search = search.trim();
     if (selectedStatus && selectedStatus !== 'all') params.status = selectedStatus;
     if (selectedSector && selectedSector !== 'all') params.sector = selectedSector;
-    if (selectedFollowupCondition && selectedFollowupCondition !== 'all') {
-      params.followup = selectedFollowupCondition;
-    }
+    const followupFlag = FOLLOWUP_FILTER_FLAGS[selectedFollowupCondition];
+    if (followupFlag) params[followupFlag] = 'true';
     if (selectedResponsibleId) params.responsible_id = selectedResponsibleId;
     if (selectedFollowupOwnerId) params.followup_owner_id = selectedFollowupOwnerId;
-    if (fromDate) params.from_date = fromDate;
-    if (toDate) params.to_date = toDate;
-    if (fromDate || toDate) params.date_field = dateField;
-
-    return api.get('/proposals', params);
+    const dateParam = DATE_RANGE_PARAMS[dateField] || 'request_date';
+    if (fromDate) params[`from_${dateParam}`] = fromDate;
+    if (toDate) params[`to_${dateParam}`] = toDate;
+    return params;
   }, [
     search,
     selectedStatus,
@@ -413,20 +410,49 @@ export default function ProposalsPage() {
     selectedFollowupCondition,
     selectedResponsibleId,
     selectedFollowupOwnerId,
-    sortBy,
-    sortOrder,
     dateField,
     fromDate,
     toDate,
   ]);
+
+  // Fetch Dashboard Stats for the active filters (answers to superseded filters are discarded)
+  const statsRequest = useRef(0);
+  const fetchStats = useCallback(async () => {
+    const req = ++statsRequest.current;
+    try {
+      const res = await api.get('/proposals/dashboard', filterParams);
+      if (res && req === statsRequest.current) setStats(res);
+    } catch (err) {
+      console.error('Failed to load proposal stats:', err);
+    }
+  }, [filterParams]);
+
+  // Proposals register with complete multi-column filters and sorting, one page per request,
+  // appended as the register scrolls. `fetchProposals` re-reads the pages already loaded, in place.
+  const fetchProposalsPage = useCallback(
+    (page: number) =>
+      api.get('/proposals', {
+        ...filterParams,
+        page,
+        limit: PROPOSALS_PAGE_SIZE,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      }),
+    [filterParams, sortBy, sortOrder],
+  );
   const proposalsList = useInfiniteList<any>(fetchProposalsPage);
   const { rows: proposals, total, loading: isLoading, refresh: fetchProposals } = proposalsList;
 
   // Initial load
   useEffect(() => {
     fetchMasters();
-    fetchStats();
   }, []);
+
+  // KPI cards follow the active filters; debounced so typing in search doesn't fire per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(fetchStats, 300);
+    return () => clearTimeout(timer);
+  }, [fetchStats]);
 
   // Real-time Event-Driven Architecture (EDA) live synchronization via Socket.IO
   useEffect(() => {
@@ -456,7 +482,7 @@ export default function ProposalsPage() {
       socket.off('proposal:outcome', handleRealtimeProposalEvent);
       socket.off('proposal:overdue_alert', handleRealtimeProposalEvent);
     };
-  }, [fetchProposals]);
+  }, [fetchProposals, fetchStats]);
 
   // Deep link from notifications: /proposals?open=<proposal id>
   useOpenParam(async (id) => {
@@ -721,7 +747,7 @@ export default function ProposalsPage() {
     setStatusError(null);
     setStatusForm({
       sent_date: istToday(),
-      lost_reason: (PROPOSAL_LOST_REASONS[0] || 'Other') as ProposalLostReason,
+      lost_reason: '' as ProposalLostReason | '',
       lost_remarks: '',
       converted_to: '',
       converted_reference: '',
@@ -752,6 +778,16 @@ export default function ProposalsPage() {
           ? 'Explain the changes you need — the comment is sent to the preparer.'
           : 'Give the reason for sending this proposal back to preparation.',
       );
+      return;
+    }
+
+    // The outcome must be recorded, never defaulted (E28 / E29, PRD §30 "proposal outcome").
+    if (targetStatus === 'LOST' && (!statusForm.lost_reason || !statusForm.lost_remarks.trim())) {
+      setStatusError('Choose the lost reason and explain what happened (competitor, price gap, customer decision).');
+      return;
+    }
+    if (targetStatus === 'CLOSED' && !statusForm.remarks.trim()) {
+      setStatusError('Give the reason for closing this proposal.');
       return;
     }
 
@@ -875,14 +911,15 @@ export default function ProposalsPage() {
   };
 
   // Lifecycle Stages definition for the visual stepper
+  // PRD §29 workflow, in order.
   const STAGES = [
-    { key: 'PROPOSAL_REQUESTED', label: 'Requested', desc: 'New request logged' },
-    { key: 'UNDER_PREPARATION', label: 'Preparation', desc: 'Drafting specs & quotation' },
-    { key: 'READY_FOR_REVIEW', label: 'Review', desc: 'Submitted for manager approval' },
-    { key: 'APPROVED', label: 'Approved', desc: 'Pricing & terms cleared' },
-    { key: 'SENT_TO_CUSTOMER', label: 'Sent', desc: 'Delivered to client' },
-    { key: 'FOLLOW_UP_REQUIRED', label: 'Follow-up', desc: 'Active pipeline coordination' },
-    { key: 'CONVERTED', label: 'Outcome', desc: 'Converted / Closed / Lost' },
+    { key: 'PROPOSAL_REQUESTED', label: 'Proposal Requested', desc: 'Request logged with customer, product and required date' },
+    { key: 'UNDER_PREPARATION', label: 'Under Preparation', desc: 'Responsible person preparing the proposal' },
+    { key: 'READY_FOR_REVIEW', label: 'Ready for Review', desc: 'Submitted for internal review' },
+    { key: 'APPROVED', label: 'Approved', desc: 'Cleared to send to the customer' },
+    { key: 'SENT_TO_CUSTOMER', label: 'Sent to Customer', desc: 'Sent date, email / reference and follow-up owner recorded' },
+    { key: 'FOLLOW_UP_REQUIRED', label: 'Follow-up Required', desc: 'Salesperson owns the follow-up' },
+    { key: 'CONVERTED', label: 'Converted / Closed / Lost', desc: 'Proposal outcome recorded' },
   ];
 
   const getStageIndex = (status: string) => {
@@ -911,11 +948,12 @@ export default function ProposalsPage() {
 
   // Pipeline strip + filter row helpers
   const headlineCards: { key: string; label: string; count: number; subtext: string; icon: React.ReactNode; kind: 'status' | 'followup'; value: string; color?: 'primary' | 'amber' | 'rose' | 'emerald' }[] = [
-    { key: 'all', label: 'Total Proposals', count: stats.total_proposals || 0, subtext: 'Active & historical register', icon: <FileSpreadsheet className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'all' },
-    { key: 'prep', label: 'Under Preparation', count: stats.pending_preparation || 0, subtext: 'Technical & price drafting', icon: <Clock className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'UNDER_PREPARATION', color: 'primary' },
-    { key: 'review', label: 'Ready for Review', count: stats.ready_for_review || 0, subtext: 'Awaiting management sign-off', icon: <AlertCircle className="h-4 w-4 text-[#9A3412]" />, kind: 'status', value: 'READY_FOR_REVIEW', color: 'amber' },
-    { key: 'overdue', label: 'Overdue Follow-ups', count: stats.overdue || 0, subtext: 'Requires immediate contact', icon: <AlertTriangle className="h-4 w-4 text-[#881337]" />, kind: 'followup', value: 'overdue', color: 'rose' },
-    { key: 'converted', label: 'Converted to Orders', count: stats.converted || 0, subtext: 'Purchase orders secured', icon: <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'CONVERTED', color: 'emerald' },
+    // PRD §28 register + the four §30 follow-up highlights.
+    { key: 'all', label: 'Proposal Register', count: stats.total_proposals || 0, subtext: 'All proposal requests', icon: <FileSpreadsheet className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'all' },
+    { key: 'no_followup', label: 'Without Follow-up', count: stats.no_followup || 0, subtext: 'Sent, no follow-up scheduled', icon: <Bell className="h-4 w-4 text-[#9A3412]" />, kind: 'followup', value: 'no_followup', color: 'amber' },
+    { key: 'due_today', label: 'Follow-ups Due Today', count: stats.due_today || 0, subtext: `${stats.overdue || 0} overdue`, icon: <CalendarDays className="h-4 w-4 text-[#881337]" />, kind: 'followup', value: 'due_today', color: 'rose' },
+    { key: 'old_inactivity', label: 'Old, No Movement', count: stats.old_no_movement || 0, subtext: 'Open, no activity for 7+ days', icon: <Clock className="h-4 w-4 text-[#9A3412]" />, kind: 'followup', value: 'old_inactivity', color: 'amber' },
+    { key: 'outcome', label: 'Proposal Outcome', count: stats.converted || 0, subtext: `Converted · ${stats.lost || 0} lost · ${stats.closed || 0} closed`, icon: <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />, kind: 'status', value: 'CONVERTED', color: 'emerald' },
   ];
   const pickStatus = (status: string) => {
     setSelectedStatus(status);
@@ -955,16 +993,19 @@ export default function ProposalsPage() {
       case 'UNDER_PREPARATION':
         return canMove(p, 'READY_FOR_REVIEW') ? { label: 'Submit for review', onClick: statusActionFor(p, 'READY_FOR_REVIEW') } : undefined;
       case 'READY_FOR_REVIEW': {
-        if (!['management', 'admin'].includes(user?.role || '')) return { label: 'Awaiting management approval', disabled: true };
-        const isCreator = Boolean(
+        // The server decides the approver by value band: Management for major proposals, the region's RM otherwise.
+        if (canMove(p, 'APPROVED')) return { label: 'Approve proposal', onClick: statusActionFor(p, 'APPROVED') };
+        const approver = p.approval_band === 'regional' ? 'Regional Manager' : 'Management';
+        const isParty = Boolean(
           user &&
             [p.created_by_id, p.created_by, p.requested_by_id, p.requested_by, p.responsible_person_id, p.responsible_id].includes(user.id),
         );
-        if (isCreator) return { label: 'Self-approval not allowed', disabled: true };
-        return { label: 'Approve proposal', onClick: statusActionFor(p, 'APPROVED') };
+        const approverRole = p.approval_band === 'regional' ? 'regional_manager' : 'management';
+        if (isParty && (user?.role === approverRole || user?.role === 'admin')) return { label: 'Self-approval not allowed', disabled: true };
+        return { label: `Awaiting ${approver} approval`, disabled: true };
       }
       case 'APPROVED':
-        return canMove(p, 'SENT_TO_CUSTOMER') ? { label: 'Mark sent', onClick: statusActionFor(p, 'SENT_TO_CUSTOMER') } : undefined;
+        return canMove(p, 'SENT_TO_CUSTOMER') ? { label: 'Send to Customer', onClick: statusActionFor(p, 'SENT_TO_CUSTOMER') } : undefined;
       case 'SENT_TO_CUSTOMER':
       case 'FOLLOW_UP_REQUIRED':
         return canEditProposal(p) ? { label: 'Log follow-up', onClick: () => openFollowupFor(p) } : undefined;
@@ -993,6 +1034,7 @@ export default function ProposalsPage() {
     if (isOverdue) badges.push({ label: 'Follow-up overdue', tone: 'danger' });
     if (!nextFollowupStr && ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'].includes(lane)) badges.push({ label: 'Follow-up not scheduled', tone: 'warning' });
     if (p.sent_late) badges.push({ label: 'Sent late', tone: 'warning' });
+    if (lane === 'READY_FOR_REVIEW') badges.push({ label: p.approval_band === 'regional' ? 'RM approval' : 'Management approval', tone: 'info' });
     const primary = primaryFor(p);
     // Edit only where the viewer may change it; follow-ups only once the quote has gone out (DEF-079 / DEF-080).
     const quick: RecordItem['quick'] = canEditProposal(p) ? [{ label: `Edit ${p.proposal_number || 'proposal'}`, icon: <Edit2 />, onClick: () => openEditProposal(p) }] : [];
@@ -1033,10 +1075,10 @@ export default function ProposalsPage() {
             <TableHead>Product</TableHead>
             <TableHead>Requested By</TableHead>
             <TableHead>Responsible</TableHead>
-            <TableHead>Req. Date</TableHead>
-            <TableHead>Due Date</TableHead>
+            <TableHead>Request Date</TableHead>
+            <TableHead>Required Date</TableHead>
             <TableHead>Sent Date</TableHead>
-            <TableHead>Ver.</TableHead>
+            <TableHead>Version</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Follow-up Owner</TableHead>
             <TableHead>Next Follow-up</TableHead>
@@ -1271,7 +1313,7 @@ export default function ProposalsPage() {
                 { key: 'all', label: 'All proposals', count: undefined },
                 { key: 'overdue', label: 'Overdue', count: stats.overdue || 0 },
                 { key: 'due_today', label: 'Due today', count: stats.due_today || 0 },
-                { key: 'upcoming', label: 'Upcoming', count: undefined },
+                { key: 'upcoming', label: 'Upcoming', count: stats.upcoming || 0 },
                 { key: 'no_followup', label: 'Not scheduled', count: stats.no_followup || 0 },
                 { key: 'old_inactivity', label: 'Inactive 7d+', count: stats.old_no_movement || 0 },
               ].map((f) => ({
@@ -1986,11 +2028,11 @@ export default function ProposalsPage() {
                             </span>
                           )}
                         </div>
-                        <div className="text-[11px] font-bold tracking-tight line-clamp-1">
+                        <div className="text-[11px] font-bold tracking-tight leading-tight">
                           {st.label}
                         </div>
                       </div>
-                      <div className="text-[9px] text-[#4A5568] mt-1 line-clamp-1">
+                      <div className="text-[9px] text-[#4A5568] mt-1 line-clamp-2" title={st.desc}>
                         {st.desc}
                       </div>
                     </div>
@@ -2424,6 +2466,9 @@ export default function ProposalsPage() {
                   onChange={(e) => setStatusForm({ ...statusForm, lost_reason: e.target.value as any })}
                   className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
                 >
+                  <option value="" disabled>
+                    -- Select reason --
+                  </option>
                   {PROPOSAL_LOST_REASONS.map((r) => (
                     <option key={r} value={r}>
                       {r}
@@ -2433,6 +2478,7 @@ export default function ProposalsPage() {
               </div>
               <Textarea
                 label="Lost Remarks / Competitor Details"
+                required
                 placeholder="Competitor price, client cancellation reasons..."
                 value={statusForm.lost_remarks}
                 onChange={(e) => setStatusForm({ ...statusForm, lost_remarks: e.target.value })}
@@ -2461,7 +2507,7 @@ export default function ProposalsPage() {
           )}
 
           <Textarea
-            label={isRequestChanges ? 'Changes Requested' : isBackToPreparation ? 'Reason' : 'Transition Remarks'}
+            label={isRequestChanges ? 'Changes Requested' : isBackToPreparation || targetStatus === 'CLOSED' ? 'Reason' : 'Transition Remarks'}
             required={isBackToPreparation}
             placeholder={isBackToPreparation ? 'What needs to change, and why…' : 'Add optional notes for this status update...'}
             value={statusForm.remarks}
@@ -2582,7 +2628,7 @@ export default function ProposalsPage() {
                 {editError}
               </InfoCallout>
             )}
-            <FormSection title="Schedule & Reference" icon={<CalendarDays />} description="Due date, version and the customer's reference for this quote.">
+            <FormSection title="Schedule & Reference" icon={<CalendarDays />} description="Required date, version and the email / customer reference for this proposal.">
               <div className="space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Input

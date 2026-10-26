@@ -36,7 +36,7 @@ const iso = (v: unknown): string | null => (v == null ? null : v instanceof Date
 const human = (s: unknown) => String(s ?? '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 
 // Pipeline, tender, visit and task definitions live in dashboard-metrics.ts — the same ones Zonal Command uses.
-const TENDER_EVAL = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'reverse_auction'];
+const TENDER_EVAL = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval'];
 const TICKET_DONE = ['resolved', 'report_submitted', 'closed', 'cancelled'];
 const PROPOSAL_DONE = ['CONVERTED', 'CLOSED', 'LOST'];
 const DEMO_DONE = ['completed', 'cancelled'];
@@ -456,7 +456,7 @@ export class DashboardWorkspaceService {
       this.one(sql`
         select count(*) filter (where t.status = 'identified')::int as identified,
                count(*) filter (where t.status = any(${TENDER_EVAL}::text[]))::int as evaluating,
-               coalesce(sum(t.emd_fee) filter (where t.status in ('under_preparation', 'submitted', 'pq_submitted', 'pq_qualified', 'technical_eval', 'commercial_eval', 'reverse_auction')), 0)::float as emd
+               coalesce(sum(t.emd_fee) filter (where t.status in ('under_preparation', 'submitted', 'pq_submitted', 'pq_qualified', 'technical_eval', 'commercial_eval')), 0)::float as emd
         from tenders t where ${TENDER_LIVE}`),
       this.closingTenders(sql`t.status in ('identified', 'awaiting_approval', 'under_preparation')`, 30, 8),
       this.rows(sql`

@@ -362,3 +362,85 @@ export class AddProductInterestDto {
   @IsNotEmpty({ message: 'Product ID is required' })
   product_id!: string;
 }
+
+/**
+ * Lead register filters. The list (GET /leads) and its KPI counts (GET /leads/dashboard) take the same query, so a
+ * card always counts what clicking it lists. Every param must be declared here: the global ValidationPipe strips
+ * undeclared query params (whitelist).
+ */
+export class LeadFilterQueryDto {
+  @IsString()
+  @IsOptional()
+  search?: string;
+
+  /** Lifecycle stage; `converted` also matches legacy `won`, `lost` also matches `dropped` (as the counts fold them). */
+  @IsString()
+  @IsOptional()
+  lead_status?: string;
+
+  /** Legacy alias of `lead_status`. */
+  @IsString()
+  @IsOptional()
+  status?: string;
+
+  @IsString()
+  @IsOptional()
+  lead_type?: string;
+
+  @IsString()
+  @IsOptional()
+  category?: string;
+
+  @IsString()
+  @IsOptional()
+  probability?: string;
+
+  @IsString()
+  @IsOptional()
+  source?: string;
+
+  @IsString()
+  @IsOptional()
+  assigned_to?: string;
+
+  @IsString()
+  @IsOptional()
+  regional_manager_id?: string;
+
+  @IsString()
+  @IsOptional()
+  organisation_id?: string;
+
+  @IsString()
+  @IsOptional()
+  sector?: string;
+
+  @IsString()
+  @IsOptional()
+  zone_id?: string;
+
+  @IsString()
+  @IsOptional()
+  region_id?: string;
+
+  /** Pending follow-ups in the follow-up queue (Module 1 §7), on open leads for due_today / overdue / upcoming. */
+  @IsString()
+  @IsOptional()
+  followup?: 'due_today' | 'overdue' | 'upcoming' | 'no_followup';
+}
+
+export class LeadListQueryDto extends LeadFilterQueryDto {
+  @IsOptional()
+  page?: number;
+
+  @IsOptional()
+  limit?: number;
+
+  @IsString()
+  @IsOptional()
+  sort_by?: 'next_followup' | 'last_interaction' | 'created_at' | 'organisation';
+
+  @IsString()
+  @IsOptional()
+  sort_dir?: 'asc' | 'desc';
+}

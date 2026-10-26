@@ -60,9 +60,9 @@ export interface PerformanceTenderFigures {
   general_mha: number;
   /** Tenders submitted in the period (status at or past submission). */
   submitted: number;
-  /** Won / partially won, result in the period. */
+  /** Won, result in the period. */
   won: number;
-  /** Lost / disqualified / PQ not qualified, result in the period. */
+  /** Lost (incl. not qualified at PQ / technical stage), result in the period. */
   lost: number;
   /** won ÷ (won + lost) × 100; null when nothing was decided in the period. */
   win_rate: number | null;

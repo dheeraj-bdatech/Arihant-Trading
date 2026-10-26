@@ -710,13 +710,29 @@ export default function LeadsPage() {
     loadMasters();
   }, []);
 
-  // Fetch Dashboard Stats
+  // The register's filters, sent to both the list and its KPI counts (/leads/dashboard), so a card counts what it lists.
+  const leadFilterParams = useMemo(
+    () => ({
+      search: leadFilters.search || undefined,
+      lead_status: leadFilters.lead_status || undefined,
+      lead_type: leadFilters.lead_type || undefined,
+      sector: leadFilters.sector || undefined,
+      source: leadFilters.lead_source || undefined,
+      followup: leadFilters.followup || undefined,
+    }),
+    [leadFilters.search, leadFilters.lead_status, leadFilters.lead_type, leadFilters.sector, leadFilters.lead_source, leadFilters.followup],
+  );
+
+  // Fetch Dashboard Stats (lead counts follow the register filters; answers to superseded filters are dropped)
+  const statsRequest = useRef(0);
   const fetchDashboardStats = useCallback(async () => {
+    const request = ++statsRequest.current;
     try {
       const [lDash, fDash] = await Promise.allSettled([
-        api.get('/leads/dashboard'),
+        api.get('/leads/dashboard', leadFilterParams),
         api.get('/follow-ups/metrics'),
       ]);
+      if (request !== statsRequest.current) return;
       if (lDash.status === 'fulfilled') {
         const val = lDash.value?.data || lDash.value || {};
         const m = val.metrics || val;
@@ -751,7 +767,7 @@ export default function LeadsPage() {
     } catch (err) {
       console.error('Failed to load dashboard metrics:', err);
     }
-  }, []);
+  }, [leadFilterParams]);
 
   // Leads Register: one page per request, appended as the register scrolls (infinite scroll).
   // `fetchLeads` re-reads the pages already loaded, in place, after an edit.
@@ -760,16 +776,11 @@ export default function LeadsPage() {
       api.get('/leads', {
         page,
         limit: LEADS_PAGE_SIZE,
-        search: leadFilters.search || undefined,
-        lead_status: leadFilters.lead_status || undefined,
-        lead_type: leadFilters.lead_type || undefined,
-        sector: leadFilters.sector || undefined,
-        source: leadFilters.lead_source || undefined,
-        followup: leadFilters.followup || undefined,
+        ...leadFilterParams,
         sort_by: leadFilters.sort_by !== 'created_at' ? leadFilters.sort_by : undefined,
         sort_dir: leadFilters.sort_dir !== 'desc' ? leadFilters.sort_dir : undefined,
       }),
-    [leadFilters],
+    [leadFilterParams, leadFilters.sort_by, leadFilters.sort_dir],
   );
   const leadsList = useInfiniteList<any>(fetchLeadsPage, { enabled: activeTab === 'leads' });
   const { rows: leads, total: leadsTotal, loading: leadsLoading, refresh: fetchLeads } = leadsList;
@@ -886,9 +897,14 @@ export default function LeadsPage() {
 
   // Initial and reactive data fetching
   useEffect(() => {
-    fetchDashboardStats();
     fetchCustomers();
-  }, [fetchDashboardStats, fetchCustomers]);
+  }, [fetchCustomers]);
+
+  // KPI counts re-read when the register filters change (debounced, so typing a search sends one request)
+  useEffect(() => {
+    const timer = setTimeout(fetchDashboardStats, 300);
+    return () => clearTimeout(timer);
+  }, [fetchDashboardStats]);
 
   useEffect(() => {
     // The leads register loads itself (useInfiniteList) whenever its tab is open.
@@ -1762,14 +1778,11 @@ export default function LeadsPage() {
     leadStats?.metrics?.byStatus?.lost ??
     (leads.length > 0 ? leads.filter((l) => ['lost', 'dropped'].includes(String(l.lead_status || l.status).toLowerCase())).length : 0);
 
-  const followupsDueTodayCount =
-    followupStats?.dueToday ??
-    followupStats?.due_today ??
-    0;
+  // Open leads with a pending follow-up due today / overdue — the same definition as the register's follow-up filter.
+  // (The Follow-ups tab counts the follow-up records themselves, from followupStats.)
+  const followupsDueTodayCount = leadStats?.followups_due_today ?? leadStats?.followUps?.dueToday ?? 0;
 
-  const followupsOverdueCount =
-    followupStats?.overdue ??
-    0;
+  const followupsOverdueCount = leadStats?.followups_overdue ?? leadStats?.followUps?.overdue ?? 0;
 
   // Lead register: filter row + KPI click-to-filter helpers
   const LEAD_STAGE_FILTERS: { key: string; label: string }[] = [
@@ -1792,6 +1805,9 @@ export default function LeadsPage() {
     { key: 'exhibition', label: 'Exhibition' },
     { key: 'website', label: 'Website' },
     { key: 'cold_outreach', label: 'Cold outreach' },
+    { key: 'gem_portal', label: 'GeM portal' },
+    { key: 'partner', label: 'OEM / partner' },
+    { key: 'gem_direct', label: 'GeM / Direct (older leads)' },
   ];
   const LEAD_SORT_FIELDS: { key: string; label: string }[] = [
     { key: 'created_at', label: 'Created date' },
@@ -2166,7 +2182,7 @@ export default function LeadsPage() {
                     { key: 'all', label: 'All leads', count: undefined },
                     { key: 'overdue', label: 'Overdue', count: Number(followupsOverdueCount) || undefined },
                     { key: 'due_today', label: 'Due today', count: Number(followupsDueTodayCount) || undefined },
-                    { key: 'upcoming', label: 'Upcoming', count: undefined },
+                    { key: 'upcoming', label: 'Upcoming', count: Number(leadStats?.followUps?.upcoming) || undefined },
                     { key: 'no_followup', label: 'Not scheduled', count: undefined },
                   ].map((f) => ({
                     ...f,

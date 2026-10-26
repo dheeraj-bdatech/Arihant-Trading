@@ -5,7 +5,8 @@ import { KYSELY_DB } from '../../../common/database/database.module.js';
 import { OutboxService, type DomainEventEnvelope } from '../../../common/outbox/outbox.service.js';
 import { EventsGateway } from '../../../common/realtime/events.gateway.js';
 import type { Database } from '@arihant/shared';
-import { proposalDisplayNo } from '../proposals.workflow.js';
+import { formatINR } from '@arihant/shared';
+import { proposalDisplayNo, managementApprovalThreshold } from '../proposals.workflow.js';
 
 @Injectable()
 export class ProposalNotificationConsumer {
@@ -67,16 +68,43 @@ export class ProposalNotificationConsumer {
 
         case 'proposal.submitted_for_review':
         case 'proposal.review_requested': {
-          // Approvers: Management & Admin only — the only roles that may approve a proposal (Module 5 §3.1, DEF-073)
-          const approvers = await this.db
-            .selectFrom('users')
-            .select('id')
-            .where('role', 'in', ['management', 'admin'])
-            .where('is_active', '=', true)
-            .execute();
+          // Only the approver for the value band is asked: Management / Admin for major proposals (quoted value at or
+          // above the threshold), the Regional Manager of the customer's region for the rest — Management only when
+          // that region has no active RM.
+          const info = aggregateId
+            ? await this.db
+                .selectFrom('proposals')
+                .leftJoin('organisations', 'organisations.id', 'proposals.organisation_id')
+                .select(['proposals.quoted_value', 'organisations.region_id'])
+                .where('proposals.id', '=', aggregateId)
+                .executeTakeFirst()
+            : undefined;
+          const settings = await this.db.selectFrom('proposal_settings').select('management_approval_threshold').executeTakeFirst();
+          const threshold = managementApprovalThreshold(settings);
+          const major = Number(info?.quoted_value) >= threshold;
+          const regionalApprovers =
+            !major && info?.region_id
+              ? await this.db
+                  .selectFrom('users')
+                  .select('id')
+                  .where('role', '=', 'regional_manager')
+                  .where('region_id', '=', info.region_id)
+                  .where('is_active', '=', true)
+                  .execute()
+              : [];
+          const approvers = regionalApprovers.length
+            ? regionalApprovers
+            : await this.db
+                .selectFrom('users')
+                .select('id')
+                .where('role', 'in', ['management', 'admin'])
+                .where('is_active', '=', true)
+                .execute();
           approvers.forEach((a) => recipientUserIds.add(a.id));
           title = `Proposal Submitted for Review: ${no}`;
-          body = `Proposal ${no} is awaiting your approval.`;
+          body = regionalApprovers.length
+            ? `Proposal ${no} (below ${formatINR(threshold)}) is awaiting your approval as Regional Manager.`
+            : `Proposal ${no} is awaiting your approval${major ? ` (${formatINR(threshold)} or more)` : ''}.`;
           break;
         }
 

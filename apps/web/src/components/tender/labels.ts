@@ -34,7 +34,7 @@ export function tenderEstimatedRupees(tender: { estimated_value?: unknown; estim
 }
 
 /** Stages a submitted bid reaches only once its bids are opened, i.e. after the bid closing time (Module 4). */
-export const BID_OPENING_STAGES = ['technical_eval', 'commercial_eval', 'won', 'lost', 'partially_won'];
+export const BID_OPENING_STAGES = ['technical_eval', 'commercial_eval', 'won', 'lost'];
 
 /**
  * True while the bid has not closed yet (mirrors the API's transition gate). A legacy date-only deadline (UTC
