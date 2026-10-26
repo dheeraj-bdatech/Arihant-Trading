@@ -320,7 +320,7 @@ export class ExpenseClaimsService {
       if (can('withdraw')) out.push('withdraw');
       if (['rejected', 'withdrawn'].includes(claim.status)) out.push('copy');
     }
-    if (!own && claim.manager_id === user.id && claim.status === 'submitted') {
+    if (!own && (claim.manager_id === user.id || isAdminLike(user)) && claim.status === 'submitted') {
       out.push('manager_approve', 'manager_reject', 'request_clarification');
     }
     if (!own && user.role === 'accounts') {
@@ -643,6 +643,8 @@ export class ExpenseClaimsService {
       .leftJoin('users as mgr', 'mgr.id', 'c.manager_id')
       .leftJoin('regions as r', 'r.id', 'c.region_id')
       .leftJoin('trips as t', 't.id', 'c.trip_id')
+      .leftJoin('visits as v', 'v.id', 'c.visit_id')
+      .leftJoin('organisations as vo', 'vo.id', 'v.organisation_id')
       .where((eb) => eb.and(claimFilterExpressions(f, eb, false)));
     if (opts.mineOnly) base = base.where('c.employee_id', '=', user.id);
     if (opts.extra) base = base.where(opts.extra);
@@ -709,6 +711,14 @@ export class ExpenseClaimsService {
         'r.name as region_name',
         't.trip_date',
         't.base_location as trip_location',
+        // The whole claim at a glance on list rows and cards: who, which customer visit, what kinds of expense.
+        'emp.employee_code',
+        'c.remarks',
+        'v.planned_date as visit_date',
+        'v.organisation_id as visit_organisation_id',
+        'vo.name as visit_organisation_name',
+        sql<string | null>`(select string_agg(distinct cat.name, ', ') from expense_items i join expense_categories cat on cat.id = i.category_id
+          where i.claim_id = c.id and i.deleted_at is null)`.as('categories'),
         sql<number>`(select count(*)::int from expense_items i where i.claim_id = c.id and i.deleted_at is null)`.as('item_count'),
         // Reviewer flags (same rules as lineAnomalies): lines dated after today in IST, and lines missing a receipt
         // their category requires at that amount. Hotel dates are ISO strings, so text comparison is date order.
@@ -744,9 +754,13 @@ export class ExpenseClaimsService {
     };
   }
 
+  /** Stage-1 queue: claims assigned to this approver; management / admin see every team's (never their own). */
   managerQueue(query: Record<string, unknown>, user: AuthUser) {
     return this.list({ sort_by: 'submitted_at', sort_dir: 'asc', ...query, statuses: 'submitted' }, user, {
-      extra: (eb: any) => eb.and([eb('c.manager_id', '=', user.id), eb('c.employee_id', '<>', user.id)]),
+      extra: (eb: any) =>
+        isAdminLike(user)
+          ? eb('c.employee_id', '<>', user.id)
+          : eb.and([eb('c.manager_id', '=', user.id), eb('c.employee_id', '<>', user.id)]),
     });
   }
 
@@ -765,7 +779,10 @@ export class ExpenseClaimsService {
       return Number(r?.n || 0);
     };
     const [manager_pending, accounts_pending, accounts_ready, my_clarifications, my_drafts, approver_inactive] = await Promise.all([
-      count((q) => q.where('c.status', '=', 'submitted').where('c.manager_id', '=', user.id).where('c.employee_id', '<>', user.id)),
+      count((q) => {
+        const pending = q.where('c.status', '=', 'submitted').where('c.employee_id', '<>', user.id);
+        return isAdminLike(user) ? pending : pending.where('c.manager_id', '=', user.id);
+      }),
       user.role === 'accounts' ? count((q) => q.where('c.status', '=', 'accounts_review').where('c.employee_id', '<>', user.id)) : 0,
       user.role === 'accounts' ? count((q) => q.where('c.status', '=', 'accounts_approved').where('c.employee_id', '<>', user.id)) : 0,
       count((q) => q.where('c.status', '=', 'clarification_required').where('c.employee_id', '=', user.id)),

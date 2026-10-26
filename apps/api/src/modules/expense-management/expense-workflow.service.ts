@@ -64,7 +64,8 @@ export function resolveTransition(
   const own = claim.employee_id === user.id;
   const kinds = new Set<ExpenseActorKind>();
   if (own) kinds.add('owner');
-  if (!own && claim.manager_id === user.id) kinds.add('approver');
+  // Management / admin oversee every team, so they can take the Stage-1 review of any claim but their own.
+  if (!own && (claim.manager_id === user.id || isAdminLike(user))) kinds.add('approver');
   if (!own && user.role === 'accounts') kinds.add('accounts');
 
   const permitted = candidates.filter((t) => kinds.has(t.actor));

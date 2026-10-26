@@ -105,7 +105,7 @@ export const EXPENSE_STATUS_LABELS: Record<ExpenseClaimStatus, string> = {
   accounts_approved: 'Ready for Tally',
   clarification_required: 'Clarification Required',
   rejected: 'Rejected',
-  processed: 'Processed',
+  processed: 'Paid',
   withdrawn: 'Withdrawn',
 };
 
@@ -151,7 +151,7 @@ export const EXPENSE_ACTION_LABELS: Record<string, string> = {
   forward_to_accounts: 'Forwarded to Accounts',
   accounts_approve: 'Approved by Accounts',
   accounts_reject: 'Rejected by Accounts',
-  process: 'Processed in Tally',
+  process: 'Paid (posted in Tally)',
   auto_reject: 'Auto-rejected (all items rejected)',
   reassign_approver: 'Approver reassigned',
   clarification_edit: 'Edited during clarification',

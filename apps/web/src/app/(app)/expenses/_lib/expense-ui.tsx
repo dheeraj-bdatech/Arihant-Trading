@@ -10,10 +10,8 @@ import {
   BarChart3,
   CalendarX,
   CheckCircle2,
-  ClipboardCheck,
   Download,
   FileText,
-  Landmark,
   LayoutList,
   Paperclip,
   Receipt,
@@ -89,13 +87,13 @@ function useExpenseViews(): ExpenseView[] {
   const isAdminLike = MANAGEMENT_ROLES.includes(role);
   return useMemo(() => {
     const n = (v?: number) => (v && v > 0 ? v : undefined);
-    const v: ExpenseView[] = [{ href: '/expenses', label: 'My Expenses', icon: <Receipt />, count: n(counts?.my_clarifications), urgent: true }];
-    if (role === 'regional_manager' || isAdminLike || counts?.has_team) {
-      v.push({ href: '/expenses/approvals', label: 'Approvals', icon: <ClipboardCheck />, count: n(counts?.manager_pending), urgent: true });
-    }
-    if (role === 'accounts' || isAdminLike) {
-      v.push({ href: '/expenses/accounts', label: 'Accounts Queue', icon: <Landmark />, count: n((counts?.accounts_pending || 0) + (counts?.accounts_ready || 0)), urgent: true });
-    }
+    // Own claims, approvals and the Accounts queue are all in the one Expenses list; its count is what waits on this user.
+    const approver = role === 'regional_manager' || isAdminLike || counts?.has_team;
+    const waiting =
+      (counts?.my_clarifications || 0) +
+      (approver ? counts?.manager_pending || 0 : 0) +
+      (role === 'accounts' || isAdminLike ? (counts?.accounts_pending || 0) + (counts?.accounts_ready || 0) : 0);
+    const v: ExpenseView[] = [{ href: '/expenses', label: 'Claims', icon: <Receipt />, count: n(waiting), urgent: true }];
     if (['management', 'admin', 'accounts', 'regional_manager'].includes(role) || counts?.has_team) {
       v.push({ href: '/expenses/reports', label: 'Reports', icon: <BarChart3 /> });
     }
@@ -127,12 +125,12 @@ export const ExpenseViewMenu: React.FC<{ active?: string; align?: 'left' | 'righ
   return <FilterMenu label="View" icon={<LayoutList />} options={options} neutralKeys={[]} align={align} />;
 };
 
-/** Compact bar for expense pages without a filter row (new claim, claim detail, edit): back to My expenses + View. */
+/** Compact bar for expense pages without a filter row (new claim, edit): back to Expenses + View. */
 export const ExpensesNav: React.FC = () => (
   <div className="flex flex-wrap items-center gap-2">
     <Link href="/expenses">
       <Button size="sm" variant="secondary" className="h-9" leftIcon={<ArrowLeft className="h-4 w-4" />}>
-        My expenses
+        Expenses
       </Button>
     </Link>
     <ExpenseViewMenu />
@@ -262,7 +260,7 @@ export const ProcessModal: React.FC<{
   const shown = (k: string) => (touched ? local[k] : undefined) || errors[k];
   const otherErrors = Object.entries(errors).filter(([k]) => !['tally_voucher_ref', 'payment_reference', 'payment_date'].includes(k));
   return (
-    <Modal isOpen={open} onClose={onClose} title="Mark as processed & paid" description={`Approved total ${formatExpenseAmount(total ?? 0)}. Record the Tally voucher and the bank payment. After this the claim is read-only.`} maxWidth="md">
+    <Modal isOpen={open} onClose={onClose} title="Mark as paid" description={`Approved total ${formatExpenseAmount(total ?? 0)}. Record the Tally voucher and the bank payment. After this the claim is read-only.`} maxWidth="md">
       <form
         onSubmit={(e) => {
           e.preventDefault();

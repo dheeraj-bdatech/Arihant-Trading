@@ -111,6 +111,8 @@ export interface ExpenseClaim {
   copied_from_claim_number?: string | null;
   version: number;
   item_count?: number;
+  /** Distinct expense categories on the claim's lines, e.g. "Hotel / Lodging, Travel" (list rows). */
+  categories?: string | null;
   /** Reviewer flags computed by the server (list rows and detail). */
   future_dated_lines?: number;
   receipt_missing_lines?: number;

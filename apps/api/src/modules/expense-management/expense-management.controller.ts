@@ -27,6 +27,7 @@ import { ExpenseAttachmentsService, type UploadedFile as ReceiptFile } from './e
 import { ExpenseReportsService } from './expense-reports.service.js';
 import { ExpenseImportService } from './expense-import.service.js';
 import { ExpenseMastersService } from './expense-masters.service.js';
+import { relevantClaimsFilter } from './expense-scope.js';
 import {
   ClaimHeaderDto,
   ExpenseCategoryDto,
@@ -96,7 +97,11 @@ export class ExpenseClaimsController {
 
   @Get()
   list(@Query() query: Record<string, unknown>, @CurrentUser() user: AuthUser) {
-    return this.claims.list(query, user, { mineOnly: query.mine === 'true' });
+    return this.claims.list(query, user, {
+      mineOnly: query.mine === 'true',
+      // The Expenses list: every member's claims for management / admin only; everyone else, the claims that concern them
+      extra: query.relevant_only === 'true' ? relevantClaimsFilter(user) : undefined,
+    });
   }
 
   @Get('pending/manager')

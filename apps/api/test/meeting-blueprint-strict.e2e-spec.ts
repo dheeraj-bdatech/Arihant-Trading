@@ -577,7 +577,7 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
       expect(res.headers['content-type']).toContain('text/csv');
       expect(res.text).toContain('Claim No');
       expect(res.text).toContain('Approved Amount');
-      expect(res.text).toContain('Processed');
+      expect(res.text).toContain('"Paid"');
       expect(res.text).toContain('JV/PATNA/001');
       expect(res.text).toContain('"8500"');
     });

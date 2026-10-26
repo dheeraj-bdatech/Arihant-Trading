@@ -135,7 +135,7 @@ export class ExpenseNotificationsListener {
     await this.notify(
       [e.employeeId],
       'expense_status',
-      `${e.claimNumber} processed`,
+      `${e.claimNumber} paid`,
       `${formatExpenseAmount(e.amount ?? 0)} processed in Tally (voucher ${e.tallyRef})${pay ? `; ${pay}` : ''}.`,
       e.claimId,
     );

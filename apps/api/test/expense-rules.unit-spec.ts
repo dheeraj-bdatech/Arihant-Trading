@@ -96,6 +96,15 @@ describe('state machine', () => {
     expect(statusOf(() => resolveTransition(accountsOwn, accounts, 'process'))).toBe(403);
   });
 
+  it('lets management take the Stage-1 review of any team claim, but not their own or the Accounts stage', () => {
+    const director = { id: 'dir-1', role: 'management' };
+    expect(resolveTransition(claim('submitted'), director, 'manager_approve').to).toBe('manager_approved');
+    expect(resolveTransition(claim('submitted'), director, 'manager_reject').to).toBe('rejected');
+    const directorsOwn = { employee_id: director.id, manager_id: MGR, status: 'submitted' };
+    expect(statusOf(() => resolveTransition(directorsOwn, director, 'manager_approve'))).toBe(403);
+    expect(statusOf(() => resolveTransition(claim('accounts_review'), director, 'accounts_approve'))).toBe(403);
+  });
+
   it('checks permission before status (403 beats 409)', () => {
     expect(statusOf(() => resolveTransition(claim('processed'), outsider, 'manager_approve'))).toBe(403);
     expect(statusOf(() => resolveTransition(claim('draft'), manager, 'submit'))).toBe(403);

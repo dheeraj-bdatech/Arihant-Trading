@@ -502,8 +502,8 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
           items: [
             {
               label: 'Expense Endorsements',
-              // Stage-1 endorsement is the RM's job here; their own claims are one click away in the module's View menu.
-              href: '/expenses/approvals',
+              // One list of every claim the RM can see; the ones waiting on them are marked "Your action".
+              href: '/expenses',
               icon: Receipt,
               moduleKey: 'expenses',
               badge: 'Stage 1 RM',
@@ -800,8 +800,8 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
 }
 
 /**
- * Module 9: each role gets one "Expenses" entry. Approvals, Accounts queue, reports and categories are reached from
- * the module's View menu (ExpenseViewMenu), so the badge sums what is waiting on this user there.
+ * Module 9: each role gets one "Expenses" entry — one list of every claim they can see — so the badge sums what is
+ * waiting on this user there.
  */
 function withExpenseItems(groups: NavGroup[], role: UserRole, counts: BadgeCounts | null): NavGroup[] {
   const isAdminLike = role === 'admin' || role === 'management';
@@ -816,9 +816,7 @@ function withExpenseItems(groups: NavGroup[], role: UserRole, counts: BadgeCount
     items: g.items.map((item) =>
       item.href === '/expenses'
         ? { ...item, label: 'Expenses', badge: waiting > 0 ? String(waiting) : item.badge, badgeVariant: waiting > 0 ? 'urgent' : item.badgeVariant }
-        : item.href === '/expenses/approvals'
-          ? { ...item, badge: waiting > 0 ? String(waiting) : item.badge, badgeVariant: waiting > 0 ? 'urgent' : item.badgeVariant }
-          : item,
+        : item,
     ),
   }));
 }
@@ -933,15 +931,16 @@ export const Sidebar: React.FC = () => {
       return next;
     });
 
-  const isItemActive = (item: NavItem) =>
-    item.href.includes('?')
-      ? pathname === item.href.split('?')[0] &&
-        typeof window !== 'undefined' &&
-        window.location.search.includes(item.href.split('?')[1])
-      : pathname === item.href ||
-        (item.href !== '/dashboard' &&
-          pathname.startsWith(item.href) &&
-          (typeof window === 'undefined' || !window.location.search.includes('tab=failures')));
+  // Exactly one item is active: a matching ?query item wins, otherwise the longest matching path
+  // (so /regional/performance highlights "Performance", not also its parent /regional).
+  const search = typeof window !== 'undefined' ? window.location.search : '';
+  const navHrefs = navGroups.flatMap((g) => g.items.map((it) => it.href));
+  const activeHref =
+    navHrefs.find((h) => h.includes('?') && pathname === h.split('?')[0] && search.includes(h.split('?')[1])) ??
+    navHrefs
+      .filter((h) => !h.includes('?') && (pathname === h || (h !== '/dashboard' && pathname.startsWith(`${h}/`))))
+      .sort((a, b) => b.length - a.length)[0];
+  const isItemActive = (item: NavItem) => item.href === activeHref;
 
   const q = query.trim().toLowerCase();
   const visibleGroups = useMemo(

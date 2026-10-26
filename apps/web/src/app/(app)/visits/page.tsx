@@ -935,7 +935,13 @@ export default function VisitsPage() {
     : isTeamView && Boolean(filterStatus || filterEmployee || datesActive);
   const canSeeTeamActivity = hasRole(['management', 'regional_manager', 'admin']);
   const viewOptions: FilterMenuOption[] = [
-    { key: 'my_visits', label: 'My visits', icon: <Calendar />, count: visits.length || undefined },
+    {
+      key: 'my_visits',
+      // The list is scoped by role on the API: everyone's for management/admin, the territory's for an RM
+      label: hasRole(['management', 'admin']) ? 'All visits' : hasRole('regional_manager') ? 'Territory visits' : 'My visits',
+      icon: <Calendar />,
+      count: visits.length || undefined,
+    },
     ...(canSeeTeamActivity ? [{ key: 'manager_dashboard', label: 'Team activity', icon: <Shield /> }] : []),
     { key: 'trips', label: 'Trips & multi-stop plans', icon: <Route />, count: trips.length || undefined },
     { key: 'customer_history', label: 'Customer timeline', icon: <Building /> },
@@ -963,7 +969,12 @@ export default function VisitsPage() {
         .sort((a, b) => `${calendarDay(b.planned_date)} ${b.start_time || ''}`.localeCompare(`${calendarDay(a.planned_date)} ${a.start_time || ''}`)),
     [visits, upcomingVisits],
   );
-  const openVisit = openVisitId ? visits.find((v) => v.id === openVisitId) || null : null;
+  // Team activity cards can open visits outside the (filtered) visit list
+  const openVisit = openVisitId
+    ? visits.find((v) => v.id === openVisitId) ||
+      Object.values(managerData?.grouped ?? {}).flat().find((v: any) => v.id === openVisitId) ||
+      null
+    : null;
   const visitToneById = useMemo(() => new Map(visits.map((v) => [v.id, visitTone(v)])), [visits]);
 
   // The manager's "also-meet" note on a visit
@@ -985,51 +996,33 @@ export default function VisitsPage() {
     )}
     </>
   );
-  // What the post-visit report recorded
-  const renderReport = (v: any) => (
-    <>
-    {/* Completed Report Callout */}
-    {v.updates && v.updates.length > 0 && (
-      <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D] space-y-1.5">
-        <div className="flex items-center justify-between">
-          <span className="font-bold text-[#0F5E63] uppercase tracking-wider text-[10px] flex items-center gap-1">
-            <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63]" />
-            POST-VISIT INTELLIGENCE LOGGED:
-          </span>
-          {v.updates[0].updated_by_name && (
-            <span className="text-[10px] text-[#4A5568]">Logged by {v.updates[0].updated_by_name}</span>
-          )}
+  // Everything one post-visit report recorded
+  const renderReportBody = (r: any) => {
+    const fact = (label: string, value: React.ReactNode) =>
+      value ? (
+        <div className="min-w-0">
+          <span className="font-bold text-[#14213D]">{label}: </span>
+          <span className="break-words">{value}</span>
         </div>
+      ) : null;
+    return (
+      <div className="space-y-1.5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-          <div>
-            <span className="font-bold text-[#14213D]">Person Met: </span>
-            <span>{v.updates[0].person_met || 'N/A'}</span>
-          </div>
-          <div>
-            <span className="font-bold text-[#14213D]">Outcome: </span>
-            <span className="font-semibold text-[#0B4A4E]">{v.updates[0].outcome || 'Completed'}</span>
-          </div>
-          {v.updates[0].product_discussed && (
-            <div>
-              <span className="font-bold text-[#14213D]">Product Discussed: </span>
-              <span className="text-[#0F5E63] font-medium">{v.updates[0].product_discussed}</span>
-            </div>
-          )}
-          {v.updates[0].opportunity && (
-            <div>
-              <span className="font-bold text-[#14213D]">Opportunity: </span>
-              <span className="text-[#0B4A4E] font-medium">{v.updates[0].opportunity}</span>
-            </div>
-          )}
-          {v.updates[0].tender_opportunity && (
+          {fact('Meeting', r.met_completed === false ? 'Not held / contact not met' : 'Held')}
+          {fact('Person met', r.person_met)}
+          {fact('Outcome', r.outcome && <span className="font-semibold text-[#0B4A4E]">{r.outcome}</span>)}
+          {fact('Product discussed', r.product_discussed)}
+          {fact('Opportunity', r.opportunity)}
+          {fact('Next action', r.next_action)}
+          {r.tender_opportunity && (
             <div className="col-span-full">
               <span className="font-bold text-[#0F5E63]">Tender / GeM Bid: </span>
               <span className="font-mono text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded text-[11px] font-semibold border border-[#DCD8CE]">
-                {v.updates[0].tender_opportunity}
+                {r.tender_opportunity}
               </span>
             </div>
           )}
-          {v.updates[0].demo_required && (
+          {r.demo_required && (
             <div>
               <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded-full border border-[#DCD8CE]">
                 <Sparkles className="h-3 w-3" /> Technical Demo Requested
@@ -1037,27 +1030,60 @@ export default function VisitsPage() {
             </div>
           )}
         </div>
-        {v.updates[0].discussion && (
-          <p className="text-[#14213D] italic border-l-2 border-[#0F5E63] pl-2 mt-1.5">
-            "{v.updates[0].discussion}"
+        {r.discussion && (
+          <p className="whitespace-pre-wrap break-words text-[#14213D] border-l-2 border-[#0F5E63] pl-2 mt-1.5">
+            <span className="font-bold not-italic">Discussion: </span>
+            {r.discussion}
           </p>
         )}
-        {v.updates[0].remarks && (
-          <p className="text-xs text-[#4A5568] bg-white p-2 rounded border border-[#DCD8CE] mt-1">
-            <span className="font-bold text-[#14213D]">Field Remarks: </span>{v.updates[0].remarks}
+        {r.remarks && (
+          <p className="whitespace-pre-wrap break-words text-xs text-[#4A5568] bg-white p-2 rounded border border-[#DCD8CE] mt-1">
+            <span className="font-bold text-[#14213D]">Field Remarks: </span>{r.remarks}
           </p>
         )}
-        {v.updates[0].followup_date && (
+        {r.followup_date && (
           <div className="text-[11px] text-[#0F5E63] font-semibold flex items-center gap-1 mt-1.5">
             <Clock className="h-3 w-3" />
-            Next Follow-up Commitment: {formatDateIN(v.updates[0].followup_date)}
-            {v.updates[0].next_action ? ` — ${v.updates[0].next_action}` : ''}
+            Next Follow-up Commitment: {formatDateIN(r.followup_date)}
           </div>
         )}
       </div>
-    )}
-    </>
-  );
+    );
+  };
+  const reportByline = (r: any) =>
+    [r.updated_by_name && `by ${r.updated_by_name}`, r.created_at && formatDateTimeIN(r.created_at)].filter(Boolean).join(' · ');
+  // The post-visit report(s) the field team submitted: the latest in full, earlier ones underneath
+  const renderReport = (v: any) => {
+    const [latest, ...earlier] = v.updates ?? [];
+    if (!latest) return null;
+    return (
+      <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D] space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-1">
+          <span className="font-bold text-[#0F5E63] uppercase tracking-wider text-[10px] flex items-center gap-1">
+            <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63]" />
+            Post-visit report submitted
+          </span>
+          <span className="text-[10px] text-[#4A5568]">{reportByline(latest)}</span>
+        </div>
+        {renderReportBody(latest)}
+        {earlier.length > 0 && (
+          <details className="border-t border-[#ECE9E2] pt-2">
+            <summary className="cursor-pointer text-[11px] font-semibold text-[#0F5E63]">
+              Earlier submissions ({earlier.length})
+            </summary>
+            <div className="mt-2 space-y-3">
+              {earlier.map((r: any) => (
+                <div key={r.id} className="rounded-lg border border-[#ECE9E2] bg-white p-2.5 space-y-1.5">
+                  <div className="text-[10px] text-[#4A5568]">{reportByline(r)}</div>
+                  {renderReportBody(r)}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  };
 
   const visitDayParts = (v: any) => {
     const d = calendarDay(v.planned_date) || '';
@@ -1237,10 +1263,20 @@ export default function VisitsPage() {
   const isActiveVisit = (v: any) => ['planned', 'modified', 'rescheduled'].includes(v.status);
   const isManagerRole = hasRole(['management', 'regional_manager', 'admin']);
 
+  // Click anywhere on the card (except its own links / buttons) to open the visit and its full report
   const renderManagerVisitCard = (v: any) => (
     <div
       key={v.id}
-      className="p-4 bg-white border border-[#DCD8CE] rounded-xl hover:border-[#0F5E63] transition-all shadow-2xs space-y-3"
+      role="button"
+      tabIndex={0}
+      aria-label={`Open visit to ${v.organisation_name || 'customer'}`}
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest('a, button, input, select, textarea, label')) return;
+        if (window.getSelection()?.toString()) return;
+        setOpenVisitId(v.id);
+      }}
+      onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && setOpenVisitId(v.id)}
+      className="p-4 bg-white border border-[#DCD8CE] rounded-xl hover:border-[#0F5E63] transition-all shadow-2xs space-y-3 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30"
     >
       {/* Top row: Organisation, Tour tag, Requirement badges, Status */}
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-[#ECE9E2] pb-2.5">
@@ -1344,6 +1380,17 @@ export default function VisitsPage() {
           )}
         </div>
       </div>
+
+      {/* Submitted report at a glance; the card opens it in full */}
+      {v.updates?.[0] && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-[#D0E5E3] bg-[#E3EFEE] px-3 py-2 text-xs text-[#0B4A4E]">
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
+          <span className="font-bold">Report submitted</span>
+          {v.updates[0].outcome && <span className="min-w-0 truncate">Outcome: {v.updates[0].outcome}</span>}
+          <span className="text-[11px] text-[#4A5568]">{reportByline(v.updates[0])}</span>
+          <span className="ml-auto font-semibold text-[#0F5E63]">View full report →</span>
+        </div>
+      )}
 
       {/* Remarks & Manager Directives / Change Reasons */}
       {(v.remarks || v.change_reason) && (
@@ -1733,6 +1780,43 @@ export default function VisitsPage() {
               </div>
             </div>
           </div>
+
+          {/* Past visits still waiting for their report */}
+          {managerData.grouped?.overdue?.length > 0 && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-black uppercase tracking-wider text-[#7C2D12] bg-[#FBEBDD] px-3 py-1.5 rounded-lg border border-[#E9C9B4] flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  <span>Report Overdue ({managerData.grouped.overdue.length})</span>
+                </span>
+                <span className="text-xs font-medium text-[#7C2D12]">Visit day passed, no report</span>
+              </h3>
+              {managerData.grouped.overdue.map((v: any) => renderManagerVisitCard(v))}
+            </div>
+          )}
+
+          {/* Past visits the team has reported on, newest first */}
+          {(() => {
+            const reported = [...(managerData.grouped?.past ?? []), ...(managerData.grouped?.today ?? [])]
+              .filter((v: any) => v.updates?.length > 0)
+              .sort((a: any, b: any) => String(b.updates[0].created_at).localeCompare(String(a.updates[0].created_at)));
+            return (
+              <div className="space-y-3">
+                <h3 className="text-xs font-black uppercase tracking-wider text-[#0B4A4E] bg-[#E3EFEE] px-3 py-1.5 rounded-lg border border-[#D0E5E3] flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    <span>Reports Submitted by Team ({reported.length})</span>
+                  </span>
+                  <span className="text-xs font-medium text-[#0B4A4E]">Click a visit for the full report</span>
+                </h3>
+                {reported.length === 0 ? (
+                  <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No post-visit reports submitted yet.</p>
+                ) : (
+                  reported.map((v: any) => renderManagerVisitCard(v))
+                )}
+              </div>
+            );
+          })()}
 
           {/* Group 1: Today */}
           <div className="space-y-3">

@@ -13,7 +13,7 @@ import type { AuthUser } from '@arihant/shared';
 
 export const ACCOUNTS_VISIBLE_STATUSES = ['manager_approved', 'accounts_review', 'accounts_approved', 'processed'] as const;
 
-export function isAdminLike(user: Pick<AuthUser, 'role'>): boolean {
+export function isAdminLike(user: { role: string }): boolean {
   return user.role === 'admin' || user.role === 'management';
 }
 
@@ -38,6 +38,34 @@ export function claimScopeFilter(user: AuthUser) {
     if (user.role === 'regional_manager' && user.region_id) {
       ors.push(eb.and([notDraft, eb('c.region_id', '=', user.region_id)]));
     }
+    return eb.or(ors);
+  };
+}
+
+/** Claims waiting on the Accounts team (Stage 2): to verify, or verified and waiting for Tally / payment. */
+export const ACCOUNTS_WORK_STATUSES = ['accounts_review', 'accounts_approved'] as const;
+
+/**
+ * The Expenses list (narrower than the read scope above): only management / admin see every member's claims.
+ * Everyone else sees the claims that concern them — their own, the ones waiting on them (Stage-1 approver, or
+ * Accounts at Stage 2) and the ones they have already acted on. Other people's drafts are never listed.
+ */
+export function relevantClaimsFilter(user: AuthUser) {
+  return (eb: ExpressionBuilder<any, any>) => {
+    const own = eb('c.employee_id', '=', user.id);
+    if (isAdminLike(user)) return eb.or([own, eb('c.status', '<>', 'draft')]);
+    const ors = [
+      own,
+      eb.and([eb('c.status', '=', 'submitted'), eb('c.manager_id', '=', user.id)]),
+      eb.exists(
+        eb
+          .selectFrom('expense_approval_history as h')
+          .select('h.id')
+          .whereRef('h.claim_id', '=', 'c.id')
+          .where('h.actor_id', '=', user.id),
+      ),
+    ];
+    if (user.role === 'accounts') ors.push(eb('c.status', 'in', [...ACCOUNTS_WORK_STATUSES]));
     return eb.or(ors);
   };
 }

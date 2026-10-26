@@ -462,7 +462,25 @@ export class VisitsService {
       .offset(offset)
       .execute();
 
-    return buildPaginatedResult(visits.map((v) => ({ ...v, report_overdue: this.isReportOverdue(v) })), total, page, limit);
+    const withReports = await this.attachReports(visits);
+    return buildPaginatedResult(withReports.map((v) => ({ ...v, report_overdue: this.isReportOverdue(v) })), total, page, limit);
+  }
+
+  /** Post-visit reports for a page of visits (newest first), so lists can show what the field team submitted. */
+  private async attachReports<T extends { id: string }>(visits: T[]) {
+    const reports = visits.length
+      ? await this.db
+          .selectFrom('visit_updates')
+          .leftJoin('users', 'visit_updates.updated_by', 'users.id')
+          .selectAll('visit_updates')
+          .select('users.full_name as updated_by_name')
+          .where('visit_updates.visit_id', 'in', [...new Set(visits.map((v) => v.id))])
+          .orderBy('visit_updates.created_at', 'desc')
+          .execute()
+      : [];
+    const byVisit = new Map<string, typeof reports>();
+    for (const r of reports) byVisit.set(r.visit_id, [...(byVisit.get(r.visit_id) ?? []), r]);
+    return visits.map((v) => ({ ...v, updates: byVisit.get(v.id) ?? [] }));
   }
 
   /** The visit day has passed (IST) but the visit is still planned / modified / rescheduled: its report is overdue. */
@@ -1726,7 +1744,7 @@ export class VisitsService {
       overdue: [] as any[],
     };
 
-    for (const raw of allVisits) {
+    for (const raw of await this.attachReports(allVisits)) {
       const v = { ...raw, report_overdue: this.isReportOverdue(raw) };
       // planned_date is a DATE column (a Date object here): compare as an IST 'YYYY-MM-DD' string.
       const vDate = calendarDay(v.planned_date as any) || '';

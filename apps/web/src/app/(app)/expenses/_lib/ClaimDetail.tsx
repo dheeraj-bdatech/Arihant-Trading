@@ -50,7 +50,7 @@ import { ClaimFormModal } from './ClaimFormModal';
 type Decision = { status: 'approved' | 'partially_approved' | 'rejected'; amount: string; comment: string };
 type CommentAction = 'manager-reject' | 'accounts-reject' | 'request-clarification';
 
-/** `inModal`: shown in a dialog (Quick view) — the action bar pins to the dialog bottom, no room kept for page FABs. */
+/** `inModal`: shown in the claim popup — the action bar pins to the dialog bottom, no room kept for page FABs. */
 export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ claimId, inModal = false }) => {
   const router = useRouter();
   const { user } = useAuth();
@@ -204,15 +204,12 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-4">
+      {!inModal && (
         <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => router.back()}>
           Back
         </Button>
-        <span className="font-mono text-sm font-semibold text-[#0F5E63]">{claim.claim_number}</span>
-        <StatusBadge status={claim.status} />
-        {claim.copied_from_claim_number && <Badge variant="outline" size="sm">Copy of {claim.copied_from_claim_number}</Badge>}
-      </div>
+      )}
 
       {conflict && <ConflictCallout onRefresh={load} />}
 
@@ -231,31 +228,44 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
         <InfoCallout variant="warning" title="The approver is no longer active">An administrator needs to reassign this claim.</InfoCallout>
       )}
 
-      {/* Header */}
-      <Card className={cardPad}>
-        <div className="flex flex-col lg:flex-row lg:items-start gap-4 lg:justify-between">
-          <div className="min-w-0 space-y-1">
-            <h2 className="font-serif text-xl text-[#14213D] break-words">{claim.title}</h2>
-            <p className="text-sm text-[#4A5568]">
-              {claim.employee_name}
-              {claim.employee_code ? ` (${claim.employee_code})` : ''}
-              {claim.region_name ? ` · ${claim.region_name}` : ''}
-            </p>
-            {claim.remarks && <p className="text-sm text-[#4A5568] italic break-words">“{claim.remarks}”</p>}
+      {/* Header: who, what, how much, and where it is in the two-stage approval */}
+      <Card className={`${cardPad} space-y-4`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#E3EFEE] font-mono text-sm font-bold text-[#0F5E63]" aria-hidden>
+              {initials(claim.employee_name)}
+            </span>
+            <div className="min-w-0 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs font-semibold text-[#0F5E63]">{claim.claim_number}</span>
+                <StatusBadge status={claim.status} />
+                {claim.copied_from_claim_number && <Badge variant="outline" size="sm">Copy of {claim.copied_from_claim_number}</Badge>}
+              </div>
+              <h2 className="font-serif text-xl leading-snug text-[#14213D] break-words">{claim.title}</h2>
+              <p className="text-sm text-[#4A5568]">
+                <span className="font-medium text-[#14213D]">{claim.employee_name}</span>
+                {claim.employee_code ? ` (${claim.employee_code})` : ''}
+                {claim.region_name ? ` · ${claim.region_name}` : ''}
+              </p>
+              {claim.remarks && <p className="text-sm text-[#4A5568] italic break-words">“{claim.remarks}”</p>}
+            </div>
           </div>
           {/* two short figures side by side; one size down on phones so lakh amounts fit their half */}
-          <div className="grid grid-cols-2 gap-4 lg:text-right shrink-0">
-            <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wide text-[#4A5568]">Claimed</div>
+          <div className="grid shrink-0 grid-cols-2 divide-x divide-[#ECE9E2] rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] lg:min-w-[300px]">
+            <div className="min-w-0 px-4 py-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#4A5568]">Claimed</div>
               <Money value={claim.total_claimed} className="text-lg font-semibold text-[#14213D] sm:text-xl" />
             </div>
-            <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wide text-[#4A5568]">{stage ? 'Will approve' : 'Approved'}</div>
+            <div className="min-w-0 px-4 py-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[#4A5568]">{stage ? 'Will approve' : 'Approved'}</div>
               <Money value={stage ? projectedTotal : claim.total_approved} className="text-lg font-semibold text-[#0F5E63] sm:text-xl" />
             </div>
           </div>
         </div>
-        <dl className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm border-t border-[#ECE9E2] pt-4">
+
+        <StageTrack status={claim.status} />
+
+        <dl className="grid grid-cols-2 gap-3 rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] p-3 text-sm md:grid-cols-4">
           <Meta label="Period">{claim.period_from ? <><DateText value={claim.period_from} /> – <DateText value={claim.period_to} /></> : '—'}</Meta>
           <Meta label="Trip">{claim.trip_id ? <><DateText value={claim.trip_date} /> {claim.trip_location}</> : '—'}</Meta>
           <Meta label="Visit">
@@ -333,9 +343,20 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
         ))}
       </Card>
 
-      <Card className={`${cardPad} space-y-4`}>
-        <h3 className="font-serif text-lg text-[#14213D]">Approval history</h3>
-        <Timeline history={claim.history || []} />
+      {/* History folds away in the popup so the lines and actions stay in view */}
+      <Card className={cardPad}>
+        <details open={!inModal} className="group">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 [&::-webkit-details-marker]:hidden">
+            <h3 className="font-serif text-lg text-[#14213D]">Approval history</h3>
+            <span className="text-xs font-semibold text-[#0F5E63]">
+              {(claim.history || []).length} step{(claim.history || []).length === 1 ? '' : 's'}
+              <span className="ml-1 inline-block transition-transform group-open:rotate-180">▾</span>
+            </span>
+          </summary>
+          <div className="mt-4">
+            <Timeline history={claim.history || []} />
+          </div>
+        </details>
       </Card>
 
       {actionError && (
@@ -427,7 +448,7 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
               title={blockedByDates ? 'Expenses dated after today cannot be paid' : undefined}
               onClick={() => { setProcessErrors({}); setProcessServerError(null); setProcessOpen(true); }}
             >
-              {claim.status === 'accounts_review' ? 'Approve & process' : 'Mark processed'}
+              {claim.status === 'accounts_review' ? 'Approve & mark paid' : 'Mark as paid'}
             </Button>
           )}
         </div>
@@ -528,6 +549,50 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
       )}
       <Toaster />
     </div>
+  );
+};
+
+const initials = (name?: string | null) =>
+  (name || '?')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join('');
+
+/** Where an in-flight claim stands: Submitted → Manager → Accounts → Paid. Drafts and closed claims show none. */
+const STAGE_STEPS = ['Submitted', 'Manager review', 'Accounts review', 'Paid'];
+const stageIndex: Partial<Record<string, number>> = {
+  submitted: 1,
+  clarification_required: 1,
+  manager_approved: 2,
+  accounts_review: 2,
+  accounts_approved: 3,
+  processed: 4,
+};
+const StageTrack: React.FC<{ status: string }> = ({ status }) => {
+  const current = stageIndex[status];
+  if (current === undefined) return null;
+  const waitingOnEmployee = status === 'clarification_required';
+  return (
+    <ol className="grid grid-cols-4 gap-1.5" aria-label="Approval progress">
+      {STAGE_STEPS.map((label, i) => {
+        const done = i < current;
+        const now = i === current;
+        return (
+          <li key={label} className="min-w-0" aria-current={now ? 'step' : undefined}>
+            <div
+              className={`h-1.5 rounded-full ${
+                done ? 'bg-[#0F5E63]' : now ? (waitingOnEmployee ? 'bg-[#9A3412]' : 'bg-[#0F5E63]/40') : 'bg-[#ECE9E2]'
+              }`}
+            />
+            <div className={`mt-1 truncate text-[10px] font-semibold uppercase tracking-wider ${done || now ? 'text-[#14213D]' : 'text-[#6B7280]'}`}>
+              {now && waitingOnEmployee ? 'With employee' : label}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
   );
 };
 
