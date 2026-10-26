@@ -140,7 +140,7 @@ const SECTIONS: Record<RelatedSection, SectionDef> = {
             id: d.id,
             title: join(d.demo_no, d.product_name),
             meta: join(day(d.confirmed_date || d.requested_date), d.assignee_name),
-            status: d.status,
+            status: d.status === 'requested' ? 'approval_pending' : d.status,
             href: `/demos?open=${d.id}`,
           })),
         };
@@ -351,6 +351,24 @@ export function RelatedRecords({ to, sections, title = 'Linked records', descrip
     };
     // `to` is compared by value through `key`; `visible` follows role + sections.
   }, [key, role, sections.join(','), refreshKey]);
+
+  // A task added here ("Add task") or anywhere else in the app broadcasts tasks:changed — reload just that section.
+  const showsTasks = visible.includes('tasks');
+  useEffect(() => {
+    if (!showsTasks) return;
+    let alive = true;
+    const reload = () => {
+      const p = SECTIONS.tasks.load(to);
+      if (!p) return;
+      p.then((loaded) => alive && setState((prev) => ({ ...prev, tasks: { status: 'ready', ...loaded } })))
+        .catch(() => alive && setState((prev) => ({ ...prev, tasks: { status: 'error' } })));
+    };
+    window.addEventListener('tasks:changed', reload);
+    return () => {
+      alive = false;
+      window.removeEventListener('tasks:changed', reload);
+    };
+  }, [key, showsTasks]);
 
   const shown = visible.filter((s) => state[s]);
   if (!user) return null;

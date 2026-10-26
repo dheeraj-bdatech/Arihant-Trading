@@ -5,7 +5,7 @@
  * renders in the modal header; the body shows only the current section; a sticky footer carries
  * Back / Next and, on the last step, the caller's submit button.
  *
- * All sections stay mounted (just hidden), so form state, native `required` checks and the
+ * All sections stay mounted (just invisible), so form state, native `required` checks and the
  * caller's <form onSubmit> keep working. "Next" validates the current section first, and if a
  * submit hits an invalid field in another section, that section is opened for the user.
  */
@@ -252,15 +252,19 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
 
       {banner && <div className="mb-4 space-y-3">{banner}</div>}
 
+      {/* Every step sits in the same grid cell, so the body is always as tall as the longest step and the
+          dialog keeps one size while the user moves between steps. Closed steps are only made invisible. */}
+      <div className="grid flex-1 [&>section]:[grid-area:1/1]">
       {steps.map((s, i) => (
         <section
           key={s.title}
           ref={(el) => {
             panels.current[i] = el;
           }}
-          hidden={i !== current}
+          aria-hidden={i !== current || undefined}
           aria-label={s.title}
-          className="flex-1 space-y-6"
+          // no transitions while hidden: `transition-all` would otherwise animate visibility and ghost the old step
+          className={twMerge('space-y-6', i !== current && 'invisible [&_*]:!transition-none')}
         >
           {s.parts.map((part, j) => (
             <div key={part.title} className={twMerge('space-y-4', j > 0 && 'border-t border-[#ECE9E2] pt-5')}>
@@ -278,6 +282,7 @@ export const FormSteps: React.FC<FormStepsProps> = ({ steps: allSteps, submit, o
           ))}
         </section>
       ))}
+      </div>
 
       {/* Sticky footer: always reachable, whatever the section length */}
       <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 mt-6 flex items-center justify-between gap-2 border-t border-[#DCD8CE] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5">

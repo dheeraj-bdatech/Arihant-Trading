@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
 import { UploadsService } from './uploads.service.js';
-import { AttachFileDto, SignUploadDto } from './uploads.dto.js';
+import { AttachFileDto, ListAttachmentsQueryDto, SignUploadDto } from './uploads.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import type { AuthUser } from '@arihant/shared';
@@ -21,10 +21,7 @@ export class UploadsController {
   }
 
   @Get('attachments')
-  async getAttachments(
-    @Query('entity_type') entityType: string,
-    @Query('entity_id') entityId: string,
-  ) {
-    return this.uploadsService.getAttachments(entityType, entityId);
+  async getAttachments(@Query() query: ListAttachmentsQueryDto, @CurrentUser() user: AuthUser) {
+    return this.uploadsService.getAttachments(query.entity_type, query.entity_id, user);
   }
 }

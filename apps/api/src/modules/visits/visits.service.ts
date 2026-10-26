@@ -12,9 +12,10 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
-import { assertRegionScope } from '../../common/utils/scope.util.js';
 import { AppEvents } from '../../common/events/event-names.js';
-import type { Database, AuthUser, PaginatedResult, VisitStatus } from '@arihant/shared';
+import { OutboxService } from '../../common/outbox/outbox.service.js';
+import { assertOrganisationInScope } from '../organisations/organisation-scope.js';
+import { isClosedLeadStatus, type Database, type AuthUser, type PaginatedResult, type VisitStatus } from '@arihant/shared';
 import type {
   CreateVisitDto,
   UpdateVisitDto,
@@ -39,6 +40,15 @@ function dmy(value: unknown): string {
   return `${d}/${m}/${y}`;
 }
 
+/** The fields a single-visit scope check needs (as selected by findOne). */
+type ScopedVisit = {
+  assigned_to: string | null;
+  service_engineer_id?: string | null;
+  zone_id?: string | null;
+  region_id?: string | null;
+  assignee_reporting_manager_id?: string | null;
+};
+
 @Injectable()
 export class VisitsService {
   private readonly logger = new Logger(VisitsService.name);
@@ -46,6 +56,7 @@ export class VisitsService {
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly eventEmitter: EventEmitter2,
+    private readonly outboxService: OutboxService,
   ) {}
 
   // -------------------------------------------------------------
@@ -245,14 +256,47 @@ export class VisitsService {
   // -------------------------------------------------------------
   // HELPER: Permission / Scope Guard
   // -------------------------------------------------------------
-  private assertEmployeeAccess(visit: { assigned_to: string | null; region_id?: string | null }, user: AuthUser) {
+  private canReadVisit(visit: ScopedVisit, user: AuthUser): boolean {
+    switch (user.role) {
+      case 'management':
+      case 'admin':
+        return true;
+      case 'sales':
+      case 'demo_team':
+        return visit.assigned_to === user.id;
+      case 'service_team':
+        return visit.assigned_to === user.id || visit.service_engineer_id === user.id;
+      case 'regional_manager':
+        // The visit list's zone/region filter, plus their own and their direct reports' visits
+        if (visit.assigned_to === user.id || visit.assignee_reporting_manager_id === user.id) return true;
+        if (user.zone_id) return visit.zone_id === user.zone_id;
+        if (user.region_id) return visit.region_id === user.region_id;
+        return true;
+      default:
+        // accounts / tender_team have no field-visit access (as on the visit list)
+        return false;
+    }
+  }
+
+  /** Mutations: the assigned employee, a Regional Manager over the visit's territory/team, management or admin. */
+  private assertEmployeeAccess(visit: ScopedVisit, user: AuthUser) {
+    if (user.role === 'management' || user.role === 'admin') return;
     if (user.role === 'sales' || user.role === 'demo_team' || user.role === 'service_team') {
       if (visit.assigned_to !== user.id) {
         throw new ForbiddenException('You are not authorized to modify another employee’s field visit.');
       }
-    } else if (user.role === 'regional_manager' && visit.region_id) {
-      assertRegionScope(user, visit.region_id);
+      return;
     }
+    if (user.role === 'regional_manager' && this.canReadVisit(visit, user)) return;
+    throw new ForbiddenException('You are not authorized to modify this field visit.');
+  }
+
+  /** Post-visit report: only the assigned employee, their manager (reporting / territorial RM) or admin — management cannot file it for others. */
+  private assertCanReportVisit(visit: ScopedVisit, user: AuthUser) {
+    if (user.role === 'admin') return;
+    if (visit.assigned_to === user.id) return;
+    if (user.role === 'regional_manager' && this.canReadVisit(visit, user)) return;
+    throw new ForbiddenException('Only the assigned employee or their manager can submit this visit report.');
   }
 
   // -------------------------------------------------------------
@@ -461,6 +505,7 @@ export class VisitsService {
         'contacts.mobile as contact_mobile',
         'contacts.email as contact_email',
         'assignee.full_name as assignee_name',
+        'assignee.reporting_manager_id as assignee_reporting_manager_id',
         'serviceEngineer.full_name as service_engineer_name',
         'planner.full_name as planner_name',
         'manager.full_name as manager_name',
@@ -474,8 +519,9 @@ export class VisitsService {
       throw new NotFoundException('Visit not found');
     }
 
-    if (user.role === 'regional_manager' && visit.region_id) {
-      assertRegionScope(user, visit.region_id);
+    // Same territory as the visit list (single-record IDOR guard)
+    if (!this.canReadVisit(visit, user)) {
+      throw new ForbiddenException('You are not authorized to view this field visit.');
     }
 
     const updates = await this.db
@@ -525,6 +571,9 @@ export class VisitsService {
 
     const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
     const assignedTo = dto.assigned_to && UUID_REGEX.test(dto.assigned_to) ? dto.assigned_to : user.id;
+    if (user.role === 'sales' && assignedTo !== user.id) {
+      throw new ForbiddenException('A salesperson can only plan field visits for themselves.');
+    }
 
     // 2. Conflict check
     const conflictResult = await this.checkConflicts({
@@ -735,6 +784,17 @@ export class VisitsService {
       dto.end_time !== undefined ? dto.end_time : existing.end_time,
     );
 
+    // Moving the date, place or customer of a planned visit must be justified (Module 2 §11)
+    const dateChanged = Boolean(dto.planned_date) && calendarDay(dto.planned_date) !== calendarDay(existing.planned_date as any);
+    const locationChanged = Boolean(dto.location) && dto.location!.trim() !== (existing.location || '').trim();
+    const orgChanged = Boolean(dto.organisation_id) && dto.organisation_id !== existing.organisation_id;
+    if ((dateChanged || locationChanged || orgChanged) && !dto.change_reason?.trim()) {
+      throw new BadRequestException({
+        code: 'MISSING_CHANGE_REASON',
+        message: 'A reason is required when changing the visit date, location or customer.',
+      });
+    }
+
     const updatePayload: any = {
       version: existing.version + 1,
     };
@@ -781,7 +841,7 @@ export class VisitsService {
       employeeId: existing.assigned_to,
       employeeName: existing.assignee_name,
       organisationName: existing.organisation_name,
-      changeDetails: `Updated details (location: ${updated.location}, date: ${updated.planned_date})`,
+      changeDetails: `Updated details (location: ${updated.location}, date: ${dmy(updated.planned_date)})`,
       reason: dto.change_reason,
       managerId: userOrg?.reporting_manager_id || existing.assigned_by_manager,
     });
@@ -870,8 +930,8 @@ export class VisitsService {
       employeeId: existing.assigned_to,
       employeeName: existing.assignee_name,
       organisationName: existing.organisation_name,
-      oldDate: existing.planned_date,
-      newDate: dto.new_date,
+      oldDate: dmy(existing.planned_date),
+      newDate: dmy(dto.new_date),
       reason: dto.reason,
       managerId: userRecord?.reporting_manager_id || existing.assigned_by_manager,
     });
@@ -928,7 +988,7 @@ export class VisitsService {
       employeeId: existing.assigned_to,
       employeeName: existing.assignee_name,
       organisationName: existing.organisation_name,
-      plannedDate: existing.planned_date,
+      plannedDate: dmy(existing.planned_date),
       reason: dto.reason,
       managerId: userRecord?.reporting_manager_id || existing.assigned_by_manager,
     });
@@ -955,6 +1015,13 @@ export class VisitsService {
       throw new BadRequestException({
         code: 'MISSING_REASON',
         message: 'A reason is strictly required when changing destination.',
+      });
+    }
+
+    if (dto.new_location.trim().toLowerCase() === (existing.location || '').trim().toLowerCase()) {
+      throw new BadRequestException({
+        code: 'SAME_DESTINATION',
+        message: 'The new location is the same as the current one.',
       });
     }
 
@@ -998,23 +1065,42 @@ export class VisitsService {
   // STATUS CHANGE (Legacy endpoint compatibility)
   // -------------------------------------------------------------
   async changeStatus(id: string, dto: ChangeVisitStatusDto, user: AuthUser) {
+    // Completion is recorded only through the post-visit report (POST /visits/:id/update)
+    if (dto.status === 'completed') {
+      throw new BadRequestException({
+        code: 'COMPLETE_VIA_VISIT_REPORT',
+        message: 'A visit is marked completed by submitting its post-visit report.',
+      });
+    }
+    if ((dto.status === 'rescheduled' || dto.status === 'cancelled') && !dto.change_reason?.trim()) {
+      throw new BadRequestException({
+        code: 'MISSING_CHANGE_REASON',
+        message: `A reason is required when a visit is ${dto.status}.`,
+      });
+    }
     if (dto.status === 'rescheduled') {
       return this.reschedule(
         id,
         {
           new_date: dto.rescheduled_to || todayInKolkata(),
-          reason: dto.change_reason || 'Rescheduled by user',
+          reason: dto.change_reason!,
         },
         user,
       );
     }
     if (dto.status === 'cancelled') {
-      return this.cancel(id, { reason: dto.change_reason || 'Cancelled by user' }, user);
+      return this.cancel(id, { reason: dto.change_reason! }, user);
     }
 
     const existing = await this.findOne(id, user);
     this.assertEmployeeAccess(existing, user);
-    if (dto.status === 'completed' || dto.status === 'not_completed') {
+    if (existing.status === 'completed') {
+      throw new BadRequestException({
+        code: 'CANNOT_MODIFY_COMPLETED_VISIT',
+        message: 'Completed visits are immutable — their status cannot be changed.',
+      });
+    }
+    if (dto.status === 'not_completed') {
       this.assertVisitDayReached(existing.planned_date);
     }
 
@@ -1036,6 +1122,7 @@ export class VisitsService {
       action: `STATUS_${dto.status.toUpperCase()}`,
       previousValue: existing,
       newValue: updated,
+      reason: dto.change_reason,
     });
 
     return updated;
@@ -1197,6 +1284,7 @@ export class VisitsService {
   // -------------------------------------------------------------
   async submitUpdate(id: string, dto: SubmitVisitUpdateDto, user: AuthUser) {
     const existing = await this.findOne(id, user);
+    this.assertCanReportVisit(existing, user);
 
     const isMeetingCompleted = dto.met_completed !== false; // default true
 
@@ -1322,17 +1410,32 @@ export class VisitsService {
         .where('id', '=', id)
         .execute();
 
-      // C. Upsert Customer Timeline (interactions) with visit_id idempotency
+      // C. Upsert Customer Timeline (interactions) with visit_id idempotency, linked to the account's latest open
+      //    lead (preferring one owned by the visiting employee) so the lead's customer history moves too (§12)
+      const orgLeads = await trx
+        .selectFrom('leads')
+        .select(['id', 'lead_status', 'status', 'assigned_to'])
+        .where('organisation_id', '=', existing.organisation_id)
+        .orderBy('updated_at', 'desc')
+        .execute();
+      const openLeads = orgLeads.filter((l) => !isClosedLeadStatus(l.lead_status || l.status || 'new'));
+      const linkedLead = openLeads.find((l) => l.assigned_to === existing.assigned_to) || openLeads[0] || null;
+
       const existingInteraction = await trx
         .selectFrom('interactions')
-        .select('id')
+        .select(['id', 'lead_id'])
         .where('visit_id', '=', id)
         .executeTakeFirst();
 
+      const leadId = existingInteraction?.lead_id || linkedLead?.id || null;
+      let interactionId: string;
       if (existingInteraction) {
+        interactionId = existingInteraction.id;
         await trx
           .updateTable('interactions')
           .set({
+            type: 'physical_visit',
+            lead_id: leadId,
             remarks: dto.discussion || dto.remarks || 'Field visit updated',
             outcome: dto.outcome || (isMeetingCompleted ? 'Meeting held' : 'Meeting not completed'),
             next_action: dto.next_action || null,
@@ -1341,13 +1444,14 @@ export class VisitsService {
           .where('id', '=', existingInteraction.id)
           .execute();
       } else {
-        await trx
+        const inserted = await trx
           .insertInto('interactions')
           .values({
             organisation_id: existing.organisation_id,
             contact_id: existing.contact_id,
+            lead_id: leadId,
             visit_id: id,
-            type: 'visit',
+            type: 'physical_visit',
             employee_id: existing.assigned_to,
             occurred_on: existing.planned_date,
             remarks: dto.discussion || dto.remarks || (isMeetingCompleted ? 'Field visit completed' : 'Meeting not completed'),
@@ -1355,7 +1459,73 @@ export class VisitsService {
             next_action: dto.next_action || null,
             followup_date: dto.followup_date || null,
           })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        interactionId = inserted.id;
+      }
+
+      // C2. Move the linked lead's contact history forward (as InteractionsService.create does)
+      if (leadId) {
+        await trx
+          .updateTable('leads')
+          .set({
+            last_interaction_at: new Date(),
+            last_contact_date: calendarDay(existing.planned_date as any) || todayInKolkata(),
+            next_followup_at: dto.followup_date ? new Date(dto.followup_date) : undefined,
+            next_followup_date: dto.followup_date || undefined,
+            updated_at: new Date(),
+          })
+          .where('id', '=', leadId)
           .execute();
+      }
+
+      // C3. Book the follow-up — one per visit report; a resubmission moves the pending one instead of duplicating
+      if (dto.followup_date) {
+        const followUpRemarks = dto.next_action || 'Follow-up scheduled from field visit';
+        const pendingFollowUp = await trx
+          .selectFrom('follow_ups')
+          .select('id')
+          .where('interaction_id', '=', interactionId)
+          .where('status', '=', 'pending')
+          .executeTakeFirst();
+
+        if (pendingFollowUp) {
+          await trx
+            .updateTable('follow_ups')
+            .set({ due_date: dto.followup_date, remarks: followUpRemarks, lead_id: leadId })
+            .where('id', '=', pendingFollowUp.id)
+            .execute();
+        } else {
+          const followUp = await trx
+            .insertInto('follow_ups')
+            .values({
+              organisation_id: existing.organisation_id,
+              contact_id: existing.contact_id || null,
+              lead_id: leadId,
+              interaction_id: interactionId,
+              assigned_to: existing.assigned_to,
+              due_date: dto.followup_date,
+              status: 'pending',
+              remarks: followUpRemarks,
+            })
+            .returningAll()
+            .executeTakeFirstOrThrow();
+
+          await this.outboxService.queueEvent(trx, {
+            eventType: AppEvents.FOLLOWUP_CREATED,
+            aggregateType: 'FOLLOW_UP',
+            aggregateId: followUp.id,
+            actorId: user.id,
+            payload: {
+              followUpId: followUp.id,
+              organisationId: existing.organisation_id,
+              leadId,
+              assignedTo: existing.assigned_to,
+              dueDate: dto.followup_date,
+              remarks: followUp.remarks,
+            },
+          });
+        }
       }
 
       // D. Upsert Employee Activity Dossier (employee_activities) with unique constraint
@@ -1410,6 +1580,8 @@ export class VisitsService {
 
       return updateRecord;
     });
+
+    this.outboxService.triggerImmediate();
 
     // 3. Emit audit log & notification
     this.eventEmitter.emit('audit.log', {
@@ -1741,6 +1913,23 @@ export class VisitsService {
       throw new NotFoundException('Trip not found');
     }
 
+    // A Regional Manager optimises only the tours of their own team / territory
+    if (user.role === 'regional_manager' && trip.employee_id !== user.id) {
+      const employee = await this.db
+        .selectFrom('users')
+        .select(['reporting_manager_id', 'region_id', 'zone_id'])
+        .where('id', '=', trip.employee_id)
+        .executeTakeFirst();
+      const inTeam =
+        !!employee &&
+        (employee.reporting_manager_id === user.id ||
+          (!!user.zone_id && employee.zone_id === user.zone_id) ||
+          (!!user.region_id && employee.region_id === user.region_id));
+      if (!inTeam) {
+        throw new ForbiddenException('You can only add visits to trips of employees in your region or team.');
+      }
+    }
+
     if (trip.status === 'cancelled') {
       throw new BadRequestException({
         code: 'CANCELLED_TRIP',
@@ -1866,7 +2055,9 @@ export class VisitsService {
   // -------------------------------------------------------------
   // CUSTOMER HISTORY (Chronological visits & interactions)
   // -------------------------------------------------------------
-  async getCustomerVisitHistory(organisationId: string) {
+  async getCustomerVisitHistory(organisationId: string, user: AuthUser) {
+    await assertOrganisationInScope(this.db, organisationId, user);
+
     const visits = await this.db
       .selectFrom('visits')
       .leftJoin('products', 'visits.product_id', 'products.id')
@@ -1913,7 +2104,10 @@ export class VisitsService {
   // -------------------------------------------------------------
   // VISIT AUDIT TRAIL (Append-only history of changes)
   // -------------------------------------------------------------
-  async getVisitAudit(visitId: string) {
+  async getVisitAudit(visitId: string, user: AuthUser) {
+    // Same single-visit scope as GET /visits/:id
+    await this.findOne(visitId, user);
+
     const logs = await this.db
       .selectFrom('audit_log')
       .leftJoin('users as actor', 'audit_log.actor_id', 'actor.id')

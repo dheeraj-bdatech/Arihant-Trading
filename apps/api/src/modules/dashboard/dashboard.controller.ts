@@ -1,11 +1,12 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { DashboardService } from './dashboard.service.js';
 import { DashboardWorkspaceService } from './dashboard-workspace.service.js';
+import { DashboardPerformanceService } from './dashboard-performance.service.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import type { AuthUser, DashboardMetricsDto, DashboardWorkspaceDto } from '@arihant/shared';
+import type { AuthUser, DashboardMetricsDto, DashboardWorkspaceDto, SalesPerformanceDto } from '@arihant/shared';
 
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard)
@@ -13,6 +14,7 @@ export class DashboardController {
   constructor(
     private readonly dashboardService: DashboardService,
     private readonly workspaceService: DashboardWorkspaceService,
+    private readonly performanceService: DashboardPerformanceService,
   ) {}
 
   @Get('metrics')
@@ -42,5 +44,22 @@ export class DashboardController {
   ) {
     return this.dashboardService.getRegionalPerformance(user, { zone_id: zoneId, region_id: regionId });
   }
-}
 
+  /**
+   * Module 9 — Salesperson & Regional Performance. Sales see only their own row; a regional manager their zone's reps
+   * and regions; management / admin everything, optionally narrowed to a zone / region.
+   */
+  @Get('sales-performance')
+  @UseGuards(RolesGuard)
+  @Roles('sales', 'regional_manager', 'management', 'admin')
+  async getSalesPerformance(
+    @CurrentUser() user: AuthUser,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('group_by') groupBy?: string,
+    @Query('zone_id') zoneId?: string,
+    @Query('region_id') regionId?: string,
+  ): Promise<SalesPerformanceDto> {
+    return this.performanceService.getSalesPerformance(user, { from, to, group_by: groupBy, zone_id: zoneId, region_id: regionId });
+  }
+}

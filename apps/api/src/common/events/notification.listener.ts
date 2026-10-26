@@ -6,6 +6,7 @@ import { EventsGateway } from '../realtime/events.gateway.js';
 import { OutboxService } from '../outbox/outbox.service.js';
 import { AppEvents } from './event-names.js';
 import type { Database, UserRole } from '@arihant/shared';
+import { calendarDay } from '../utils/ist-date.util.js';
 
 @Injectable()
 export class NotificationListener {
@@ -752,27 +753,59 @@ export class NotificationListener {
     requestedByName: string;
     location?: string;
   }) {
-    // Notify demo coordinators (demo_team & management)
-    const coordinators = await this.db
+    // Management approves a new request; the demo team is told it is coming
+    const recipients = await this.db
       .selectFrom('users')
-      .select('id')
+      .select(['id', 'role'])
       .where('role', 'in', ['demo_team', 'management'])
       .where('is_active', '=', true)
       .execute();
 
-    for (const u of coordinators) {
+    for (const u of recipients) {
       if (u.id !== payload.requestedBy) {
+        const approver = u.role === 'management';
         await this.createAndPushNotification({
           userId: u.id,
           type: 'demo_requested',
-          title: `New Demo Request: ${payload.demoNo}`,
-          body: `${payload.requestedByName} requested a client demonstration for ${payload.organisationName} (${payload.location || 'Site'}).`,
+          title: approver ? `Demo request needs your approval: ${payload.demoNo}` : `New Demo Request: ${payload.demoNo}`,
+          body: approver
+            ? `${payload.requestedByName} requested a client demonstration for ${payload.organisationName} (${payload.location || 'Site'}). Approve or decline it.`
+            : `${payload.requestedByName} requested a client demonstration for ${payload.organisationName} (${payload.location || 'Site'}). It is waiting for management approval.`,
           entityType: 'demo',
           entityId: payload.demoId,
         });
       }
     }
     this.eventsGateway.sendToRole('demo_team', 'demo:requested', payload);
+  }
+
+  @OnEvent(AppEvents.DEMO_REQUEST_APPROVED)
+  async handleDemoRequestApproved(payload: { demoId: string; demoNo: string; requestedById?: string | null; assignedToId?: string | null; approvedByName: string }) {
+    if (payload.requestedById) {
+      await this.createAndPushNotification({
+        userId: payload.requestedById,
+        type: 'demo_request_approved',
+        title: `Demo request approved: ${payload.demoNo}`,
+        body: `${payload.approvedByName} approved your demo request. The demo team will confirm the date.`,
+        entityType: 'demo',
+        entityId: payload.demoId,
+      });
+      this.eventsGateway.sendToUser(payload.requestedById, 'demo:request_approved', payload);
+    }
+    // the demo team fixes the date next: the assigned specialist, or the whole team when nobody is assigned yet
+    const team = payload.assignedToId
+      ? [{ id: payload.assignedToId }]
+      : await this.db.selectFrom('users').select('id').where('role', '=', 'demo_team').where('is_active', '=', true).execute();
+    for (const u of team) {
+      await this.createAndPushNotification({
+        userId: u.id,
+        type: 'demo_request_approved',
+        title: `Approved, confirm the date: ${payload.demoNo}`,
+        body: `${payload.approvedByName} approved this demo request. Confirm the demo date with the client.`,
+        entityType: 'demo',
+        entityId: payload.demoId,
+      });
+    }
   }
 
   @OnEvent(AppEvents.DEMO_TEAM_ASSIGNED)
@@ -817,6 +850,116 @@ export class NotificationListener {
         entityType: 'demo',
         entityId: payload.demoId,
       });
+    }
+  }
+
+  /** Calendar value (DATE / ISO instant / 'YYYY-MM-DD') as dd-mm-yyyy for notification text. */
+  private ddmmyyyy(value: unknown): string {
+    const day = calendarDay(value as any);
+    if (!day) return String(value ?? '');
+    const [y, m, d] = day.split('-');
+    return `${d}-${m}-${y}`;
+  }
+
+  @OnEvent(AppEvents.DEMO_EQUIPMENT_CONFLICT)
+  async handleDemoEquipmentConflict(payload: {
+    equipmentId: string;
+    equipmentLabel: string;
+    requestedForDemoId: string;
+    conflictingDemoId?: string | null;
+    conflictingDemoNo?: string | null;
+    from: string;
+    to: string;
+    actorId?: string;
+  }) {
+    try {
+      const recipients = new Set<string>();
+      const equipment = await this.db
+        .selectFrom('demo_equipment')
+        .select('responsible_person')
+        .where('id', '=', payload.equipmentId)
+        .executeTakeFirst();
+      // demo_equipment.responsible_person holds the owning user's uuid
+      const responsibleId = equipment?.responsible_person;
+      if (responsibleId) recipients.add(responsibleId);
+
+      if (payload.conflictingDemoId) {
+        const conflicting = await this.db
+          .selectFrom('demos')
+          .select('requested_by')
+          .where('id', '=', payload.conflictingDemoId)
+          .executeTakeFirst();
+        if (conflicting?.requested_by) recipients.add(conflicting.requested_by);
+      }
+
+      const mgmt = await this.db
+        .selectFrom('users')
+        .select('id')
+        .where('role', '=', 'management')
+        .where('is_active', '=', true)
+        .execute();
+      mgmt.forEach((m) => recipients.add(m.id));
+
+      if (payload.actorId) recipients.delete(payload.actorId);
+
+      const conflictNo = payload.conflictingDemoNo || 'another demo';
+      for (const userId of recipients) {
+        await this.createAndPushNotification({
+          userId,
+          type: 'demo_equipment_conflict',
+          title: `Equipment conflict: ${payload.equipmentLabel}`,
+          body: `${payload.equipmentLabel} was requested for ${this.ddmmyyyy(payload.from)} to ${this.ddmmyyyy(payload.to)}, which clashes with its booking for Demo ${conflictNo}.`,
+          entityType: 'demo',
+          entityId: payload.requestedForDemoId,
+        });
+      }
+    } catch (err: any) {
+      this.logger.error(`Error handling demo equipment conflict: ${err.message}`);
+    }
+  }
+
+  @OnEvent(AppEvents.DEMO_EQUIPMENT_REQUESTED)
+  async handleDemoEquipmentRequested(payload: {
+    demoId: string;
+    demoNo: string;
+    reservationId: string;
+    equipmentLabel: string;
+    responsiblePersonId?: string | null;
+    requestedById: string;
+    from: string;
+    to: string;
+  }) {
+    try {
+      const recipients = new Set<string>();
+      if (payload.responsiblePersonId) {
+        recipients.add(payload.responsiblePersonId);
+      } else {
+        const team = await this.db
+          .selectFrom('users')
+          .select('id')
+          .where('role', '=', 'demo_team')
+          .where('is_active', '=', true)
+          .execute();
+        team.forEach((u) => recipients.add(u.id));
+      }
+
+      const requester = payload.requestedById
+        ? await this.db.selectFrom('users').select('full_name').where('id', '=', payload.requestedById).executeTakeFirst()
+        : undefined;
+      const requesterName = requester?.full_name || 'A colleague';
+
+      for (const userId of recipients) {
+        await this.createAndPushNotification({
+          userId,
+          type: 'demo_equipment_requested',
+          title: `Equipment requested: ${payload.equipmentLabel}`,
+          body: `${requesterName} requested ${payload.equipmentLabel} for ${payload.demoNo} (${this.ddmmyyyy(payload.from)}–${this.ddmmyyyy(payload.to)}) — approve, reject, suggest an alternative or allocate another unit.`,
+          entityType: 'demo',
+          entityId: payload.demoId,
+        });
+      }
+    } catch (err: any) {
+      this.logger.error(`Error handling demo equipment request: ${err.message}`);
     }
   }
 
@@ -1215,25 +1358,8 @@ export class NotificationListener {
     this.eventsGateway.broadcast('proposal:updated', payload);
   }
 
-  @OnEvent(AppEvents.PROPOSAL_OVERDUE_FOLLOWUP)
-  async handleProposalOverdueFollowup(payload: {
-    proposalId: string;
-    proposalNumber: string;
-    followUpOwnerId?: string;
-  }) {
-    if (payload.followUpOwnerId) {
-      await this.createAndPushNotification({
-        userId: payload.followUpOwnerId,
-        type: 'proposal_overdue',
-        title: `Overdue Follow-up: ${payload.proposalNumber}`,
-        body: `Proposal ${payload.proposalNumber} has an overdue customer follow-up. Please log client interaction.`,
-        entityType: 'proposal',
-        entityId: payload.proposalId,
-      });
-    }
-
-    this.eventsGateway.broadcast('proposal:overdue_alert', payload);
-  }
+  // Proposal follow-up due/overdue notifications are sent by ProposalNotificationConsumer (proposal.followup_due /
+  // proposal.followup_overdue envelopes, deduped per proposal per day by the proposals scheduler).
 
   // ==========================================
   // MODULE 1: LEADS & CUSTOMER DOMAIN EVENTS

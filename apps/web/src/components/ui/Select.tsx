@@ -1,13 +1,24 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo, useId } from 'react';
+import { createPortal } from 'react-dom';
 import { twMerge } from 'tailwind-merge';
 import { ChevronDown, Search, Check, X } from 'lucide-react';
 
 export interface SelectOption {
   value: string;
   label: string;
+  /** Short status shown as a pill on the right of the option in the open list (not in the closed field), e.g. "2/2 ready". */
+  hint?: string;
+  hintTone?: 'success' | 'warning' | 'danger' | 'neutral';
 }
+
+const HINT_TONES: Record<NonNullable<SelectOption['hintTone']>, string> = {
+  success: 'bg-[#E3EFEE] text-[#0F5E63] border-[#D0E5E3]',
+  warning: 'bg-[#FBEBDD] text-[#9A3412] border-[#E9C9B4]',
+  danger: 'bg-[#FCE8EC] text-[#881337] border-[#F3C7CF]',
+  neutral: 'bg-[#ECE9E2] text-[#4A5568] border-[#DCD8CE]',
+};
 
 export interface SelectProps
   extends Omit<React.SelectHTMLAttributes<HTMLSelectElement>, 'size'> {
@@ -48,13 +59,16 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
     const [isOpen, setIsOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
-    const [dropUp, setDropUp] = useState(false);
+    // The panel is portalled to <body> with fixed coordinates, so a scrolling parent (a modal body,
+    // a card with overflow hidden) can never clip it.
+    const [panelPos, setPanelPos] = useState<React.CSSProperties | null>(null);
 
     const containerRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const nativeSelectRef = useRef<HTMLSelectElement | null>(null);
     const listRef = useRef<HTMLDivElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
 
     // Extract options from options prop or React children <option> elements
     const parsedOptions: SelectOption[] = useMemo(() => {
@@ -102,14 +116,30 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       ? selectedOption.label
       : placeholder || (parsedOptions[0]?.value === '' ? parsedOptions[0]?.label : '-- Select an option --');
 
+    // Place the panel under the trigger, or above it when there is more room there
+    const updatePanelPos = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom - 8;
+      const spaceAbove = rect.top - 8;
+      const up = spaceBelow < 300 && spaceAbove > spaceBelow;
+      const width = Math.max(rect.width, 200);
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      setPanelPos({
+        position: 'fixed',
+        left,
+        width,
+        zIndex: 120,
+        maxHeight: Math.max(160, (up ? spaceAbove : spaceBelow) - 4),
+        ...(up ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }),
+      });
+    };
+
     // Toggle dropdown open state and position check
     const handleToggle = () => {
       if (disabled) return;
-      if (!isOpen && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        const spaceBelow = window.innerHeight - rect.bottom;
-        setDropUp(spaceBelow < 280 && rect.top > 280);
-      }
+      if (!isOpen) updatePanelPos();
       setIsOpen((prev) => !prev);
       setSearchQuery('');
       setHighlightedIndex(-1);
@@ -130,7 +160,8 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       if (!isOpen) return;
 
       const handleClickOutside = (e: MouseEvent) => {
-        if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        const target = e.target as Node;
+        if (containerRef.current && !containerRef.current.contains(target) && !panelRef.current?.contains(target)) {
           setIsOpen(false);
           setSearchQuery('');
         }
@@ -146,12 +177,22 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         }
       };
 
+      // Follow the trigger when the page or a modal body scrolls (but not when the option list itself scrolls)
+      const handleReposition = (e: Event) => {
+        if (panelRef.current?.contains(e.target as Node)) return;
+        updatePanelPos();
+      };
+
       document.addEventListener('mousedown', handleClickOutside);
       document.addEventListener('keydown', handleGlobalKeyDown);
+      document.addEventListener('scroll', handleReposition, true);
+      window.addEventListener('resize', handleReposition);
 
       return () => {
         document.removeEventListener('mousedown', handleClickOutside);
         document.removeEventListener('keydown', handleGlobalKeyDown);
+        document.removeEventListener('scroll', handleReposition, true);
+        window.removeEventListener('resize', handleReposition);
       };
     }, [isOpen]);
 
@@ -223,7 +264,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
     return (
       <div
         ref={containerRef}
-        className="w-full flex flex-col justify-end text-left relative"
+        className="w-full flex flex-col justify-start text-left relative"
       >
         {label && (
           <label
@@ -296,16 +337,15 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         </button>
 
         {/* Searchable Dropdown Popup Menu */}
-        {isOpen && (
+        {isOpen && panelPos && typeof document !== 'undefined' && createPortal(
           <div
-            className={twMerge(
-              'select-panel absolute z-50 left-0 right-0 w-full min-w-[200px] rounded-[10px] border border-[#DCD8CE] bg-white shadow-xl animate-in fade-in-50 zoom-in-95 duration-100 overflow-hidden',
-              dropUp ? 'bottom-full mb-1' : 'top-full mt-1',
-            )}
+            ref={panelRef}
+            style={panelPos}
+            className="select-panel flex flex-col rounded-[10px] border border-[#DCD8CE] bg-white shadow-xl animate-in fade-in-50 zoom-in-95 duration-100 overflow-hidden"
           >
             {/* Search Input Bar */}
             {searchable && (
-              <div className="p-2 border-b border-[#ECE9E2] bg-[#FBFAF7]">
+              <div className="shrink-0 p-2 border-b border-[#ECE9E2] bg-[#FBFAF7]">
                 <div className="relative flex items-center">
                   <Search className="absolute left-2.5 h-3.5 w-3.5 text-[#4A5568] pointer-events-none" />
                   <input
@@ -346,7 +386,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
             <div
               ref={listRef}
               role="listbox"
-              className="max-h-60 overflow-y-auto p-1 space-y-0.5"
+              className="min-h-0 max-h-60 overflow-y-auto p-1 space-y-0.5"
             >
               {filteredOptions.length > 0 ? (
                 filteredOptions.map((opt, idx) => {
@@ -372,9 +412,19 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
                       )}
                     >
                       <span className="truncate pr-2">{opt.label}</span>
-                      {isSelected && opt.value !== '' && (
-                        <Check className="h-3.5 w-3.5 text-[#0F5E63] shrink-0 ml-1.5" />
-                      )}
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        {opt.hint && (
+                          <span
+                            className={twMerge(
+                              'whitespace-nowrap rounded-full border px-2 py-0.5 font-mono text-[10px] font-semibold not-italic',
+                              HINT_TONES[opt.hintTone || 'neutral'],
+                            )}
+                          >
+                            {opt.hint}
+                          </span>
+                        )}
+                        {isSelected && opt.value !== '' && <Check className="h-3.5 w-3.5 text-[#0F5E63]" />}
+                      </span>
                     </div>
                   );
                 })
@@ -384,7 +434,8 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
                 </div>
               )}
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
 
         {error && <p className="text-xs text-[#881337] font-medium mt-1">{error}</p>}

@@ -1,10 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { purgeTaskModule } from './helpers/reset-tasks';
 import { istDay } from './helpers/ist-date';
+import { configureApp } from '../src/common/app-setup';
 
 describe('Module 3: Demo Management E2E Test Suite', () => {
   let app: INestApplication;
@@ -30,14 +31,7 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     // 1. Authenticate users with different RBAC roles
@@ -152,6 +146,27 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
       expect(res.body.demo_no).toBe(demoNo);
       expect(res.body.organisation_id).toBe(testOrgId);
       expect(res.body.requested_by).toBe(salesUserId);
+    });
+
+    it('Only management approves a new demo request', async () => {
+      const denied = await request(app.getHttpServer())
+        .post(`/api/demos/${demoId}/start-planning`)
+        .set('Authorization', `Bearer ${demoTeamToken}`)
+        .send({});
+      expect(denied.status).toBe(403);
+
+      const early = await request(app.getHttpServer())
+        .post(`/api/demos/${demoId}/confirm`)
+        .set('Authorization', `Bearer ${demoTeamToken}`)
+        .send({ confirmed_date: confirmedDate });
+      expect(early.status).toBe(400);
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/demos/${demoId}/start-planning`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({});
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe('under_planning');
     });
 
     it('Coordinator checks team availability on requested date (§5)', async () => {
@@ -690,17 +705,33 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
       expect(res.status).toBe(403);
     });
 
-    it('Salesperson is FORBIDDEN from reserving equipment directly (403)', async () => {
+    // §16: a salesperson *requests* a unit; it is not booked until the custodian / coordinator approves it.
+    it('Salesperson can only REQUEST equipment — the reservation is pending, not approved', async () => {
+      const avail = await request(app.getHttpServer())
+        .get('/api/demos/equipment/availability')
+        .query({ from_date: '2026-12-30', to_date: '2026-12-30' })
+        .set('Authorization', `Bearer ${salesToken}`);
+      const unit = avail.body.units.find((u: any) => u.is_available_for_dates);
+      expect(unit).toBeDefined();
+
       const res = await request(app.getHttpServer())
         .post(`/api/demos/${demoId}/reserve`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          equipment_id: testEquipId1,
+          equipment_id: unit.id,
           reserved_from: '2026-12-30',
           reserved_to: '2026-12-30',
+          product_mismatch_reason: 'RBAC test: any available unit',
         });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe('requested');
+      expect(res.body.approved_by).toBeNull();
+
+      const unitAfter = await request(app.getHttpServer())
+        .get(`/api/demos/equipment/${unit.id}`)
+        .set('Authorization', `Bearer ${salesToken}`);
+      expect(unitAfter.body.availability_status).not.toBe('reserved');
     });
 
     it('Unauthenticated requests are rejected with 401 Unauthorized', async () => {

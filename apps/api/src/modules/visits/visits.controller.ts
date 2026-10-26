@@ -185,8 +185,8 @@ export class VisitsController {
   // -----------------------------------------------------------
   @Get('organisations/:orgId/history')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
-  async getCustomerVisitHistory(@Param('orgId', VisitIdPipe) orgId: string) {
-    return this.visitsService.getCustomerVisitHistory(orgId);
+  async getCustomerVisitHistory(@Param('orgId', VisitIdPipe) orgId: string, @CurrentUser() user: AuthUser) {
+    return this.visitsService.getCustomerVisitHistory(orgId, user);
   }
 
   @Get('employees/:employeeId/activities')
@@ -202,6 +202,7 @@ export class VisitsController {
   // SINGLE VISIT OPERATIONS
   // -----------------------------------------------------------
   @Get(':id')
+  @Roles('management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin')
   async findOne(@Param('id', VisitIdPipe) id: string, @CurrentUser() user: AuthUser) {
     return this.visitsService.findOne(id, user);
   }
@@ -245,7 +246,8 @@ export class VisitsController {
     @Query('reason') reason: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.visitsService.cancel(id, { reason: reason || 'Cancelled by user request' }, user);
+    // cancel() rejects a blank reason — no default is invented for the audit trail
+    return this.visitsService.cancel(id, { reason: reason || '' }, user);
   }
 
   @Post(':id/destination')
@@ -297,7 +299,7 @@ export class VisitsController {
 
   @Get(':id/audit')
   @Roles('management', 'regional_manager', 'sales', 'admin')
-  async getVisitAudit(@Param('id', VisitIdPipe) id: string) {
-    return this.visitsService.getVisitAudit(id);
+  async getVisitAudit(@Param('id', VisitIdPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.visitsService.getVisitAudit(id, user);
   }
 }

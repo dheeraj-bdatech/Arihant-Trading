@@ -2,15 +2,17 @@
 
 import React, { Suspense, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { CalendarClock, CheckSquare, ClipboardCheck, Columns3, Inbox, List, Plus, ShieldCheck, Users } from 'lucide-react';
-import { Button, ButtonGroup, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader } from '@/components/ui';
+import { openTaskPeek } from './_lib/TaskPeek';
+import { CalendarClock, CheckSquare, ClipboardCheck, Columns3, Inbox, Layers, List, Pencil, Plus, ShieldCheck, Users } from 'lucide-react';
+import { Button, ButtonGroup, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader, RowMenu, Spinner } from '@/components/ui';
 import { TASK_FALLBACK_REVIEWER_ROLES } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
 import { addDays, istToday, useTaskSummary } from './_lib/task-lib';
 import { TASK_BOARD_SCOPES, TaskViewMenu, useTaskViews, useToaster, useUrlFilters, type TaskBoardScope } from './_lib/task-ui';
 import { ApprovalBoard, BlockerReviewBoard } from './_lib/QueueBoards';
-import { BoardFilterMenu, BoardSortMenu, QUICK_FILTERS, TaskBoard, useBoardSort, type QuickFilter } from './_lib/TaskBoard';
-import { TaskCards, TaskPagination, TaskSearchInput, TaskTable, useTaskList } from './_lib/TaskList';
+import { BoardFilterMenu, BoardSortMenu, QUICK_FILTERS, TaskBoard, taskMoveMenu, useBoardSort, useTaskMover, type QuickFilter } from './_lib/TaskBoard';
+import { TASK_GROUP_BY_LABELS, TaskCards, TaskPagination, TaskSearchInput, TaskTable, useTaskList, type TaskGroupBy } from './_lib/TaskList';
+import type { TaskRow } from './_lib/task-lib';
 import { NewTaskButton } from './_lib/NewTaskModal';
 
 /**
@@ -18,7 +20,7 @@ import { NewTaskButton } from './_lib/NewTaskModal';
  * (taskViewsFor). `mode=list` switches My tasks to the list; the other boards' lists are their own pages.
  * `queue=all` shows every pending blocker / approval (management, admin).
  */
-const FILTER_KEYS = ['mode', 'scope', 'queue', 'filter', 'tab', 'search', 'page'] as const;
+const FILTER_KEYS = ['mode', 'scope', 'queue', 'filter', 'tab', 'search', 'page', 'dir', 'group'] as const;
 const LIST_PAGES: Partial<Record<TaskBoardScope, string>> = { team: '/tasks/team', blockers: '/tasks/blockers', approvals: '/tasks/approvals' };
 const SCOPE_TITLE: Record<TaskBoardScope, { title: string; icon: React.ReactNode }> = {
   mine: { title: 'My Tasks', icon: <CheckSquare className="h-5 w-5" /> },
@@ -29,12 +31,14 @@ const SCOPE_TITLE: Record<TaskBoardScope, { title: string; icon: React.ReactNode
 const OPEN_WORK = 'not_started,in_progress,blocked';
 const BOARD_OPEN = 'not_started,in_progress,blocked,awaiting_approval';
 
-type TabId = 'today' | 'upcoming' | 'overdue' | 'blocked' | 'awaiting' | 'completed';
-const TAB_IDS: TabId[] = ['today', 'upcoming', 'overdue', 'blocked', 'awaiting', 'completed'];
+type TabId = 'open' | 'today' | 'upcoming' | 'overdue' | 'blocked' | 'awaiting' | 'completed';
+const TAB_IDS: TabId[] = ['open', 'today', 'upcoming', 'overdue', 'blocked', 'awaiting', 'completed'];
 
 /** GET /tasks filters per list tab (always view=mine). */
 function tabQuery(tab: TabId, today: string): Record<string, string> {
   switch (tab) {
+    case 'open':
+      return { statuses: BOARD_OPEN, sort_by: 'deadline' };
     case 'today':
       return { deadline_from: today, deadline_to: today, statuses: OPEN_WORK, sort_by: 'deadline' };
     case 'upcoming':
@@ -51,6 +55,7 @@ function tabQuery(tab: TabId, today: string): Record<string, string> {
 }
 
 const EMPTY: Record<TabId, { title: string; description: string }> = {
+  open: { title: 'No open tasks', description: 'You have nothing in progress. New assignments will appear here.' },
   today: { title: 'Nothing due today', description: 'No open task has today’s deadline. Check Upcoming for what is next.' },
   upcoming: { title: 'No upcoming tasks', description: 'Nothing is scheduled after today. New assignments will appear here.' },
   overdue: { title: 'Nothing overdue', description: 'Every open task is within its deadline. Keep it that way.' },
@@ -59,7 +64,7 @@ const EMPTY: Record<TabId, { title: string; description: string }> = {
   completed: { title: 'No completed tasks yet', description: 'Finished work is listed here, newest first.' },
 };
 
-const TAB_LABELS: Record<TabId, string> = { today: 'Due today', upcoming: 'Upcoming', overdue: 'Overdue', blocked: 'Blocked', awaiting: 'Awaiting approval', completed: 'Completed' };
+const TAB_LABELS: Record<TabId, string> = { open: 'All open', today: 'Due today', upcoming: 'Upcoming', overdue: 'Overdue', blocked: 'Blocked', awaiting: 'Awaiting approval', completed: 'Completed' };
 
 function Tasks() {
   const router = useRouter();
@@ -79,7 +84,7 @@ function Tasks() {
   const queueScope = values.queue === 'all' && canSeeAllQueues ? 'all' : 'mine';
   const board = values.mode !== 'list' || scope !== 'mine';
   const filter: QuickFilter = QUICK_FILTERS.some((f) => f.id === values.filter) ? (values.filter as QuickFilter) : 'all';
-  const tab: TabId = (TAB_IDS as string[]).includes(values.tab) ? (values.tab as TabId) : 'today';
+  const tab: TabId = (TAB_IDS as string[]).includes(values.tab) ? (values.tab as TabId) : 'open';
   const page = Math.max(1, Number(values.page) || 1);
   const today = istToday();
   const search = values.search || undefined;
@@ -87,13 +92,43 @@ function Tasks() {
   const view = scope === 'team' ? teamView : 'mine';
   const statusBoard = board && !queue;
 
-  const listQuery = useMemo(() => (board ? null : { view: 'mine', ...tabQuery(tab, today), search, page, page_size: 20 }), [board, tab, today, search, page]);
+  // Completed sorts by finish time; every other tab sorts by deadline, soonest first unless the user flips it.
+  const dueSort = tab === 'completed' ? undefined : values.dir === 'desc' ? 'desc' : 'asc';
+  const groupBy = (Object.keys(TASK_GROUP_BY_LABELS) as TaskGroupBy[]).find((g) => g === values.group);
+  // Grouped lists load a fuller page so a group is not split across pages.
+  const pageSize = groupBy ? 100 : 20;
+  const listQuery = useMemo(
+    () => (board ? null : { view: 'mine', ...tabQuery(tab, today), ...(dueSort ? { sort_by: 'deadline', sort_dir: dueSort } : {}), search, page, page_size: pageSize }),
+    [board, tab, today, dueSort, search, page, pageSize],
+  );
   const openQuery = useMemo(() => (statusBoard ? { view, statuses: BOARD_OPEN, sort_by: 'deadline', search, page_size: 100 } : null), [statusBoard, view, search]);
   const doneQuery = useMemo(() => (statusBoard ? { view, statuses: 'completed', sort_by: 'updated_at', sort_dir: 'desc', search, page_size: 25 } : null), [statusBoard, view, search]);
 
   const list = useTaskList(listQuery);
   const open = useTaskList(openQuery);
   const done = useTaskList(doneQuery);
+
+  // List rows get the board's moves behind a pencil menu (same rules, same dialogs).
+  const mover = useTaskMover({
+    isManager,
+    notify: push,
+    onChanged: () => {
+      list.reload();
+      reloadSummary();
+    },
+  });
+  const listActions = (t: TaskRow) =>
+    mover.busyId === t.id ? (
+      <span className="flex h-8 w-8 items-center justify-center">
+        <Spinner size="xs" />
+      </span>
+    ) : (
+      <RowMenu
+        icon={<Pencil className="h-4 w-4" />}
+        label={`Update ${t.task_number}`}
+        items={taskMoveMenu(t, t.status, mover.kindsOf(t), (to) => mover.move(t, to), () => openTaskPeek(t.id))}
+      />
+    );
 
   const refreshBoard = () => {
     open.reload();
@@ -109,6 +144,7 @@ function Tasks() {
   const showList = () => (LIST_PAGES[scope] ? router.push(LIST_PAGES[scope]!) : set({ mode: 'list' }));
 
   const listTabs = [
+    { id: 'open' as const, count: s?.my_open },
     { id: 'today' as const, count: s?.my_due_today },
     { id: 'upcoming' as const },
     { id: 'overdue' as const, count: s?.my_overdue, urgent: true },
@@ -185,8 +221,25 @@ function Tasks() {
                   count: t.count || undefined,
                   urgent: t.urgent,
                   active: tab === t.id,
-                  onSelect: () => set({ tab: t.id === 'today' ? null : t.id }),
+                  onSelect: () => set({ tab: t.id === 'open' ? null : t.id }),
                 }))}
+              />
+            )}
+            {!queue && !board && (
+              <FilterMenu
+                label="Group by"
+                icon={<Layers />}
+                neutralKeys={['none']}
+                align="right"
+                options={[
+                  { key: 'none', label: 'No grouping', active: !groupBy, onSelect: () => set({ group: null }) },
+                  ...(Object.keys(TASK_GROUP_BY_LABELS) as TaskGroupBy[]).map((g) => ({
+                    key: g,
+                    label: g === 'person' ? 'Assigned by' : TASK_GROUP_BY_LABELS[g],
+                    active: groupBy === g,
+                    onSelect: () => set({ group: g }),
+                  })),
+                ]}
               />
             )}
           </div>
@@ -263,12 +316,14 @@ function Tasks() {
         />
       ) : (
         <div className={`space-y-3 transition-opacity ${list.loading ? 'opacity-60' : ''}`}>
-          <TaskTable rows={list.data.data} />
-          <TaskCards rows={list.data.data} />
+          {mover.dialogs.conflict}
+          <TaskTable rows={list.data.data} rowActions={listActions} groupBy={groupBy} dueSort={dueSort} onDueSort={dueSort ? () => set({ dir: dueSort === 'asc' ? 'desc' : null }) : undefined} />
+          <TaskCards rows={list.data.data} rowActions={listActions} />
           <TaskPagination page={list.data.page} totalPages={list.data.totalPages} total={list.data.total} onPage={(p) => set({ page: String(p) }, { resetPage: false })} />
         </div>
       )}
 
+      {mover.dialogs.action}
       <Toaster />
     </PageContainer>
   );

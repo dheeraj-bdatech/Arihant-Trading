@@ -1,7 +1,9 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Inject, NotFoundException } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
-import type { Database } from '@arihant/shared';
+import { checkRegionScope } from '../../common/utils/scope.util.js';
+import type { AuthUser, Database } from '@arihant/shared';
+import { PEER_NOTIFICATION_TYPES } from './notifications.dto.js';
 
 /** Category keywords in precedence order — must match the notifications page badges. */
 const CATEGORY_KEYWORDS: [string, string[]][] = [
@@ -121,6 +123,9 @@ export class NotificationsService {
       .returningAll()
       .executeTakeFirst();
 
+    // Someone else's (or an unknown) notification: nothing was updated, so say so.
+    if (!updated) throw new NotFoundException('Notification not found');
+
     const unread = await this.getUnreadCount(userId);
     return {
       ...updated,
@@ -137,6 +142,41 @@ export class NotificationsService {
       .execute();
 
     return { success: true, count: 0, unreadCount: 0 };
+  }
+
+  /**
+   * A notification raised from the API by a signed-in user. Anyone may write to their own inbox; management /
+   * admin may notify anyone. Other roles may only notify a colleague with an assignment notice linked to a lead
+   * they can access, and without links — so the bell cannot carry spoofed or phishing messages.
+   */
+  async createFromUser(data: { userId: string; type: string; title: string; body: string; entityType?: string; entityId?: string }, sender: AuthUser) {
+    const toSelf = data.userId === sender.id;
+    if (!toSelf && !['management', 'admin'].includes(sender.role)) {
+      if (!(PEER_NOTIFICATION_TYPES as readonly string[]).includes(data.type)) {
+        throw new ForbiddenException('You can only send assignment notices to colleagues.');
+      }
+      if (data.entityType !== 'lead' || !data.entityId) {
+        throw new BadRequestException('A notice to a colleague must be linked to a lead.');
+      }
+      if (/(https?:\/\/|www\.|javascript:)/i.test(`${data.title} ${data.body}`)) {
+        throw new BadRequestException('Notices to colleagues cannot contain links.');
+      }
+      const lead = await this.db
+        .selectFrom('leads')
+        .innerJoin('organisations', 'leads.organisation_id', 'organisations.id')
+        .select(['leads.assigned_to', 'leads.regional_manager_id', 'organisations.region_id', 'organisations.zone_id'])
+        .where('leads.id', '=', data.entityId)
+        .executeTakeFirst();
+      const mayAct =
+        !!lead &&
+        (lead.assigned_to === sender.id ||
+          lead.regional_manager_id === sender.id ||
+          (sender.role !== 'sales' && checkRegionScope(sender, lead.region_id, lead.zone_id)));
+      if (!mayAct) throw new ForbiddenException('You can only send notices about leads you work on.');
+    }
+    const target = await this.db.selectFrom('users').select('is_active').where('id', '=', data.userId).executeTakeFirst();
+    if (!target?.is_active) throw new BadRequestException('The recipient is not an active user.');
+    return this.create(data);
   }
 
   async create(data: {

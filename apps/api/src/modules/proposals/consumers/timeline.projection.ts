@@ -17,6 +17,8 @@ export class ProposalTimelineProjection {
 
   @OnEvent('proposal.*')
   async handleProposalEvent(envelope: DomainEventEnvelope) {
+    // Only outbox envelopes are processed; a raw payload on proposal.* (wildcard) must not crash or poison processed_events.
+    if (!envelope?.eventId || !envelope?.eventType) return;
     const { eventId, eventType, aggregateId, actorId, occurredAt, payload } = envelope;
 
     if (!aggregateId) return;

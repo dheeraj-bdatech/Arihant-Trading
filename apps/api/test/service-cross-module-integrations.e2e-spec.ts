@@ -1,7 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/common/app-setup';
 
 jest.setTimeout(60000);
 
@@ -19,14 +20,7 @@ describe('Module 6: Cross-Module Integrations & SLA Configurations E2E Test Suit
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     const mgmtRes = await request(app.getHttpServer())

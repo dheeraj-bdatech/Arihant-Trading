@@ -13,7 +13,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     const inputId = id || label?.toLowerCase().replace(/\s+/g, '-');
 
     return (
-      <div className="w-full flex flex-col justify-end text-left">
+      <div className="w-full flex flex-col justify-start text-left">
         {label && (
           <label
             htmlFor={inputId}

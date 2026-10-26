@@ -183,7 +183,8 @@ export interface VisitSummary {
   cancelled: number;
   rescheduled: number;
   withManagerDirective: number;
-  completionRate: number;
+  /** completed ÷ total × 100; null when there are no visits to complete. */
+  completionRate: number | null;
 }
 
 export interface TaskFigures {
@@ -302,7 +303,7 @@ export class DashboardMetricsService {
       cancelled: num(r.cancelled),
       rescheduled: num(r.rescheduled),
       withManagerDirective: num(r.directive),
-      completionRate: total > 0 ? Math.round((completed / total) * 100) : 0,
+      completionRate: total > 0 ? Math.round((completed / total) * 100) : null,
     };
   }
 

@@ -273,6 +273,8 @@ export class UsersService {
       previousValue: existing,
       newValue: updated,
     });
+    // Drop the user's live socket connections too (the HTTP guard already refuses their token).
+    if (dto.is_active === false && existing.is_active) this.eventEmitter.emit('user.deactivated', { userId: id });
 
     return updated;
   }

@@ -42,19 +42,46 @@ export const TableBody = React.forwardRef<
 ));
 TableBody.displayName = 'TableBody';
 
-export const TableRow = React.forwardRef<
-  HTMLTableRowElement,
-  React.HTMLAttributes<HTMLTableRowElement>
->(({ className, ...props }, ref) => (
-  <tr
-    ref={ref}
-    className={twMerge(
-      'transition-colors hover:bg-[#FBFAF7] data-[state=selected]:bg-[#E3EFEE] data-[selected=true]:bg-[#E3EFEE]',
-      className,
-    )}
-    {...props}
-  />
-));
+/** Clicks on these inside a clickable row do their own thing and don't also open the row. */
+const ROW_INTERACTIVE = 'a, button, input, select, textarea, label, [role="button"], [role="menuitem"]';
+
+export interface TableRowProps extends React.HTMLAttributes<HTMLTableRowElement> {
+  /** Makes the whole row open the record: click anywhere (except its own buttons / links) or press Enter. */
+  onOpen?: () => void;
+  /** Accessible name for a clickable row, e.g. "Open Access Control System". */
+  openLabel?: string;
+}
+
+export const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
+  ({ className, onOpen, openLabel, onClick, onKeyDown, ...props }, ref) => (
+    <tr
+      ref={ref}
+      className={twMerge(
+        'transition-colors hover:bg-[#FBFAF7] data-[state=selected]:bg-[#E3EFEE] data-[selected=true]:bg-[#E3EFEE]',
+        onOpen && 'cursor-pointer focus-visible:bg-[#E3EFEE] focus-visible:outline-none',
+        className,
+      )}
+      tabIndex={onOpen ? 0 : undefined}
+      aria-label={onOpen ? openLabel : undefined}
+      onClick={(e) => {
+        onClick?.(e);
+        if (!onOpen || e.defaultPrevented) return;
+        if ((e.target as HTMLElement).closest(ROW_INTERACTIVE)) return;
+        // Selecting text in a cell is not a click on the row
+        if (window.getSelection()?.toString()) return;
+        onOpen();
+      }}
+      onKeyDown={(e) => {
+        onKeyDown?.(e);
+        if (onOpen && e.key === 'Enter' && e.target === e.currentTarget) {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      {...props}
+    />
+  ),
+);
 TableRow.displayName = 'TableRow';
 
 export const TableHead = React.forwardRef<

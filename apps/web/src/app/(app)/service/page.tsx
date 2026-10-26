@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import { istToday } from '@/lib/ist-date';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { twMerge } from 'tailwind-merge';
 import {
@@ -10,14 +9,12 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
-  Building,
   User,
   ShieldAlert,
   FileCheck,
   RefreshCw,
   Calendar,
   UserCheck,
-  FileText,
   Package,
   Phone,
   Flame,
@@ -45,11 +42,7 @@ import {
   Badge,
   Card,
   Modal,
-  Input,
-  Select,
-  Textarea,
   PageContainer,
-  FormSteps,
   PageHeader,
   EmptyState,
   StatCard,
@@ -71,7 +64,6 @@ import {
   type BadgeProps,
   type RecordItem,
   ScrollStrip, formatDateTimeIN } from '@/components/ui';
-import type { ServicePriority, WarrantyStatus, ComplaintSource } from '@arihant/shared';
 import { allowedNextServiceStatuses, normalizeServiceStatus, type ServiceStatus } from '@arihant/shared';
 import {
   errMsg,
@@ -91,6 +83,8 @@ import { StatusActionModal, type Engineer } from '@/components/service/StatusAct
 import { CloseTicketModal } from '@/components/service/CloseTicketModal';
 import { LinkOrganisationModal } from '@/components/service/LinkOrganisationModal';
 import { ReportFormModal } from '@/components/service/ReportFormModal';
+import { ReassignEngineerModal } from './_lib/ReassignEngineerModal';
+import { CreateServiceTicketModal } from './_lib/CreateServiceTicketModal';
 import { VisitsTab } from '@/components/service/VisitsTab';
 import { PartsTab } from '@/components/service/PartsTab';
 import { ReportsTab } from '@/components/service/ReportsTab';
@@ -100,6 +94,7 @@ import { NotesTab, AuditTab } from '@/components/service/NotesAuditTabs';
 type TicketAction =
   | { kind: 'status'; target: ServiceStatus; label: string; tone: 'primary' | 'secondary' | 'exception' }
   | { kind: 'report'; label: string; tone: 'primary' }
+  | { kind: 'reassign'; label: string; tone: 'secondary' }
   | { kind: 'close'; label: string; tone: 'primary' };
 
 const ACTION_LABEL: Partial<Record<ServiceStatus, string>> = {
@@ -118,7 +113,7 @@ const ACTION_LABEL: Partial<Record<ServiceStatus, string>> = {
   received: 'Back to received',
 };
 const EXCEPTION_TARGETS: ServiceStatus[] = ['awaiting_part', 'awaiting_customer', 'escalated', 'on_hold', 'revisit_required', 'cancelled'];
-const ACTION_ORDER = ['assigned', 'visit_scheduled', 'in_progress', 'report', 'resolved', 'closed', 'reopened', 'created', 'received'];
+const ACTION_ORDER = ['assigned', 'visit_scheduled', 'in_progress', 'report', 'resolved', 'closed', 'reassign', 'reopened', 'created', 'received'];
 
 const ACTION_ICON: Record<string, React.ReactNode> = {
   assigned: <UserCheck className="h-3.5 w-3.5 mr-1" />,
@@ -134,6 +129,7 @@ const ACTION_ICON: Record<string, React.ReactNode> = {
   reopened: <Repeat className="h-3.5 w-3.5 mr-1" />,
   report: <FileCheck className="h-3.5 w-3.5 mr-1" />,
   closed: <CheckCircle2 className="h-3.5 w-3.5 mr-1" />,
+  reassign: <Users className="h-3.5 w-3.5 mr-1" />,
 };
 /** Bare glyphs for the record cards' icon buttons (the Quick button sizes them). */
 const ACTION_GLYPH: Record<string, LucideIcon> = {
@@ -150,8 +146,9 @@ const ACTION_GLYPH: Record<string, LucideIcon> = {
   reopened: Repeat,
   report: FileCheck,
   closed: CheckCircle2,
+  reassign: Users,
 };
-const actionKey = (a: TicketAction) => (a.kind === 'status' ? a.target : a.kind === 'report' ? 'report' : 'closed');
+const actionKey = (a: TicketAction) => (a.kind === 'status' ? a.target : a.kind === 'report' ? 'report' : a.kind === 'reassign' ? 'reassign' : 'closed');
 const actionRank = (a: TicketAction) => {
   const i = ACTION_ORDER.indexOf(actionKey(a));
   return i === -1 ? 99 : i;
@@ -177,10 +174,7 @@ const ticketStatusBadge = (status?: string | null): BadgeVariant => {
 const priorityBadge = (p?: string | null): BadgeVariant => (p === 'critical' || p === 'high' ? 'danger' : p === 'medium' ? 'warning' : 'default');
 const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
 
-/** Roles that may add a customer to the organisation master (POST /organisations). */
-const CAN_CREATE_ORG = ['management', 'regional_manager', 'sales', 'tender_team', 'admin'];
-
-type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link'; ticket: any; target?: ServiceStatus };
+type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link' | 'reassign'; ticket: any; target?: ServiceStatus };
 
 export default function ServicePage() {
   const { user } = useAuth();
@@ -205,7 +199,6 @@ export default function ServicePage() {
   const [unverifiedFilter, setUnverifiedFilter] = useState(false);
 
   // Reference data
-  const [organisations, setOrganisations] = useState<any[]>([]);
   const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
 
   // Modals
@@ -217,27 +210,6 @@ export default function ServicePage() {
   const [cardError, setCardError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
 
-  // New ticket form (§31)
-  const emptyTicket = () => ({
-    organisation_id: '',
-    organisation_name: '',
-    city: '',
-    ticket_no: '',
-    equipment_type: 'XBIS (X-Ray Baggage Inspection System)',
-    serial_no: '',
-    location: '',
-    complaint: '',
-    complaint_source: 'Phone' as ComplaintSource,
-    received_date: istToday(),
-    priority: 'high' as ServicePriority,
-    warranty_status: 'in_warranty' as WarrantyStatus,
-    assigned_to: '',
-    planned_visit_date: '',
-  });
-  const [newTicket, setNewTicket] = useState(emptyTicket);
-
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'overview' | 'visits' | 'reports' | 'parts' | 'comments' | 'history' | 'linked'>('overview');
 
   // Engineers the current user may dispatch, as the API decides (GET /service/engineers): managers everyone in
@@ -285,13 +257,8 @@ export default function ServicePage() {
     fetchData();
   }, [fetchData]);
 
-  // Load auxiliary reference data
+  // Load auxiliary reference data (the new-ticket popup loads its own)
   useEffect(() => {
-    api
-      .get('/organisations', { limit: 100 })
-      .then((res) => setOrganisations(res.data || []))
-      .catch(() => {});
-
     if (['management', 'regional_manager', 'service_team', 'admin'].includes(role)) {
       api
         .get('/service/engineers')
@@ -451,7 +418,7 @@ export default function ServicePage() {
         if (target === 'cancelled' && role === 'service_team' && t.assigned_to && t.assigned_to !== userId) continue;
         let label = ACTION_LABEL[target] || statusLabel(target);
         if (status === 'escalated' && target !== 'cancelled') label = `De-escalate: ${statusLabel(target)}`;
-        else if (target === 'assigned' && t.assigned_to) label = 'Reassign engineer';
+        else if (target === 'assigned' && t.assigned_to) label = 'Back to assigned';
         out.push({
           kind: 'status',
           target,
@@ -461,6 +428,10 @@ export default function ServicePage() {
       }
       if (['service_team', 'admin'].includes(role) && ['in_progress', 'resolved'].includes(status)) {
         out.push({ kind: 'report', label: 'File service report', tone: 'primary' });
+      }
+      // §47: hand an open ticket to another engineer without a status change (a field engineer cannot; a chief can)
+      if (t.assigned_to && !isFinished(t.status) && (role !== 'service_team' || engineers.length > 1)) {
+        out.push({ kind: 'reassign', label: 'Reassign engineer', tone: 'secondary' });
       }
       return out.sort((a, b) => actionRank(a) - actionRank(b));
     },
@@ -484,62 +455,6 @@ export default function ServicePage() {
       setActionCtx({ kind: 'link', ticket: full });
     } catch (err) {
       setCardError(errMsg(err, 'Could not load the ticket.'));
-    }
-  };
-
-  // 1. Log New Incident (§31)
-  const handleLogTicket = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setActionError(null);
-    setIsSubmitting(true);
-
-    try {
-      if (newTicket.received_date && newTicket.received_date > istToday()) {
-        throw new Error('Date received cannot be in the future.');
-      }
-      const typedName = newTicket.organisation_name.trim();
-      let orgId = newTicket.organisation_id;
-      let claimedName: string | undefined;
-      if (!orgId) {
-        if (!typedName) throw new Error('Please enter or select a customer organisation.');
-        // Picked by name but not from the list: match it case-insensitively before treating it as new.
-        const match = organisations.find((o) => String(o.name).trim().toLowerCase() === typedName.toLowerCase());
-        if (match) orgId = match.id;
-        else if (CAN_CREATE_ORG.includes(role)) {
-          const orgRes = await api.post('/organisations', {
-            name: typedName,
-            city: newTicket.city.trim() || 'New Delhi',
-            state: 'North Zone',
-          });
-          orgId = orgRes.id;
-        } else {
-          // Service desk cannot add customers to the master: log it as an unverified customer, linked later.
-          claimedName = typedName;
-        }
-      }
-
-      await api.post('/service/tickets', {
-        organisation_id: orgId || undefined,
-        claimed_organisation_name: claimedName,
-        ticket_no: newTicket.ticket_no.trim() || undefined,
-        equipment_serial: newTicket.serial_no || undefined,
-        location: newTicket.location || newTicket.city || undefined,
-        complaint: `[${newTicket.equipment_type}] ${newTicket.complaint}`,
-        complaint_source: newTicket.complaint_source,
-        received_date: newTicket.received_date || undefined,
-        priority: newTicket.priority,
-        warranty_status: newTicket.warranty_status,
-        assigned_to: newTicket.assigned_to || undefined,
-        planned_visit_date: newTicket.planned_visit_date || undefined,
-      });
-
-      setIsLogTicketOpen(false);
-      setNewTicket(emptyTicket());
-      await fetchData();
-    } catch (err) {
-      setActionError(errMsg(err, 'Failed to register breakdown incident.'));
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -914,240 +829,13 @@ export default function ServicePage() {
       )}
 
       {/* 1. Log Breakdown Ticket Modal */}
-      <Modal
+      <CreateServiceTicketModal
         isOpen={isLogTicketOpen}
         onClose={() => setIsLogTicketOpen(false)}
-        title="Log Equipment Breakdown Incident"
-        description="Register a defense/PSU customer maintenance incident under warranty or AMC contract."
-        maxWidth="lg"
-      >
-        <form onSubmit={handleLogTicket}>
-          <FormSteps
-            onCancel={() => setIsLogTicketOpen(false)}
-            banner={
-              actionError && (
-                <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D]">
-                  {actionError}
-                </div>
-              )
-            }
-            submit={
-              // phones: same 40px height as Back, and a label that fits half the footer
-              <Button type="submit" size="sm" isLoading={isSubmitting} className="h-10 sm:h-8">
-                <span className="sm:hidden">Register incident</span>
-                <span className="hidden sm:inline">Register Incident & Dispatch</span>
-              </Button>
-            }
-            steps={[
-              {
-                title: 'Intake',
-                icon: <FileText />,
-                description: 'When and how the complaint reached us, and how urgent it is.',
-                content: (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Input
-                        label="Ticket Ref"
-                        placeholder="Auto: TCK-YYYY-NNNNNN"
-                        helperText="Leave blank for the next TCK number, or enter the customer's own reference"
-                        value={newTicket.ticket_no}
-                        onChange={(e) => setNewTicket({ ...newTicket, ticket_no: e.target.value })}
-                      />
-                      <Input
-                        label="Date Received"
-                        type="date"
-                        required
-                        max={istToday()}
-                        value={newTicket.received_date}
-                        onChange={(e) => setNewTicket({ ...newTicket, received_date: e.target.value })}
-                      />
-                      <Select
-                        label="Complaint Origin / Source"
-                        value={newTicket.complaint_source}
-                        onChange={(e) => setNewTicket({ ...newTicket, complaint_source: e.target.value as ComplaintSource })}
-                        options={[
-                          { value: 'Phone', label: 'Direct Client Call / Phone Helpline' },
-                          { value: 'Email', label: 'Official Client Email / Notice' },
-                          { value: 'Official Letter', label: 'Government Written Dispatch / Letter' },
-                          { value: 'Customer Portal', label: 'Client Direct / Web Portal' },
-                          { value: 'Demo Team', label: 'Demo Team (Trial Incident / Client Discovery)' },
-                          { value: 'Sales Rep', label: 'Sales Rep (Field Visit / On-site Contact)' },
-                          { value: 'Field Visit', label: 'Routine Inspection / Field Visit' },
-                          { value: 'Walk-in', label: 'Client Walk-in / Depot Visit' },
-                          { value: 'WhatsApp', label: 'WhatsApp Helpline' },
-                        ]}
-                      />
-                      <Select
-                        label="SLA Priority Level"
-                        value={newTicket.priority}
-                        onChange={(e) => setNewTicket({ ...newTicket, priority: e.target.value as ServicePriority })}
-                        options={[
-                          { value: 'critical', label: 'CRITICAL — Liquidated Damages (LD) Risk' },
-                          { value: 'high', label: 'HIGH — Station Interruption' },
-                          { value: 'medium', label: 'MEDIUM — Partial Functionality' },
-                          { value: 'low', label: 'LOW — Routine Preventative' },
-                        ]}
-                      />
-                    </div>
-
-                    {/* Dynamic Source Origin Guidance Note */}
-                    {newTicket.complaint_source === 'Demo Team' && (
-                      <div className="p-2.5 rounded-lg bg-[#EEF1F5] border border-[#DCD8CE] text-xs text-[#14213D] flex items-center gap-2">
-                        <Flame className="h-4 w-4 shrink-0 text-[#1F2E52]" />
-                        <span>
-                          <strong>Demo Team Field Intake:</strong> Tagged for demo trials. Use this if demo equipment broke down during a client demonstration trial, or if an on-site customer requested servicing for an existing machine during your demo visit.
-                        </span>
-                      </div>
-                    )}
-                    {newTicket.complaint_source === 'Official Letter' && (
-                      <div className="p-2.5 rounded-lg bg-[#FBEBDD] border border-[#9A3412]/30 text-xs text-[#7C2D12] flex items-center gap-2">
-                        <FileText className="h-4 w-4 shrink-0 text-[#9A3412]" />
-                        <span>
-                          <strong>Formal B2G Government Notice:</strong> Registered under official client letter dispatch. Ensure the letter dispatch number and contract terms are noted in the complaint field.
-                        </span>
-                      </div>
-                    )}
-                    {newTicket.complaint_source === 'Customer Portal' && (
-                      <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-xs text-[#0F5E63] flex items-center gap-2">
-                        <Building className="h-4 w-4 shrink-0 text-[#0F5E63]" />
-                        <span>
-                          <strong>Direct Client Web Intake:</strong> Incident logged directly by client authority or nodal checkpoint officer.
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                ),
-              },
-              {
-                title: 'Customer',
-                icon: <Building />,
-                description: 'Which client agency raised it and where the machine is deployed.',
-                content: (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                        Client Agency / Organisation <span className="text-[#881337]">*</span>
-                      </label>
-                      <input
-                        list="org-list"
-                        value={newTicket.organisation_name}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          const match = organisations.find((o) => o.name === val);
-                          setNewTicket({
-                            ...newTicket,
-                            organisation_name: val,
-                            organisation_id: match ? match.id : '',
-                            city: match?.city || newTicket.city,
-                          });
-                        }}
-                        placeholder="e.g. Delhi Police Traffic HQ / BSF Sector"
-                        className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-                        required
-                      />
-                      {!newTicket.organisation_id && newTicket.organisation_name.trim().length > 2 &&
-                        !organisations.some((o) => String(o.name).trim().toLowerCase() === newTicket.organisation_name.trim().toLowerCase()) && (
-                          <p className="mt-1 text-[11px] text-[#9A3412]">
-                            {CAN_CREATE_ORG.includes(role)
-                              ? 'Not in the customer master — it will be added as a new customer.'
-                              : 'Not in the customer master — the ticket is logged as an unverified customer; link it to the right organisation once it is added.'}
-                          </p>
-                        )}
-                      <datalist id="org-list">
-                        {organisations.map((org) => (
-                          <option key={org.id} value={org.name}>
-                            {org.city ? `${org.name} (${org.city})` : org.name}
-                          </option>
-                        ))}
-                      </datalist>
-                    </div>
-
-                    <Input
-                      label="Deployment Station / City"
-                      value={newTicket.city}
-                      onChange={(e) => setNewTicket({ ...newTicket, city: e.target.value })}
-                      placeholder="e.g. New Delhi / Patna / Kolkata"
-                    />
-                  </div>
-                ),
-              },
-              {
-                title: 'Equipment',
-                icon: <Wrench />,
-                description: 'The machine that broke down, its coverage and what went wrong.',
-                content: (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Select
-                        label="Equipment Category"
-                        value={newTicket.equipment_type}
-                        onChange={(e) => setNewTicket({ ...newTicket, equipment_type: e.target.value })}
-                        options={[
-                          { value: 'XBIS (X-Ray Baggage Inspection System)', label: 'XBIS (Dual Energy X-Ray)' },
-                          { value: 'DFMD (Door Frame Metal Detector)', label: 'DFMD (Multi-Zone Walk-through)' },
-                          { value: 'HHMD (Hand Held Metal Detector)', label: 'HHMD (MHA QR Compliant)' },
-                          { value: 'UVSS (Under Vehicle Surveillance System)', label: 'UVSS Embedded Array' },
-                          { value: 'Thermal Imaging Monocular', label: 'Thermal / Night Vision' },
-                          { value: 'Other Homeland Security Device', label: 'Other Security Hardware' },
-                        ]}
-                      />
-                      <Input
-                        label="Machine Serial Number"
-                        value={newTicket.serial_no}
-                        onChange={(e) => setNewTicket({ ...newTicket, serial_no: e.target.value })}
-                        placeholder="e.g. SN-XBIS-2025-081"
-                      />
-                      <Select
-                        label="Warranty / AMC Status"
-                        value={newTicket.warranty_status}
-                        onChange={(e) => setNewTicket({ ...newTicket, warranty_status: e.target.value as WarrantyStatus })}
-                        options={[
-                          { value: 'in_warranty', label: 'Under OEM Warranty' },
-                          { value: 'amc', label: 'Comprehensive AMC Active' },
-                          { value: 'out_of_warranty', label: 'Out of Warranty (Billable)' },
-                        ]}
-                      />
-                    </div>
-
-                    <Textarea
-                      label="Breakdown Complaint / Symptom"
-                      required
-                      rows={3}
-                      value={newTicket.complaint}
-                      onChange={(e) => setNewTicket({ ...newTicket, complaint: e.target.value })}
-                      placeholder="Describe the failure, error codes on display, or physical damage observed..."
-                    />
-                  </div>
-                ),
-              },
-              {
-                title: 'Dispatch',
-                icon: <UserCheck />,
-                description: 'Optionally send an engineer now and plan the first visit.',
-                content: (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <Select
-                      label="Initial Field Engineer Dispatch (Optional)"
-                      value={newTicket.assigned_to}
-                      onChange={(e) => setNewTicket({ ...newTicket, assigned_to: e.target.value })}
-                      options={[
-                        { value: '', label: '-- Unassigned (Assign Later) --' },
-                        ...engineers.map((eng) => ({ value: eng.id, label: eng.name })),
-                      ]}
-                    />
-                    <Input
-                      label="Planned Visit Date"
-                      type="date"
-                      value={newTicket.planned_visit_date}
-                      onChange={(e) => setNewTicket({ ...newTicket, planned_visit_date: e.target.value })}
-                    />
-                  </div>
-                ),
-              },
-            ]}
-          />
-        </form>
-      </Modal>
+        onCreated={() => {
+          fetchData();
+        }}
+      />
 
 
       {/* Workflow action modals (status moves / report / close / link) */}
@@ -1168,6 +856,9 @@ export default function ServicePage() {
       )}
       {actionCtx?.kind === 'report' && (
         <ReportFormModal ticket={actionCtx.ticket} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
+      )}
+      {actionCtx?.kind === 'reassign' && (
+        <ReassignEngineerModal ticket={actionCtx.ticket} engineers={engineers} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
       )}
       {actionCtx?.kind === 'link' && (
         <LinkOrganisationModal ticket={actionCtx.ticket} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />

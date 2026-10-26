@@ -42,15 +42,19 @@ export class UploadsService {
     return attachment;
   }
 
-  async getAttachments(entityType: string, entityId: string) {
-    return this.db
+  /**
+   * Generic attachments carry no per-record permissions of their own, so a user sees only files they uploaded;
+   * management and admin see every file on the record. (Module documents use their own scoped endpoints.)
+   */
+  async getAttachments(entityType: string, entityId: string, user: AuthUser) {
+    let q = this.db
       .selectFrom('attachments')
       .leftJoin('users', 'attachments.uploaded_by', 'users.id')
       .selectAll('attachments')
       .select('users.full_name as uploaded_by_name')
       .where('entity_type', '=', entityType)
-      .where('entity_id', '=', entityId)
-      .orderBy('created_at', 'desc')
-      .execute();
+      .where('entity_id', '=', entityId);
+    if (!['management', 'admin'].includes(user.role)) q = q.where('attachments.uploaded_by', '=', user.id);
+    return q.orderBy('created_at', 'desc').execute();
   }
 }

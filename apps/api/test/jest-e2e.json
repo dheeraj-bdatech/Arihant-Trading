@@ -1,5 +1,9 @@
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
+  "moduleFileExtensions": [
+    "js",
+    "json",
+    "ts"
+  ],
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
@@ -9,7 +13,9 @@
       {
         "isolatedModules": true,
         "diagnostics": {
-          "ignoreCodes": [151002]
+          "ignoreCodes": [
+            151002
+          ]
         }
       }
     ]
@@ -17,5 +23,8 @@
   "moduleNameMapper": {
     "^(\\./.*)\\.js$": "$1",
     "^(\\.\\./.*)\\.js$": "$1"
-  }
+  },
+  "setupFiles": [
+    "<rootDir>/helpers/e2e-db-guard.ts"
+  ]
 }

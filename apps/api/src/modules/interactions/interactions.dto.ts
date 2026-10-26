@@ -4,8 +4,10 @@ import {
   IsOptional,
   IsDateString,
   IsArray,
+  IsIn,
   Matches,
 } from 'class-validator';
+import { INTERACTION_TYPES } from '@arihant/shared';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -40,7 +42,8 @@ export class CreateInteractionDto {
   lead_id?: string;
 
   @IsString()
-  @IsNotEmpty({ message: 'Interaction type is required (e.g. call, visit, video_conference, demo, email, whatsapp, proposal, follow_up, tender_discussion)' })
+  @IsNotEmpty({ message: 'Interaction type is required' })
+  @IsIn(INTERACTION_TYPES, { message: `Interaction type must be one of: ${INTERACTION_TYPES.join(', ')}` })
   type!: string;
 
   @IsDateString()

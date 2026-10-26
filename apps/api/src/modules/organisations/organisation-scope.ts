@@ -12,8 +12,9 @@
  * Used by the Customer Register list and by the Leads dashboard "total customers" count so both always agree.
  * Expects the query to have `organisations` in scope under that name.
  */
-import { sql, type RawBuilder } from 'kysely';
-import type { AuthUser } from '@arihant/shared';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
+import type { AuthUser, Database } from '@arihant/shared';
 
 export function organisationScope(user: AuthUser): RawBuilder<boolean> | null {
   if (user.role === 'sales') {
@@ -51,4 +52,23 @@ export function organisationScope(user: AuthUser): RawBuilder<boolean> | null {
   }
 
   return null;
+}
+
+/**
+ * Single-record guard for the same territory: 404 when the organisation does not exist, 403 when it lies outside
+ * the caller's Customer Register scope.
+ */
+export async function assertOrganisationInScope(db: Kysely<Database>, orgId: string, user: AuthUser): Promise<void> {
+  const scope = organisationScope(user);
+  const row = await db
+    .selectFrom('organisations')
+    .select(['organisations.id', (scope ?? sql<boolean>`true`).as('in_scope')])
+    .where('organisations.id', '=', orgId)
+    .executeTakeFirst();
+  if (!row) {
+    throw new NotFoundException(`Organisation with id '${orgId}' not found`);
+  }
+  if (!row.in_scope) {
+    throw new ForbiddenException('This customer account is outside your territory.');
+  }
 }

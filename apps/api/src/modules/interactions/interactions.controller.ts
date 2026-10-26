@@ -22,18 +22,19 @@ export class InteractionsController {
   async find(
     @Query('organisation_id') orgId?: string,
     @Query('lead_id') leadId?: string,
+    @CurrentUser() user?: AuthUser,
   ) {
     if (leadId) {
-      return this.interactionsService.findByLead(leadId);
+      return this.interactionsService.findByLead(leadId, user!);
     }
     if (orgId) {
-      return this.interactionsService.findByOrganisation(orgId);
+      return this.interactionsService.findByOrganisation(orgId, user!);
     }
     return [];
   }
 
   @Post()
   async create(@Body() dto: CreateInteractionDto, @CurrentUser() user: AuthUser) {
-    return this.interactionsService.create(dto, user.id);
+    return this.interactionsService.create(dto, user);
   }
 }

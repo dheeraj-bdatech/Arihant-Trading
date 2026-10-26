@@ -5,6 +5,9 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   AlertTriangle,
+  Ban,
+  CircleCheck,
+  CircleDashed,
   CalendarDays,
   CheckSquare,
   ClipboardCheck,
@@ -15,17 +18,19 @@ import {
   Gauge,
   Hourglass,
   LayoutList,
+  OctagonAlert,
   Paperclip,
   RefreshCw,
   Repeat,
   Settings2,
   ShieldAlert,
   ShieldCheck,
+  Timer,
   Trash2,
   TrendingUp,
   Users,
 } from 'lucide-react';
-import { Badge, Button, Card, FilterMenu, InfoCallout, Modal, Spinner, type FilterMenuOption } from '@/components/ui';
+import { Badge, Button, Card, FilterMenu, InfoCallout, Modal, Spinner, StepTrack, type FilterMenuOption, type TrackStep } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -120,14 +125,35 @@ export const DueText: React.FC<{ deadline: string | null; open: boolean; compact
   );
 };
 
-export const ProgressBar: React.FC<{ value: number; className?: string }> = ({ value, className }) => (
-  <div className={`flex items-center gap-2 ${className || ''}`} aria-label={`Progress ${value}%`}>
-    <div className="h-1.5 flex-1 rounded-full bg-[#ECE9E2] overflow-hidden">
-      <div className="h-full rounded-full bg-[#0F5E63] transition-all" style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
-    </div>
-    <span className="font-mono text-[11px] text-[#4A5568] w-8 text-right">{value}%</span>
-  </div>
-);
+/**
+ * Where a task stands, as the Kanban board's columns in order (finished steps ticked, the current one filled).
+ * Replaces the old percentage bar — status, not a number, says how far the work has got.
+ */
+export const StatusTrack: React.FC<{ status: string; approvalRequired?: boolean; className?: string }> = ({ status, approvalRequired, className }) => {
+  if (status === 'cancelled') {
+    return (
+      <span className={`inline-flex items-center gap-1.5 rounded-full border border-[#DCD8CE] bg-[#ECE9E2] px-2.5 py-1 text-xs font-semibold text-[#4A5568] ${className || ''}`}>
+        <Ban className="h-3.5 w-3.5" aria-hidden /> Cancelled
+      </span>
+    );
+  }
+  const steps: TrackStep[] = [
+    { key: 'not_started', label: 'Not started', icon: CircleDashed },
+    status === 'blocked' ? { key: 'blocked', label: 'Blocked', icon: OctagonAlert } : { key: 'in_progress', label: 'In progress', icon: Timer },
+    ...(approvalRequired || status === 'awaiting_approval' ? [{ key: 'awaiting_approval', label: 'Approval', icon: Hourglass }] : []),
+    { key: 'completed', label: 'Completed', icon: CircleCheck },
+  ];
+  return (
+    <StepTrack
+      steps={steps}
+      current={Math.max(0, steps.findIndex((st) => st.key === status))}
+      tone={status === 'blocked' ? 'danger' : status === 'awaiting_approval' ? 'warning' : 'primary'}
+      complete={status === 'completed'}
+      label={`Status: ${TASK_STATUS_LABELS[status as TaskDisplayStatus] || status}`}
+      className={className}
+    />
+  );
+};
 
 export const EvidenceDisclaimer: React.FC = () => (
   <InfoCallout variant="warning" title="Evidence only" icon={<ShieldAlert className="h-4 w-4" />}>
@@ -372,7 +398,6 @@ function updateDetails(u: TaskUpdate): string | null {
   const m = u.metadata || {};
   const bits: string[] = [];
   if (u.status_from && u.status_to && u.status_from !== u.status_to) bits.push(`${TASK_STATUS_LABELS[u.status_from as TaskDisplayStatus] || u.status_from} → ${TASK_STATUS_LABELS[u.status_to as TaskDisplayStatus] || u.status_to}`);
-  if (u.progress_percent !== null && u.progress_percent !== undefined) bits.push(`progress ${u.progress_percent}%`);
   if (m.blocker_type) bits.push(blockerTypeLabel(m.blocker_type));
   if (m.raised_after_deadline) bits.push('raised after the deadline');
   if (m.new_deadline) bits.push(`new deadline ${formatTaskDateTime(m.new_deadline)}`);

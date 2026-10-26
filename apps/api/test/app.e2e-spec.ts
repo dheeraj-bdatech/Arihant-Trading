@@ -1,11 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 
 import { Kysely } from 'kysely';
 import { Database as DB } from '@arihant/shared';
 import { purgeTaskModule } from './helpers/reset-tasks';
+import { configureApp } from '../src/common/app-setup';
 
 /** IST calendar day `days` from today (demo / reservation dates cannot be in the past). */
 const istDay = (days = 0) => new Date(Date.now() + 5.5 * 3600000 + days * 86400000).toISOString().slice(0, 10);
@@ -28,14 +29,7 @@ describe('Arihant BOS API E2E Suite', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     const db = moduleFixture.get<Kysely<DB>>('KYSELY_DB');

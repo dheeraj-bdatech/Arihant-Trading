@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { Kysely, sql } from 'kysely';
 import { createHash, randomInt } from 'crypto';
@@ -8,6 +8,7 @@ import { KYSELY_DB } from '../src/common/database/database.module';
 import { nameSimilarity, normalizePhone } from '../src/modules/service/service-portal.service';
 import { advanceTicket, validReport } from './helpers/service-flow';
 import { istDay } from './helpers/ist-date';
+import { configureApp } from '../src/common/app-setup';
 
 /**
  * The public customer service-request form and everything it triggers. No customer login:
@@ -76,8 +77,7 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
+    configureApp(app); // same global setup as main.ts
     await app.init();
     db = app.get(KYSELY_DB);
 

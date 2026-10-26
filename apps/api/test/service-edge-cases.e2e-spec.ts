@@ -1,8 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { advanceTicket, istDay, validReport } from './helpers/service-flow';
+import { configureApp } from '../src/common/app-setup';
 
 jest.setTimeout(60000);
 
@@ -26,14 +27,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     // 1. Authenticate tokens

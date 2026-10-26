@@ -6,6 +6,7 @@ import type { UserRole } from '@arihant/shared';
  * Cross-module links use canOpen() so nobody is sent to a page that will only show "access denied".
  */
 export const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] }[] = [
+  { path: '/regional/performance', name: 'Salesperson & Regional Performance', roles: ['sales', 'regional_manager', 'management', 'admin'] },
   { path: '/regional', name: 'Regional Territory Command', roles: ['regional_manager', 'management', 'admin'] },
   { path: '/tenders', name: 'GeM Defence Tenders', roles: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'] },
   { path: '/leads', name: 'Leads & CRM Accounts', roles: ['management', 'regional_manager', 'sales', 'admin'] },

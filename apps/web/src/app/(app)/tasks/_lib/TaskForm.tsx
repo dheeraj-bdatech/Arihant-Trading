@@ -9,7 +9,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, ArrowLeft, CalendarClock, Camera, Link2, ListChecks, Paperclip, Plus, Repeat, Send, ShieldCheck, Upload, Users, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CalendarClock, Camera, ListChecks, Paperclip, Plus, Repeat, Send, ShieldCheck, Upload, Users, X } from 'lucide-react';
 import { Badge, Button, Card, Checkbox, FormSteps, InfoCallout, Input, Select, Spinner, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import {
@@ -35,8 +35,11 @@ import {
   type TaskRecurrenceType,
   type TaskTemplateStatus,
 } from '@arihant/shared';
-import { errorMessage, fieldErrors, fileSize, istToday, notifyTasksChanged, useTaskCategories, useTaskSettings, useTaskSummary, type AssigneeOption, type TaskCategory } from './task-lib';
+import { errorMessage, fieldErrors, fileSize, istToday, notifyTasksChanged, useTaskCategories, useTaskSettings, useTaskSummary, type AssigneeOption, type LinkOption, type TaskCategory } from './task-lib';
 import { AssigneePicker, DeadlineInput, LinkPicker } from './pickers';
+import { QuickCustomerModal } from './QuickCustomerModal';
+import { CreateDemoModal } from '@/app/(app)/demos/_lib/CreateDemoModal';
+import { CreateServiceTicketModal } from '@/app/(app)/service/_lib/CreateServiceTicketModal';
 import { uploadTaskFiles } from './TaskActions';
 import { useToaster } from './task-ui';
 
@@ -141,6 +144,28 @@ const LINK_FIELD: Record<LinkType, LinkField> = { customer: 'customer_id', tende
 const LINK_NAME: Record<LinkType, string> = { customer: 'Customer', tender: 'Tender', demo: 'Demo', service: 'Service ticket', project: 'Project' };
 /** Link pickers the category makes mandatory (demo / service accept the customer instead). */
 const REQUIRED_LINKS: Record<string, LinkType[]> = { customer: ['customer'], tender: ['tender'], demo: ['demo', 'customer'], service: ['service', 'customer'] };
+/** Categories whose record can be created on the spot from the task form, and what the offer says. */
+type CreatableLink = 'demo' | 'service' | 'customer';
+const CREATE_OFFER: Record<CreatableLink, { field: LinkField; question: string; detail: string; yes: string }> = {
+  demo: {
+    field: 'demo_id',
+    question: 'Do you want to create a new demo for this task?',
+    detail: 'Opens the demo request with live kit and team availability. The demo team is notified, and the demo is linked here.',
+    yes: 'Yes, create demo',
+  },
+  service: {
+    field: 'service_ticket_id',
+    question: 'Do you want to log a new service ticket for this task?',
+    detail: 'Opens the breakdown form. The service desk is notified, and the ticket is linked here.',
+    yes: 'Yes, create ticket',
+  },
+  customer: {
+    field: 'customer_id',
+    question: 'Is this for a new customer?',
+    detail: 'Create the account now and it is linked here. An existing account with the same name and city is reused.',
+    yes: 'Yes, add customer',
+  },
+};
 const CATEGORY_HINT: Record<string, string> = {
   customer: 'Needs a linked customer.',
   tender: 'Needs an open tender — the customer is filled in from the tender.',
@@ -196,8 +221,9 @@ const FIELD_ORDER = [
   'files',
 ];
 const HANDLED_KEYS = new Set(FIELD_ORDER);
-const anchorId = (key: string) => (key.startsWith('recurrence_rule') ? 'tf-recurrence' : `tf-${key}`);
-/** The popup's two steps: Task + Linked work + Assign, then Schedule + Rules + Documents. */
+const anchorId = (key: string) =>
+  key.startsWith('recurrence_rule') ? 'tf-recurrence' : typeof document !== 'undefined' && !document.getElementById(`tf-${key}`) && key.endsWith('_id') && key !== 'category_id' ? 'tf-links' : `tf-${key}`;
+/** The popup's two steps: Task + Assign, then Schedule + Rules + Documents. */
 const MODAL_STEP_TITLES = ['Task & people', 'Schedule & rules'];
 
 export interface TaskFormPrefill {
@@ -413,7 +439,9 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     if (leaveDefault === 'skip' || leaveDefault === 'keep') setRec((r) => ({ ...r, leavePolicy: leaveDefault }));
   }, [leaveDefault]);
   const [evidenceTouched, setEvidenceTouched] = useState(false);
-  const [extraLinks, setExtraLinks] = useState<LinkType[]>([]);
+  // "Create a new demo / ticket / customer for this task?" — which popup is open, and which offer the user turned down
+  const [creatingLink, setCreatingLink] = useState<CreatableLink | null>(null);
+  const [declinedCreate, setDeclinedCreate] = useState<CreatableLink | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [fileProblems, setFileProblems] = useState<string | null>(null);
   const [drag, setDrag] = useState(false);
@@ -444,8 +472,14 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
   const requiredTypes = category?.requires_link_type ? REQUIRED_LINKS[category.requires_link_type] || [] : [];
   const links = form.links;
   const linked = Boolean(links.customer_id || links.tender_id || links.demo_id || links.service_ticket_id);
-  const optionalTypes = LINK_TYPES.filter((t) => !requiredTypes.includes(t) && (extraLinks.includes(t) || links[LINK_FIELD[t]]));
-  const addableTypes = LINK_TYPES.filter((t) => !requiredTypes.includes(t) && !optionalTypes.includes(t));
+  const offerType = category?.requires_link_type as CreatableLink | undefined;
+  const createOffer: CreatableLink | null =
+    offerType && offerType in CREATE_OFFER && !links[CREATE_OFFER[offerType].field] && declinedCreate !== offerType && !created ? offerType : null;
+  // demo / service tasks also accept just the customer
+  const linkSatisfied = !category?.requires_link_type || requiredTypes.length === 0 || (requiredTypes.length > 1 ? requiredTypes.some((t) => links[LINK_FIELD[t]]) : Boolean(links[LINK_FIELD[requiredTypes[0]]]));
+  const pickerTypes: LinkType[] = !linkSatisfied && !createOffer ? requiredTypes : [];
+  const linkedTypes = LINK_TYPES.filter((t) => links[LINK_FIELD[t]] && !pickerTypes.includes(t));
+  const linkError = (['customer_id', 'tender_id', 'demo_id', 'service_ticket_id'] as const).map((k) => errors[k]).find(Boolean);
   const selectedAssignees = useMemo(() => form.assignee_ids.map((id) => assigneeOptions.find((o) => o.id === id)).filter((o): o is AssigneeOption => Boolean(o)), [form.assignee_ids, assigneeOptions]);
   const nameOf = useCallback((id: string) => assigneeOptions.find((o) => o.id === id)?.full_name || 'Assignee', [assigneeOptions]);
   const count = form.assignee_ids.length;
@@ -472,6 +506,11 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
     setForm((f) => ({ ...f, links: { ...f.links, [field]: id } }));
     // A demo / service task accepts either picker, so clear both errors.
     clearErrors(field, 'demo_id', 'service_ticket_id', 'customer_id');
+  };
+  /** A record created from the offer: link it, and its customer too when the task has none yet. */
+  const linkCreated = (t: CreatableLink, id: string, organisationId?: string | null) => {
+    setLink(t, id);
+    if (t !== 'customer' && organisationId && !form.links.customer_id) setLink('customer', organisationId);
   };
   const setCategory = useCallback(
     (id: string) => {
@@ -807,7 +846,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
   // ------------------------------------------------------------------ render helpers
   const linkHelper = (t: LinkType) =>
     t === 'tender' || t === 'demo' || t === 'service' ? `The customer is filled in automatically from the ${LINK_NAME[t].toLowerCase()}.` : t === 'project' ? 'Optional internal project.' : undefined;
-  const linkPicker = (t: LinkType, required: boolean, removable: boolean) => {
+  const linkPicker = (t: LinkType, required = true) => {
     const field = LINK_FIELD[t];
     const eitherOr = category?.requires_link_type === 'demo' || category?.requires_link_type === 'service';
     return (
@@ -820,16 +859,6 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
           error={errors[field]}
           helperText={eitherOr && required ? (t === 'customer' ? `Or just the customer, if there is no ${category?.requires_link_type === 'demo' ? 'demo' : 'ticket'} yet.` : `${linkHelper(t)} Pick this or the customer.`) : linkHelper(t)}
         />
-        {removable && !links[field] && (
-          <button
-            type="button"
-            onClick={() => setExtraLinks((x) => x.filter((y) => y !== t))}
-            className="absolute right-0 top-0 text-[11px] font-semibold text-[#4A5568] hover:text-[#881337]"
-            aria-label={`Remove ${LINK_NAME[t]} link`}
-          >
-            Remove
-          </button>
-        )}
       </div>
     );
   };
@@ -895,6 +924,70 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                 />
               </div>
             </div>
+            {/* What the task is linked to: set from where it was opened, or created on the spot. A picker shows
+                only when the category needs a link that is still missing. */}
+            {(linkedTypes.length > 0 || createOffer || pickerTypes.length > 0 || linkError) && (
+              <div id="tf-links" className="space-y-3">
+                {linkedTypes.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-xs font-semibold text-[#4A5568]">Linked to</span>
+                    {linkedTypes.map((t) => (
+                      <LinkedChip key={t} type={t} id={links[LINK_FIELD[t]]} onRemove={disabled ? undefined : () => setLink(t, '')} />
+                    ))}
+                  </div>
+                )}
+                {createOffer && (
+                  <div className="flex flex-col gap-3 rounded-lg border border-[#D0E5E3] bg-[#E3EFEE] p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-[#0B4A4E]">{CREATE_OFFER[createOffer].question}</p>
+                      <p className="text-[11px] text-[#4A5568]">{CREATE_OFFER[createOffer].detail}</p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button type="button" size="xs" variant="ghost" onClick={() => setDeclinedCreate(createOffer)}>
+                        No
+                      </Button>
+                      <Button type="button" size="xs" variant="primary" leftIcon={<Plus className="h-3 w-3" />} onClick={() => setCreatingLink(createOffer)}>
+                        {CREATE_OFFER[createOffer].yes}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {pickerTypes.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">{pickerTypes.map((t) => linkPicker(t))}</div>
+                )}
+                {linkError && pickerTypes.length === 0 && <p className="text-xs font-medium text-[#881337]">{linkError}</p>}
+              </div>
+            )}
+            {/* The popups are portalled out of this form in the DOM, but React still bubbles their submit up the
+                component tree — stop it here so creating a demo / ticket / customer never also submits the task. */}
+            <div className="contents" onSubmit={(e) => e.stopPropagation()}>
+              <CreateDemoModal
+                isOpen={creatingLink === 'demo'}
+                onClose={() => setCreatingLink(null)}
+                prefill={{ organisation_id: links.customer_id || null, tender_id: links.tender_id || null, purpose: form.title.trim() || null }}
+                onCreated={(d) => {
+                  linkCreated('demo', d.id, d.organisation_id);
+                  push('success', `Demo ${d.demo_no} requested and linked to this task.`);
+                }}
+              />
+              <CreateServiceTicketModal
+                isOpen={creatingLink === 'service'}
+                onClose={() => setCreatingLink(null)}
+                prefill={{ organisation_id: links.customer_id || null, issue: form.description.trim() || form.title.trim() || null }}
+                onCreated={(t) => {
+                  linkCreated('service', t.id, t.organisation_id);
+                  push('success', `Service ticket ${t.ticket_no || ''} logged and linked to this task.`.replace('  ', ' '));
+                }}
+              />
+              <QuickCustomerModal
+                isOpen={creatingLink === 'customer'}
+                onClose={() => setCreatingLink(null)}
+                onCreated={(org) => {
+                  linkCreated('customer', org.id);
+                  push('success', `${org.name} linked to this task.`);
+                }}
+              />
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
               <div id="tf-description">
                 <Textarea
@@ -924,33 +1017,6 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                 />
               </div>
             </div>
-          </Panel>
-      ),
-    },
-    {
-      title: 'Linked work',
-      page: 0,
-      icon: <Link2 />,
-      description: requiredTypes.length ? `${category?.name} tasks must be linked. Linked work can also be requested from colleagues outside your team.` : 'Optional. Linking lets you request work from colleagues outside your team.',
-      node: (
-          <Panel className="p-4 sm:p-5 space-y-4 overflow-visible">
-            <Title
-              icon={<Link2 className="h-4 w-4" />}
-              title="Linked work"
-              description={requiredTypes.length ? `${category?.name} tasks must be linked. Linked work can also be requested from colleagues outside your team.` : 'Optional. Linking lets you request work from colleagues outside your team.'}
-            />
-            {requiredTypes.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">{requiredTypes.map((t) => linkPicker(t, true, false))}</div>}
-            {optionalTypes.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">{optionalTypes.map((t) => linkPicker(t, false, true))}</div>}
-            {addableTypes.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold text-[#4A5568]">{requiredTypes.length ? 'Also link to' : 'Link to'}</span>
-                {addableTypes.map((t) => (
-                  <Button key={t} type="button" size="xs" variant="secondary" leftIcon={<Plus className="h-3 w-3" />} onClick={() => setExtraLinks((x) => [...x, t])} disabled={disabled}>
-                    {LINK_NAME[t]}
-                  </Button>
-                ))}
-              </div>
-            )}
           </Panel>
       ),
     },
@@ -1546,5 +1612,31 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
       </div>
       <Toaster />
     </form>
+  );
+};
+
+/** One thing the task is linked to (customer, demo …), named by a lookup of its id. */
+const LinkedChip: React.FC<{ type: LinkType; id: string; onRemove?: () => void }> = ({ type, id, onRemove }) => {
+  const [option, setOption] = useState<LinkOption | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .get<LinkOption[]>('/tasks/lookups/links', { type, id })
+      .then((r) => alive && setOption(r[0] || null))
+      .catch(() => alive && setOption(null));
+    return () => {
+      alive = false;
+    };
+  }, [type, id]);
+  return (
+    <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#D0E5E3] bg-[#E3EFEE] py-1 pl-2.5 pr-1.5 text-[11px] font-semibold text-[#0F5E63]">
+      <span className="font-medium text-[#4A5568]">{LINK_NAME[type]}:</span>
+      <span className="truncate">{option ? option.label : '…'}</span>
+      {onRemove && (
+        <button type="button" onClick={onRemove} aria-label={`Unlink ${LINK_NAME[type]}`} className="rounded-full p-0.5 text-[#4A5568] hover:text-[#881337]">
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </span>
   );
 };

@@ -7,7 +7,7 @@
  * jobs idempotency, evidence snapshot immutability and the 15-minute delete window.
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -20,6 +20,7 @@ import { TaskJobsService } from '../src/modules/tasks/task-jobs.service';
 import { TaskGeneratorService } from '../src/modules/tasks/task-generator.service';
 import { loadTaskConfig } from '../src/modules/tasks/task.config';
 import { todayInKolkata, type Database } from '@arihant/shared';
+import { configureApp } from '../src/common/app-setup';
 
 jest.setTimeout(90000);
 
@@ -73,8 +74,7 @@ describe('Module 8 — Task & Productivity Management (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
+    configureApp(app); // same global setup as main.ts
     await app.init();
     db = moduleFixture.get<Kysely<Database>>(TASK_DB);
     jobs = moduleFixture.get(TaskJobsService);
@@ -198,9 +198,7 @@ describe('Module 8 — Task & Productivity Management (e2e)', () => {
       expect((await act(u.e1, id, 'start')).body.status).toBe('in_progress');
       const p = await act(u.e1, id, 'progress', { progress_percent: 60, comment: 'Half way' });
       expect(p.body.progress_percent).toBe(60);
-      const noConfirm = await act(u.e1, id, 'complete', { remarks: 'Done' });
-      expect(noConfirm.body.errors.confirm_full_completion).toBeDefined();
-      const done = await act(u.e1, id, 'complete', { remarks: 'Done', confirm_full_completion: true });
+      const done = await act(u.e1, id, 'complete', { remarks: 'Done' });
       expect(done.body.status).toBe('awaiting_approval');
       expect(done.body.progress_percent).toBe(100);
       expect((await act(u.e1, id, 'approve')).status).toBe(403); // nobody approves their own work

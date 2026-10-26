@@ -17,7 +17,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import { twMerge } from 'tailwind-merge';
-import { ArrowRight, ChevronDown, Columns3, LayoutGrid, List } from 'lucide-react';
+import { ArrowRight, CalendarDays, ChevronDown, Columns3, LayoutGrid, List } from 'lucide-react';
 import { istDateOf, istToday } from '@/lib/ist-date';
 import { formatINR, formatLakh } from '@arihant/shared';
 import { Badge, type BadgeProps } from './Badge';
@@ -828,12 +828,12 @@ export const RecordDetails: React.FC<{ item: RecordItem | null; onClose: () => v
 };
 
 // ------------------------------------------------------------------ view switcher
-export type RecordView = 'list' | 'cards' | 'board';
+export type RecordView = 'list' | 'cards' | 'board' | 'calendar';
 
 const readView = (key: string, fallback: RecordView): RecordView => {
   try {
     const v = localStorage.getItem(`records-view:${key}`);
-    return v === 'list' || v === 'cards' || v === 'board' ? v : fallback;
+    return v === 'list' || v === 'cards' || v === 'board' || v === 'calendar' ? v : fallback;
   } catch {
     return fallback;
   }
@@ -922,13 +922,15 @@ export const RecordViews: React.FC<{
   loadingMore?: boolean;
   /** The page's own table of the same records, shown in place of the built-in List rows. */
   list?: React.ReactNode;
-}> = ({ items, lanes, laneOf, storageKey, defaultView = 'cards', empty, hideEmptyLanes, title, summary, onLoadMore, hasMore, loadingMore, list }) => {
+  /** A schedule of the same records; adds a "Calendar" choice to the view switch. */
+  calendar?: React.ReactNode;
+}> = ({ items, lanes, laneOf, storageKey, defaultView = 'cards', empty, hideEmptyLanes, title, summary, onLoadMore, hasMore, loadingMore, list, calendar }) => {
   const [view, setView] = useState<RecordView>(defaultView);
   const [peek, setPeek] = useState<RecordItem | null>(null);
   // Phones get one layout — the compact list cards (the List view's phone form). Fact boxes and a stage board do
   // not fit a 375px screen, so the view switch is hidden there and any remembered choice shows as the list.
   const isPhone = useIsPhone();
-  const shown: RecordView = isPhone ? 'list' : view;
+  const shown: RecordView = isPhone || (view === 'calendar' && !calendar) ? 'list' : view;
   const scroller = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => setView(readView(storageKey, defaultView)), [storageKey, defaultView]);
   const choose = (v: RecordView) => {
@@ -944,6 +946,7 @@ export const RecordViews: React.FC<{
     { key: 'list', label: 'List', icon: <List className="h-3.5 w-3.5" /> },
     { key: 'cards', label: 'Cards', icon: <LayoutGrid className="h-3.5 w-3.5" /> },
     { key: 'board', label: 'Board', icon: <Columns3 className="h-3.5 w-3.5" /> },
+    ...(calendar ? [{ key: 'calendar' as const, label: 'Calendar', icon: <CalendarDays className="h-3.5 w-3.5" /> }] : []),
   ];
 
   return (
@@ -956,7 +959,7 @@ export const RecordViews: React.FC<{
           </div>
           <div role="radiogroup" aria-label="View" className="hidden rounded-[10px] border border-[#C9C4B8] bg-white p-0.5 md:inline-flex">
             {opts.map((o) => {
-              const on = view === o.key;
+              const on = shown === o.key;
               return (
                 <button
                   key={o.key}
@@ -979,7 +982,9 @@ export const RecordViews: React.FC<{
         {/* 7.25rem ≈ top bar (4rem) + this card's compact header: scrolled to the end of the page, the card runs
             down to the bottom edge of the screen (pages have no bottom padding) */}
         <div ref={scroller} className="custom-scrollbar bg-[#FBFAF7] p-3 sm:p-4 md:max-h-[max(420px,calc(100dvh-7.25rem))] md:overflow-auto">
-          {shown === 'list' ? (
+          {shown === 'calendar' ? (
+            calendar
+          ) : shown === 'list' ? (
             list ?? <RecordList items={items} empty={empty} />
           ) : shown === 'cards' ? (
             <RecordCards items={items} empty={empty} />

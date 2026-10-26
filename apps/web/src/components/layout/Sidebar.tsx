@@ -27,6 +27,7 @@ import {
   ChevronDown,
   Users,
   MessageSquarePlus,
+  TrendingUp,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -88,6 +89,12 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               href: '/proposals',
               icon: FileSpreadsheet,
               moduleKey: 'proposals',
+            },
+            {
+              label: 'My Performance',
+              href: '/regional/performance',
+              icon: TrendingUp,
+              moduleKey: 'dashboard',
             },
           ],
         },
@@ -409,6 +416,12 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               badgeVariant: 'cyber',
             },
             {
+              label: 'Sales & Regional Performance',
+              href: '/regional/performance',
+              icon: TrendingUp,
+              moduleKey: 'regional',
+            },
+            {
               label: 'Regional Performance Reports',
               href: '/reports',
               icon: FileSpreadsheet,
@@ -660,6 +673,12 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               moduleKey: 'regional',
               badge: '4 Zones',
               badgeVariant: 'cyber',
+            },
+            {
+              label: 'Sales & Regional Performance',
+              href: '/regional/performance',
+              icon: TrendingUp,
+              moduleKey: 'regional',
             },
             {
               label: 'Consolidated Reports & Exports',

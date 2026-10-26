@@ -3,6 +3,7 @@ import { NotificationsService } from './notifications.service.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import type { AuthUser } from '@arihant/shared';
+import { CreateNotificationDto } from './notifications.dto.js';
 
 @Controller('notifications')
 @UseGuards(JwtAuthGuard)
@@ -54,31 +55,20 @@ export class NotificationsController {
     return this.notifService.markAsRead(id, user.id);
   }
 
+  /** Self-notes, or a lead-linked assignment notice to a colleague (rules in createFromUser). */
   @Post()
-  async create(
-    @Body()
-    dto: {
-      userId?: string;
-      user_id?: string;
-      type?: string;
-      title: string;
-      body: string;
-      entityType?: string;
-      entity_type?: string;
-      entityId?: string;
-      entity_id?: string;
-    },
-    @CurrentUser() user: AuthUser,
-  ) {
-    const targetUserId = dto.userId || dto.user_id || user.id;
-    return this.notifService.create({
-      userId: targetUserId,
-      type: dto.type || 'system',
-      title: dto.title,
-      body: dto.body,
-      entityType: dto.entityType || dto.entity_type,
-      entityId: dto.entityId || dto.entity_id,
-    });
+  async create(@Body() dto: CreateNotificationDto, @CurrentUser() user: AuthUser) {
+    return this.notifService.createFromUser(
+      {
+        userId: dto.userId || dto.user_id || user.id,
+        type: dto.type || 'system',
+        title: dto.title,
+        body: dto.body,
+        entityType: dto.entityType || dto.entity_type,
+        entityId: dto.entityId || dto.entity_id,
+      },
+      user,
+    );
   }
 }
 

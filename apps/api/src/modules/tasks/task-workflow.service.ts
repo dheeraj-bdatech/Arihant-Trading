@@ -29,7 +29,6 @@ import {
   TaskValidationException,
   UUID_RE,
   conflict,
-  readBool,
   readComment,
   readDeadline,
   readEnum,
@@ -169,9 +168,8 @@ export class TaskWorkflowService {
             .executeTakeFirst();
           if (!Number(ev?.n)) errors.evidence = 'Upload at least one evidence file before completing this task.';
         }
-        if (task.progress_percent < 100 && !readBool(dto.confirm_full_completion)) {
-          errors.confirm_full_completion = `Progress is ${task.progress_percent}%. Confirm the work is fully complete — progress will be set to 100%.`;
-        }
+        // Progress is no longer tracked as a percentage in the app (status shows where the work is), so completing
+        // a task needs no "it is really 100%" confirmation; it is still recorded as 100% below.
         throwIfErrors(errors);
         let to: TaskStatus = 'completed';
         let approverIds: string[] = [];

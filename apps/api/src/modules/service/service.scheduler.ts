@@ -16,8 +16,10 @@ export class ServiceScheduler {
     this.running = true;
     try {
       const r = await this.service.runSlaSweep(null);
-      if (r.escalated || r.responseBreaches || r.resolutionBreaches) {
-        this.logger.log(`SLA sweep: ${r.escalated} escalated, ${r.responseBreaches} response / ${r.resolutionBreaches} resolution breaches flagged`);
+      if (r.escalated || r.responseBreaches || r.resolutionBreaches || r.visitOverdue) {
+        this.logger.log(
+          `SLA sweep: ${r.escalated} escalated, ${r.responseBreaches} response / ${r.resolutionBreaches} resolution breaches flagged, ${r.visitOverdue} overdue visits notified`,
+        );
       }
     } catch (err: any) {
       this.logger.error(`SLA sweep failed: ${err.message}`);

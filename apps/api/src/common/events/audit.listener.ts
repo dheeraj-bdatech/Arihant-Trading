@@ -11,6 +11,8 @@ export interface AuditEventPayload {
   action: string;
   previousValue?: any;
   newValue?: any;
+  /** Why the change was made — persisted inside new_value.reason so the audit trail carries it (Module 2 §11). */
+  reason?: string | null;
 }
 
 @Injectable()
@@ -21,6 +23,15 @@ export class AuditListener {
 
   @OnEvent('audit.log')
   async handleAuditLog(payload: AuditEventPayload) {
+    let newValue = payload.newValue;
+    if (payload.reason) {
+      newValue =
+        newValue && typeof newValue === 'object' && !Array.isArray(newValue)
+          ? { ...newValue, reason: newValue.reason ?? payload.reason }
+          : newValue !== undefined && newValue !== null
+            ? { value: newValue, reason: payload.reason }
+            : { reason: payload.reason };
+    }
     try {
       await this.db
         .insertInto('audit_log')
@@ -30,7 +41,7 @@ export class AuditListener {
           entity_id: payload.entityId,
           action: payload.action,
           previous_value: payload.previousValue ? JSON.stringify(payload.previousValue) : null,
-          new_value: payload.newValue ? JSON.stringify(payload.newValue) : null,
+          new_value: newValue ? JSON.stringify(newValue) : null,
         })
         .execute();
 

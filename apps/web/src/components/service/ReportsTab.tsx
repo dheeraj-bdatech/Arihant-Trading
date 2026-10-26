@@ -104,6 +104,19 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
                     <a className="text-[#0F5E63] underline" href={rep.report_url} target="_blank" rel="noreferrer">Signed report document</a>
                   </p>
                 )}
+                {Array.isArray(rep.attachments) && rep.attachments.length > 0 && (
+                  <ul className="space-y-0.5">
+                    {rep.attachments.map((f: { name?: string; url?: string }, i: number) =>
+                      f?.url ? (
+                        <li key={`${f.url}-${i}`}>
+                          <a className="text-[#0F5E63] underline" href={f.url} target="_blank" rel="noreferrer">
+                            {f.name || `Attachment ${i + 1}`}
+                          </a>
+                        </li>
+                      ) : null,
+                    )}
+                  </ul>
+                )}
                 {rep.return_reason && (
                   <div className="rounded border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">
                     <strong>Correction required:</strong> {rep.return_reason}

@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { Kysely, sql } from 'kysely';
 import { AppModule } from '../src/app.module';
@@ -7,6 +7,7 @@ import { KYSELY_DB } from '../src/common/database/database.module';
 import { addBusinessHours } from '../src/modules/service/service.core';
 import { SERVICE_TRANSITIONS, canTransitionService, allowedNextServiceStatuses, type ServiceStatus } from '@arihant/shared';
 import { advanceTicket, fileReport, istDay, validReport } from './helpers/service-flow';
+import { configureApp } from '../src/common/app-setup';
 
 /**
  * Module 6 hardening: every rule from the spec's state machine, SLA clock, scoping and
@@ -64,8 +65,7 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
+    configureApp(app); // same global setup as main.ts
     await app.init();
     db = app.get(KYSELY_DB);
 

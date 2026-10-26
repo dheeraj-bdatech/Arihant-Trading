@@ -7,6 +7,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
 import { ShellEnhancer } from '@/components/layout/ShellEnhancer';
 import { CommandPalette } from '@/components/layout/CommandPalette';
+import { TaskPeek } from './tasks/_lib/TaskPeek';
 import { Shield, ShieldAlert, ArrowLeft, UserCheck } from 'lucide-react';
 import { Button, Spinner } from '@/components/ui';
 import { SidebarProvider } from '@/lib/sidebar-context';
@@ -149,6 +150,7 @@ export default function AppLayout({
           isOpen={isCommandOpen}
           onClose={() => setIsCommandOpen(false)}
         />
+        <TaskPeek />
       </div>
     </SidebarProvider>
   );

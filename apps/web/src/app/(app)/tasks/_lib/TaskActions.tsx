@@ -8,7 +8,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertOctagon, CalendarClock, Camera, Paperclip, X } from 'lucide-react';
-import { Button, Checkbox, FormSection, InfoCallout, Input, Modal, Select, Textarea } from '@/components/ui';
+import { Button, FormSection, InfoCallout, Input, Modal, Select, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -195,7 +195,6 @@ export const TaskActionDialog: React.FC<{
         if (task.evidence_required) need('remarks', TASK_MIN_EVIDENCE_REMARKS, 'Completion remarks');
         if (task.evidence_required && !files.length) e.evidence = 'Attach at least one evidence file (photo, signed document…).';
         if (late) need('delay_reason', 10, 'Reason for delay');
-        if (task.progress_percent < 100 && !v.confirm_full_completion) e.confirm_full_completion = 'Confirm the work is fully complete.';
         break;
       case 'raise_blocker': {
         if (!v.blocker_type) e.blocker_type = 'Choose what is blocking you.';
@@ -255,7 +254,6 @@ export const TaskActionDialog: React.FC<{
       if (action === 'raise_blocker' && v.blocker_type === 'customer_dependency' && !v.dependency_customer_id) body.dependency_customer_id = task.customer_id;
       if (action === 'correction') {
         if (!body.status) delete body.status;
-        if (body.progress_percent === '' || body.progress_percent === undefined) delete body.progress_percent;
         if (!body.deadline) delete body.deadline;
       }
       const detail = await api.post<TaskDetail>(ENDPOINT(action, task), body);
@@ -313,15 +311,6 @@ export const TaskActionDialog: React.FC<{
             {commentField('remarks', 'Completion remarks', task.evidence_required ? `What was done (at least ${TASK_MIN_EVIDENCE_REMARKS} characters)` : 'What was done', task.evidence_required)}
             {late && commentField('delay_reason', 'Reason for delay', 'Why was this finished after the deadline?')}
             <FilePick files={files} onChange={setFiles} label={task.evidence_required ? 'Evidence *' : 'Evidence (optional)'} error={errors.evidence} />
-            {task.progress_percent < 100 && (
-              <Checkbox
-                checked={Boolean(v.confirm_full_completion)}
-                onChange={(e) => set('confirm_full_completion', e.target.checked)}
-                label={`Progress is ${task.progress_percent}% — I confirm the work is fully complete`}
-                description="Progress will be set to 100%."
-              />
-            )}
-            {errors.confirm_full_completion && <p className="text-xs text-[#881337]">{errors.confirm_full_completion}</p>}
             {task.approval_required && <p className="text-xs text-[#4A5568]">This task needs approval — it will go to your manager.</p>}
           </>
         )}
@@ -447,10 +436,7 @@ export const TaskActionDialog: React.FC<{
         {action === 'correction' && (
           <>
             <InfoCallout variant="danger">Corrections are written to the task history and the audit log with your name and reason.</InfoCallout>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Select label="Status" value={v.status || ''} onChange={(e) => set('status', e.target.value)} error={errors.status} options={[{ value: '', label: 'Unchanged' }, ...TASK_STATUSES.map((s) => ({ value: s, label: TASK_STATUS_LABELS[s] }))]} />
-              <Input label="Progress %" type="number" min={0} max={100} value={v.progress_percent ?? ''} onChange={(e) => set('progress_percent', e.target.value)} error={errors.progress_percent} />
-            </div>
+            <Select label="Status" value={v.status || ''} onChange={(e) => set('status', e.target.value)} error={errors.status} options={[{ value: '', label: 'Unchanged' }, ...TASK_STATUSES.map((s) => ({ value: s, label: TASK_STATUS_LABELS[s] }))]} />
             <DeadlineInput label="Deadline" value={v.deadline || ''} onChange={(x) => set('deadline', x)} error={errors.deadline} helperText="Leave empty to keep it." />
             {commentField('reason', 'Reason', 'What was wrong and why is this correction needed?')}
           </>

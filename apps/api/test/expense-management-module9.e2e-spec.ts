@@ -5,7 +5,7 @@
  * role scoping on lists/reports/exports, receipts, duplicates, trips, import and history.
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -17,6 +17,7 @@ import { AppModule } from '../src/app.module';
 import { EXPENSE_DB } from '../src/modules/expense-management/expense-db';
 import { loadExpenseConfig } from '../src/modules/expense-management/expense.config';
 import { EXPENSE_IMPORT_TEMPLATE_COLUMNS, todayInKolkata, type Database } from '@arihant/shared';
+import { configureApp } from '../src/common/app-setup';
 
 jest.setTimeout(60000);
 
@@ -102,8 +103,7 @@ describe('Module 9 — Expense Management (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
+    configureApp(app); // same global setup as main.ts
     await app.init();
     db = moduleFixture.get<Kysely<Database>>(EXPENSE_DB);
 
@@ -243,7 +243,11 @@ describe('Module 9 — Expense Management (e2e)', () => {
       expect(res.body.employee_id).toBe(users.amit.id);
       expect(res.body.status).toBe('draft');
       const smuggle = await http().post('/api/expense-claims').set(bearer(users.amit)).send({ title: 'x', status: 'processed', employee_id: users.pooja.id });
-      expect(smuggle.status).toBe(400); // forbidNonWhitelisted in this suite; ignored in production
+      // Production strips unknown fields: the claim is created, but as the caller's own draft.
+      expect(smuggle.status).toBe(201);
+      expect(smuggle.body.employee_id).toBe(users.amit.id);
+      expect(smuggle.body.status).toBe('draft');
+      await http().delete(`/api/expense-claims/${smuggle.body.id}`).set(bearer(users.amit));
     });
 
     it('cannot submit an empty claim', async () => {

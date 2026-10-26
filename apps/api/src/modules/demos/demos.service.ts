@@ -106,6 +106,13 @@ export class DemosService {
         'products.name as product_name',
         'products.category as product_category',
         'users.full_name as responsible_person_name',
+        // §15 "Reserved date": the current or next live booking window of this unit.
+        sql<string | null>`(select r.reserved_from::text from demo_reservations r join demos d on d.id = r.demo_id
+          where r.equipment_id = demo_equipment.id and r.status = 'approved' and coalesce(d.status, '') not in ('cancelled', 'completed')
+            and coalesce(r.reserved_to, r.reserved_from) >= current_date order by r.reserved_from limit 1)`.as('next_reserved_from'),
+        sql<string | null>`(select coalesce(r.reserved_to, r.reserved_from)::text from demo_reservations r join demos d on d.id = r.demo_id
+          where r.equipment_id = demo_equipment.id and r.status = 'approved' and coalesce(d.status, '') not in ('cancelled', 'completed')
+            and coalesce(r.reserved_to, r.reserved_from) >= current_date order by r.reserved_from limit 1)`.as('next_reserved_to'),
       ]);
 
     if (query.location) {
@@ -264,7 +271,8 @@ export class DemosService {
         'demos.demo_no',
         'demos.location as demo_location',
       ])
-      .where('demo_reservations.status', 'in', ['approved', 'requested', 'alternative_suggested'])
+      // Same set the booking check treats as a clash (a superseded / alternative-suggested row no longer holds the unit).
+      .where('demo_reservations.status', 'in', ['approved', 'requested'])
       .where(sql<boolean>`coalesce(demos.status, '') not in ('cancelled', 'completed')`)
       .where('demo_reservations.reserved_from', '<=', toDate)
       .where(sql<boolean>`coalesce(demo_reservations.reserved_to, demo_reservations.reserved_from) >= ${fromDate}`)
@@ -279,15 +287,11 @@ export class DemosService {
       const reservation = reservedMap.get(unit.id);
       let calculatedStatus: 'available' | 'reserved' | 'maintenance' = 'available';
 
+      // Bookings decide reserved-ness for the asked window; a unit out in use is unavailable whatever the dates.
       if (unit.availability_status === 'maintenance') {
         calculatedStatus = 'maintenance';
-      } else if (reservation) {
+      } else if (reservation || unit.availability_status === 'in_use') {
         calculatedStatus = 'reserved';
-      } else if (unit.availability_status === 'reserved' && unit.reserved_until) {
-        const untilStr = formatDateOnly(unit.reserved_until);
-        if (untilStr >= fromDate) {
-          calculatedStatus = 'reserved';
-        }
       }
 
       const conflictingReservation = reservation
@@ -297,12 +301,12 @@ export class DemosService {
             reserved_from: formatDateOnly(reservation.reserved_from, fromDate),
             reserved_to: formatDateOnly(reservation.reserved_to, toDate),
           }
-        : calculatedStatus === 'reserved' && unit.reserved_until
+        : unit.availability_status === 'in_use'
         ? {
-            demo_no: 'Depot Fleet Hold',
+            demo_no: 'In use',
             demo_location: unit.current_location,
             reserved_from: fromDate,
-            reserved_to: formatDateOnly(unit.reserved_until, toDate),
+            reserved_to: unit.reserved_until ? formatDateOnly(unit.reserved_until, toDate) : toDate,
           }
         : null;
 
@@ -521,6 +525,8 @@ export class DemosService {
     const demoIds = demos.map((d) => d.id);
     const reservationsByDemo: Record<string, any[]> = {};
     const outcomesByDemo: Record<string, any> = {};
+    // Open tasks on the demo that need manager sign-off: 'pending' once one is handed in, else 'required'
+    const taskApprovalByDemo: Record<string, 'required' | 'pending'> = {};
 
     if (demoIds.length > 0) {
       const reservations = await this.db
@@ -563,18 +569,131 @@ export class DemosService {
       for (const out of outcomes) {
         outcomesByDemo[out.demo_id] = out;
       }
+
+      const approvalTasks = await this.db
+        .selectFrom('tasks')
+        .select(['tasks.demo_id', 'tasks.status'])
+        .where('tasks.demo_id', 'in', demoIds)
+        .where('tasks.approval_required', '=', true)
+        .where('tasks.status', 'not in', ['completed', 'cancelled'])
+        .execute();
+
+      for (const t of approvalTasks) {
+        if (!t.demo_id) continue;
+        if (t.status === 'awaiting_approval') taskApprovalByDemo[t.demo_id] = 'pending';
+        else taskApprovalByDemo[t.demo_id] ??= 'required';
+      }
     }
 
     const enhancedDemos = demos.map((d) => ({
       ...d,
       reservations: reservationsByDemo[d.id] || [],
       outcome: outcomesByDemo[d.id] || null,
+      task_approval: taskApprovalByDemo[d.id] || null,
     }));
 
     return buildPaginatedResult(enhancedDemos, total, page, limit);
   }
 
-  async findOneDemo(id: string) {
+  /**
+   * Re-derives a unit's availability from its live bookings instead of patching it per action:
+   * reserved (until the last day) while an approved reservation of a still-open demo runs today or later,
+   * otherwise available. Maintenance / in-use units are left alone — only people move a unit out of those.
+   * Every real change is audited against the equipment (§47 "equipment availability changed").
+   */
+  private async syncEquipmentAvailability(trx: Kysely<Database>, equipmentId: string, actorId: string | null, cause: string) {
+    const unit = await trx.selectFrom('demo_equipment').select(['availability_status', 'reserved_until']).where('id', '=', equipmentId).executeTakeFirst();
+    if (!unit || unit.availability_status === 'maintenance' || unit.availability_status === 'in_use') return;
+    const live = await trx
+      .selectFrom('demo_reservations')
+      .innerJoin('demos', 'demo_reservations.demo_id', 'demos.id')
+      .select(sql<string | null>`max(coalesce(demo_reservations.reserved_to, demo_reservations.reserved_from))::text`.as('until'))
+      .where('demo_reservations.equipment_id', '=', equipmentId)
+      .where('demo_reservations.status', '=', 'approved')
+      .where(sql<boolean>`coalesce(demos.status, '') not in ('cancelled', 'completed')`)
+      .where(sql<boolean>`coalesce(demo_reservations.reserved_to, demo_reservations.reserved_from) >= ${todayInKolkata()}::date`)
+      .executeTakeFirst();
+    const until = live?.until ? live.until.slice(0, 10) : null;
+    const next = { availability_status: until ? 'reserved' : 'available', reserved_until: until };
+    const prevUntil = unit.reserved_until ? formatDateOnly(unit.reserved_until) : null;
+    if (unit.availability_status === next.availability_status && prevUntil === until) return;
+    await trx
+      .updateTable('demo_equipment')
+      .set({ availability_status: next.availability_status as any, reserved_until: until as any, updated_at: new Date() })
+      .where('id', '=', equipmentId)
+      .execute();
+    this.eventEmitter.emit('audit.log', {
+      actorId,
+      entityType: 'demo_equipment',
+      entityId: equipmentId,
+      action: 'availability_changed',
+      previousValue: { availability_status: unit.availability_status, reserved_until: prevUntil },
+      newValue: { ...next, cause },
+    });
+  }
+
+  /** Overlapping approved/requested booking of an open demo on this unit (optionally ignoring one reservation). */
+  private async findReservationConflict(trx: Kysely<Database>, equipmentId: string, from: string, to: string, excludeReservationId?: string) {
+    let q = trx
+      .selectFrom('demo_reservations')
+      .innerJoin('demos', 'demo_reservations.demo_id', 'demos.id')
+      .leftJoin('organisations', 'demos.organisation_id', 'organisations.id')
+      .select(['demo_reservations.id', 'demo_reservations.demo_id', 'demo_reservations.reserved_from', 'demo_reservations.reserved_to', 'demos.demo_no', 'organisations.name as organisation_name'])
+      .where('demo_reservations.equipment_id', '=', equipmentId)
+      .where('demo_reservations.status', 'in', ['approved', 'requested'])
+      .where(sql<boolean>`coalesce(demos.status, '') not in ('cancelled', 'completed')`)
+      .where('demo_reservations.reserved_from', '<=', to as any)
+      .where(sql<boolean>`coalesce(demo_reservations.reserved_to, demo_reservations.reserved_from) >= ${from}`);
+    if (excludeReservationId) q = q.where('demo_reservations.id', '!=', excludeReservationId);
+    return q.executeTakeFirst();
+  }
+
+  /** 409 for a clash — and tell the people involved (§46 "equipment conflict"). */
+  private conflictError(equipment: { id: string; model?: string | null; serial_no?: string | null }, conflict: { demo_id: string; demo_no: string | null; organisation_name: string | null; reserved_from: any; reserved_to: any }, demoId: string, actorId: string) {
+    const from = formatDateOnly(conflict.reserved_from);
+    const to = formatDateOnly(conflict.reserved_to, from);
+    this.eventEmitter.emit(AppEvents.DEMO_EQUIPMENT_CONFLICT, {
+      equipmentId: equipment.id,
+      equipmentLabel: `${equipment.model || 'Unit'} (${equipment.serial_no || 'no serial'})`,
+      requestedForDemoId: demoId,
+      conflictingDemoId: conflict.demo_id,
+      conflictingDemoNo: conflict.demo_no,
+      from,
+      to,
+      actorId,
+    });
+    return new ConflictException({
+      code: 'EQUIPMENT_ALREADY_RESERVED',
+      message: `Equipment unit ${equipment.model || ''} (${equipment.serial_no || 'Unit'}) is already booked from ${dmy(from)} to ${dmy(to)} for Demo ${conflict.demo_no || ''} (${conflict.organisation_name || 'Client'}).`,
+      conflicting_reservation: conflict,
+    });
+  }
+
+  /**
+   * Row-level access for a single demo — the same visibility findAllDemos applies to the list
+   * (sales: own requests; service team: assigned to them; regional manager: their zone/region or own).
+   * Unknown and out-of-scope demos both answer 404 so ids cannot be probed.
+   */
+  private async assertDemoAccess(demoId: string, user: AuthUser) {
+    const row = await this.db
+      .selectFrom('demos')
+      .innerJoin('organisations', 'demos.organisation_id', 'organisations.id')
+      .select(['demos.requested_by', 'demos.assigned_to', 'demos.service_engineer_id', 'organisations.zone_id', 'organisations.region_id'])
+      .where('demos.id', '=', demoId)
+      .executeTakeFirst();
+    if (!row) throw new NotFoundException('Demo not found');
+    let allowed = true;
+    if (user.role === 'sales') allowed = row.requested_by === user.id;
+    else if (user.role === 'service_team') allowed = row.assigned_to === user.id || row.service_engineer_id === user.id;
+    else if (user.role === 'regional_manager') {
+      if (user.zone_id) allowed = row.zone_id === user.zone_id || row.requested_by === user.id;
+      else if (user.region_id) allowed = row.region_id === user.region_id || row.requested_by === user.id;
+    }
+    if (!allowed) throw new NotFoundException('Demo not found');
+  }
+
+  async findOneDemo(id: string, user: AuthUser) {
+    await this.assertDemoAccess(id, user);
     const demo = await this.db
       .selectFrom('demos')
       .innerJoin('organisations', 'demos.organisation_id', 'organisations.id')
@@ -766,6 +885,7 @@ export class DemosService {
   }
 
   async updateDemo(id: string, dto: UpdateDemoDto, user: AuthUser) {
+    await this.assertDemoAccess(id, user);
     return this.db.transaction().execute(async (trx) => {
       const demo = await trx
         .selectFrom('demos')
@@ -880,6 +1000,38 @@ export class DemosService {
     });
   }
 
+  /** §14 "Under Planning": a coordinator has reviewed the request and is arranging team, equipment and date. */
+  async startPlanning(demoId: string, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
+    const updated = await this.db
+      .updateTable('demos')
+      .set({ status: 'under_planning', updated_at: new Date(), version: sql`version + 1` })
+      .where('id', '=', demoId)
+      .where('status', '=', 'requested')
+      .returningAll()
+      .executeTakeFirst();
+    if (!updated) throw new BadRequestException('Only a new request (status Requested) can move to Under Planning.');
+    this.eventEmitter.emit('audit.log', {
+      actorId: user.id,
+      entityType: 'demo',
+      entityId: demoId,
+      action: 'DEMO_PLANNING_STARTED',
+      previousValue: { status: 'requested' },
+      newValue: { status: 'under_planning' },
+    });
+    // Management's approval: tell the salesperson, and hand the date over to the demo team
+    {
+      this.eventEmitter.emit(AppEvents.DEMO_REQUEST_APPROVED, {
+        demoId,
+        demoNo: updated.demo_no,
+        requestedById: updated.requested_by,
+        assignedToId: updated.assigned_to,
+        approvedByName: user.full_name || 'Management',
+      });
+    }
+    return updated;
+  }
+
   async assignTeam(demoId: string, dto: AssignTeamDto, user: AuthUser) {
     return this.db.transaction().execute(async (trx) => {
       const demo = await trx
@@ -928,7 +1080,8 @@ export class DemosService {
         }
       }
 
-      const nextStatus = demo.status === 'requested' ? 'team_assigned' : demo.status;
+      // A request stays 'requested' until management approves it; assigning early is just preparation
+      const nextStatus = demo.status === 'under_planning' ? 'team_assigned' : demo.status;
 
       const updatePayload: any = {
         assigned_to: dto.assigned_to,
@@ -982,6 +1135,10 @@ export class DemosService {
   // =========================================================================
 
   async reserveEquipment(demoId: string, dto: ReserveEquipmentDto, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
+    // §16: a salesperson *requests* a unit; the unit's responsible person / coordinator approves, rejects,
+    // suggests an alternative or allocates another unit. Coordinators and management book directly.
+    const isRequest = user.role === 'sales';
     return this.db.transaction().execute(async (trx) => {
       // 1. Lock the demo record
       const demo = await trx
@@ -1142,6 +1299,7 @@ export class DemosService {
             },
           });
         } else {
+          this.conflictError(equipment, conflict, demoId, user.id); // notifies the people involved (§46)
           throw new ConflictException({
             code: 'EQUIPMENT_ALREADY_RESERVED',
             message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is already reserved from ${dmy(confFrom)} to ${dmy(confTo)} for Demo ${conflict.demo_no || ''} (${conflict.organisation_name || 'Client'}).`,
@@ -1167,16 +1325,7 @@ export class DemosService {
         }
       }
 
-      // Check if equipment availability_status is 'reserved' and reserved_until covers the date
-      if (!dto.override_conflict && equipment.availability_status === 'reserved' && equipment.reserved_until) {
-        const reservedUntilStr = formatDateOnly(equipment.reserved_until);
-        if (reservedUntilStr >= fromDate) {
-          throw new ConflictException({
-            code: 'EQUIPMENT_ALREADY_RESERVED',
-            message: `Equipment unit ${equipment.model} (${equipment.serial_no || 'Unit'}) is currently reserved until ${dmy(reservedUntilStr)}.`,
-          });
-        }
-      }
+      // (No blanket "reserved until" check: the overlap check above is exact, so a free window before a later booking stays bookable.)
 
       // 4. Create reservation
       const reservation = await trx
@@ -1186,25 +1335,19 @@ export class DemosService {
           equipment_id: dto.equipment_id,
           reserved_from: fromDate,
           reserved_to: toDate,
-          status: 'approved',
-          approved_by: user.id,
+          status: isRequest ? 'requested' : 'approved',
+          approved_by: isRequest ? null : user.id,
           remarks: [dto.remarks?.trim(), productNote].filter(Boolean).join(' | ') || null,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
 
-      // 5. Update equipment availability status & reserved_until
-      await trx
-        .updateTable('demo_equipment')
-        .set({
-          availability_status: 'reserved',
-          reserved_until: toDate,
-        })
-        .where('id', '=', dto.equipment_id)
-        .execute();
+      // 5. A booked unit shows as reserved; a request leaves it as is until approved.
+      await this.syncEquipmentAvailability(trx as any, dto.equipment_id, user.id, `reserved for demo ${demo.demo_no}`);
 
       // 6. Update demo status
-      const nextStatus = demo.status === 'requested' || demo.status === 'under_planning'
+      // Only an approved request (under planning) advances; before management approval the booking is preparation
+      const nextStatus = !isRequest && demo.status === 'under_planning'
         ? 'equipment_reserved'
         : demo.status;
 
@@ -1233,14 +1376,27 @@ export class DemosService {
       });
 
       // Notification
-      this.eventEmitter.emit(AppEvents.DEMO_EQUIPMENT_RESERVED, {
-        demoId,
-        demoNo: demo.demo_no,
-        equipmentModel: equipment.model || 'Demo Unit',
-        serialNo: equipment.serial_no,
-        salespersonId: demo.requested_by,
-        assignedToId: demo.assigned_to,
-      });
+      if (isRequest) {
+        this.eventEmitter.emit(AppEvents.DEMO_EQUIPMENT_REQUESTED, {
+          demoId,
+          demoNo: demo.demo_no,
+          reservationId: reservation.id,
+          equipmentLabel: `${equipment.model || 'Demo Unit'} (${equipment.serial_no || 'no serial'})`,
+          responsiblePersonId: equipment.responsible_person || null,
+          requestedById: user.id,
+          from: fromDate,
+          to: toDate,
+        });
+      } else {
+        this.eventEmitter.emit(AppEvents.DEMO_EQUIPMENT_RESERVED, {
+          demoId,
+          demoNo: demo.demo_no,
+          equipmentModel: equipment.model || 'Demo Unit',
+          serialNo: equipment.serial_no,
+          salespersonId: demo.requested_by,
+          assignedToId: demo.assigned_to,
+        });
+      }
 
       return {
         ...reservation,
@@ -1321,6 +1477,17 @@ export class DemosService {
       if (!reservation) {
         throw new NotFoundException('Reservation not found');
       }
+      if (!['requested', 'alternative_suggested'].includes(reservation.status as string)) {
+        throw new BadRequestException(`Only a pending request can be approved (this one is ${reservation.status}).`);
+      }
+
+      const equipment = await trx.selectFrom('demo_equipment').selectAll().where('id', '=', reservation.equipment_id).forUpdate().executeTakeFirstOrThrow();
+      if (equipment.availability_status === 'maintenance') {
+        throw new BadRequestException('Equipment is under maintenance — allocate another unit instead.');
+      }
+      const from = formatDateOnly(reservation.reserved_from);
+      const clash = await this.findReservationConflict(trx as any, reservation.equipment_id, from, formatDateOnly(reservation.reserved_to, from), reservationId);
+      if (clash) throw this.conflictError(equipment, clash, reservation.demo_id, user.id);
 
       const updated = await trx
         .updateTable('demo_reservations')
@@ -1334,16 +1501,7 @@ export class DemosService {
         .returningAll()
         .executeTakeFirstOrThrow();
 
-      // Lock equipment availability status to 'reserved'
-      await trx
-        .updateTable('demo_equipment')
-        .set({
-          availability_status: 'reserved',
-          reserved_until: reservation.reserved_to,
-          updated_at: new Date(),
-        })
-        .where('id', '=', reservation.equipment_id)
-        .execute();
+      await this.syncEquipmentAvailability(trx as any, reservation.equipment_id, user.id, 'reservation approved');
 
       // Update demo status to equipment_reserved if still in requested or under_planning
       await trx
@@ -1399,29 +1557,7 @@ export class DemosService {
         .returningAll()
         .executeTakeFirstOrThrow();
 
-      const todayStr = todayInKolkata();
-
-      // Check if equipment has any other active approved reservations
-      const otherActiveReservations = await trx
-        .selectFrom('demo_reservations')
-        .select('id')
-        .where('equipment_id', '=', reservation.equipment_id)
-        .where('id', '!=', reservationId)
-        .where('status', '=', 'approved')
-        .where('reserved_to', '>=', todayStr)
-        .executeTakeFirst();
-
-      if (!otherActiveReservations) {
-        await trx
-          .updateTable('demo_equipment')
-          .set({
-            availability_status: 'available',
-            reserved_until: null,
-            updated_at: new Date(),
-          })
-          .where('id', '=', reservation.equipment_id)
-          .execute();
-      }
+      await this.syncEquipmentAvailability(trx as any, reservation.equipment_id, user.id, 'reservation rejected');
 
       this.eventEmitter.emit('audit.log', {
         actorId: user.id,
@@ -1462,36 +1598,19 @@ export class DemosService {
       if (!newUnit) {
         throw new NotFoundException('Target equipment unit not found');
       }
-
-      const todayStr = todayInKolkata();
-
-      // Release previous equipment unit if no other active reservation
-      const oldEquipId = reservation.equipment_id;
-      if (oldEquipId !== dto.equipment_id) {
-        const otherApproved = await trx
-          .selectFrom('demo_reservations')
-          .select('id')
-          .where('equipment_id', '=', oldEquipId)
-          .where('id', '!=', reservationId)
-          .where('status', '=', 'approved')
-          .where('reserved_to', '>=', todayStr)
-          .executeTakeFirst();
-
-        if (!otherApproved) {
-          await trx
-            .updateTable('demo_equipment')
-            .set({
-              availability_status: 'available',
-              reserved_until: null,
-              updated_at: new Date(),
-            })
-            .where('id', '=', oldEquipId)
-            .execute();
-        }
+      if (['cancelled', 'rejected'].includes(reservation.status as string)) {
+        throw new BadRequestException(`This reservation is ${reservation.status}; raise a new request instead.`);
+      }
+      if (newUnit.availability_status === 'maintenance') {
+        throw new BadRequestException('The selected unit is under maintenance.');
       }
 
+      const oldEquipId = reservation.equipment_id;
       const reservedFrom = dto.reserved_from || reservation.reserved_from;
       const reservedTo = dto.reserved_to || reservation.reserved_to;
+      const fromStr = formatDateOnly(reservedFrom);
+      const clash = await this.findReservationConflict(trx as any, dto.equipment_id, fromStr, formatDateOnly(reservedTo, fromStr), reservationId);
+      if (clash) throw this.conflictError(newUnit, clash, reservation.demo_id, user.id);
 
       const updated = await trx
         .updateTable('demo_reservations')
@@ -1509,16 +1628,8 @@ export class DemosService {
         .returningAll()
         .executeTakeFirstOrThrow();
 
-      // Lock new unit availability status to 'reserved'
-      await trx
-        .updateTable('demo_equipment')
-        .set({
-          availability_status: 'reserved',
-          reserved_until: reservedTo,
-          updated_at: new Date(),
-        })
-        .where('id', '=', dto.equipment_id)
-        .execute();
+      await this.syncEquipmentAvailability(trx as any, dto.equipment_id, user.id, 'unit allocated');
+      if (oldEquipId !== dto.equipment_id) await this.syncEquipmentAvailability(trx as any, oldEquipId, user.id, 'replaced by another unit');
 
       // Update demo status
       await trx
@@ -1526,6 +1637,7 @@ export class DemosService {
         .set({
           status: 'equipment_reserved',
           updated_at: new Date(),
+          version: sql`version + 1`,
         })
         .where('id', '=', reservation.demo_id)
         .where('status', 'in', ['requested', 'under_planning'])
@@ -1565,6 +1677,9 @@ export class DemosService {
 
       if (demo.status === 'completed' || demo.status === 'cancelled') {
         throw new BadRequestException(`Cannot confirm demo in terminal state "${demo.status}"`);
+      }
+      if (demo.status === 'requested') {
+        throw new BadRequestException('Management has not approved this demo request yet. The date can be confirmed once it is approved.');
       }
 
       const confirmedDay = calendarDay(dto.confirmed_date) || '';
@@ -1748,43 +1863,40 @@ export class DemosService {
         .where('status', 'in', ['approved', 'requested'])
         .execute();
 
+      // Each booking moves with the demo and keeps its length (a 3-day loan stays 3 days), anchored on its first day.
+      const shiftDays = (iso: string, days: number) => {
+        const d = new Date(`${iso}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + days);
+        return d.toISOString().slice(0, 10);
+      };
+      const dayDiff = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
       for (const res of reservations) {
-        // Check if unit is available on new date
-        const equipConflict = await trx
-          .selectFrom('demo_reservations')
-          .innerJoin('demos', 'demo_reservations.demo_id', 'demos.id')
-          .where('demo_reservations.equipment_id', '=', res.equipment_id)
-          .where('demo_reservations.status', 'in', ['approved', 'requested'])
-          .where('demos.status', 'not in', ['cancelled', 'completed'])
-          .where('demo_reservations.demo_id', '!=', demoId)
-          .where('demo_reservations.reserved_from', '<=', dto.new_date)
-          .where('demo_reservations.reserved_to', '>=', dto.new_date)
-          .select(['demo_reservations.id', 'demos.demo_no'])
-          .executeTakeFirst();
+        const from = formatDateOnly(res.reserved_from);
+        const to = formatDateOnly(res.reserved_to, from);
+        const newFrom = dto.new_date;
+        const newTo = shiftDays(newFrom, Math.max(0, dayDiff(from, to)));
 
-        if (equipConflict) {
+        const clash = await this.findReservationConflict(trx as any, res.equipment_id, newFrom, newTo, res.id);
+        if (clash && clash.demo_id !== demoId) {
+          const equipment = await trx.selectFrom('demo_equipment').select(['id', 'model', 'serial_no']).where('id', '=', res.equipment_id).executeTakeFirstOrThrow();
+          this.conflictError(equipment, clash, demoId, user.id); // notifies (§46)
           throw new ConflictException({
             code: 'EQUIPMENT_CONFLICT_ON_RESCHEDULE',
-            message: `Reserved equipment is already booked on ${dmy(dto.new_date)} by Demo ${equipConflict.demo_no || ''}. Please release/replace unit before rescheduling.`,
+            message: `Reserved equipment is already booked from ${dmy(newFrom)} to ${dmy(newTo)} by Demo ${clash.demo_no || ''}. Please release/replace unit before rescheduling.`,
           });
         }
 
-        // Update reservation date range to cover new date
         await trx
           .updateTable('demo_reservations')
           .set({
-            reserved_from: dto.new_date,
-            reserved_to: dto.new_date,
+            reserved_from: newFrom,
+            reserved_to: newTo,
             updated_at: new Date(),
           })
           .where('id', '=', res.id)
           .execute();
 
-        await trx
-          .updateTable('demo_equipment')
-          .set({ reserved_until: dto.new_date })
-          .where('id', '=', res.equipment_id)
-          .execute();
+        await this.syncEquipmentAvailability(trx as any, res.equipment_id, user.id, `demo ${demo.demo_no} rescheduled`);
       }
 
       // 3. Record in reschedule history
@@ -1841,6 +1953,7 @@ export class DemosService {
   }
 
   async cancelDemo(demoId: string, dto: CancelDemoDto, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
     return this.db.transaction().execute(async (trx) => {
       const demo = await trx
         .selectFrom('demos')
@@ -1874,15 +1987,6 @@ export class DemosService {
           .where('id', '=', r.id)
           .execute();
 
-        // Release equipment availability status back to available
-        await trx
-          .updateTable('demo_equipment')
-          .set({
-            availability_status: 'available',
-            reserved_until: null,
-          })
-          .where('id', '=', r.equipment_id)
-          .execute();
       }
 
       // 2. Cancel demo
@@ -1898,6 +2002,11 @@ export class DemosService {
         .where('id', '=', demoId)
         .returningAll()
         .executeTakeFirstOrThrow();
+
+      // Units go back to available only if no other demo still holds them (and never out of maintenance).
+      for (const equipmentId of new Set(reservations.map((r) => r.equipment_id))) {
+        await this.syncEquipmentAvailability(trx as any, equipmentId, user.id, `demo ${demo.demo_no} cancelled`);
+      }
 
       // Audit Log
       this.eventEmitter.emit('audit.log', {
@@ -1928,6 +2037,7 @@ export class DemosService {
   // =========================================================================
 
   async submitOutcome(demoId: string, dto: SubmitDemoOutcomeDto, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
     // Failure reason is strictly REQUIRED if demo result is 'fail'
     if (dto.result === 'fail' && !dto.failure_reason) {
       throw new BadRequestException({
@@ -1994,6 +2104,7 @@ export class DemosService {
           .innerJoin('demo_equipment', 'demo_reservations.equipment_id', 'demo_equipment.id')
           .selectAll('demo_equipment')
           .where('demo_reservations.demo_id', '=', demoId)
+          .where('demo_reservations.status', '=', 'approved')
           .execute();
 
         const primaryUnit = reservedUnits[0] || null;
@@ -2022,7 +2133,7 @@ export class DemosService {
         autoServiceTicket = created.ticket;
         const ticketNo = created.ticket.ticket_no || created.ticket.ticket_number;
 
-        // Put reserved equipment into MAINTENANCE status
+        // Put the units used in this trial into MAINTENANCE status
         for (const unit of reservedUnits) {
           await trx
             .updateTable('demo_equipment')
@@ -2034,24 +2145,14 @@ export class DemosService {
             })
             .where('id', '=', unit.id)
             .execute();
-        }
-      } else {
-        // Release reserved equipment back to available
-        const reservations = await trx
-          .selectFrom('demo_reservations')
-          .select('equipment_id')
-          .where('demo_id', '=', demoId)
-          .execute();
-
-        for (const r of reservations) {
-          await trx
-            .updateTable('demo_equipment')
-            .set({
-              availability_status: 'available',
-              reserved_until: null,
-            })
-            .where('id', '=', r.equipment_id)
-            .execute();
+          this.eventEmitter.emit('audit.log', {
+            actorId: user.id,
+            entityType: 'demo_equipment',
+            entityId: unit.id,
+            action: 'availability_changed',
+            previousValue: { availability_status: unit.availability_status, reserved_until: unit.reserved_until },
+            newValue: { availability_status: 'maintenance', reserved_until: null, cause: `technical failure on demo ${demo.demo_no} (ticket ${ticketNo})` },
+          });
         }
       }
 
@@ -2100,17 +2201,27 @@ export class DemosService {
           .executeTakeFirstOrThrow();
       }
 
-      // 1. Mark demo completed and link service ticket if created
+      // 1. Mark demo completed (only when it actually took place) and link service ticket if created.
+      // A "did not happen" outcome is recorded but leaves the demo open to be rescheduled or cancelled.
+      const tookPlace = dto.completed !== false;
       await trx
         .updateTable('demos')
         .set({
-          status: 'completed',
+          status: tookPlace ? 'completed' : demo.status,
           service_ticket_id: autoServiceTicket?.id || demo.service_ticket_id || null,
           updated_at: new Date(),
           version: demo.version + 1,
         })
         .where('id', '=', demoId)
         .execute();
+
+      // 2. Free this demo's units once it is done (units quarantined above stay in maintenance).
+      if (tookPlace) {
+        const booked = await trx.selectFrom('demo_reservations').select('equipment_id').where('demo_id', '=', demoId).where('status', '=', 'approved').execute();
+        for (const equipmentId of new Set(booked.map((r) => r.equipment_id))) {
+          await this.syncEquipmentAvailability(trx as any, equipmentId, user.id, `demo ${demo.demo_no} completed`);
+        }
+      }
 
       // 3. Customer timeline interaction (§20: idempotent using demo_id unique constraint)
       const occurredDate = demo.confirmed_date || demo.requested_date || todayInKolkata();
@@ -2228,10 +2339,23 @@ export class DemosService {
   // 7. MANAGEMENT ANALYTICS (§19)
   // =========================================================================
 
-  async getAnalytics() {
+  async getAnalytics(user: AuthUser) {
+    // A regional manager analyses their own zone (or region) plus demos they raised; everyone else sees the company.
+    // The equipment fleet is shared stock, so it stays company-wide.
+    const territory = user.role === 'regional_manager' && (user.zone_id || user.region_id)
+      ? user.zone_id
+        ? sql`o.zone_id = ${user.zone_id}`
+        : sql`o.region_id = ${user.region_id}`
+      : null;
+    const inScope = (column: string) =>
+      territory
+        ? sql<boolean>`${sql.ref(column)} in (select d.id from demos d join organisations o on o.id = d.organisation_id where ${territory} or d.requested_by = ${user.id})`
+        : sql<boolean>`true`;
+
     // Total counts by status
     const statusCounts = await this.db
       .selectFrom('demos')
+      .where(inScope('demos.id'))
       .select([
         sql<number>`count(*)::int`.as('total_demos'),
         sql<number>`count(*) filter (where status = 'completed')::int`.as('completed_demos'),
@@ -2244,6 +2368,7 @@ export class DemosService {
     // Outcomes counts: success vs fail
     const outcomeCounts = await this.db
       .selectFrom('demo_outcomes')
+      .where(inScope('demo_outcomes.demo_id'))
       .select([
         sql<number>`count(*) filter (where result = 'success')::int`.as('successful'),
         sql<number>`count(*) filter (where result = 'fail')::int`.as('unsuccessful'),
@@ -2260,6 +2385,7 @@ export class DemosService {
     // Structured failure reasons breakdown
     const failureBreakdownRows = await this.db
       .selectFrom('demo_outcomes')
+      .where(inScope('demo_outcomes.demo_id'))
       .select([
         'failure_reason',
         sql<number>`count(*)::int`.as('count'),
@@ -2291,6 +2417,7 @@ export class DemosService {
     // Competitor involvement distribution
     const competitorRows = await this.db
       .selectFrom('demo_outcomes')
+      .where(inScope('demo_outcomes.demo_id'))
       .select([
         'competitor_involved',
         sql<number>`count(*)::int`.as('count'),
@@ -2305,6 +2432,7 @@ export class DemosService {
     // Decision-maker attendance correlation
     const dmStats = await this.db
       .selectFrom('demo_outcomes')
+      .where(inScope('demo_outcomes.demo_id'))
       .select([
         sql<number>`count(*) filter (where decision_maker_present = true)::int`.as('dm_present_total'),
         sql<number>`count(*) filter (where decision_maker_present = true and result = 'success')::int`.as('dm_present_success'),
@@ -2330,6 +2458,7 @@ export class DemosService {
       ])
       .where('demo_outcomes.result', '=', 'fail')
       .where('demo_outcomes.failure_reason', 'is not', null)
+      .where(inScope('demo_outcomes.demo_id'))
       .groupBy(['products.name', 'demo_outcomes.failure_reason'])
       .orderBy('fail_count', 'desc')
       .limit(6)
@@ -2376,7 +2505,8 @@ export class DemosService {
   // 8. AUDIT TRAIL (§23)
   // =========================================================================
 
-  async getAuditTrail(demoId: string) {
+  async getAuditTrail(demoId: string, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
     const logs = await this.db
       .selectFrom('audit_log')
       .leftJoin('users as actor', 'audit_log.actor_id', 'actor.id')

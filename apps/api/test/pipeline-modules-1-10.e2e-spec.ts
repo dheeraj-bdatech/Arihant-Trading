@@ -13,7 +13,7 @@
  * All names carry a unique tag so nothing collides with seed data; nothing is deleted (the clone is dropped).
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { Kysely, sql } from 'kysely';
@@ -21,6 +21,7 @@ import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { OutboxService } from '../src/common/outbox/outbox.service';
 import { istEndOfDay, todayInKolkata, type Database } from '@arihant/shared';
+import { configureApp } from '../src/common/app-setup';
 
 jest.setTimeout(120000);
 
@@ -117,8 +118,7 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
+    configureApp(app); // same global setup as main.ts
     await app.init();
     db = moduleFixture.get<Kysely<Database>>(KYSELY_DB);
     outbox = moduleFixture.get(OutboxService);
@@ -281,7 +281,7 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
     expect(ok(await http().get(`/api/visits/${visitId}`).set(bearer(u.sales)), 200).status).toBe('completed');
     const vi = await db.selectFrom('interactions').selectAll().where('visit_id', '=', visitId).execute();
     expect(vi).toHaveLength(1);
-    expect(vi[0]).toMatchObject({ organisation_id: orgId, type: 'visit', employee_id: u.sales.id });
+    expect(vi[0]).toMatchObject({ organisation_id: orgId, type: 'physical_visit', employee_id: u.sales.id });
     // (known gap, not asserted: the visit interaction carries no lead_id)
     const act = await db.selectFrom('employee_activities').selectAll().where('entity_type', '=', 'visit').where('entity_id', '=', visitId).execute();
     expect(act).toHaveLength(1);
@@ -741,11 +741,11 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
     const types = new Set(tl.timeline.map((i: any) => i.type));
     expect(tl.timeline.some((i: any) => i.lead_id === lead1Id)).toBe(true);
     expect(tl.timeline.some((i: any) => i.lead_id === lead2Id)).toBe(true);
-    for (const t of ['visit', 'demo', 'service']) expect(types.has(t)).toBe(true);
+    for (const t of ['physical_visit', 'demo', 'service']) expect(types.has(t)).toBe(true);
     expect(tl.timeline.filter((i: any) => i.type === 'service').length).toBeGreaterThanOrEqual(3);
     expect(tl.timeline.find((i: any) => i.type === 'demo').demo_id).toBe(demoId);
     // previous_meetings now carries completed field visits
-    expect(tl.management_summary.previous_meetings.some((m: any) => m.visit_id === visitId && m.type === 'visit')).toBe(true);
+    expect(tl.management_summary.previous_meetings.some((m: any) => m.visit_id === visitId && m.type === 'physical_visit')).toBe(true);
     expect(tl.management_summary.current_salesperson).toBeTruthy();
     expect(tl.management_summary.follow_up_history.total).toBe(2);
 

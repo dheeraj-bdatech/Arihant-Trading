@@ -53,6 +53,7 @@ export const AppEvents = {
   SERVICE_CUSTOMER_FEEDBACK: 'service.customer_feedback',
 
   DEMO_REQUESTED: 'demo.requested',
+  DEMO_REQUEST_APPROVED: 'demo.request_approved',
   DEMO_SERVICE_ESCORT_REQUESTED: 'demo.service_escort_requested',
   DEMO_TECHNICAL_FAILURE: 'demo.technical_failure',
   DEMO_TEAM_ASSIGNED: 'demo.team_assigned',
@@ -61,6 +62,8 @@ export const AppEvents = {
   DEMO_RESCHEDULED: 'demo.rescheduled',
   DEMO_CANCELLED: 'demo.cancelled',
   DEMO_COMPLETED: 'demo.completed',
+  DEMO_EQUIPMENT_CONFLICT: 'demo.equipment_conflict',
+  DEMO_EQUIPMENT_REQUESTED: 'demo.equipment_requested',
 
   PROPOSAL_CREATED: 'proposal.created',
   PROPOSAL_REQUESTED: 'proposal.requested',

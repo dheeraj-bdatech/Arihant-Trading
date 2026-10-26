@@ -2,7 +2,7 @@
 
 /**
  * Task detail (§12.3): status + overdue + delay badges, original vs current deadline, links, supporting docs,
- * the activity timeline, a progress box (comment, % slider, photos from the phone camera) and the actions this
+ * the status track (the board's columns), an update box (comment, photos from the phone camera) and the actions this
  * user may take right now (server-computed `allowed_actions`; every call is re-checked server-side).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -11,12 +11,18 @@ import { useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   ArrowRightLeft,
+  BadgeCheck,
   Ban,
   Camera,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   FilePlus2,
+  FileText,
   Flag,
+  History,
+  MessageSquare,
   Paperclip,
   Pencil,
   Play,
@@ -24,8 +30,11 @@ import {
   RotateCcw,
   Send,
   ShieldAlert,
+  Tag,
+  Target,
   Trash2,
   Undo2,
+  Users,
   Wrench,
 } from 'lucide-react';
 import { Badge, Button, Card, FormSteps, InfoCallout, Input, Modal, PageLoader, RowMenu, Select, Textarea } from '@/components/ui';
@@ -41,6 +50,7 @@ import {
   describeRecurrence,
   formatTaskDateTime,
   minutesToDays,
+  relativeDue,
   type TaskDeadlineChangeSource,
   type TaskReassignReason,
 } from '@arihant/shared';
@@ -50,13 +60,11 @@ import {
   BlockerBadge,
   DateTime,
   DelayBadge,
-  DueText,
   FileList,
   FileViewer,
   FlagChip,
-  Meta,
   PriorityBadge,
-  ProgressBar,
+  StatusTrack,
   TaskConflictCallout,
   TaskStatusBadges,
   blockerTypeLabel,
@@ -93,7 +101,8 @@ const SECONDARY: { action: TaskDialogAction | 'edit' | 'delete'; label: string; 
   { action: 'correction', label: 'Admin correction', icon: <Wrench className="h-4 w-4" />, danger: true },
 ];
 
-export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
+/** `popup`: the essentials only (status, due, people, the work, actions), for the task quick view opened from any list. */
+export const TaskDetailView: React.FC<{ taskId: string; variant?: 'page' | 'popup'; onLoaded?: (task: TaskDetail) => void }> = ({ taskId, variant = 'page', onLoaded }) => {
   const router = useRouter();
   const { user } = useAuth();
   const { push, Toaster } = useToaster();
@@ -105,13 +114,21 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
   const [viewer, setViewer] = useState<TaskAttachment | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const popup = variant === 'popup';
   const [busy, setBusy] = useState(false);
+
+  // read through a ref so a new callback from the parent does not refetch the task
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
 
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
-      setTask(await api.get<TaskDetail>(`/tasks/${taskId}`));
+      const fresh = await api.get<TaskDetail>(`/tasks/${taskId}`);
+      setTask(fresh);
+      onLoadedRef.current?.(fresh);
       setConflict(false);
     } catch (e) {
       setLoadError(errorMessage(e, 'Task not found or you do not have access to it.'));
@@ -193,28 +210,450 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
     task.related_entity_type === 'proposal' && task.related_entity_id && { label: 'Proposal', value: 'Proposal follow-up', href: follow(`/proposals?open=${task.related_entity_id}`) },
   ].filter(Boolean) as { label: string; value: string; href: string | null }[];
 
+  const rel = task.deadline ? relativeDue(task.deadline) : null;
+  const dueHeadline = !task.deadline
+    ? 'No deadline'
+    : !open
+      ? task.completed_at
+        ? 'Done'
+        : 'Closed'
+      : rel!.overdue
+        ? `${rel!.label.replace('overdue by ', '')} late`
+        : rel!.label.replace('due in ', 'Due in ');
+  const dueTone = !open ? 'text-[#0F5E63]' : rel?.overdue ? 'text-[#9A3412]' : 'text-[#14213D]';
+  const delayed = task.delay_class === 'late_excused' || task.delay_class === 'late_unexcused' || task.delay_class === 'open_overdue';
+  const historyLine = [
+    task.rework_count && `${task.rework_count} rework`,
+    task.reopen_count && `${task.reopen_count} reopened`,
+    task.extension_count && `${task.extension_count} extension${task.extension_count === 1 ? '' : 's'}`,
+    task.reassign_count && `${task.reassign_count} reassignment${task.reassign_count === 1 ? '' : 's'}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const chips = (
+  <div className="flex flex-wrap items-center gap-1.5">
+    {task.category_name && (
+      <span className="inline-flex items-center gap-1 rounded-md border border-[#DCD8CE] bg-[#FBFAF7] px-2 py-0.5 text-xs font-medium text-[#14213D]">
+        <Tag className="h-3 w-3 text-[#4A5568]" aria-hidden />
+        {task.category_name}
+      </span>
+    )}
+    {links.map((l) =>
+      l.href ? (
+        <Link key={l.label} href={l.href} className="inline-flex items-center gap-1 rounded-md border border-[#D0E5E3] bg-[#E3EFEE] px-2 py-0.5 text-xs font-medium text-[#0F5E63] hover:border-[#0F5E63]">
+          <span className="text-[#4A5568]">{l.label}:</span> {l.value}
+        </Link>
+      ) : (
+        <span key={l.label} className="inline-flex items-center gap-1 rounded-md border border-[#DCD8CE] bg-white px-2 py-0.5 text-xs font-medium text-[#14213D]">
+          <span className="text-[#4A5568]">{l.label}:</span> {l.value}
+        </span>
+      ),
+    )}
+    {task.approval_required && (
+      <span
+        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-semibold ${task.status === 'awaiting_approval' ? 'bg-[#FFF8EB] text-[#A15C07] ring-1 ring-[#E9C9B4]' : 'bg-[#EEF1F5] text-[#1F2E52]'}`}
+      >
+        <BadgeCheck className="h-3 w-3" aria-hidden /> {task.status === 'awaiting_approval' ? 'Approval pending' : 'Approval required'}
+      </span>
+    )}
+    {task.evidence_required && (
+      <span className="inline-flex items-center gap-1 rounded-md bg-[#EEF1F5] px-2 py-0.5 text-xs font-semibold text-[#1F2E52]">
+        <Paperclip className="h-3 w-3" aria-hidden /> Evidence required
+      </span>
+    )}
+  </div>
+  );
+
+  const overlays = (
+    <>
+        <TaskActionDialog action={dialog} task={task} onClose={() => setDialog(null)} onDone={done} onConflict={() => setConflict(true)} />
+        <FileViewer file={viewer} onClose={() => setViewer(null)} />
+        {editOpen && <EditTaskModal task={task} onClose={() => setEditOpen(false)} onSaved={(d) => done(d, 'Task updated.')} onConflict={() => setConflict(true)} />}
+        <Modal isOpen={deleteOpen} onClose={() => setDeleteOpen(false)} title="Delete this task?" description="Only possible within a few minutes of creating it and before anyone worked on it. Otherwise cancel it with a reason." maxWidth="md">
+          <DialogActions sticky={false}>
+            <Button variant="ghost" onClick={() => setDeleteOpen(false)} disabled={busy}>
+              Keep it
+            </Button>
+            <Button variant="danger" isLoading={busy} onClick={doDelete}>
+              Delete permanently
+            </Button>
+          </DialogActions>
+        </Modal>
+        <Toaster />
+    </>
+  );
+
+  // Who and when: in the popup this leads the expanded details, on the page it heads the side column.
+  const approvers = task.approvers.map((ap) => ap.full_name).join(', ') || task.reporting_manager_name || 'the manager';
+  const approvalText = !task.approval_required
+    ? 'Not required'
+    : task.status === 'awaiting_approval'
+      ? `Pending with ${approvers}`
+      : `${approvers} approves once it is marked done`;
+  // Who and when beyond the people up top: shared by the page's Details card and the popup's summary box
+  const detailRows = (
+    <>
+      <SideRow label="Reporting manager">
+        <Person name={task.reporting_manager_name} />
+      </SideRow>
+      <SideRow label="Department">{task.department_name || '—'}</SideRow>
+      <SideRow label="Start date">
+        <DateTime value={task.start_date} dateOnly />
+      </SideRow>
+      <SideRow label="Last update">
+        <DateTime value={task.last_update_at} />
+      </SideRow>
+      {task.completed_at && (
+        <SideRow label="Completed">
+          <DateTime value={task.completed_at} />
+        </SideRow>
+      )}
+      {task.approved_at && (
+        <SideRow label="Approved">
+          <DateTime value={task.approved_at} />
+        </SideRow>
+      )}
+      {task.template && <SideRow label="Series">{describeRecurrence(task.template.recurrence_type as any, (task.template as any).recurrence_rule) || task.template.title}</SideRow>}
+      {historyLine && <SideRow label="History">{historyLine}</SideRow>}
+      {delayed && (
+        <SideRow label="Delay">
+          <span className="text-[#9A3412]">{Number(task.unexcused_delay_days).toFixed(1)} d unexcused</span>
+          <span className="text-[#4A5568]"> · {Number(task.excused_delay_days).toFixed(1)} d excused</span>
+        </SideRow>
+      )}
+    </>
+  );
+  const detailsCard = (
+    <Card className="p-4">
+      <SectionTitle icon={<Users className="h-4 w-4" />}>Details</SectionTitle>
+      <dl className="mt-3 divide-y divide-[#ECE9E2]">
+        <SideRow label="Assignee">
+          <Person name={task.assignee_name} note={task.assignee_active === false ? 'inactive' : undefined} />
+        </SideRow>
+        <SideRow label="Assigned by">
+          <Person name={task.assigned_by_name || 'System'} />
+        </SideRow>
+        <SideRow label="Evidence">{task.evidence_required ? 'Required' : 'Not required'}</SideRow>
+        <SideRow label="Approval">{approvalText}</SideRow>
+        {detailRows}
+      </dl>
+    </Card>
+  );
+
+  // Everything below the header: the work, activity, people, files, blockers and the decision trail.
+  const fullSections = (
+        <div className={popup ? 'space-y-4' : 'grid grid-cols-1 gap-5 xl:grid-cols-3'}>
+          {/* Main column: the work itself, the update box and the history */}
+          <div className={popup ? 'space-y-4' : 'space-y-5 xl:col-span-2'}>
+            {(!popup || task.completion_remarks) && (
+            <Card className="space-y-4 p-4 sm:p-5">
+              <SectionTitle icon={<FileText className="h-4 w-4" />}>{popup ? 'Completion' : 'About this task'}</SectionTitle>
+              {popup ? null : task.description ? (
+                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-[#14213D]">{task.description}</p>
+              ) : (
+                <p className="text-sm text-[#6B7280]">No description.</p>
+              )}
+              {!popup && task.expected_outcome && (
+                <div className="rounded-[12px] border border-[#D0E5E3] bg-[#E3EFEE]/50 px-4 py-3">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#0F5E63]">
+                    <Target className="h-3.5 w-3.5" aria-hidden /> Expected outcome
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-[#14213D]">{task.expected_outcome}</p>
+                </div>
+              )}
+              {task.completion_remarks && (
+                <div className="rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3 text-sm">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#4A5568]">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63]" aria-hidden /> Completion remarks
+                  </div>
+                  <p className="mt-1 text-[#14213D]">{task.completion_remarks}</p>
+                  {task.delay_reason && <p className="mt-1 text-[#9A3412]">Reason for delay: {task.delay_reason}</p>}
+                </div>
+              )}
+            </Card>
+            )}
+
+            {allowed.has('progress') && <ProgressBox task={task} isAssignee={isAssignee} onSaved={(d, m) => done(d, m)} onConflict={() => setConflict(true)} onError={(m) => push('error', m)} />}
+
+            <Card className="space-y-3 p-4 sm:p-5">
+              <SectionTitle icon={<History className="h-4 w-4" />} count={task.updates.length}>
+                Activity
+              </SectionTitle>
+              <ActivityTimeline updates={task.updates} />
+            </Card>
+          </div>
+
+          {/* Side column: who, when, rules, linked files and the decision trail */}
+          <div className={popup ? 'space-y-4' : 'space-y-5'}>
+            {!popup && detailsCard}
+
+            <Card className="space-y-3 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <SectionTitle icon={<Paperclip className="h-4 w-4" />} count={task.attachments.length}>
+                  Files
+                </SectionTitle>
+                {open && (isAssignee || task.viewer.kinds.includes('manager') || task.viewer.kinds.includes('assigner')) && (
+                  <SupportingUpload taskId={task.id} purpose={isAssignee ? 'evidence' : 'supporting_doc'} onDone={(failures) => (failures.length ? push('error', failures.join(' ')) : (push('success', 'File attached.'), load()))} />
+                )}
+              </div>
+              <FileList files={task.attachments} onOpen={setViewer} onRemove={removeFile} canRemove={(f) => open && (f.uploaded_by === user?.id || (task.viewer.kinds.includes('manager') && !isAssignee))} />
+            </Card>
+
+            <Card className="space-y-3 p-4">
+              <SectionTitle icon={<Flag className="h-4 w-4" />} count={task.blockers.length}>
+                Blockers
+              </SectionTitle>
+              {task.blockers.length === 0 ? (
+                <p className="text-xs text-[#6B7280]">No blockers raised.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {task.blockers.map((b) => (
+                    <li key={b.id} className="space-y-1 rounded-[10px] border border-[#ECE9E2] p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-[#14213D]">{blockerTypeLabel(b.blocker_type)}</span>
+                        <BlockerBadge status={b.status} />
+                      </div>
+                      <p className="text-xs text-[#14213D]">{b.description}</p>
+                      <p className="text-[11px] text-[#4A5568]">
+                        {formatTaskDateTime(b.created_at)}
+                        {b.raised_after_deadline ? ' · after deadline' : ''}
+                        {b.excused_minutes ? ` · ${minutesToDays(b.excused_minutes)} day(s) excused` : ''}
+                      </p>
+                      {b.decision_comment && (
+                        <p className="text-[11px] text-[#4A5568]">
+                          {b.decided_by_name || 'System'}: “{b.decision_comment}”
+                        </p>
+                      )}
+                      {b.resolution_note && <p className="text-[11px] text-[#4A5568]">Resolved: “{b.resolution_note}”</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+
+            {task.deadline_changes.length > 0 && (
+              <Card className="space-y-3 p-4">
+                <SectionTitle icon={<Clock className="h-4 w-4" />} count={task.deadline_changes.length}>
+                  Deadline changes
+                </SectionTitle>
+                <ul className="space-y-2">
+                  {task.deadline_changes.map((c) => (
+                    <li key={c.id} className="border-l-2 border-[#0F5E63] pl-2 text-xs">
+                      <div className="font-semibold text-[#14213D]">{TASK_DEADLINE_SOURCE_LABELS[c.source as TaskDeadlineChangeSource] || c.source}</div>
+                      <div className="font-mono text-[11px] text-[#4A5568]">
+                        {formatTaskDateTime(c.old_deadline)} → {formatTaskDateTime(c.new_deadline)}
+                      </div>
+                      {c.excused_minutes > 0 && <div className="text-[#0F5E63]">{minutesToDays(c.excused_minutes)} day(s) excused</div>}
+                      {c.locked_unexcused_minutes > 0 && <div className="text-[#9A3412]">{minutesToDays(c.locked_unexcused_minutes)} day(s) already overdue — stays unexcused</div>}
+                      <div className="text-[#4A5568]">
+                        {c.changed_by_name || 'System'} · “{c.reason}”
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+
+            {task.assignment_history.length > 0 && (
+              <Card className="space-y-3 p-4">
+                <SectionTitle icon={<ArrowRightLeft className="h-4 w-4" />} count={task.assignment_history.length}>
+                  Reassignments
+                </SectionTitle>
+                <ul className="space-y-2">
+                  {task.assignment_history.map((h) => (
+                    <li key={h.id} className="text-xs">
+                      <div className="font-semibold text-[#14213D]">
+                        {h.from_name || '—'} → {h.to_name || '—'}
+                      </div>
+                      <div className="text-[#4A5568]">
+                        {TASK_REASSIGN_REASON_LABELS[h.reason_type as TaskReassignReason] || h.reason_type}
+                        {h.was_overdue ? ' · was overdue' : ''} · {formatTaskDateTime(h.created_at)}
+                      </div>
+                      <div className="text-[#4A5568]">“{h.reason}”</div>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+
+            {task.escalations.length > 0 && (
+              <Card className="space-y-3 p-4">
+                <SectionTitle icon={<ShieldAlert className="h-4 w-4" />} count={task.escalations.length}>
+                  Escalations
+                </SectionTitle>
+                <ul className="space-y-3">
+                  {task.escalations.map((e) => (
+                    <EscalationRow key={e.id} esc={e} mine={e.escalated_to === user?.id} onChanged={(d, m) => done(d, m)} onError={(m) => push('error', m)} />
+                  ))}
+                </ul>
+              </Card>
+            )}
+          </div>
+        </div>
+  );
+
+  if (variant === 'popup') {
+    const tile = 'rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2.5';
+    const tileLabel = 'text-[10px] font-semibold uppercase tracking-wider text-[#4A5568]';
+    return (
+      <div className="space-y-4">
+        {/* Where it stands (the board's columns), how urgent, and what it is about. Title and number sit in the dialog header. */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <StatusTrack status={task.status} approvalRequired={task.approval_required} />
+          <div className="flex items-center gap-1.5">
+            <PriorityBadge priority={task.priority} />
+            <DelayBadge delay={task.delay_class} />
+          </div>
+        </div>
+        {chips}
+
+        {conflict && <TaskConflictCallout onRefresh={load} />}
+        {ob && (
+          <InfoCallout variant={ob.status === 'accepted' ? 'info' : 'warning'} title={`Blocked: ${blockerTypeLabel(ob.blocker_type)} (${TASK_BLOCKER_STATUS_LABELS[ob.status]})`}>
+            <p className="line-clamp-2 text-sm">“{ob.description}”</p>
+          </InfoCallout>
+        )}
+
+        {/* The three things to know at a glance */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className={tile}>
+            <div className={tileLabel}>Due</div>
+            <div className={`mt-0.5 text-sm font-semibold ${dueTone}`}>{dueHeadline}</div>
+            {task.deadline && <DateTime value={task.deadline} className="text-[11px] text-[#4A5568]" />}
+          </div>
+          <div className={tile}>
+            <div className={tileLabel}>Assignee</div>
+            <div className="mt-1 text-sm">
+              <Person name={task.assignee_name} note={task.assignee_active === false ? 'inactive' : undefined} />
+            </div>
+            <div className="mt-0.5 text-[11px] text-[#4A5568]">Assigned by {task.assigned_by_name || 'System'}</div>
+          </div>
+          <div className={tile}>
+            <div className={tileLabel}>Approval</div>
+            {task.approval_required ? (
+              <>
+                <div className="mt-0.5 text-sm font-semibold text-[#14213D]">{approvers}</div>
+                <div className={`text-[11px] ${task.status === 'awaiting_approval' ? 'font-semibold text-[#A15C07]' : 'text-[#4A5568]'}`}>
+                  {task.status === 'awaiting_approval' ? 'Waiting for sign-off now' : 'Approves when it is marked done'}
+                </div>
+              </>
+            ) : (
+              <div className="mt-0.5 text-sm text-[#4A5568]">Not required</div>
+            )}
+          </div>
+        </div>
+
+        {(task.description || task.expected_outcome) && (
+          <div className="space-y-2">
+            {task.description && <p className="line-clamp-4 whitespace-pre-wrap break-words text-sm leading-relaxed text-[#14213D]">{task.description}</p>}
+            {task.expected_outcome && (
+              <p className="line-clamp-3 rounded-[10px] border border-[#D0E5E3] bg-[#E3EFEE]/50 px-3 py-2 text-sm text-[#14213D]">
+                <span className="font-semibold text-[#0F5E63]">Expected outcome: </span>
+                {task.expected_outcome}
+              </p>
+            )}
+          </div>
+        )}
+
+        <dl className="grid grid-cols-1 gap-x-8 gap-y-1 rounded-[12px] border border-[#ECE9E2] px-4 py-3 sm:grid-cols-2 [&>div]:py-1">{detailRows}</dl>
+
+        {showAll && (
+          <div className="space-y-4 border-t border-[#ECE9E2] pt-4 animate-in fade-in duration-150">
+            {fullSections}
+          </div>
+        )}
+        {/* Footer pinned to the bottom of the popup, so the actions (pencil at the far right) stay in reach while scrolling */}
+        <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 flex flex-col-reverse gap-3 border-t border-[#ECE9E2] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <button
+            type="button"
+            aria-expanded={showAll}
+            onClick={() => setShowAll((x) => !x)}
+            className="inline-flex items-center gap-1 self-start text-xs font-semibold text-[#0F5E63] hover:underline"
+          >
+            {showAll ? 'Hide full details' : 'Show full details (activity, files, history)'}
+            {showAll ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          </button>
+          {(primary.length > 0 || secondary.length > 0) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {primary.map((p, i) => (
+                <Button key={p.action} size="sm" variant={p.variant || (i === 0 ? 'primary' : 'secondary')} leftIcon={p.icon} onClick={() => setDialog(p.action)}>
+                  {p.label}
+                </Button>
+              ))}
+              {secondary.length > 0 && (
+                <RowMenu
+                  label="Edit, reassign and more"
+                  icon={<Pencil className="h-4 w-4" />}
+                  items={secondary.map((sec) => ({ key: sec.action, label: sec.label, icon: sec.icon, danger: sec.danger, onSelect: () => onSecondary(sec.action) }))}
+                />
+              )}
+            </div>
+          )}
+        </div>
+        {overlays}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">
-      {/* Title row */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />} onClick={() => router.back()}>
-          Back
-        </Button>
-        <span className="font-mono text-sm font-semibold text-[#0F5E63]">{task.task_number}</span>
-        <TaskStatusBadges status={task.display_status} storedStatus={task.status} isOverdue={task.is_overdue} />
-        <PriorityBadge priority={task.priority} />
-        <DelayBadge delay={task.delay_class} />
-        {task.template && (
-          <Link href={`/tasks/templates/${task.template.id}`}>
-            <Badge variant="outline" size="sm" className="gap-1 cursor-pointer">
-              <Repeat className="h-3 w-3" /> Recurring
-            </Badge>
-          </Link>
+      {/* Header: identity, title, links, due and the actions this user may take */}
+      <Card className={`overflow-hidden p-0 ${task.is_overdue ? 'border-l-[3px] border-l-[#9A3412]' : ''}`}>
+        <div className="flex flex-wrap items-center gap-2 border-b border-[#ECE9E2] bg-[#FBFAF7] px-4 py-2.5 sm:px-5">
+          <Button variant="ghost" size="xs" leftIcon={<ArrowLeft className="h-3.5 w-3.5" />} onClick={() => router.back()}>
+            Back
+          </Button>
+          <span aria-hidden className="h-4 w-px bg-[#DCD8CE]" />
+          <span className="font-mono text-sm font-semibold text-[#0F5E63]">{task.task_number}</span>
+          <TaskStatusBadges status={task.display_status} storedStatus={task.status} isOverdue={task.is_overdue} />
+          <PriorityBadge priority={task.priority} />
+          <DelayBadge delay={task.delay_class} />
+          {task.template && (
+            <Link href={`/tasks/templates/${task.template.id}`}>
+              <Badge variant="outline" size="sm" className="gap-1 cursor-pointer">
+                <Repeat className="h-3 w-3" /> Recurring
+              </Badge>
+            </Link>
+          )}
+          {task.is_backlog && <Badge variant="outline" size="sm">Backlog entry (excluded from metrics)</Badge>}
+          {task.generated_late && <Badge variant="outline" size="sm">Generated late (excluded from metrics)</Badge>}
+          {task.no_update && <FlagChip>No update recently</FlagChip>}
+        </div>
+
+        <div className="grid grid-cols-1 gap-5 p-4 sm:p-5 lg:grid-cols-[1fr_auto]">
+          <div className="min-w-0 space-y-3">
+            <h2 className="font-serif text-2xl leading-tight text-[#14213D] break-words">{task.title}</h2>
+            <StatusTrack status={task.status} approvalRequired={task.approval_required} />
+            {chips}
+          </div>
+
+          {/* Due */}
+          <div className="flex items-stretch gap-3 lg:min-w-[260px]">
+            <div className="flex-1 rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] px-4 py-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[#4A5568]">Deadline</div>
+              <div className={`mt-0.5 text-lg font-semibold leading-tight ${dueTone}`}>{dueHeadline}</div>
+              {task.deadline && <DateTime value={task.deadline} className="text-xs text-[#4A5568]" />}
+              {deadlineMoved && (
+                <div className="mt-1 text-[11px] text-[#6B7280]">
+                  Originally <DateTime value={task.original_deadline} />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {(primary.length > 0 || secondary.length > 0) && (
+          <div className="hidden flex-wrap items-center gap-2 border-t border-[#ECE9E2] px-5 py-3 md:flex">
+            {primary.map((p, i) => (
+              <Button key={p.action} size="sm" variant={p.variant || (i === 0 ? 'primary' : 'secondary')} leftIcon={p.icon} onClick={() => setDialog(p.action)}>
+                {p.label}
+              </Button>
+            ))}
+            {secondary.length > 0 && <RowMenu label="More task actions" buttonLabel="More" items={secondary.map((s) => ({ key: s.action, label: s.label, icon: s.icon, danger: s.danger, onSelect: () => onSecondary(s.action) }))} />}
+          </div>
         )}
-        {task.is_backlog && <Badge variant="outline" size="sm">Backlog entry (excluded from metrics)</Badge>}
-        {task.generated_late && <Badge variant="outline" size="sm">Generated late (excluded from metrics)</Badge>}
-        {task.no_update && <FlagChip>No update recently</FlagChip>}
-      </div>
+      </Card>
 
       {conflict && <TaskConflictCallout onRefresh={load} />}
 
@@ -264,211 +703,7 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
         </InfoCallout>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-        <div className="xl:col-span-2 space-y-5">
-          {/* Header card */}
-          <Card className="p-4 sm:p-5 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:justify-between">
-              <div className="min-w-0 space-y-1">
-                <h2 className="font-serif text-xl text-[#14213D] break-words">{task.title}</h2>
-                <p className="text-sm text-[#4A5568]">
-                  {task.category_name}
-                  {links.length ? ` · ${links.map((l) => l.value).join(' · ')}` : ''}
-                </p>
-              </div>
-              <div className="sm:text-right shrink-0">
-                <div className="text-[11px] uppercase tracking-wide text-[#4A5568]">Deadline</div>
-                <DueText deadline={task.deadline} open={open} />
-                {deadlineMoved && (
-                  <div className="text-[11px] text-[#4A5568] mt-1">
-                    Original: <DateTime value={task.original_deadline} />
-                  </div>
-                )}
-              </div>
-            </div>
-            <ProgressBar value={task.progress_percent} />
-            {task.description && <p className="text-sm text-[#14213D] whitespace-pre-wrap break-words">{task.description}</p>}
-            {task.expected_outcome && (
-              <div className="rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] px-3 py-2">
-                <div className="text-[11px] uppercase tracking-wide text-[#4A5568]">Expected outcome</div>
-                <p className="text-sm text-[#14213D] whitespace-pre-wrap">{task.expected_outcome}</p>
-              </div>
-            )}
-            <dl className="grid grid-cols-2 md:grid-cols-4 gap-3 border-t border-[#ECE9E2] pt-4">
-              <Meta label="Assignee">
-                {task.assignee_name || '—'}
-                {task.assignee_active === false ? ' (inactive)' : ''}
-              </Meta>
-              <Meta label="Assigned by">{task.assigned_by_name || 'System'}</Meta>
-              <Meta label="Reporting manager (at assignment)">{task.reporting_manager_name || '—'}</Meta>
-              <Meta label="Department">{task.department_name || '—'}</Meta>
-              <Meta label="Start date">
-                <DateTime value={task.start_date} dateOnly />
-              </Meta>
-              <Meta label="Last update">
-                <DateTime value={task.last_update_at} />
-              </Meta>
-              {task.completed_at && (
-                <Meta label="Completed">
-                  <DateTime value={task.completed_at} />
-                </Meta>
-              )}
-              {task.approved_at && (
-                <Meta label="Approved">
-                  <DateTime value={task.approved_at} />
-                </Meta>
-              )}
-              <Meta label="Evidence required">{task.evidence_required ? 'Yes' : 'No'}</Meta>
-              <Meta label="Approval required">{task.approval_required ? 'Yes' : 'No'}</Meta>
-              {links.map((l) => (
-                <Meta key={l.label} label={l.label}>
-                  {l.href ? (
-                    <Link href={l.href} className="text-[#0F5E63] font-medium hover:underline">
-                      {l.value}
-                    </Link>
-                  ) : (
-                    l.value
-                  )}
-                </Meta>
-              ))}
-              {task.template && <Meta label="Series">{describeRecurrence(task.template.recurrence_type as any, (task.template as any).recurrence_rule) || task.template.title}</Meta>}
-              {(task.rework_count > 0 || task.reopen_count > 0 || task.extension_count > 0 || task.reassign_count > 0) && (
-                <Meta label="History">
-                  {[task.rework_count && `${task.rework_count} rework`, task.reopen_count && `${task.reopen_count} reopened`, task.extension_count && `${task.extension_count} extension(s)`, task.reassign_count && `${task.reassign_count} reassignment(s)`]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </Meta>
-              )}
-              {(task.delay_class === 'late_excused' || task.delay_class === 'late_unexcused' || task.delay_class === 'open_overdue') && (
-                <Meta label="Delay (days)">
-                  {task.unexcused_delay_days} unexcused · {task.excused_delay_days} excused
-                </Meta>
-              )}
-            </dl>
-            {task.completion_remarks && (
-              <div className="rounded-lg bg-[#E3EFEE]/50 border border-[#0F5E63]/20 px-3 py-2 text-sm">
-                <span className="font-semibold text-[#0F5E63]">Completion remarks: </span>
-                {task.completion_remarks}
-                {task.delay_reason && <span className="block text-[#9A3412] mt-1">Reason for delay: {task.delay_reason}</span>}
-              </div>
-            )}
-
-            {/* Actions */}
-            {(primary.length > 0 || secondary.length > 0) && (
-              <div className="hidden md:flex flex-wrap items-center gap-2 border-t border-[#ECE9E2] pt-4">
-                {primary.map((p, i) => (
-                  <Button key={p.action} size="sm" variant={p.variant || (i === 0 ? 'primary' : 'secondary')} leftIcon={p.icon} onClick={() => setDialog(p.action)}>
-                    {p.label}
-                  </Button>
-                ))}
-                {secondary.length > 0 && <RowMenu label="More task actions" buttonLabel="More" items={secondary.map((s) => ({ key: s.action, label: s.label, icon: s.icon, danger: s.danger, onSelect: () => onSecondary(s.action) }))} />}
-              </div>
-            )}
-          </Card>
-
-          {allowed.has('progress') && <ProgressBox task={task} isAssignee={isAssignee} onSaved={(d, m) => done(d, m)} onConflict={() => setConflict(true)} onError={(m) => push('error', m)} />}
-
-          <Card className="p-4 sm:p-5 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="font-serif text-lg text-[#14213D]">Files</h3>
-              {open && (isAssignee || task.viewer.kinds.includes('manager') || task.viewer.kinds.includes('assigner')) && (
-                <SupportingUpload taskId={task.id} purpose={isAssignee ? 'evidence' : 'supporting_doc'} onDone={(failures) => (failures.length ? push('error', failures.join(' ')) : (push('success', 'File attached.'), load()))} />
-              )}
-            </div>
-            <FileList files={task.attachments} onOpen={setViewer} onRemove={removeFile} canRemove={(f) => open && (f.uploaded_by === user?.id || (task.viewer.kinds.includes('manager') && !isAssignee))} />
-          </Card>
-
-          <Card className="p-4 sm:p-5 space-y-3">
-            <h3 className="font-serif text-lg text-[#14213D]">Activity</h3>
-            <ActivityTimeline updates={task.updates} />
-          </Card>
-        </div>
-
-        {/* Side panels */}
-        <div className="space-y-5">
-          <Card className="p-4 space-y-3">
-            <h3 className="font-serif text-base text-[#14213D]">Blockers</h3>
-            {task.blockers.length === 0 ? (
-              <p className="text-xs text-[#6B7280]">No blockers raised.</p>
-            ) : (
-              <ul className="space-y-3">
-                {task.blockers.map((b) => (
-                  <li key={b.id} className="rounded-lg border border-[#ECE9E2] p-3 space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-[#14213D]">{blockerTypeLabel(b.blocker_type)}</span>
-                      <BlockerBadge status={b.status} />
-                    </div>
-                    <p className="text-xs text-[#14213D]">{b.description}</p>
-                    <p className="text-[11px] text-[#4A5568]">
-                      {formatTaskDateTime(b.created_at)}
-                      {b.raised_after_deadline ? ' · after deadline' : ''}
-                      {b.excused_minutes ? ` · ${minutesToDays(b.excused_minutes)} day(s) excused` : ''}
-                    </p>
-                    {b.decision_comment && (
-                      <p className="text-[11px] text-[#4A5568]">
-                        {b.decided_by_name || 'System'}: “{b.decision_comment}”
-                      </p>
-                    )}
-                    {b.resolution_note && <p className="text-[11px] text-[#4A5568]">Resolved: “{b.resolution_note}”</p>}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-
-          {task.deadline_changes.length > 0 && (
-            <Card className="p-4 space-y-3">
-              <h3 className="font-serif text-base text-[#14213D]">Deadline changes</h3>
-              <ul className="space-y-2">
-                {task.deadline_changes.map((c) => (
-                  <li key={c.id} className="text-xs border-l-2 border-[#0F5E63] pl-2">
-                    <div className="font-semibold text-[#14213D]">{TASK_DEADLINE_SOURCE_LABELS[c.source as TaskDeadlineChangeSource] || c.source}</div>
-                    <div className="font-mono text-[11px] text-[#4A5568]">
-                      {formatTaskDateTime(c.old_deadline)} → {formatTaskDateTime(c.new_deadline)}
-                    </div>
-                    {c.excused_minutes > 0 && <div className="text-[#0F5E63]">{minutesToDays(c.excused_minutes)} day(s) excused</div>}
-                    {c.locked_unexcused_minutes > 0 && <div className="text-[#9A3412]">{minutesToDays(c.locked_unexcused_minutes)} day(s) already overdue — stays unexcused</div>}
-                    <div className="text-[#4A5568]">
-                      {c.changed_by_name || 'System'} · “{c.reason}”
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}
-
-          {task.assignment_history.length > 0 && (
-            <Card className="p-4 space-y-3">
-              <h3 className="font-serif text-base text-[#14213D]">Reassignments</h3>
-              <ul className="space-y-2">
-                {task.assignment_history.map((h) => (
-                  <li key={h.id} className="text-xs">
-                    <div className="font-semibold text-[#14213D]">
-                      {h.from_name || '—'} → {h.to_name || '—'}
-                    </div>
-                    <div className="text-[#4A5568]">
-                      {TASK_REASSIGN_REASON_LABELS[h.reason_type as TaskReassignReason] || h.reason_type}
-                      {h.was_overdue ? ' · was overdue' : ''} · {formatTaskDateTime(h.created_at)}
-                    </div>
-                    <div className="text-[#4A5568]">“{h.reason}”</div>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}
-
-          {task.escalations.length > 0 && (
-            <Card className="p-4 space-y-3">
-              <h3 className="font-serif text-base text-[#14213D]">Escalations</h3>
-              <ul className="space-y-3">
-                {task.escalations.map((e) => (
-                  <EscalationRow key={e.id} esc={e} mine={e.escalated_to === user?.id} onChanged={(d, m) => done(d, m)} onError={(m) => push('error', m)} />
-                ))}
-              </ul>
-            </Card>
-          )}
-        </div>
-      </div>
+      {fullSections}
 
       {/* Mobile sticky action bar */}
       {(primary.length > 0 || secondary.length > 0) && (
@@ -490,25 +725,47 @@ export const TaskDetailView: React.FC<{ taskId: string }> = ({ taskId }) => {
         </div>
       )}
 
-      <TaskActionDialog action={dialog} task={task} onClose={() => setDialog(null)} onDone={done} onConflict={() => setConflict(true)} />
-      <FileViewer file={viewer} onClose={() => setViewer(null)} />
-      {editOpen && <EditTaskModal task={task} onClose={() => setEditOpen(false)} onSaved={(d) => done(d, 'Task updated.')} onConflict={() => setConflict(true)} />}
-      <Modal isOpen={deleteOpen} onClose={() => setDeleteOpen(false)} title="Delete this task?" description="Only possible within a few minutes of creating it and before anyone worked on it. Otherwise cancel it with a reason." maxWidth="md">
-        <DialogActions sticky={false}>
-          <Button variant="ghost" onClick={() => setDeleteOpen(false)} disabled={busy}>
-            Keep it
-          </Button>
-          <Button variant="danger" isLoading={busy} onClick={doDelete}>
-            Delete permanently
-          </Button>
-        </DialogActions>
-      </Modal>
-      <Toaster />
+      {overlays}
     </div>
   );
 };
 
-// ------------------------------------------------------------------ progress box
+// ------------------------------------------------------------------ layout helpers
+const SectionTitle: React.FC<{ icon: React.ReactNode; count?: number; children: React.ReactNode }> = ({ icon, count, children }) => (
+  <h3 className="flex items-center gap-2 font-serif text-base font-semibold text-[#14213D]">
+    <span className="text-[#0F5E63]">{icon}</span>
+    {children}
+    {count !== undefined && count > 0 && <span className="rounded-full border border-[#DCD8CE] bg-[#FBFAF7] px-1.5 py-px font-mono text-[10px] font-semibold text-[#4A5568]">{count}</span>}
+  </h3>
+);
+
+const SideRow: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div className="flex items-start justify-between gap-3 py-2 first:pt-0 last:pb-0">
+    <dt className="shrink-0 pt-0.5 text-xs text-[#4A5568]">{label}</dt>
+    <dd className="min-w-0 text-right text-sm text-[#14213D] break-words [&_.font-mono]:text-[13px]">{children}</dd>
+  </div>
+);
+
+const initialsOf = (name?: string | null) =>
+  (name || '?')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]!.toUpperCase())
+    .join('');
+
+const Person: React.FC<{ name?: string | null; note?: string }> = ({ name, note }) =>
+  name ? (
+    <span className="inline-flex items-center gap-2">
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#E3EFEE] font-mono text-[10px] font-bold text-[#0F5E63]">{initialsOf(name)}</span>
+      <span className="font-medium">{name}</span>
+      {note && <span className="text-xs text-[#881337]">({note})</span>}
+    </span>
+  ) : (
+    <span className="text-[#6B7280]">—</span>
+  );
+
+// ------------------------------------------------------------------ update box
 const ProgressBox: React.FC<{
   task: TaskDetail;
   isAssignee: boolean;
@@ -517,19 +774,16 @@ const ProgressBox: React.FC<{
   onError: (m: string) => void;
 }> = ({ task, isAssignee, onSaved, onConflict, onError }) => {
   const [comment, setComment] = useState('');
-  const [progress, setProgress] = useState(task.progress_percent);
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const camRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  useEffect(() => setProgress(task.progress_percent), [task.progress_percent]);
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
-    const changed = isAssignee && progress !== task.progress_percent;
-    if (!comment.trim() && !changed && !files.length) {
-      setError('Add a comment, move the progress slider or attach a photo.');
+    if (!comment.trim() && !files.length) {
+      setError('Write an update or attach a photo / file.');
       return;
     }
     setBusy(true);
@@ -543,12 +797,11 @@ const ProgressBox: React.FC<{
       const d = await api.post<TaskDetail>(`/tasks/${task.id}/progress`, {
         version: fresh.version,
         comment: comment.trim() || undefined,
-        ...(changed ? { progress_percent: progress } : {}),
       });
       setComment('');
       setFiles([]);
       notifyTasksChanged();
-      onSaved(d, isAssignee ? 'Progress updated.' : 'Comment added.');
+      onSaved(d, isAssignee ? 'Update posted.' : 'Comment added.');
     } catch (err) {
       if (isConflict(err)) onConflict();
       const errs = fieldErrors(err);
@@ -561,16 +814,8 @@ const ProgressBox: React.FC<{
   return (
     <Card className="p-4 sm:p-5">
       <form onSubmit={save} className="space-y-3">
-        <h3 className="font-serif text-lg text-[#14213D]">{isAssignee ? 'Update progress' : 'Add a comment'}</h3>
+        <SectionTitle icon={<MessageSquare className="h-4 w-4" />}>{isAssignee ? 'Post an update' : 'Add a comment'}</SectionTitle>
         <Textarea label={isAssignee ? 'What happened since the last update?' : 'Comment to the assignee'} value={comment} onChange={(e) => setComment(e.target.value)} rows={3} maxLength={2000} placeholder={isAssignee ? 'e.g. Met the procurement officer; revised quote due Friday' : 'Your note is sent to the assignee'} />
-        {isAssignee && (
-          <div>
-            <label htmlFor="task-progress" className="block text-xs font-semibold text-[#14213D] mb-1.5">
-              Progress: <span className="font-mono">{progress}%</span>
-            </label>
-            <input id="task-progress" type="range" min={0} max={100} step={5} value={progress} onChange={(e) => setProgress(Number(e.target.value))} className="w-full accent-[#0F5E63] h-8" />
-          </div>
-        )}
         <div className="flex flex-wrap items-center gap-2">
           <input ref={fileRef} type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,image/*" className="hidden" onChange={(e) => e.target.files && setFiles([...files, ...Array.from(e.target.files)].slice(0, 5))} />
           <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => e.target.files && setFiles([...files, ...Array.from(e.target.files)].slice(0, 5))} />
@@ -766,6 +1011,7 @@ const EditTaskModal: React.FC<{ task: TaskDetail; onClose: () => void; onSaved: 
     <Modal isOpen onClose={onClose} title="Edit task" description="Deadline changes go through “Extend deadline” so they are recorded." maxWidth="2xl">
       <form onSubmit={save}>
         <FormSteps
+          maxSteps={1}
           onCancel={onClose}
           busy={busy}
           banner={(errors._ || errors.deadline || errors.version) && <InfoCallout variant="danger">{errors._ || errors.deadline || errors.version}</InfoCallout>}

@@ -6,7 +6,7 @@ import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { isClosedLeadStatus, type AuthUser, type Database, type PaginatedResult } from '@arihant/shared';
 import type { CreateOrganisationDto, UpdateOrganisationDto } from './organisations.dto.js';
-import { organisationScope } from './organisation-scope.js';
+import { organisationScope, assertOrganisationInScope } from './organisation-scope.js';
 import { resolveLocation } from './india-geo.js';
 import { cleanOrgText, isOrgDuplicateError, orgDuplicateConflict, sameOrgNameAndCity } from './organisation-dedupe.js';
 
@@ -151,7 +151,10 @@ export class OrganisationsService {
     return buildPaginatedResult(enrichedOrgs, total, page, limit);
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, user?: AuthUser) {
+    if (user) {
+      await assertOrganisationInScope(this.db, id, user);
+    }
     const org = await this.db
       .selectFrom('organisations')
       .leftJoin('zones', 'organisations.zone_id', 'zones.id')
@@ -198,8 +201,8 @@ export class OrganisationsService {
     };
   }
 
-  async getTimeline(orgId: string) {
-    const org = await this.findOne(orgId);
+  async getTimeline(orgId: string, user?: AuthUser) {
+    const org = await this.findOne(orgId, user);
 
     // 1. Fetch all interactions
     const interactions = await this.db
@@ -312,7 +315,7 @@ export class OrganisationsService {
     );
 
     // 8. Previous Meetings (Physical visits, demonstrations, in-person discussions).
-    // Completed field visits are logged by the visits module with type 'visit'.
+    // Completed field visits are logged by the visits module as 'physical_visit' (older rows: 'visit').
     const meetings = enrichedInteractions.filter((i) =>
       ['physical_visit', 'visit', 'demo', 'meeting'].includes((i.type || '').toLowerCase()),
     );
@@ -329,6 +332,33 @@ export class OrganisationsService {
       [...leads].sort((a, b) => new Date(b.updated_at as any).getTime() - new Date(a.updated_at as any).getTime()),
     );
     const currentSalesperson = ownerLead?.assignee_name || (org as any).created_by_name || 'Unassigned';
+    const currentOwnerId = ownerLead?.assigned_to || (ownerLead ? null : org.created_by) || null;
+
+    // Previous salespersons (§7): formal reassignments, plus everyone else who has owned one of this account's
+    // leads or logged an interaction with it — the current owner excluded.
+    const previousSalespersons: any[] = [...assignmentHistory];
+    const involved = new Map<string, { name: string | null; source: string; last_seen: any }>();
+    const noteInvolved = (userId: string | null | undefined, name: string | null | undefined, source: string, at: any) => {
+      if (!userId || userId === currentOwnerId) return;
+      const existing = involved.get(userId);
+      if (!existing) {
+        involved.set(userId, { name: name || null, source, last_seen: at });
+      } else if (at && (!existing.last_seen || new Date(at).getTime() > new Date(existing.last_seen).getTime())) {
+        existing.last_seen = at;
+      }
+    };
+    for (const l of leads) noteInvolved(l.assigned_to, l.assignee_name, 'lead', l.updated_at);
+    for (const i of interactions) noteInvolved(i.employee_id, i.employee_name, 'interaction', i.occurred_on);
+    const alreadyListed = new Set(assignmentHistory.map((h) => h.previous_salesperson_id).filter(Boolean));
+    for (const [userId, info] of involved) {
+      if (alreadyListed.has(userId)) continue;
+      previousSalespersons.push({
+        salesperson_id: userId,
+        salesperson_name: info.name,
+        source: info.source,
+        changed_at: info.last_seen,
+      });
+    }
 
     // 11. Follow-up history metrics
     const today = todayInKolkata();
@@ -360,7 +390,7 @@ export class OrganisationsService {
       previous_meetings: meetings,
       product_interests: allProductNames,
       current_salesperson: currentSalesperson,
-      previous_salespersons: assignmentHistory,
+      previous_salespersons: previousSalespersons,
       follow_up_history: followUpHistory,
       current_opportunity_status: activeOpportunities,
     };

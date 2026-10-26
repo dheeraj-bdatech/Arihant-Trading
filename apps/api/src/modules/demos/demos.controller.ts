@@ -110,8 +110,8 @@ export class DemosController {
 
   @Get('analytics')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
-  async getAnalytics() {
-    return this.demosService.getAnalytics();
+  async getAnalytics(@CurrentUser() user: AuthUser) {
+    return this.demosService.getAnalytics(user);
   }
 
   // =========================================================================
@@ -119,7 +119,7 @@ export class DemosController {
   // =========================================================================
 
   @Get()
-  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
   async findAllDemos(
     @Query('page') page?: number,
     @Query('limit') limit?: number,
@@ -159,15 +159,15 @@ export class DemosController {
   }
 
   @Get(':id')
-  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'admin')
-  async findOneDemo(@Param('id', DemoIdPipe) id: string) {
-    return this.demosService.findOneDemo(id);
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
+  async findOneDemo(@Param('id', DemoIdPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.demosService.findOneDemo(id, user);
   }
 
   @Get(':id/audit')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'admin')
-  async getAuditTrail(@Param('id', DemoIdPipe) id: string) {
-    return this.demosService.getAuditTrail(id);
+  async getAuditTrail(@Param('id', DemoIdPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.demosService.getAuditTrail(id, user);
   }
 
   @Post()
@@ -186,6 +186,13 @@ export class DemosController {
     return this.demosService.updateDemo(id, dto, user);
   }
 
+  /** §14: the coordinator has picked the request up (Requested → Under Planning). */
+  @Post(':id/start-planning')
+  @Roles('management', 'admin')
+  async startPlanning(@Param('id', DemoIdPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.demosService.startPlanning(id, user);
+  }
+
   @Post(':id/assign-team')
   @Roles('management', 'regional_manager', 'demo_team', 'admin')
   async assignTeam(
@@ -197,7 +204,7 @@ export class DemosController {
   }
 
   @Post(':id/confirm')
-  @Roles('management', 'regional_manager', 'demo_team', 'admin')
+  @Roles('demo_team', 'admin')
   async confirmDemo(
     @Param('id', DemoIdPipe) id: string,
     @Body() dto: ConfirmDemoDto,
@@ -226,8 +233,9 @@ export class DemosController {
     return this.demosService.cancelDemo(id, dto, user);
   }
 
+  // Sales may *request* a unit for their own demo (§16); the service records it as a pending request.
   @Post(':id/reserve')
-  @Roles('management', 'regional_manager', 'demo_team', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'demo_team', 'admin')
   async reserveEquipment(
     @Param('id', DemoIdPipe) id: string,
     @Body() dto: ReserveEquipmentDto,
@@ -237,7 +245,7 @@ export class DemosController {
   }
 
   @Post(':id/reserve-equipment')
-  @Roles('management', 'regional_manager', 'demo_team', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'demo_team', 'admin')
   async reserveEquipmentAlias(
     @Param('id', DemoIdPipe) id: string,
     @Body() dto: ReserveEquipmentDto,

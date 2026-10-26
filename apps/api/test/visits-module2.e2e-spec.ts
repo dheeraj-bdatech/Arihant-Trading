@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { istDay } from './helpers/ist-date';
+import { configureApp } from '../src/common/app-setup';
 
 describe('Module 2: Visit & Field Planning E2E Suite', () => {
   let app: INestApplication;
@@ -29,14 +30,7 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     // Clean up test data for deterministic test runs
@@ -625,7 +619,8 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         });
 
       expect(res.status).toBe(403);
-      expect(res.body.message).toContain('not authorized to modify');
+      // The visit is outside this user's scope, so the read check refuses it before the modify check runs.
+      expect(res.body.message).toMatch(/not authorized to (view|modify)/);
     });
 
     it('denies sales executive from viewing another employee private activity dossier (403 Forbidden)', async () => {

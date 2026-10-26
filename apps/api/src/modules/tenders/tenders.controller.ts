@@ -556,14 +556,14 @@ export class TendersController {
 
   @Get(':id/portal-issues')
   @Roles('management', 'regional_manager', 'tender_team', 'sales', 'admin')
-  async getPortalIssues(@Param('id') id: string) {
-    return this.tendersService.getPortalIssues(id);
+  async getPortalIssues(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getPortalIssues(id, user);
   }
 
   @Get(':id/issues')
   @Roles('management', 'regional_manager', 'tender_team', 'sales', 'admin')
-  async getPortalIssuesAlias(@Param('id') id: string) {
-    return this.tendersService.getPortalIssues(id);
+  async getPortalIssuesAlias(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getPortalIssues(id, user);
   }
 
   @Post(':id/portal-issues')
@@ -610,8 +610,8 @@ export class TendersController {
 
   @Get(':id/activities')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
-  async getActivities(@Param('id') id: string) {
-    return this.tendersService.getActivities(id);
+  async getActivities(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getActivities(id, user);
   }
 
   // =========================================================================
@@ -720,8 +720,8 @@ export class TendersController {
 
   @Get(':id/corrigenda')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
-  async getCorrigenda(@Param('id') id: string) {
-    return this.tendersService.getCorrigenda(id);
+  async getCorrigenda(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getCorrigenda(id, user);
   }
 
   @Post(':id/corrigenda')

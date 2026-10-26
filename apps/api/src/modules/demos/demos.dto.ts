@@ -328,8 +328,11 @@ export class SubmitDemoOutcomeDto {
   })
   result!: 'success' | 'fail' | 'partial';
 
-  @IsString()
+  // §17: one of the nine structured reasons, so failure patterns can be analysed.
   @IsOptional()
+  @IsIn(['PRODUCT_LIMITATION', 'EQUIPMENT_ISSUE', 'TECHNICAL_FAILURE', 'CUSTOMER_REQUIREMENT_MISMATCH', 'PRICING_CONCERN', 'DECISION_MAKER_UNAVAILABLE', 'COMPETITOR_PREFERENCE', 'DEMO_PREPARATION_ISSUE', 'OTHER'], {
+    message: 'Failure reason must be one of the structured demo failure reasons',
+  })
   failure_reason?: DemoFailureReason;
 
   @IsString()

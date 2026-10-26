@@ -1,8 +1,8 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module.js';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
+import { configureApp } from './common/app-setup.js';
 import { runAutoMigrations } from './common/database/auto-migrate.js';
 
 async function bootstrap() {
@@ -16,17 +16,7 @@ async function bootstrap() {
   // Automatically ensure database schema is up-to-date on deployment / startup
   await runAutoMigrations(configService, logger);
 
-  app.setGlobalPrefix('api');
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      transform: true,
-      whitelist: true,
-      forbidNonWhitelisted: false,
-    }),
-  );
-
-  app.useGlobalFilters(new HttpExceptionFilter());
+  configureApp(app);
 
   app.enableCors({
     origin: corsOrigins.includes(',') ? corsOrigins.split(',').map((o) => o.trim()) : corsOrigins,
@@ -40,4 +30,7 @@ async function bootstrap() {
   logger.log(`⚡ WebSocket gateway running on port ${port}`);
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  new Logger('ArihantBOS-API').error(`Startup failed: ${err?.message || err}`, err?.stack);
+  process.exit(1);
+});

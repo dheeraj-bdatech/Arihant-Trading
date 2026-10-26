@@ -7,6 +7,9 @@ import {
   IsEnum,
   IsNumber,
   IsArray,
+  IsObject,
+  ArrayMaxSize,
+  MinLength,
   Min,
   Max,
   Matches,
@@ -154,6 +157,20 @@ export class CreateTicketDto {
   region_id?: string;
 }
 
+/** §47: change the engineer on an open ticket without a status change. */
+export class AssignEngineerDto {
+  @Matches(UUID_REGEX, { message: 'assigned_to must be a valid UUID' })
+  assigned_to!: string;
+
+  @IsString()
+  @MinLength(5, { message: 'A reason (at least 5 characters) is required to reassign the engineer' })
+  reason!: string;
+
+  @IsNumber()
+  @IsOptional()
+  version?: number;
+}
+
 export class CloseTicketDto {
   @IsString()
   @IsOptional()
@@ -289,9 +306,12 @@ export class SubmitServiceReportDto {
   @IsOptional()
   report_url?: string;
 
+  /** Uploaded evidence (job sheet, photos): [{ name, url }], validated and normalised in the service. */
   @IsArray()
+  @ArrayMaxSize(10, { message: 'At most 10 attachments per service report' })
+  @IsObject({ each: true, message: 'Each attachment must be an object { name, url }' })
   @IsOptional()
-  attachments?: any[];
+  attachments?: { name: string; url: string }[];
 }
 
 export class CreateVisitDto {

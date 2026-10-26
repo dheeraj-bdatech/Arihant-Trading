@@ -1,12 +1,37 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { CalendarClock, ClipboardList, Package, Plus, Trash2, UserCheck } from 'lucide-react';
+import { CalendarClock, ClipboardList, Package, Paperclip, Plus, Trash2, UserCheck } from 'lucide-react';
 import { Modal, Button, Input, Select, Textarea, InfoCallout, FormSteps } from '@/components/ui';
 import { api } from '@/lib/api';
 import { errMsg, isConflict, todayLocal } from './serviceHelpers';
 
 const CONFIRMATION_TYPES = ['Signature', 'OTP', 'Email Confirmation', 'Photo of Signed Job Sheet'];
+const MAX_ATTACHMENTS = 10;
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+interface Attachment {
+  name: string;
+  url: string;
+}
+
+/** Signed direct upload through the shared uploads API (POST /uploads/sign → Cloudinary); returns the stored URL. */
+async function uploadReportFile(file: File): Promise<Attachment> {
+  const sig = await api.post<{ timestamp: number; signature: string; apiKey: string; cloudName: string; folder: string; allowedFormats: string }>('/uploads/sign', {
+    folder: 'service-reports',
+  });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('api_key', sig.apiKey);
+  form.append('timestamp', String(sig.timestamp));
+  form.append('signature', sig.signature);
+  form.append('folder', sig.folder);
+  form.append('allowed_formats', sig.allowedFormats); // signed by the API — must be sent exactly as returned
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(sig.cloudName)}/auto/upload`, { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.secure_url) throw new Error(data?.error?.message || 'Upload failed');
+  return { name: file.name, url: data.secure_url as string };
+}
 
 interface PartRow {
   name: string;
@@ -29,6 +54,7 @@ const blank = (ticket: any) => ({
   furtherDesc: '',
   nextVisit: '',
   reportUrl: '',
+  attachments: [] as Attachment[],
 });
 
 interface Props {
@@ -43,12 +69,16 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     setF(blank(ticket));
     setErrors({});
     setError(null);
     setBusy(false);
+    setUploading(false);
+    setUploadError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticket?.id]);
 
@@ -56,6 +86,28 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
   const status = String(ticket.status);
   const wrongStatus = !['in_progress', 'resolved'].includes(status);
   const set = (p: Partial<typeof f>) => setF((s) => ({ ...s, ...p }));
+
+  const addFiles = async (list: FileList | null) => {
+    const files = Array.from(list || []);
+    if (!files.length) return;
+    setUploadError(null);
+    const room = MAX_ATTACHMENTS - f.attachments.length;
+    if (files.length > room) return setUploadError(`A report can carry at most ${MAX_ATTACHMENTS} attachments.`);
+    const tooBig = files.find((file) => file.size > MAX_FILE_BYTES);
+    if (tooBig) return setUploadError(`${tooBig.name} is larger than 10 MB.`);
+    setUploading(true);
+    const failures: string[] = [];
+    for (const file of files) {
+      try {
+        const att = await uploadReportFile(file);
+        setF((s) => ({ ...s, attachments: [...s.attachments, att] }));
+      } catch (err) {
+        failures.push(`${file.name}: ${errMsg(err, 'upload failed')}`);
+      }
+    }
+    setUploading(false);
+    if (failures.length) setUploadError(`Could not upload ${failures.join('; ')}`);
+  };
 
   const validate = (): Record<string, string> => {
     const e: Record<string, string> = {};
@@ -87,6 +139,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
     if (wrongStatus) return setError('A report can only be filed while the ticket is in progress (or resolved). Start work first.');
+    if (uploading) return setError('Wait for the attachments to finish uploading.');
     const e = validate();
     setErrors(e);
     if (Object.keys(e).length) return setError('Please fix the highlighted fields.');
@@ -112,6 +165,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
         further_work_description: f.furtherWork ? f.furtherDesc.trim() : undefined,
         next_visit_date: f.furtherWork ? f.nextVisit : undefined,
         report_url: f.reportUrl.trim() || undefined,
+        attachments: f.attachments.length ? f.attachments : undefined,
       });
       await onDone();
       onClose();
@@ -153,7 +207,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
           }
           submit={
             // phones: same 40px height as the Back button beside it in the shared footer
-            <Button type="submit" size="sm" isLoading={busy} disabled={wrongStatus} className="h-10 sm:h-8">
+            <Button type="submit" size="sm" isLoading={busy} disabled={wrongStatus || uploading} className="h-10 sm:h-8">
               File service report
             </Button>
           }
@@ -270,6 +324,43 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
               description: 'Attach the signed report and flag any revisit that is still needed.',
               content: (
                 <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[#14213D]">Signed job sheet, photos &amp; documents</span>
+                      <label className={`inline-flex min-h-10 cursor-pointer items-center gap-1 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs font-semibold text-[#0F5E63] hover:bg-[#E3EFEE] sm:min-h-8 ${uploading || f.attachments.length >= MAX_ATTACHMENTS ? 'pointer-events-none opacity-50' : ''}`}>
+                        <Paperclip className="h-3.5 w-3.5" /> {uploading ? 'Uploading…' : 'Attach files'}
+                        <input
+                          type="file"
+                          multiple
+                          accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx"
+                          className="hidden"
+                          disabled={uploading || f.attachments.length >= MAX_ATTACHMENTS}
+                          onChange={(e) => {
+                            void addFiles(e.target.files);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
+                    {f.attachments.length === 0 ? (
+                      <p className="text-[11px] text-[#4A5568]">No files attached. PDF, Word, Excel or photos · up to 10 MB each, {MAX_ATTACHMENTS} files.</p>
+                    ) : (
+                      <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#DCD8CE]">
+                        {f.attachments.map((a, i) => (
+                          <li key={a.url} className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs">
+                            <a href={a.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-[#0F5E63] underline">
+                              {a.name}
+                            </a>
+                            <Button type="button" size="sm" variant="ghost" aria-label={`Remove ${a.name}`} className="h-10 w-10 shrink-0 px-0 sm:h-8 sm:w-8" onClick={() => set({ attachments: f.attachments.filter((_, j) => j !== i) })}>
+                              <Trash2 className="h-3.5 w-3.5 text-[#9A3412]" />
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {uploadError && <p className="text-xs font-medium text-[#881337]">{uploadError}</p>}
+                  </div>
+
                   <Input label="Signed report document URL (optional)" value={f.reportUrl} onChange={(e) => set({ reportUrl: e.target.value })} placeholder="https://…" />
 
                   <div className="space-y-2">

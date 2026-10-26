@@ -6,6 +6,18 @@ import { OutboxService, type DomainEventEnvelope } from '../../../common/outbox/
 import type { Database } from '@arihant/shared';
 import { PROPOSAL_DECISION_EVENTS } from '../../audit/audit-trail.listener.js';
 
+// §47: scheduler alerts are reminders, not changes — keep them out of the audit log so real status changes aren't buried.
+const ALERT_EVENTS = new Set([
+  'proposal.followup_due',
+  'proposal.followup_overdue',
+  'proposal.followup_escalated',
+  'proposal.stale',
+  'proposal.approval_pending',
+  'proposal.required_date_missed',
+  'proposal.required_date_approaching',
+  'proposal.suggest_closure',
+]);
+
 @Injectable()
 export class ProposalAuditLogConsumer {
   private readonly logger = new Logger(ProposalAuditLogConsumer.name);
@@ -18,6 +30,8 @@ export class ProposalAuditLogConsumer {
 
   @OnEvent('proposal.*')
   async handleProposalEvent(envelope: DomainEventEnvelope) {
+    // Only outbox envelopes are processed; a raw payload on proposal.* (wildcard) must not crash or poison processed_events.
+    if (!envelope?.eventId || !envelope?.eventType) return;
     const { eventId, eventType, aggregateId, actorId, payload } = envelope;
 
     // Idempotency check (E51)
@@ -32,6 +46,7 @@ export class ProposalAuditLogConsumer {
     // The audit trail is append-only and idempotent per event, so ordering is carried by created_at instead.
     // Decision events (approved, sent, converted, lost…) are written by AuditTrailListener under readable codes.
     if (PROPOSAL_DECISION_EVENTS.has(eventType)) return;
+    if (ALERT_EVENTS.has(eventType)) return;
 
     try {
       // Determine action name from eventType e.g. "proposal.requested" -> "create"

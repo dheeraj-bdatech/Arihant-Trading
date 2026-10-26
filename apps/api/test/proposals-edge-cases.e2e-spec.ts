@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { Kysely, sql } from 'kysely';
@@ -7,6 +7,7 @@ import type { Database } from '@arihant/shared';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { OutboxService } from '../src/common/outbox/outbox.service';
 import { ProposalsSchedulerService } from '../src/modules/proposals/proposals-scheduler.service';
+import { configureApp } from '../src/common/app-setup';
 
 jest.setTimeout(90000);
 
@@ -49,14 +50,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     db = app.get<Kysely<Database>>(KYSELY_DB);

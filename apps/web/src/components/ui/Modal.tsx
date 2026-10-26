@@ -1,6 +1,6 @@
-import React, { createContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useEffect, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { IconButton } from './Button';
 
@@ -24,11 +24,17 @@ export const ModalSlotContext = createContext<{ header: HTMLElement | null }>({ 
 // Global modal stack tracking for z-index layering, body scroll lock, and ESC key routing
 interface StackEntry {
   id: string;
+  title: string;
   onClose: () => void;
   zIndex: number;
 }
 const activeModalStack: StackEntry[] = [];
 let nextModalId = 0;
+
+// Only the newest dialog is shown; the ones under it stay mounted (their input is kept) but hidden, so a flow like
+// lead → new task → new demo is one popup at a time. Open dialogs re-render when the stack changes.
+const stackListeners = new Set<() => void>();
+const notifyStack = () => stackListeners.forEach((l) => l());
 
 function updateBodyOverflow() {
   if (typeof document === 'undefined') return;
@@ -51,6 +57,7 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const modalIdRef = useRef<string | null>(null);
   const [headerSlot, setHeaderSlot] = useState<HTMLDivElement | null>(null);
+  const [, onStackChange] = useReducer((n: number) => n + 1, 0);
 
   if (!modalIdRef.current) {
     modalIdRef.current = `modal_${++nextModalId}`;
@@ -68,11 +75,14 @@ export const Modal: React.FC<ModalProps> = ({
     const baseZ = zIndex ?? (50 + activeModalStack.length * 10);
     const entry: StackEntry = {
       id: modalId,
+      title,
       onClose: () => onCloseRef.current(),
       zIndex: baseZ,
     };
     activeModalStack.push(entry);
     updateBodyOverflow();
+    stackListeners.add(onStackChange);
+    notifyStack();
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // An open dropdown / menu inside the dialog already consumed this Escape (it calls preventDefault):
@@ -95,13 +105,21 @@ export const Modal: React.FC<ModalProps> = ({
         activeModalStack.splice(idx, 1);
       }
       updateBodyOverflow();
+      stackListeners.delete(onStackChange);
+      notifyStack();
     };
+    // `title` is read once for the stack entry; a dialog's title doesn't change while it is open
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, modalId, zIndex]);
 
   if (!isOpen) return null;
 
   const currentEntry = activeModalStack.find((m) => m.id === modalId);
   const resolvedZIndex = zIndex ?? currentEntry?.zIndex ?? (50 + activeModalStack.length * 10);
+  const stackIndex = activeModalStack.findIndex((m) => m.id === modalId);
+  // Not registered yet (first render) counts as the top
+  const covered = stackIndex !== -1 && stackIndex < activeModalStack.length - 1;
+  const parent = stackIndex > 0 ? activeModalStack[stackIndex - 1] : null;
 
   const maxWidths = {
     sm: 'sm:max-w-sm',
@@ -118,8 +136,14 @@ export const Modal: React.FC<ModalProps> = ({
     <div
       // Phones: a bottom sheet (full width, docked to the bottom edge, thumb-reachable actions).
       // From `sm` up: the centred dialog.
-      className={twMerge('fixed inset-0 flex items-end justify-center sm:items-center sm:p-4', className)}
+      className={twMerge(
+        'fixed inset-0 flex items-end justify-center sm:items-center sm:p-4',
+        // covered by a newer dialog: kept mounted, but out of sight and out of the tab order
+        covered && 'invisible pointer-events-none [&_*]:!transition-none',
+        className,
+      )}
       style={{ zIndex: resolvedZIndex }}
+      aria-hidden={covered || undefined}
     >
       {/* Translucent overlay */}
       <div
@@ -146,6 +170,16 @@ export const Modal: React.FC<ModalProps> = ({
           </div>
           <div className="flex items-start justify-between gap-3 px-4 pb-3 pt-1.5 sm:px-5 sm:pb-3.5 sm:pt-4">
             <div className="min-w-0 border-l-[3px] border-[#0F5E63] pl-3">
+              {parent && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="mb-1 flex max-w-full items-center gap-1 text-[11px] font-semibold text-[#0F5E63] hover:text-[#0B4A4E]"
+                >
+                  <ArrowLeft className="h-3 w-3 shrink-0" />
+                  <span className="truncate">Back to {parent.title}</span>
+                </button>
+              )}
               <h3 className="line-clamp-2 font-serif text-[16px] font-semibold leading-snug tracking-tight text-[#14213D] [overflow-wrap:anywhere] sm:line-clamp-none sm:text-[18px]">
                 {title}
               </h3>

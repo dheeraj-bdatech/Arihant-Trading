@@ -83,6 +83,30 @@ function rmTenderScope(user: AuthUser) {
   return sql<boolean>`(${zone} or tenders.assigned_to in ${team} or tenders.owner in ${team} or tenders.tender_owner_id in ${team})`;
 }
 
+/**
+ * Report scope (B4): a regional manager sees the bids their tender list shows; a salesperson only their own bids
+ * (same rule as the list); management / admin / tender team see everything.
+ */
+function tenderReportScope(user: AuthUser) {
+  if (user.role === 'regional_manager') return rmTenderScope(user);
+  if (user.role === 'sales') {
+    return sql<boolean>`(tenders.assigned_to = ${user.id} or tenders.owner = ${user.id} or tenders.tender_owner_id = ${user.id} or tenders.created_by = ${user.id})`;
+  }
+  return sql<boolean>`true`;
+}
+
+/** §27 report definitions — one source for the dashboard and every pipeline report. */
+const TENDER_TERMINAL_STATUSES = ['won', 'partially_won', 'lost', 'cancelled', 'rejected_internally', 'pq_not_qualified', 'technically_disqualified', 'not_submitted'];
+const TENDER_SUBMITTED_STATUSES = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'reverse_auction', 'won', 'partially_won', 'lost'];
+const TENDER_WORKED_UPON_STATUSES = ['under_preparation', ...TENDER_SUBMITTED_STATUSES];
+/** Pre-submission stages: the only ones whose submission deadline can still be missed (B2/B3). */
+const TENDER_PRE_SUBMISSION_STATUSES = ['identified', 'awaiting_approval', 'under_preparation', 'pq_qualified'];
+const sqlList = (values: string[]) => sql.raw(`(${values.map((v) => `'${v}'`).join(', ')})`);
+const TERMINAL_SQL = sqlList(TENDER_TERMINAL_STATUSES);
+const SUBMITTED_SQL = sqlList(TENDER_SUBMITTED_STATUSES);
+const WORKED_UPON_SQL = sqlList(TENDER_WORKED_UPON_STATUSES);
+const PRE_SUBMISSION_SQL = sqlList(TENDER_PRE_SUBMISSION_STATUSES);
+
 /** Stages that need the bids opened, so a submitted bid can only reach them after its closing time. */
 const BID_OPENING_TARGETS: StandardTenderStatus[] = [
   'TECHNICAL_EVALUATION',
@@ -677,7 +701,7 @@ export class TendersService {
       );
     }
 
-    // Deadlines filtering
+    // Deadlines filtering — pre-submission bids only (a submitted bid has no open submission deadline)
     if (query.deadline) {
       const now = new Date();
       if (query.deadline === 'due_today') {
@@ -686,24 +710,24 @@ export class TendersService {
         const startOfDay = istDateTime(istToday, '00:00:00').toISOString();
         const endOfDay = istEndOfDay(istToday).toISOString();
         baseQuery = baseQuery
-          .where('tenders.status', 'not in', ['won', 'lost', 'cancelled'])
+          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
           .where('tenders.submission_deadline', '>=', startOfDay)
           .where('tenders.submission_deadline', '<=', endOfDay);
       } else if (query.deadline === 'urgent_48h') {
         const urgent48 = new Date(now.getTime() + TENDER_URGENT_HOURS * 3600 * 1000).toISOString();
         baseQuery = baseQuery
-          .where('tenders.status', 'not in', ['won', 'lost', 'cancelled'])
+          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
           .where('tenders.submission_deadline', '>=', now.toISOString())
           .where('tenders.submission_deadline', '<=', urgent48);
       } else if (query.deadline === 'upcoming_7d') {
         const upcoming7d = new Date(now.getTime() + TENDER_UPCOMING_DAYS * 24 * 3600 * 1000).toISOString();
         baseQuery = baseQuery
-          .where('tenders.status', 'not in', ['won', 'lost', 'cancelled'])
+          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
           .where('tenders.submission_deadline', '>=', now.toISOString())
           .where('tenders.submission_deadline', '<=', upcoming7d);
       } else if (query.deadline === 'overdue') {
         baseQuery = baseQuery
-          .where('tenders.status', 'not in', ['won', 'lost', 'cancelled'])
+          .where('tenders.status', 'in', TENDER_PRE_SUBMISSION_STATUSES as any)
           .where('tenders.submission_deadline', '<', now.toISOString());
       }
     }
@@ -1583,7 +1607,7 @@ export class TendersService {
   }
 
   async update(id: string, dto: UpdateTenderDto, user: AuthUser) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     // Optimistic locking check
@@ -1684,7 +1708,7 @@ export class TendersService {
   }
 
   async softDelete(id: string, user: AuthUser) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
     await this.db
       .updateTable('tenders')
@@ -1737,7 +1761,7 @@ export class TendersService {
       throw new BadRequestException('Target status (to_status) is required');
     }
     const targetStatus = this.workflowService.normalizeStatus(rawTarget);
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
     const currentStatus = this.workflowService.normalizeStatus(existing.status);
 
@@ -2052,7 +2076,7 @@ export class TendersService {
    * "ON HOLD is a flag, not a status. While on hold, every transition is blocked except CANCELLED."
    */
   async holdTender(id: string, dto: HoldTenderDto, user: AuthUser) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
@@ -2116,7 +2140,7 @@ export class TendersService {
    * Resume Tender: restores stage from status_before_hold, clears on_hold flag.
    */
   async resumeTender(id: string, dto: ResumeTenderDto, user: AuthUser) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
@@ -2174,7 +2198,7 @@ export class TendersService {
    * Rule: "Submit for approval requires assigned_to to be set."
    */
   async requestApproval(id: string, remarks: string | undefined, user: AuthUser, expected_version?: number) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
 
     if (!existing.assigned_to) {
       throw new BadRequestException('Approval requested with no assignee is blocked. Please assign a salesperson first.');
@@ -2202,7 +2226,7 @@ export class TendersService {
       );
     }
 
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     const normStatus = this.workflowService.normalizeStatus(existing.status);
 
     if (normStatus !== 'AWAITING_INTERNAL_APPROVAL' && normStatus !== 'IDENTIFIED') {
@@ -2264,7 +2288,7 @@ export class TendersService {
       inTransaction?: (trx: Kysely<Database>, change: { oldDeadline: Date; newDeadline: Date }) => Promise<void>;
     },
   ) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
@@ -2358,7 +2382,7 @@ export class TendersService {
    * Section 5: Record Result Form (WON / LOST) with Snapshot
    */
   async recordResult(id: string, dto: RecordTenderResultDto, user: AuthUser) {
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
     if (user.role === 'regional_manager') await this.assertTenderVisible(user, existing);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
@@ -2682,7 +2706,7 @@ export class TendersService {
       throw new BadRequestException('A reason is mandatory when reopening a closed tender');
     }
 
-    const existing = await this.findOne(id);
+    const existing = await this.findOne(id, user);
 
     if (dto.expected_version !== undefined && existing.version !== dto.expected_version) {
       throw new ConflictException('This tender was updated by someone else – refresh');
@@ -2811,8 +2835,8 @@ export class TendersService {
     return q.orderBy('tender_portal_issues.created_at', 'desc').execute();
   }
 
-  async getPortalIssues(tenderId: string) {
-    await this.findOne(tenderId);
+  async getPortalIssues(tenderId: string, user?: AuthUser) {
+    await this.findOne(tenderId, user);
     return this.db
       .selectFrom('tender_portal_issues')
       .leftJoin('users as rep', 'tender_portal_issues.reported_by', 'rep.id')
@@ -2898,7 +2922,7 @@ export class TendersService {
       throw new NotFoundException(`Portal issue with ID "${issueId}" not found for this tender`);
     }
 
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     // Statuses are stored upper-case (OPEN / IN_PROGRESS / ESCALATED / RESOLVED) whatever the client sends.
@@ -2961,8 +2985,8 @@ export class TendersService {
     return updated;
   }
 
-  async getActivities(tenderId: string) {
-    await this.findOne(tenderId);
+  async getActivities(tenderId: string, user?: AuthUser) {
+    await this.findOne(tenderId, user);
     return this.db
       .selectFrom('tender_activities')
       .leftJoin('users', 'tender_activities.performed_by', 'users.id')
@@ -3231,19 +3255,19 @@ export class TendersService {
         sql<number>`count(case when tenders.status in ('submitted') then 1 end)::int`.as('submitted'),
         sql<number>`count(case when tenders.status in ('won', 'lost', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('result_tracking'),
         sql<number>`count(case when tenders.category::text ilike 'pq%' then 1 end)::int`.as('pq_tenders'),
-        sql<number>`count(case when tenders.category::text ilike 'general%' then 1 end)::int`.as('general_mha_tenders'),
-        sql<number>`count(case when tenders.category::text not ilike 'pq%' and tenders.category::text not ilike 'general%' then 1 end)::int`.as('other_tenders'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('worked_upon'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('tenders_submitted'),
+        sql<number>`count(case when tenders.category::text = 'general_mha' then 1 end)::int`.as('general_mha_tenders'),
+        sql<number>`count(case when tenders.category::text not ilike 'pq%' and tenders.category::text <> 'general_mha' then 1 end)::int`.as('other_tenders'),
+        sql<number>`count(case when tenders.status in ${WORKED_UPON_SQL} then 1 end)::int`.as('worked_upon'),
+        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('tenders_submitted'),
         sql<number>`count(case when tenders.status in ('won') then 1 end)::int`.as('tenders_won'),
         sql<number>`count(case when tenders.status in ('lost') then 1 end)::int`.as('tenders_lost'),
-        sql<number>`count(case when tenders.status not in ('won', 'lost', 'cancelled') then 1 end)::int`.as('pending_tenders'),
+        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending_tenders'),
         sql<number>`count(case when tenders.on_hold = true then 1 end)::int`.as('on_hold_tenders'),
         sql<number>`count(case when tenders.status in ('under_preparation') then 1 end)::int`.as('incomplete_preparation'),
         sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('result_followups'),
-        sql<number>`count(case when tenders.status not in ('won', 'lost', 'cancelled') and tenders.submission_deadline is not null and tenders.submission_deadline >= NOW() and tenders.submission_deadline <= NOW() + make_interval(hours => 24) then 1 end)::int`.as('urgent_deadlines'),
-        sql<number>`count(case when tenders.status not in ('won', 'lost', 'cancelled') and tenders.submission_deadline is not null and tenders.submission_deadline < NOW() then 1 end)::int`.as('overdue_tenders'),
-        sql<number>`count(case when tenders.status not in ('won', 'lost', 'cancelled') and tenders.submission_deadline is not null and tenders.submission_deadline >= NOW() and tenders.submission_deadline <= NOW() + make_interval(days => 7) then 1 end)::int`.as('upcoming_deadlines'),
+        sql<number>`count(case when tenders.status in ${PRE_SUBMISSION_SQL} and tenders.submission_deadline is not null and tenders.submission_deadline >= NOW() and tenders.submission_deadline <= NOW() + make_interval(hours => 24) then 1 end)::int`.as('urgent_deadlines'),
+        sql<number>`count(case when tenders.status in ${PRE_SUBMISSION_SQL} and tenders.submission_deadline is not null and tenders.submission_deadline < NOW() then 1 end)::int`.as('overdue_tenders'),
+        sql<number>`count(case when tenders.status in ${PRE_SUBMISSION_SQL} and tenders.submission_deadline is not null and tenders.submission_deadline >= NOW() and tenders.submission_deadline <= NOW() + make_interval(days => 7) then 1 end)::int`.as('upcoming_deadlines'),
       ])
       .executeTakeFirst();
 
@@ -3300,7 +3324,8 @@ export class TendersService {
       under_preparation: metrics?.under_preparation || 0,
       stage_4_prep: metrics?.under_preparation || 0,
       submitted: metrics?.submitted || 0,
-      tenders_submitted: metrics?.submitted || 0,
+      // §27: submitted = every bid that went in (PQ submitted … result), not just the 'submitted' stage
+      tenders_submitted: metrics?.tenders_submitted || 0,
       stage_5_submitted: metrics?.submitted || 0,
       result_tracking: metrics?.result_tracking || 0,
       stage_6_results: metrics?.result_tracking || 0,
@@ -3357,10 +3382,19 @@ export class TendersService {
       organisation?: string;
     },
   ) {
-    // Fetch all non-deleted tenders with joined results snapshot
+    // Fetch all non-deleted tenders with the LATEST results snapshot per tender (B5: a re-recorded result must not
+    // duplicate the tender row and double-count it).
+    const latestResults = this.db
+      .selectFrom('tender_results')
+      .selectAll()
+      .distinctOn('tender_results.tender_id')
+      .orderBy('tender_results.tender_id')
+      .orderBy(sql`coalesce(tender_results.recorded_at, tender_results.created_at)`, 'desc')
+      .as('tender_results');
     let query = this.db
       .selectFrom('tenders')
-      .leftJoin('tender_results', 'tenders.id', 'tender_results.tender_id')
+      .leftJoin(latestResults, 'tenders.id', 'tender_results.tender_id')
+      .leftJoin('tender_categories', 'tenders.category_id', 'tender_categories.id')
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
       .leftJoin('zones as live_zone', 'tenders.zone_id', 'live_zone.id')
       .leftJoin('regions as live_region', 'tenders.region_id', 'live_region.id')
@@ -3375,6 +3409,7 @@ export class TendersService {
         'tenders.category',
         'tenders.organisation',
         'tenders.tender_value',
+        'tender_categories.name as category_name',
         'tender_results.outcome as result_outcome',
         'tender_results.value as result_value',
         // Group fields
@@ -3383,7 +3418,8 @@ export class TendersService {
         sql<string>`case when tenders.status in ('won', 'lost') then coalesce(snap_user.full_name, 'Unmapped') else coalesce(live_user.full_name, 'Unmapped') end`.as('group_salesperson'),
         sql<string>`coalesce(tenders.organisation, organisations.name, 'Unmapped')`.as('group_organisation'),
       ])
-      .where('tenders.is_deleted', '=', false);
+      .where('tenders.is_deleted', '=', false)
+      .where(tenderReportScope(user));
 
     const dateCol = filters?.date_field === 'submission_deadline' ? 'tenders.submission_deadline' : 'tenders.publication_date';
     if (filters?.start_date) {
@@ -3406,25 +3442,6 @@ export class TendersService {
     }
 
     const tenders = await query.execute();
-
-    // Fetch submission & preparation history for each tender to calculate worked upon and submitted
-    const historyRows = await this.db
-      .selectFrom('tender_status_history')
-      .select(['tender_id', 'to_status'])
-      .execute();
-
-    const everWorkedUpon = new Set<string>();
-    const everSubmitted = new Set<string>();
-
-    for (const h of historyRows) {
-      const s = (h.to_status || '').toLowerCase();
-      if (['under_preparation', 'pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(s)) {
-        everWorkedUpon.add(h.tender_id);
-      }
-      if (['pq_submitted', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'].includes(s)) {
-        everSubmitted.add(h.tender_id);
-      }
-    }
 
     // Grouping dictionary
     const groups: Record<string, any> = {};
@@ -3453,21 +3470,28 @@ export class TendersService {
           pending: 0,
           on_hold: 0,
           won_value: 0,
+          categories: {} as Record<string, number>,
         };
       }
 
       const g = groups[key];
       g.total_identified += 1;
 
-      const isPq = (t.category || '').toLowerCase().startsWith('pq');
-      if (isPq) g.pq_count += 1;
-      else g.general_mha_count += 1;
+      // §20: PQ and General/MHA are their own categories (not "everything non-PQ"); configured categories are
+      // broken down by name as well.
+      const category = (t.category || '').toLowerCase();
+      if (category.startsWith('pq')) g.pq_count += 1;
+      else if (category === 'general_mha') g.general_mha_count += 1;
+      const categoryName = t.category_name || t.category || 'Uncategorised';
+      g.categories[categoryName] = (g.categories[categoryName] || 0) + 1;
 
-      if (everWorkedUpon.has(t.id)) g.worked_upon += 1;
-      if (everSubmitted.has(t.id)) g.submitted += 1;
-
+      // §27 definitions
       const status = (t.status || '').toLowerCase();
-      if (status === 'won') {
+      if (TENDER_WORKED_UPON_STATUSES.includes(status)) g.worked_upon += 1;
+      if (TENDER_SUBMITTED_STATUSES.includes(status)) g.submitted += 1;
+      if (!TENDER_TERMINAL_STATUSES.includes(status)) g.pending += 1;
+
+      if (status === 'won' || status === 'partially_won') {
         g.won += 1;
         g.won_value += Number(t.result_value || t.tender_value || 0);
       } else if (status === 'lost') {
@@ -3476,8 +3500,6 @@ export class TendersService {
         g.cancelled += 1;
       } else if (status === 'rejected_internally') {
         g.rejected_internally += 1;
-      } else {
-        g.pending += 1;
       }
 
       if (t.on_hold) g.on_hold += 1;
@@ -3691,10 +3713,14 @@ export class TendersService {
   }
 
   async getZoneReport(user: AuthUser) {
-    return this.db
+    const scoped = !['management', 'admin', 'tender_team'].includes(user.role);
+    let query = this.db
       .selectFrom('zones')
       .leftJoin('tenders', (join) =>
-        join.onRef('zones.id', '=', 'tenders.zone_id').on('tenders.is_deleted', '=', false),
+        join
+          .onRef('zones.id', '=', 'tenders.zone_id')
+          .on('tenders.is_deleted', '=', false)
+          .on(tenderReportScope(user)),
       )
       .select([
         'zones.id as zone_id',
@@ -3702,27 +3728,34 @@ export class TendersService {
         sql<number>`count(tenders.id)::int`.as('total'),
         sql<number>`count(tenders.id)::int`.as('total_tenders'),
         sql<number>`count(case when tenders.category::text ilike 'pq%' then 1 end)::int`.as('pq_count'),
-        sql<number>`count(case when tenders.category::text ilike 'general%' then 1 end)::int`.as('general_mha_count'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then 1 end)::int`.as('pending'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then 1 end)::int`.as('pending_tenders'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('submitted'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('submitted_tenders'),
+        sql<number>`count(case when tenders.category::text = 'general_mha' then 1 end)::int`.as('general_mha_count'),
+        sql<number>`count(case when tenders.status in ${WORKED_UPON_SQL} then 1 end)::int`.as('worked_upon'),
+        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending'),
+        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending_tenders'),
+        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('submitted'),
+        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('submitted_tenders'),
         sql<number>`count(case when tenders.status = 'won' then 1 end)::int`.as('won'),
         sql<number>`count(case when tenders.status = 'won' then 1 end)::int`.as('won_tenders'),
         sql<number>`count(case when tenders.status = 'lost' then 1 end)::int`.as('lost'),
         sql<number>`count(case when tenders.status = 'lost' then 1 end)::int`.as('lost_tenders'),
       ])
       .groupBy(['zones.id', 'zones.name'])
-      .orderBy('zones.name', 'asc')
-      .execute();
+      .orderBy('zones.name', 'asc');
+    // B4: a scoped user only sees the zones their own bids sit in
+    if (scoped) query = query.having(sql`count(tenders.id)`, '>', 0);
+    return query.execute();
   }
 
   async getRegionReport(user: AuthUser) {
-    return this.db
+    const scoped = !['management', 'admin', 'tender_team'].includes(user.role);
+    let query = this.db
       .selectFrom('regions')
       .leftJoin('zones', 'regions.zone_id', 'zones.id')
       .leftJoin('tenders', (join) =>
-        join.onRef('regions.id', '=', 'tenders.region_id').on('tenders.is_deleted', '=', false),
+        join
+          .onRef('regions.id', '=', 'tenders.region_id')
+          .on('tenders.is_deleted', '=', false)
+          .on(tenderReportScope(user)),
       )
       .select([
         'regions.id as region_id',
@@ -3731,19 +3764,21 @@ export class TendersService {
         sql<number>`count(tenders.id)::int`.as('total'),
         sql<number>`count(tenders.id)::int`.as('total_tenders'),
         sql<number>`count(case when tenders.category::text ilike 'pq%' then 1 end)::int`.as('pq_count'),
-        sql<number>`count(case when tenders.category::text ilike 'general%' then 1 end)::int`.as('general_mha_count'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then 1 end)::int`.as('pending'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then 1 end)::int`.as('pending_tenders'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('submitted'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('submitted_tenders'),
+        sql<number>`count(case when tenders.category::text = 'general_mha' then 1 end)::int`.as('general_mha_count'),
+        sql<number>`count(case when tenders.status in ${WORKED_UPON_SQL} then 1 end)::int`.as('worked_upon'),
+        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending'),
+        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending_tenders'),
+        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('submitted'),
+        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('submitted_tenders'),
         sql<number>`count(case when tenders.status = 'won' then 1 end)::int`.as('won'),
         sql<number>`count(case when tenders.status = 'won' then 1 end)::int`.as('won_tenders'),
         sql<number>`count(case when tenders.status = 'lost' then 1 end)::int`.as('lost'),
         sql<number>`count(case when tenders.status = 'lost' then 1 end)::int`.as('lost_tenders'),
       ])
       .groupBy(['regions.id', 'regions.name', 'zones.name'])
-      .orderBy('regions.name', 'asc')
-      .execute();
+      .orderBy('regions.name', 'asc');
+    if (scoped) query = query.having(sql`count(tenders.id)`, '>', 0);
+    return query.execute();
   }
 
   async getSalespersonReport(user: AuthUser) {
@@ -3757,7 +3792,8 @@ export class TendersService {
               eb('users.id', '=', eb.ref('tenders.tender_owner_id')),
             ]),
           )
-          .on('tenders.is_deleted', '=', false),
+          .on('tenders.is_deleted', '=', false)
+          .on(tenderReportScope(user)),
       )
       .select([
         'users.id as user_id',
@@ -3766,11 +3802,12 @@ export class TendersService {
         sql<number>`count(distinct tenders.id)::int`.as('total'),
         sql<number>`count(distinct tenders.id)::int`.as('total_tenders'),
         sql<number>`count(distinct case when tenders.category::text ilike 'pq%' then tenders.id end)::int`.as('pq_count'),
-        sql<number>`count(distinct case when tenders.category::text ilike 'general%' then tenders.id end)::int`.as('general_mha_count'),
-        sql<number>`count(distinct case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then tenders.id end)::int`.as('pending'),
-        sql<number>`count(distinct case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then tenders.id end)::int`.as('pending_tenders'),
-        sql<number>`count(distinct case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then tenders.id end)::int`.as('submitted'),
-        sql<number>`count(distinct case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then tenders.id end)::int`.as('submitted_tenders'),
+        sql<number>`count(distinct case when tenders.category::text = 'general_mha' then tenders.id end)::int`.as('general_mha_count'),
+        sql<number>`count(distinct case when tenders.status in ${WORKED_UPON_SQL} then tenders.id end)::int`.as('worked_upon'),
+        sql<number>`count(distinct case when tenders.status not in ${TERMINAL_SQL} then tenders.id end)::int`.as('pending'),
+        sql<number>`count(distinct case when tenders.status not in ${TERMINAL_SQL} then tenders.id end)::int`.as('pending_tenders'),
+        sql<number>`count(distinct case when tenders.status in ${SUBMITTED_SQL} then tenders.id end)::int`.as('submitted'),
+        sql<number>`count(distinct case when tenders.status in ${SUBMITTED_SQL} then tenders.id end)::int`.as('submitted_tenders'),
         sql<number>`count(distinct case when tenders.status = 'won' then tenders.id end)::int`.as('won'),
         sql<number>`count(distinct case when tenders.status = 'won' then tenders.id end)::int`.as('won_tenders'),
         sql<number>`count(distinct case when tenders.status = 'lost' then tenders.id end)::int`.as('lost'),
@@ -3796,11 +3833,12 @@ export class TendersService {
         sql<number>`count(tenders.id)::int`.as('total'),
         sql<number>`count(tenders.id)::int`.as('total_tenders'),
         sql<number>`count(case when tenders.category::text ilike 'pq%' then 1 end)::int`.as('pq_count'),
-        sql<number>`count(case when tenders.category::text ilike 'general%' then 1 end)::int`.as('general_mha_count'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then 1 end)::int`.as('pending'),
-        sql<number>`count(case when tenders.status in ('under_preparation', 'awaiting_approval', 'identified') then 1 end)::int`.as('pending_tenders'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('submitted'),
-        sql<number>`count(case when tenders.status in ('submitted', 'technical_eval', 'commercial_eval') then 1 end)::int`.as('submitted_tenders'),
+        sql<number>`count(case when tenders.category::text = 'general_mha' then 1 end)::int`.as('general_mha_count'),
+        sql<number>`count(case when tenders.status in ${WORKED_UPON_SQL} then 1 end)::int`.as('worked_upon'),
+        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending'),
+        sql<number>`count(case when tenders.status not in ${TERMINAL_SQL} then 1 end)::int`.as('pending_tenders'),
+        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('submitted'),
+        sql<number>`count(case when tenders.status in ${SUBMITTED_SQL} then 1 end)::int`.as('submitted_tenders'),
         sql<number>`count(case when tenders.status = 'won' then 1 end)::int`.as('won'),
         sql<number>`count(case when tenders.status = 'won' then 1 end)::int`.as('won_tenders'),
         sql<number>`count(case when tenders.status = 'lost' then 1 end)::int`.as('lost'),
@@ -3816,9 +3854,7 @@ export class TendersService {
       .having(sql`count(tenders.id)`, '>', 0)
       .orderBy('total', 'desc');
 
-    if (user.role === 'regional_manager') {
-      query = query.where(rmTenderScope(user));
-    }
+    query = query.where(tenderReportScope(user));
     return query.execute();
   }
 
@@ -4207,7 +4243,7 @@ export class TendersService {
   // =========================================================================
 
   async getLineItems(tenderId: string, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     const items = await this.db
@@ -4287,7 +4323,7 @@ export class TendersService {
   }
 
   async updateLineItem(tenderId: string, itemId: string, dto: UpdateTenderLineItemDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     // After a win only the award columns may still be filled in; everything else on the BOQ is frozen.
@@ -4486,7 +4522,7 @@ export class TendersService {
   }
 
   async getDocuments(tenderId: string, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     const docs = await this.db
@@ -4511,7 +4547,7 @@ export class TendersService {
   }
 
   async addDocument(tenderId: string, dto: CreateTenderDocumentDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     const doc = await this.db
@@ -4537,7 +4573,7 @@ export class TendersService {
   }
 
   async updateDocument(tenderId: string, docId: string, dto: UpdateTenderDocumentDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     const updateData: any = { updated_at: new Date() };
@@ -4581,7 +4617,7 @@ export class TendersService {
   }
 
   async deleteDocument(tenderId: string, docId: string, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     await this.db
@@ -4595,7 +4631,7 @@ export class TendersService {
   }
 
   async initChecklist(tenderId: string, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     // Same template resolution the readiness gate uses, de-duplicated by document type.
@@ -4641,7 +4677,8 @@ export class TendersService {
   // Tender Corrigenda & Deadline Extension
   // =========================================================================
 
-  async getCorrigenda(tenderId: string) {
+  async getCorrigenda(tenderId: string, user?: AuthUser) {
+    await this.findOne(tenderId, user);
     return this.db
       .selectFrom('tender_corrigenda')
       .leftJoin('users', 'tender_corrigenda.created_by', 'users.id')
@@ -4653,7 +4690,7 @@ export class TendersService {
   }
 
   async addCorrigendum(tenderId: string, dto: CreateTenderCorrigendumDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     const corrigendumNumber = (dto.corrigendum_number || '').trim();
@@ -4730,7 +4767,7 @@ export class TendersService {
   // =========================================================================
 
   async getFinancialInstruments(tenderId: string, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     return this.db
@@ -4744,7 +4781,7 @@ export class TendersService {
   }
 
   async addFinancialInstrument(tenderId: string, dto: CreateTenderFinancialInstrumentDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     const amount = Number(dto.amount);
@@ -4785,7 +4822,7 @@ export class TendersService {
     dto: UpdateTenderFinancialInstrumentDto,
     user: AuthUser,
   ) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     if (dto.amount !== undefined && (!Number.isFinite(Number(dto.amount)) || Number(dto.amount) <= 0)) {
@@ -4883,7 +4920,7 @@ export class TendersService {
   // =========================================================================
 
   async getComments(tenderId: string, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     return this.db
@@ -4897,7 +4934,7 @@ export class TendersService {
   }
 
   async addComment(tenderId: string, dto: CreateTenderCommentDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
     const mentions = Array.isArray(dto.mentions) ? dto.mentions : [];
@@ -5089,7 +5126,7 @@ export class TendersService {
   // =========================================================================
 
   async createLinkedTender(tenderId: string, dto: CreateLinkedTenderDto, user: AuthUser) {
-    const parent = await this.findOne(tenderId);
+    const parent = await this.findOne(tenderId, user);
     const parentNorm = this.workflowService.normalizeStatus(parent.status);
 
     if (parentNorm !== 'PQ_QUALIFIED' && parentNorm !== 'WON') {
@@ -5167,7 +5204,7 @@ export class TendersService {
   }
 
   async createSalesOrder(tenderId: string, dto: CreateSalesOrderFromTenderDto, user: AuthUser) {
-    const tender = await this.findOne(tenderId);
+    const tender = await this.findOne(tenderId, user);
     const norm = this.workflowService.normalizeStatus(tender.status);
 
     if (norm !== 'WON' && norm !== 'PARTIALLY_WON') {
@@ -5245,22 +5282,12 @@ export class TendersService {
       .selectFrom('tenders')
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
       .leftJoin('users as assignee', 'tenders.assigned_to', 'assignee.id')
+      // Full tender rows so the Deadline Centre cards can open the dossier / outcome form directly.
+      .selectAll('tenders')
       .select([
-        'tenders.id',
-        'tenders.tender_number',
-        'tenders.tender_no',
-        'tenders.tender_title',
-        'tenders.organisation',
         'organisations.name as organisation_name',
-        'tenders.status',
-        'tenders.submission_deadline',
-        'tenders.pre_bid_meeting_date',
-        'tenders.query_submission_deadline',
-        'tenders.technical_opening_date',
-        'tenders.assigned_to',
         'assignee.full_name as assigned_to_name',
-        'tenders.region_id',
-        'tenders.zone_id',
+        'assignee.full_name as assigned_person_name',
       ])
       .where('tenders.is_deleted', '=', false)
       .where('tenders.status', 'in', nonTerminalStatuses as any);
@@ -5279,33 +5306,36 @@ export class TendersService {
     }
 
     const allActive = await baseQuery.execute();
+    // B2/B3: only pre-submission bids can approach or miss their submission deadline; a submitted / evaluated bid
+    // is never "overdue" (it shows under result follow-ups instead).
+    const preSubmission = allActive.filter((t) => TENDER_PRE_SUBMISSION_STATUSES.includes(String(t.status).toLowerCase()));
 
-    const upcoming7d = allActive.filter((t) => {
+    const upcoming7d = preSubmission.filter((t) => {
       if (!t.submission_deadline) return false;
       const d = new Date(t.submission_deadline);
       return d >= now && d <= in7Days;
     });
 
     const in72Hours = new Date(now.getTime() + 72 * 3600 * 1000);
-    const approaching72h = allActive.filter((t) => {
+    const approaching72h = preSubmission.filter((t) => {
       if (!t.submission_deadline) return false;
       const d = new Date(t.submission_deadline);
       return d >= now && d <= in72Hours;
     });
 
-    const approaching48h = allActive.filter((t) => {
+    const approaching48h = preSubmission.filter((t) => {
       if (!t.submission_deadline) return false;
       const d = new Date(t.submission_deadline);
       return d >= now && d <= in48Hours;
     });
 
-    const urgent24h = allActive.filter((t) => {
+    const urgent24h = preSubmission.filter((t) => {
       if (!t.submission_deadline) return false;
       const d = new Date(t.submission_deadline);
       return d >= now && d <= in24Hours;
     });
 
-    const overdue = allActive.filter((t) => {
+    const overdue = preSubmission.filter((t) => {
       if (!t.submission_deadline) return false;
       const d = new Date(t.submission_deadline);
       return d < now;

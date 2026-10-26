@@ -1,8 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { istDay } from './helpers/ist-date';
+import { configureApp } from '../src/common/app-setup';
 
 describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
   let app: INestApplication;
@@ -19,14 +20,7 @@ describe('Module 5: Delivery Management E2E Test Suite (TEST 5)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     // 1. Authenticate tokens

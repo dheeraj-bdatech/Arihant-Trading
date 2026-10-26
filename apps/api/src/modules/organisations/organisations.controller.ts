@@ -46,13 +46,13 @@ export class OrganisationsController {
 
   @Get(':id/timeline')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
-  async getTimeline(@Param('id') id: string) {
-    return this.orgsService.getTimeline(id);
+  async getTimeline(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.orgsService.getTimeline(id, user);
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    return this.orgsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.orgsService.findOne(id, user);
   }
 
   @Post()

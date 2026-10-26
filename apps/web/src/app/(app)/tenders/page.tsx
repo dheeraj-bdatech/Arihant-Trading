@@ -118,6 +118,94 @@ type TenderView = 'pipeline' | 'approvals_inbox' | 'calendar' | 'finance_emd' | 
 /** Tenders fetched per request while the register scrolls. */
 const TENDERS_PAGE_SIZE = 25;
 
+/** §21/§27 zone-wise and region-wise tender pipeline (rows from /tenders/reports/by-zone | by-region). */
+function PipelineBreakdownTable({
+  title,
+  description,
+  icon,
+  rows,
+  nameKey,
+  idKey,
+  secondaryKey,
+  emptyText,
+}: {
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+  rows: any[];
+  nameKey: string;
+  idKey: string;
+  secondaryKey?: string;
+  emptyText: string;
+}) {
+  return (
+    <div className="bg-white rounded-[14px] border border-[#DCD8CE] p-4 shadow-2xs space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-bold text-[#14213D] flex items-center gap-1.5">
+            {icon}
+            <span>{title}</span>
+          </h4>
+          <p className="text-xs text-[#4A5568]">{description}</p>
+        </div>
+        <Badge variant="info" size="sm">
+          <span className="font-mono">{rows.length}</span>
+        </Badge>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs border-collapse">
+          <thead>
+            <tr className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] font-semibold">
+              <th className="p-2.5">Name</th>
+              <th className="p-2.5 text-center">Total</th>
+              <th className="p-2.5 text-center">PQ</th>
+              <th className="p-2.5 text-center">General / MHA</th>
+              <th className="p-2.5 text-center">Submitted</th>
+              <th className="p-2.5 text-center">Won</th>
+              <th className="p-2.5 text-center">Lost</th>
+              <th className="p-2.5 text-center">Pending</th>
+              <th className="p-2.5 text-right">Win Rate</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#ECE9E2]">
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="p-4 text-center text-xs text-[#4A5568]">
+                  {emptyText}
+                </td>
+              </tr>
+            ) : (
+              rows.map((r) => {
+                const won = Number(r.won ?? r.won_tenders ?? 0);
+                const lost = Number(r.lost ?? r.lost_tenders ?? 0);
+                const decided = won + lost;
+                return (
+                  <tr key={r[idKey] || r[nameKey]} className="hover:bg-[#FBFAF7]">
+                    <td className="p-2.5">
+                      <div className="font-bold text-[#14213D]">{r[nameKey] || 'Unmapped'}</div>
+                      {secondaryKey && r[secondaryKey] ? <div className="text-[10px] text-[#6B7280]">{r[secondaryKey]}</div> : null}
+                    </td>
+                    <td className="p-2.5 text-center font-mono font-bold text-[#0F5E63]">{r.total ?? r.total_tenders ?? 0}</td>
+                    <td className="p-2.5 text-center font-mono text-[#14213D]">{r.pq_count ?? 0}</td>
+                    <td className="p-2.5 text-center font-mono text-[#14213D]">{r.general_mha_count ?? 0}</td>
+                    <td className="p-2.5 text-center font-mono text-[#0B4A4E]">{r.submitted ?? r.submitted_tenders ?? 0}</td>
+                    <td className="p-2.5 text-center font-mono font-bold text-[#0B4A4E]">{won}</td>
+                    <td className="p-2.5 text-center font-mono text-[#881337]">{lost}</td>
+                    <td className="p-2.5 text-center font-mono text-[#7C2D12]">{r.pending ?? r.pending_tenders ?? 0}</td>
+                    <td className="p-2.5 text-right font-mono font-bold text-[#0B4A4E]">
+                      {decided > 0 ? `${Math.round((won / decided) * 100)}%` : '—'}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function TendersPage() {
   const { user, hasRole } = useAuth();
   const searchParams = useSearchParams();
@@ -953,38 +1041,35 @@ export default function TendersPage() {
     else setIssueToResolve(null);
   };
 
-  // Helper for deadline groupings
+  // §24 Deadline Centre: groups come from the server (GET /tenders/deadline-centre) over every tender in scope,
+  // not from the paginated list. Only pre-submission bids can be urgent / upcoming / overdue (B2/B3).
+  const [deadlineCentre, setDeadlineCentre] = useState<any>(null);
+  const fetchDeadlineCentre = useCallback(async () => {
+    try {
+      const res = await api.get('/tenders/deadline-centre');
+      setDeadlineCentre(res || null);
+    } catch (err) {
+      console.error('Failed to load deadline centre:', err);
+    }
+  }, []);
+  useEffect(() => {
+    // Re-fetch when the tab opens and whenever the tender list reloads (mutations, realtime events).
+    if (activeTab === 'deadlines') fetchDeadlineCentre();
+  }, [activeTab, tenders, fetchDeadlineCentre]);
+
   const categorizedDeadlines = useMemo(() => {
-    const now = new Date().getTime();
-    const urgent: any[] = [];
-    const upcoming: any[] = [];
-    const overdue: any[] = [];
-    const incompletePrep: any[] = [];
-    const awaitingSignoff: any[] = [];
-    const resultFollowups: any[] = [];
-
-    tenders.forEach((t) => {
-      const closing = t.submission_deadline || t.bid_closing_date ? new Date(t.submission_deadline || t.bid_closing_date).getTime() : null;
-      const diffHours = closing ? (closing - now) / (1000 * 60 * 60) : null;
-
-      if (t.status === 'awaiting_approval') {
-        awaitingSignoff.push(t);
-      }
-      if (['submitted', 'technical_eval', 'commercial_eval'].includes(t.status)) {
-        resultFollowups.push(t);
-      }
-      if (t.status === 'under_preparation' && diffHours !== null && diffHours <= 168 && diffHours > 0) {
-        incompletePrep.push(t);
-      }
-      if (diffHours !== null && !['won', 'lost', 'cancelled'].includes(t.status)) {
-        if (diffHours < 0) overdue.push(t);
-        else if (diffHours <= 48) urgent.push(t);
-        else if (diffHours <= 168) upcoming.push(t);
-      }
-    });
-
-    return { urgent, upcoming, overdue, incompletePrep, awaitingSignoff, resultFollowups };
-  }, [tenders]);
+    const list = (v: any): any[] => (Array.isArray(v) ? v : []);
+    const urgent = list(deadlineCentre?.approaching_48h);
+    const urgentIds = new Set(urgent.map((t) => t.id));
+    return {
+      urgent,
+      upcoming: list(deadlineCentre?.upcoming_7d).filter((t) => !urgentIds.has(t.id)),
+      overdue: list(deadlineCentre?.overdue),
+      incompletePrep: list(deadlineCentre?.incomplete_preparation),
+      awaitingSignoff: list(deadlineCentre?.pending_approvals),
+      resultFollowups: list(deadlineCentre?.result_follow_ups),
+    };
+  }, [deadlineCentre]);
 
   // Check if any filter is active
   const hasActiveFilters = Boolean(
@@ -1980,7 +2065,7 @@ export default function TendersPage() {
                     <th className="p-2.5 text-center">Assigned Tenders</th>
                     <th className="p-2.5 text-center">PQ Bids</th>
                     <th className="p-2.5 text-center">General / MHA</th>
-                    <th className="p-2.5 text-center">In Preparation</th>
+                    <th className="p-2.5 text-center">Pending</th>
                     <th className="p-2.5 text-center">Bids Submitted</th>
                     <th className="p-2.5 text-center">Won Awards</th>
                     <th className="p-2.5 text-center">Lost</th>
@@ -2010,7 +2095,7 @@ export default function TendersPage() {
                           <td className="p-2.5 text-center text-[#0B4A4E] font-bold">{s.won || s.won_tenders || 0}</td>
                           <td className="p-2.5 text-center text-[#881337] font-semibold">{s.lost || s.lost_tenders || 0}</td>
                           <td className="p-2.5 text-right font-black text-[#0B4A4E]">
-                            {dec > 0 ? `${rate}%` : 'N/A'}
+                            {dec > 0 ? `${rate}%` : '—'}
                           </td>
                         </tr>
                       );
@@ -2019,6 +2104,29 @@ export default function TendersPage() {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          {/* Section 3b: Zone-wise & Region-wise pipeline (§21, §27) */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <PipelineBreakdownTable
+              title="Zone-wise Pipeline (§21, §27)"
+              description="Bids per zone: category mix, submissions, outcomes and pending work"
+              icon={<MapPin className="h-4 w-4 text-[#0F5E63]" />}
+              rows={zoneReport}
+              nameKey="zone_name"
+              idKey="zone_id"
+              emptyText="No zone pipeline recorded yet."
+            />
+            <PipelineBreakdownTable
+              title="Region-wise Pipeline (§21, §27)"
+              description="Bids per region: category mix, submissions, outcomes and pending work"
+              icon={<Building className="h-4 w-4 text-[#0F5E63]" />}
+              rows={regionReport}
+              nameKey="region_name"
+              idKey="region_id"
+              secondaryKey="zone_name"
+              emptyText="No region pipeline recorded yet."
+            />
           </div>
 
           {/* Section 4: Structured Win / Loss Post-Mortem Intelligence HUD (§26) */}

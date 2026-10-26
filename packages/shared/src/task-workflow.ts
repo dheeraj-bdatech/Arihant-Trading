@@ -207,7 +207,7 @@ export const TASK_STATUS_LABELS: Record<TaskDisplayStatus, string> = {
   not_started: 'Not Started',
   in_progress: 'In Progress',
   blocked: 'Blocked',
-  awaiting_approval: 'Awaiting Approval',
+  awaiting_approval: 'Approval Pending',
   completed: 'Completed',
   cancelled: 'Cancelled',
   overdue: 'Overdue',

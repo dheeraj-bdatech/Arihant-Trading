@@ -5,17 +5,24 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Inject, Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { Server, Socket } from 'socket.io';
 import { ConfigService } from '@nestjs/config';
-import jwt from 'jsonwebtoken';
 import { Kysely } from 'kysely';
 import { KYSELY_DB } from '../database/database.module.js';
 import type { Database, UserRole } from '@arihant/shared';
-import { getJwtSecret } from '../auth/jwt-secret.js';
+import { verifyAccessToken } from '../auth/verify-token.js';
+
+/** Same allow-list as the HTTP API (CORS_ORIGINS, comma separated); read per handshake so .env is respected. */
+const allowedOrigin = (origin: string | undefined, cb: (err: Error | null, ok?: boolean) => void) => {
+  const allowed = (process.env.CORS_ORIGINS || 'http://localhost:3000').split(',').map((o) => o.trim());
+  // Non-browser clients send no Origin; they still need a valid token to connect.
+  cb(null, !origin || allowed.includes(origin));
+};
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: allowedOrigin,
     credentials: true,
   },
 })
@@ -46,9 +53,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ? authHeader.split(' ')[1]
         : authHeader;
 
-      const jwtSecret = getJwtSecret(this.configService);
-
-      const payload: any = jwt.verify(token, jwtSecret);
+      // Same verification as the HTTP guard (HS256 and Supabase ES256).
+      const payload: any = await verifyAccessToken(token, this.configService);
       const userId = payload.sub || payload.id;
 
       if (!userId) {
@@ -78,6 +84,14 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     } catch (err: any) {
       this.logger.warn(`Auth failed for client ${client.id}: ${err.message}`);
       client.disconnect();
+    }
+  }
+
+  /** A deactivated account loses its live connection at once (its HTTP calls already fail in the guard). */
+  @OnEvent('user.deactivated')
+  disconnectUser(payload: { userId: string }) {
+    if (this.server && payload?.userId) {
+      this.server.in(`user:${payload.userId}`).disconnectSockets(true);
     }
   }
 

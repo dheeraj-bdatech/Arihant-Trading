@@ -107,12 +107,13 @@ function register<T>(list: T[], toItem: (row: T) => RecordItem, laneKey: (row: T
   return { items, laneOf: (item: RecordItem) => lanes.get(item.key) ?? 'other' };
 }
 
-const RATING_TONE: Record<string, RecordTone> = { Critical: 'danger', 'Needs Attention': 'warning', Good: 'info', Excellent: 'success' };
+const RATING_TONE: Record<string, RecordTone> = { Critical: 'danger', 'Needs Attention': 'warning', Good: 'info', Excellent: 'success', 'No data': 'neutral' };
 const TEAM_LANES: BoardLane[] = [
   { key: 'Critical', label: 'Critical', tone: 'danger' },
   { key: 'Needs Attention', label: 'Needs attention', tone: 'warning' },
   { key: 'Good', label: 'Good', tone: 'info' },
   { key: 'Excellent', label: 'Excellent', tone: 'success' },
+  { key: 'No data', label: 'No data', tone: 'neutral' },
 ];
 const LEAD_LANES: BoardLane[] = [
   { key: 'new_lead', label: 'New Lead', tone: 'info' },
@@ -129,7 +130,9 @@ const TENDER_LANES: BoardLane[] = [...TENDER_STATUSES, 'other'].map((k) => ({ ke
 const TENDER_PRE_SUBMISSION = ['identified', 'awaiting_approval', 'under_preparation', 'on_hold'];
 
 type BadgeVariant = NonNullable<BadgeProps['variant']>;
-const RATING_BADGE: Record<string, BadgeVariant> = { Excellent: 'success', Good: 'default', 'Needs Attention': 'warning' };
+const RATING_BADGE: Record<string, BadgeVariant> = { Excellent: 'success', Good: 'default', 'Needs Attention': 'warning', 'No data': 'outline' };
+/** Completion % or "No data" when nothing was assigned (the API sends null, never a fake 100%). */
+const pctOrNoData = (rate: number | null | undefined) => (rate === null || rate === undefined ? 'No data' : `${rate}%`);
 const ratingBadge = (rating: string): BadgeVariant => RATING_BADGE[rating] ?? 'danger';
 const categoryBadge = (category?: string): BadgeVariant => {
   const tone = getCategoryTone(category);
@@ -150,6 +153,7 @@ export default function RegionalPage() {
   const [tenderPage, setTenderPage] = useState(1);
   const TENDER_PAGE_SIZE = 15;
   const [selectedZoneId, setSelectedZoneId] = useState<string>('');
+  const [selectedRegionId, setSelectedRegionId] = useState<string>('');
   const [searchEmployee, setSearchEmployee] = useState('');
 
   // Modals
@@ -161,12 +165,15 @@ export default function RegionalPage() {
   const [isSubmittingIntervention, setIsSubmittingIntervention] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const fetchRegionalData = async (zoneId?: string) => {
+  const fetchRegionalData = async (zoneId?: string, regionId?: string) => {
     try {
       setIsLoading(true);
       const params: any = {};
       if (zoneId) {
         params.zone_id = zoneId;
+      }
+      if (regionId) {
+        params.region_id = regionId;
       }
       const res = await api.get('/dashboard/regional-performance', params);
       setData(res);
@@ -182,9 +189,9 @@ export default function RegionalPage() {
 
   useEffect(() => {
     if (hasRole(['regional_manager', 'management', 'admin'])) {
-      fetchRegionalData(selectedZoneId || undefined);
+      fetchRegionalData(selectedZoneId || undefined, selectedRegionId || undefined);
     }
-  }, [selectedZoneId]);
+  }, [selectedZoneId, selectedRegionId]);
 
   const handleOpenIntervention = (visit: any) => {
     setSelectedVisit(visit);
@@ -204,7 +211,7 @@ export default function RegionalPage() {
         instructions: interventionInstructions,
       });
       setIsInterventionModalOpen(false);
-      await fetchRegionalData(selectedZoneId || undefined);
+      await fetchRegionalData(selectedZoneId || undefined, selectedRegionId || undefined);
     } catch (err: any) {
       setActionError(err.message || 'Failed to submit manager intervention.');
     } finally {
@@ -224,7 +231,7 @@ export default function RegionalPage() {
     );
   }
 
-  const zoneName = data?.zone?.name || 'North';
+  const zoneName = data?.zone?.name || '—';
   const employeeQuery = searchEmployee.toLowerCase();
   const filteredTeam: any[] = (data?.teamPerformance ?? []).filter(
     (emp: any) =>
@@ -233,7 +240,10 @@ export default function RegionalPage() {
       emp.email.toLowerCase().includes(employeeQuery) ||
       emp.region_name.toLowerCase().includes(employeeQuery),
   );
-  const zoneCode = data?.zone?.code || 'N';
+  const zoneCode = data?.zone?.code || '—';
+  const tendersDecided = (data?.tenders?.won ?? 0) + (data?.tenders?.lost ?? 0);
+  // won ÷ (won + lost); "—" while nothing has been decided
+  const winRate: number | null = tendersDecided > 0 ? Math.round(((data?.tenders?.won ?? 0) / tendersDecided) * 100) : null;
 
   const openEvidence = (emp: any) => {
     setSelectedEmployee(emp);
@@ -258,7 +268,7 @@ export default function RegionalPage() {
       ],
       value: formatLakh(emp.leads.valueLakh || 0),
       facts: [
-        { label: 'Milestones', value: `${emp.tasks.completed} / ${emp.tasks.total} · ${emp.tasks.completionRate}%` },
+        { label: 'Milestones', value: `${emp.tasks.completed} / ${emp.tasks.total} · ${pctOrNoData(emp.tasks.completionRate)}` },
         { label: 'Visits', value: `${emp.visits.completed} / ${emp.visits.total}` },
         { label: 'Overdue', value: emp.tasks.overdue },
         { label: 'Blockers', value: emp.activeBlockers.length || 'None' },
@@ -300,7 +310,7 @@ export default function RegionalPage() {
                 <span className="font-mono font-bold text-[#14213D]">
                   {emp.tasks.completed} / {emp.tasks.total}
                 </span>
-                <div className="text-[10px] text-[#4A5568]">{emp.tasks.completionRate}%</div>
+                <div className="text-[10px] text-[#4A5568]">{pctOrNoData(emp.tasks.completionRate)}</div>
               </TableCell>
               <TableCell className="text-center whitespace-nowrap">
                 {emp.tasks.overdue > 0 ? (
@@ -347,16 +357,16 @@ export default function RegionalPage() {
     (ld: any): RecordItem => ({
       key: ld.id,
       title: ld.organisation_name,
-      subtitle: [ld.city || 'North Zone', ld.product_name || 'Security Scanning Hardware'].join(' · '),
+      subtitle: [ld.city || '—', ld.product_name || '—'].join(' · '),
       status: { label: formatLeadCategory(ld.category), tone: getCategoryTone(ld.category) },
       badges: ld.probability
         ? [{ label: `${ld.probability} probability`, tone: ld.probability === 'high' ? 'success' : ld.probability === 'medium' ? 'warning' : 'neutral' }]
         : [],
       due: { date: ld.next_followup_date, label: 'Follow-up', done: isClosedLeadStatus(ld.status) },
       value: formatLakh(ld.value_lakh || 0),
-      owner: ld.assigned_rep_name || 'Territory Rep',
+      owner: ld.assigned_rep_name || '—',
       facts: [
-        { label: 'Product', value: ld.product_name || 'Security Scanning Hardware' },
+        { label: 'Product', value: ld.product_name || '—' },
         { label: 'Lead status', value: pretty(ld.status) },
       ],
       details: rowDetails(ld),
@@ -387,9 +397,9 @@ export default function RegionalPage() {
             <TableRow key={ld.id}>
               <TableCell className="font-bold text-[#14213D]">
                 {ld.organisation_name}
-                <div className="text-[10px] text-[#4A5568] font-normal">{ld.city || 'North Zone'}</div>
+                <div className="text-[10px] text-[#4A5568] font-normal">{ld.city || '—'}</div>
               </TableCell>
-              <TableCell className="text-[#14213D]">{ld.product_name || 'Security Scanning Hardware'}</TableCell>
+              <TableCell className="text-[#14213D]">{ld.product_name || '—'}</TableCell>
               <TableCell>
                 <Badge variant={categoryBadge(ld.category)} size="sm" className="font-semibold">
                   {formatLeadCategory(ld.category)}
@@ -405,7 +415,7 @@ export default function RegionalPage() {
                 )}
               </TableCell>
               <TableCell className="text-right font-mono font-bold text-[#0F5E63]">{formatLakh(ld.value_lakh || 0)}</TableCell>
-              <TableCell className="text-[#4A5568]">{ld.assigned_rep_name || 'Territory Rep'}</TableCell>
+              <TableCell className="text-[#4A5568]">{ld.assigned_rep_name || '—'}</TableCell>
               <TableCell className="font-mono text-[#4A5568]">{formatDateIN(ld.next_followup_date)}</TableCell>
             </TableRow>
           ))}
@@ -419,12 +429,12 @@ export default function RegionalPage() {
     (v: any): RecordItem => ({
       key: v.id,
       title: v.organisation_name,
-      subtitle: v.location || 'Client HQ',
+      subtitle: v.location || '—',
       status: { label: pretty(v.status), tone: toneFor(v.status) },
       due: { date: v.planned_date, label: 'Planned', done: VISIT_DONE.includes(v.status) },
-      owner: v.assigned_rep_name || 'Territory Rep',
+      owner: v.assigned_rep_name || '—',
       facts: [
-        { label: 'Purpose', value: v.purpose || 'Technical brief' },
+        { label: 'Purpose', value: v.purpose || '—' },
         { label: 'Manager directive', value: v.remarks || 'None attached' },
       ],
       primary: { label: 'Add Stop / Also Meet', onClick: () => handleOpenIntervention(v) },
@@ -456,13 +466,13 @@ export default function RegionalPage() {
                 {v.organisation_name}
                 <div className="text-[10px] text-[#4A5568] font-normal flex items-center gap-1">
                   <MapPin className="h-3 w-3 text-[#0F5E63]" />
-                  <span>{v.location || 'Client HQ'}</span>
+                  <span>{v.location || '—'}</span>
                 </div>
               </TableCell>
               <TableCell className="text-[#14213D] max-w-[200px] truncate" title={v.purpose || undefined}>
-                {v.purpose || 'Technical brief'}
+                {v.purpose || '—'}
               </TableCell>
-              <TableCell className="text-[#4A5568] whitespace-nowrap">{v.assigned_rep_name || 'Territory Rep'}</TableCell>
+              <TableCell className="text-[#4A5568] whitespace-nowrap">{v.assigned_rep_name || '—'}</TableCell>
               <TableCell className="whitespace-nowrap">
                 <Badge variant={visitBadge(v.status)} size="sm" className="uppercase font-bold">
                   {upperLabel(v.status)}
@@ -490,7 +500,7 @@ export default function RegionalPage() {
     (t: any): RecordItem => ({
       key: t.id,
       code: t.tender_no,
-      title: t.department || 'Government Buyer',
+      title: t.department || '—',
       subtitle: [t.city, t.state].filter(Boolean).join(', ') || undefined,
       status: { label: pretty(t.status), tone: toneFor(t.status) },
       badges: t.category ? [{ label: String(t.category).replace(/_/g, ' ').toUpperCase(), tone: 'neutral' }] : [],
@@ -528,7 +538,7 @@ export default function RegionalPage() {
                   <span className="font-mono text-[#0F5E63]">{t.tender_no}</span>
                 </TableCell>
                 <TableCell className="text-[#14213D]">
-                  <div className="font-semibold text-[#14213D]">{t.department || 'Government Buyer'}</div>
+                  <div className="font-semibold text-[#14213D]">{t.department || '—'}</div>
                   <div className="text-[10px] text-[#4A5568]">{[t.city, t.state].filter(Boolean).join(', ')}</div>
                 </TableCell>
                 <TableCell className="text-[#4A5568] max-w-[240px] truncate" title={t.requirement_text || undefined}>
@@ -589,7 +599,7 @@ export default function RegionalPage() {
                 <span className="text-[10px] font-bold uppercase text-[#4A5568]">Territory:</span>
                 <Select
                   value={selectedZoneId}
-                  onChange={(e) => { setSelectedZoneId(e.target.value); setTenderPage(1); }}
+                  onChange={(e) => { setSelectedZoneId(e.target.value); setSelectedRegionId(''); setTenderPage(1); }}
                   className="h-8 border-0 bg-transparent text-xs font-bold text-[#0F5E63] focus:ring-0 p-0"
                 >
                   {data.availableZones.map((z: any) => (
@@ -600,6 +610,32 @@ export default function RegionalPage() {
                 </Select>
               </div>
             )}
+
+            {/* Region filter: narrows every figure on this page to one region of the zone in view */}
+            {(data?.regionsInZone?.length ?? 0) > 0 && (
+              <div className="flex items-center space-x-2 bg-[#FBFAF7] border border-[#DCD8CE] px-3 py-1 rounded-lg text-xs">
+                <span className="text-[10px] font-bold uppercase text-[#4A5568]">Region:</span>
+                <Select
+                  value={selectedRegionId}
+                  onChange={(e) => { setSelectedRegionId(e.target.value); setTenderPage(1); }}
+                  className="h-8 border-0 bg-transparent text-xs font-bold text-[#0F5E63] focus:ring-0 p-0"
+                >
+                  <option value="">All regions</option>
+                  {data.regionsInZone.map((r: any) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+
+            <Link href="/regional/performance">
+              <Button variant="secondary" size="sm">
+                <TrendingUp className="mr-2 h-4 w-4 text-[#0F5E63]" />
+                <span>Performance</span>
+              </Button>
+            </Link>
 
             <Link href="/visits">
               <Button variant="secondary" size="sm">
@@ -629,14 +665,14 @@ export default function RegionalPage() {
           value={`${data?.tenders?.total ?? 0} Bids`}
           icon={<FileText size={16} />}
           variant="rose"
-          subtext={`${data?.tenders?.closingSoon ?? 0} Closing ≤ 7 Days • ${data?.tenders?.awaitingApproval ?? 0} Signoff`}
+          subtext={`${data?.tenders?.closingSoon ?? 0} Closing ≤ 7 Days • ${data?.tenders?.awaitingApproval ?? 0} Signoff • ${data?.tenders?.won ?? 0} Won / ${data?.tenders?.lost ?? 0} Lost (${winRate === null ? '—' : `${winRate}%`} Win)`}
         />
         <StatCard
           title="Field Client Visits"
           value={`${data?.visits?.completed ?? 0} / ${data?.visits?.total ?? 0}`}
           icon={<Calendar size={16} />}
           variant="emerald"
-          subtext={`${data?.visits?.completionRate ?? 0}% Delivery Rate • ${data?.visits?.planned ?? 0} Upcoming`}
+          subtext={`${data?.visits?.completionRate == null ? '—' : `${data.visits.completionRate}%`} Delivery Rate • ${data?.visits?.planned ?? 0} Upcoming • ${data?.visits?.cancelled ?? 0} Cancelled`}
         />
         <StatCard
           title="Territory Personnel"

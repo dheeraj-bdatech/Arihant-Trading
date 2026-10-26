@@ -1,11 +1,13 @@
 import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
-import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
 import { AppEvents } from '../../common/events/event-names.js';
-import type { Database } from '@arihant/shared';
+import type { AuthUser, Database } from '@arihant/shared';
 import type { CreateInteractionDto } from './interactions.dto.js';
+import { assertRegionScope } from '../../common/utils/scope.util.js';
+import { assertOrganisationInScope } from '../organisations/organisation-scope.js';
 
 @Injectable()
 export class InteractionsService {
@@ -14,8 +16,48 @@ export class InteractionsService {
     private readonly outboxService: OutboxService,
   ) {}
 
-  async findByOrganisation(orgId: string) {
-    const interactions = await this.db
+  /**
+   * Lead-level access, mirroring LeadsService.findOne: a salesperson acts only on leads assigned to them; a Regional
+   * Manager on leads they manage, own or whose owner reports to them, otherwise their region/zone; other roles all.
+   */
+  private async assertLeadAccess(leadId: string, user: AuthUser) {
+    const lead = await this.db
+      .selectFrom('leads')
+      .innerJoin('organisations', 'leads.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'leads.assigned_to', 'assignee.id')
+      .select([
+        'leads.id',
+        'leads.organisation_id',
+        'leads.assigned_to',
+        'leads.regional_manager_id',
+        'organisations.region_id',
+        'organisations.zone_id',
+        'assignee.reporting_manager_id as assignee_reporting_manager_id',
+      ])
+      .where('leads.id', '=', leadId)
+      .executeTakeFirst();
+
+    if (!lead) {
+      throw new NotFoundException(`Lead with id '${leadId}' not found`);
+    }
+    if (user.role === 'sales' && lead.assigned_to !== user.id) {
+      throw new ForbiddenException('You are not authorized to access this lead.');
+    }
+    if (
+      user.role === 'regional_manager' &&
+      lead.regional_manager_id !== user.id &&
+      lead.assigned_to !== user.id &&
+      lead.assignee_reporting_manager_id !== user.id
+    ) {
+      assertRegionScope(user, lead.region_id, lead.zone_id);
+    }
+    return lead;
+  }
+
+  async findByOrganisation(orgId: string, user: AuthUser) {
+    await assertOrganisationInScope(this.db, orgId, user);
+
+    let query = this.db
       .selectFrom('interactions')
       .leftJoin('contacts', 'interactions.contact_id', 'contacts.id')
       .leftJoin('users', 'interactions.employee_id', 'users.id')
@@ -29,7 +71,20 @@ export class InteractionsService {
         'leads.lead_status',
         'leads.status as legacy_status',
       ])
-      .where('interactions.organisation_id', '=', orgId)
+      .where('interactions.organisation_id', '=', orgId);
+
+    // A salesperson sees the account-level touchpoints and those on their own leads — not colleagues' lead history
+    if (user.role === 'sales') {
+      query = query.where((eb) =>
+        eb.or([
+          eb('interactions.lead_id', 'is', null),
+          eb('leads.assigned_to', '=', user.id),
+          eb('interactions.employee_id', '=', user.id),
+        ]),
+      );
+    }
+
+    const interactions = await query
       .orderBy('interactions.occurred_on', 'desc')
       .orderBy('interactions.created_at', 'desc')
       .execute();
@@ -51,7 +106,9 @@ export class InteractionsService {
     }));
   }
 
-  async findByLead(leadId: string) {
+  async findByLead(leadId: string, user: AuthUser) {
+    await this.assertLeadAccess(leadId, user);
+
     const interactions = await this.db
       .selectFrom('interactions')
       .leftJoin('contacts', 'interactions.contact_id', 'contacts.id')
@@ -83,7 +140,28 @@ export class InteractionsService {
     }));
   }
 
-  async create(dto: CreateInteractionDto, employeeId: string) {
+  async create(dto: CreateInteractionDto, user: AuthUser) {
+    const employeeId = user.id;
+    // The lead must belong to the stated account, and the caller must be allowed to act on it / the account
+    if (dto.lead_id) {
+      const lead = await this.assertLeadAccess(dto.lead_id, user);
+      if (lead.organisation_id !== dto.organisation_id) {
+        throw new BadRequestException('The selected lead does not belong to this customer account.');
+      }
+    } else {
+      await assertOrganisationInScope(this.db, dto.organisation_id, user);
+    }
+    if (dto.contact_id) {
+      const contact = await this.db
+        .selectFrom('contacts')
+        .select('organisation_id')
+        .where('id', '=', dto.contact_id)
+        .executeTakeFirst();
+      if (!contact || contact.organisation_id !== dto.organisation_id) {
+        throw new BadRequestException('The selected contact does not belong to this customer account.');
+      }
+    }
+
     const occurredOn = dto.occurred_on || dto.interaction_date || todayInKolkata();
     const remarks = dto.remarks || dto.notes || null;
     const followupDate = dto.followup_date || dto.next_followup_date || null;

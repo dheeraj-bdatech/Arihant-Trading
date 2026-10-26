@@ -22,6 +22,7 @@ import {
   ReviewServiceReportDto,
   CloseTicketDto,
   LinkOrganisationDto,
+  AssignEngineerDto,
 } from './service.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -81,6 +82,17 @@ export class ServiceController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.serviceService.updateTicketStatus(id, dto, user);
+  }
+
+  /** §47: reassign the engineer on an open ticket without changing its status (reason mandatory). */
+  @Patch('tickets/:id/assign')
+  @Roles('management', 'regional_manager', 'service_team', 'admin')
+  async assignEngineer(
+    @Param('id') id: string,
+    @Body() dto: AssignEngineerDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.serviceService.assignEngineer(id, dto, user);
   }
 
   @Post('tickets/:id/report')

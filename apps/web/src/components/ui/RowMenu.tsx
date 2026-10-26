@@ -15,7 +15,8 @@ export interface RowMenuItem {
 }
 
 /** Kebab "⋮" overflow menu for table rows: keeps a row to one line, secondary actions live in the panel. */
-export const RowMenu: React.FC<{ items: RowMenuItem[]; label?: string; buttonLabel?: string }> = ({ items, label = 'Row actions', buttonLabel }) => {
+/** `icon` swaps the ⋮ trigger for another glyph (e.g. a pencil for an edit/status menu). */
+export const RowMenu: React.FC<{ items: RowMenuItem[]; label?: string; buttonLabel?: string; icon?: React.ReactNode }> = ({ items, label = 'Row actions', buttonLabel, icon }) => {
   const [open, setOpen] = useState<DOMRect | null>(null);
   const btn = useRef<HTMLButtonElement>(null);
   const visible = items.filter((i) => !i.hidden);
@@ -66,7 +67,7 @@ export const RowMenu: React.FC<{ items: RowMenuItem[]; label?: string; buttonLab
             <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
           </>
         ) : (
-          <MoreVertical className="h-4 w-4" />
+          icon || <MoreVertical className="h-4 w-4" />
         )}
       </button>
       {open &&

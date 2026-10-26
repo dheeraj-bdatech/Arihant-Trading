@@ -20,6 +20,8 @@ export class ProposalNotificationConsumer {
 
   @OnEvent('proposal.*')
   async handleProposalNotification(envelope: DomainEventEnvelope) {
+    // Only outbox envelopes are processed; a raw payload on proposal.* (wildcard) must not crash or poison processed_events.
+    if (!envelope?.eventId || !envelope?.eventType) return;
     const { eventId, eventType, aggregateId, payload, suppressNotifications } = envelope;
 
     // E67: Notifications suppressed during imports or silent syncs
@@ -129,6 +131,33 @@ export class ProposalNotificationConsumer {
           title = 'ESCALATION: Proposal Follow-up Overdue';
           body = `Proposal ${no} follow-up is severely overdue and requires intervention.`;
           break;
+
+        // §46: daily follow-up reminders from ProposalsSchedulerService (deduped per proposal per day via scheduler_dedupe)
+        case 'proposal.followup_due':
+          if (payload?.followUpOwnerId) recipientUserIds.add(payload.followUpOwnerId);
+          title = `Follow-up Due Today: ${no}`;
+          body = `Customer follow-up for proposal ${no} is due today. Please log the interaction.`;
+          break;
+
+        case 'proposal.followup_overdue':
+          if (payload?.followUpOwnerId) recipientUserIds.add(payload.followUpOwnerId);
+          title = `Overdue Follow-up: ${no}`;
+          body = `Customer follow-up for proposal ${no} is ${payload?.daysOverdue ?? 1} day(s) overdue. Please log the interaction.`;
+          break;
+
+        case 'proposal.approval_pending': {
+          // Approvers: Management & Admin only (Module 5 §3.1, DEF-073)
+          const approvers = await this.db
+            .selectFrom('users')
+            .select('id')
+            .where('role', 'in', ['management', 'admin'])
+            .where('is_active', '=', true)
+            .execute();
+          approvers.forEach((a) => recipientUserIds.add(a.id));
+          title = `Proposal Awaiting Approval: ${no}`;
+          body = `Proposal ${no} is still waiting for approval.`;
+          break;
+        }
 
         case 'proposal.required_date_missed':
           if (payload?.responsibleId) recipientUserIds.add(payload.responsibleId);

@@ -9,7 +9,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { openTaskPeek } from './TaskPeek';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -34,7 +34,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatTaskDate, formatTaskDateTime, relativeDue, type TaskActorKind, type TaskPriority, type TaskStatus } from '@arihant/shared';
 import { errorMessage, isConflict, notifyTasksChanged, type TaskRow } from './task-lib';
-import { BlockerBadge, DelayBadge, PriorityBadge, ProgressBar, StatusBadge, TaskConflictCallout } from './task-ui';
+import { BlockerBadge, DelayBadge, PriorityBadge, StatusBadge, TaskConflictCallout } from './task-ui';
 import { TaskActionDialog, type TaskDialogAction } from './TaskActions';
 import { KANBAN_COLUMNS, TaskFlags, countsDown, planKanbanMove, rowActorKinds } from './TaskList';
 
@@ -165,15 +165,23 @@ export const TaskBoard: React.FC<{
   onChanged: () => void;
   notify: (kind: 'success' | 'error', text: string) => void;
 }> = ({ rows, isManager, showAssignee, notes, filter: quick, sort, onChanged, notify }) => {
-  const { user } = useAuth();
   const [collapsed, setCollapsed] = useState<TaskStatus[]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<TaskStatus | null>(null);
-  const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: TaskRow } | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
   /** Optimistic column for a card whose move is in flight; cleared when fresh rows arrive. */
   const [moved, setMoved] = useState<Record<string, TaskStatus>>({});
-  const [conflict, setConflict] = useState(false);
+  const { kindsOf, move, busyId, dialogs } = useTaskMover({
+    isManager,
+    notify,
+    onChanged,
+    onOptimistic: (id, to) =>
+      setMoved((m) => {
+        const next = { ...m };
+        if (to) next[id] = to;
+        else delete next[id];
+        return next;
+      }),
+  });
 
   useEffect(() => {
     const saved = readPref<TaskStatus[]>(COLLAPSED_KEY);
@@ -202,40 +210,7 @@ export const TaskBoard: React.FC<{
     });
   }, [rows, moved, quick, sort, now]);
 
-  const kindsOf = (row: TaskRow) => rowActorKinds(row, user?.id, isManager);
   const dragRow = dragId ? rows.find((r) => r.id === dragId) || null : null;
-
-  const move = async (row: TaskRow, to: TaskStatus) => {
-    const plan = planKanbanMove(row, to, kindsOf(row));
-    if (!plan) return;
-    if (!plan.ok) {
-      notify('error', plan.message);
-      return;
-    }
-    if (plan.action !== 'start') {
-      setDialog({ action: plan.action, task: row });
-      return;
-    }
-    // Starting has no fields — apply it straight from the drop and show the card in its new column at once.
-    setBusyId(row.id);
-    setMoved((m) => ({ ...m, [row.id]: 'in_progress' }));
-    try {
-      await api.post(`/tasks/${row.id}/start`, { version: row.version });
-      notifyTasksChanged();
-      notify('success', `${row.task_number} started.`);
-      onChanged();
-    } catch (e) {
-      setMoved((m) => {
-        const next = { ...m };
-        delete next[row.id];
-        return next;
-      });
-      if (isConflict(e) && (e as any)?.data?.code === 'STALE_VERSION') setConflict(true);
-      else notify('error', errorMessage(e));
-    } finally {
-      setBusyId(null);
-    }
-  };
 
   const endDrag = () => {
     setDragId(null);
@@ -263,14 +238,7 @@ export const TaskBoard: React.FC<{
 
   return (
     <div className="space-y-3">
-      {conflict && (
-        <TaskConflictCallout
-          onRefresh={() => {
-            setConflict(false);
-            onChanged();
-          }}
-        />
-      )}
+      {dialogs.conflict}
 
       <p className="hidden text-[11px] text-[#4A5568] md:block">Drag a card to another column, or use its ⋮ menu. Only moves allowed for you are applied.</p>
 
@@ -387,6 +355,73 @@ export const TaskBoard: React.FC<{
         </div>
       </div>
 
+      {dialogs.action}
+    </div>
+  );
+};
+
+// ------------------------------------------------------------------ moves (board + list)
+/**
+ * Status moves shared by the board and the task list: plans the move for this viewer, starts straight away
+ * (no fields), opens the matching TaskActionDialog for everything else, and surfaces version conflicts.
+ * Render `dialogs.conflict` above the rows and `dialogs.action` once anywhere below.
+ */
+export function useTaskMover({
+  isManager,
+  notify,
+  onChanged,
+  onOptimistic,
+}: {
+  isManager: boolean;
+  notify: (kind: 'success' | 'error', text: string) => void;
+  onChanged: () => void;
+  /** Show a started card in its new column before the server answers (null = undo). */
+  onOptimistic?: (id: string, to: TaskStatus | null) => void;
+}) {
+  const { user } = useAuth();
+  const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: TaskRow } | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [conflict, setConflict] = useState(false);
+
+  const kindsOf = (row: TaskRow) => rowActorKinds(row, user?.id, isManager);
+
+  const move = async (row: TaskRow, to: TaskStatus) => {
+    const plan = planKanbanMove(row, to, kindsOf(row));
+    if (!plan) return;
+    if (!plan.ok) {
+      notify('error', plan.message);
+      return;
+    }
+    if (plan.action !== 'start') {
+      setDialog({ action: plan.action, task: row });
+      return;
+    }
+    setBusyId(row.id);
+    onOptimistic?.(row.id, 'in_progress');
+    try {
+      await api.post(`/tasks/${row.id}/start`, { version: row.version });
+      notifyTasksChanged();
+      notify('success', `${row.task_number} started.`);
+      onChanged();
+    } catch (e) {
+      onOptimistic?.(row.id, null);
+      if (isConflict(e) && (e as any)?.data?.code === 'STALE_VERSION') setConflict(true);
+      else notify('error', errorMessage(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const dialogs = {
+    conflict: conflict ? (
+      <TaskConflictCallout
+        onRefresh={() => {
+          setConflict(false);
+          onChanged();
+        }}
+      />
+    ) : null,
+    action: (
       <TaskActionDialog
         action={dialog?.action ?? null}
         task={dialog?.task ?? null}
@@ -398,9 +433,24 @@ export const TaskBoard: React.FC<{
         }}
         onConflict={() => setConflict(true)}
       />
-    </div>
-  );
-};
+    ),
+  };
+
+  return { kindsOf, move, busyId, dialogs };
+}
+
+/** The card ⋮ menu: open the task, then every move this viewer may make from `status`. */
+export function taskMoveMenu(t: TaskRow, status: TaskStatus, kinds: Set<TaskActorKind>, onMove: (to: TaskStatus) => void, openTask: () => void): RowMenuItem[] {
+  return [
+    { key: 'open', label: 'Open task', icon: <ExternalLink />, onSelect: openTask },
+    ...KANBAN_COLUMNS.filter((c) => c.id !== status).flatMap((c) => {
+      const plan = planKanbanMove(t, c.id, kinds);
+      if (!plan?.ok) return [];
+      const I = COLUMN_META[c.id].icon;
+      return [{ key: c.id, label: `${plan.label} → ${c.label}`, icon: <I />, onSelect: () => onMove(c.id) }];
+    }),
+  ];
+}
 
 // ------------------------------------------------------------------ card
 /** "40m", "12h", "3d" — short enough for a narrow card. */
@@ -460,21 +510,12 @@ const BoardCard: React.FC<{
   onDragStart: (e: React.DragEvent<HTMLLIElement>) => void;
   onDragEnd: () => void;
 }> = ({ task: t, status, showAssignee, busy, dragging, kinds, onMove, onDragStart, onDragEnd }) => {
-  const router = useRouter();
   const showDelay = (t.status === 'completed' || t.status === 'awaiting_approval') && Boolean(t.delay_class) && t.delay_class !== 'open';
   const links = [t.customer_name, t.tender_no ? `Tender ${t.tender_no}` : null, t.demo_no ? `Demo ${t.demo_no}` : null, t.ticket_no ? `Ticket ${t.ticket_no}` : null].filter(Boolean).join(' · ');
   const person = showAssignee ? { name: t.assignee_name, label: `Assigned to ${t.assignee_name || 'nobody'}` } : t.assigned_by && t.assigned_by !== t.assigned_to ? { name: t.assigned_by_name, label: `Assigned by ${t.assigned_by_name || 'someone'}` } : null;
   const reworks = t.rework_count + t.reopen_count;
 
-  const menu: RowMenuItem[] = [
-    { key: 'open', label: 'Open task', icon: <ExternalLink />, onSelect: () => router.push(`/tasks/${t.id}`) },
-    ...KANBAN_COLUMNS.filter((c) => c.id !== status).flatMap((c) => {
-      const plan = planKanbanMove(t, c.id, kinds);
-      if (!plan?.ok) return [];
-      const I = COLUMN_META[c.id].icon;
-      return [{ key: c.id, label: `${plan.label} → ${c.label}`, icon: <I />, onSelect: () => onMove(c.id) }];
-    }),
-  ];
+  const menu = taskMoveMenu(t, status, kinds, onMove, () => openTaskPeek(t.id));
 
   return (
     <li
@@ -495,7 +536,7 @@ const BoardCard: React.FC<{
           <span className="flex shrink-0 items-center gap-1.5">
             {t.template_id && <Indicator icon={Repeat} label="Recurring task" />}
             {t.evidence_required && <Indicator icon={FileCheck2} label="Evidence required" />}
-            {t.approval_required && <Indicator icon={BadgeCheck} label="Needs manager approval" />}
+            {t.approval_required && <Indicator icon={BadgeCheck} label={t.status === 'awaiting_approval' ? 'Approval pending' : 'Approval required'} />}
             {reworks > 0 && <Indicator icon={RotateCcw} label={`Sent back or reopened ${reworks}×`} count={reworks} />}
           </span>
           {busy ? (
@@ -521,8 +562,6 @@ const BoardCard: React.FC<{
           {showDelay && <DelayBadge delay={t.delay_class} />}
           <TaskFlags task={t} showInactive={Boolean(showAssignee)} />
         </div>
-
-        {(status === 'in_progress' || (status === 'blocked' && t.progress_percent > 0)) && <ProgressBar value={t.progress_percent} />}
 
         <div className="flex items-center justify-between gap-2 border-t border-[#ECE9E2] pt-2">
           <DueChip task={t} />

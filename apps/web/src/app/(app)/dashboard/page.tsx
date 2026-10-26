@@ -229,7 +229,7 @@ function sales(w: W): DeskView {
           items={[
             { label: 'My pipeline', value: lakh(num(w, 'pipelineLakh')), sub: `${num(w, 'openLeads')} active of ${num(w, 'totalLeads')} leads`, href: '/leads', icon: <Target size={15} />, tone: 'teal' },
             { label: 'My open tasks', value: num(w, 'tasksOpen'), sub: `${num(w, 'tasksOverdue')} overdue · ${num(w, 'tasksBlocked')} blocked`, href: '/tasks', icon: <ListChecks size={15} />, tone: num(w, 'tasksOverdue') ? 'red' : 'teal' },
-            { label: 'Open proposals', value: num(w, 'proposalsOpen'), sub: 'Requested or with the customer', href: '/proposals', icon: <Layers size={15} />, tone: 'ink' },
+            { label: 'Proposals requested', value: num(w, 'proposalsRequested'), sub: 'Waiting to be prepared', href: '/proposals?status=PROPOSAL_REQUESTED', icon: <Layers size={15} />, tone: 'ink' },
             { label: 'Demos in progress', value: num(w, 'demosOpen'), sub: 'Requested by you', href: '/demos', icon: <Box size={15} />, tone: 'teal' },
             { label: 'My expense claims', value: num(w, 'claimsLive'), sub: `${inr(num(w, 'claimsAmount'))} in approval`, chip: num(w, 'claimsDraft') ? `${num(w, 'claimsDraft')} draft` : undefined, href: '/expenses', icon: <Wallet size={15} />, tone: num(w, 'claimsClarify') ? 'red' : 'ochre' },
           ]}

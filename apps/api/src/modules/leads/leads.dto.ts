@@ -9,6 +9,7 @@ import {
   IsEmail,
   IsPositive,
   Matches,
+  IsIn,
   Min,
 } from 'class-validator';
 import type {
@@ -19,7 +20,7 @@ import type {
   LeadType,
   LeadLossReason,
 } from '@arihant/shared';
-import { INDIAN_MOBILE_PATTERN } from '@arihant/shared';
+import { INDIAN_MOBILE_PATTERN, INTERACTION_TYPES } from '@arihant/shared';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Any non-whitespace character — one decorator that rejects missing, empty and whitespace-only text with one message. */
@@ -138,6 +139,7 @@ export class CreateLeadDto {
   last_interaction_date?: string;
 
   @IsString()
+  @IsIn(INTERACTION_TYPES, { message: `Last interaction type must be one of: ${INTERACTION_TYPES.join(', ')}` })
   @IsOptional()
   last_interaction_type?: string;
 

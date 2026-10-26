@@ -1,11 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { istDay } from './helpers/ist-date';
 import { AppModule } from '../src/app.module';
-import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { Kysely } from 'kysely';
 import { Database as DB, todayInKolkata } from '@arihant/shared';
 import { purgeTaskModule } from './helpers/reset-tasks';
+import { configureApp } from '../src/common/app-setup';
 
 describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => {
   let app: INestApplication;
@@ -41,15 +42,7 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalFilters(new HttpExceptionFilter());
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     db = moduleFixture.get<Kysely<DB>>('KYSELY_DB');
@@ -473,7 +466,8 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
         return r.body;
       };
       await step({ status: 'assigned', assigned_to: serviceUserId });
-      await step({ status: 'visit_scheduled', planned_visit_date: new Date(Date.now() + 86400000).toISOString().split('T')[0] });
+      // Work can only start on/after the scheduled visit day (IST), so the visit is scheduled for today.
+      await step({ status: 'visit_scheduled', planned_visit_date: istDay(0) });
       const res = await step({ status: 'in_progress' });
       expect(res.status).toBe('in_progress');
     });

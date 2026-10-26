@@ -1,8 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { availableFirst, fleetHint, kitForProduct, kitValue, unitHint } from '@/app/(app)/demos/_lib/fleet';
+import type { SelectOption } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { INDIAN_STATES, canonicalState, resolveLocation, stateOfCity } from './_lib/india-geo';
+import { SECTOR_OPTIONS } from './_lib/sectors';
 import { calendarDay } from '@/lib/calendar-day';
 import {
   Target,
@@ -95,20 +98,6 @@ const LEAD_CATEGORY_OPTIONS: { value: LeadCategory; label: string }[] = [
   { value: 'follow_up', label: 'Follow-up' },
 ];
 
-const SECTOR_OPTIONS = [
-  { value: 'Defence', label: 'Defence (Army / Navy / Air Force)' },
-  { value: 'Police / Paramilitary', label: 'Police / Paramilitary (CRPF, BSF, CISF, ITBP, SSB)' },
-  { value: 'State Police', label: 'State Police & Special Forces' },
-  { value: 'Railways', label: 'Railways & Metro Transit' },
-  { value: 'Security / Intelligence', label: 'Intelligence & Security Agencies' },
-  { value: 'Nuclear & Energy', label: 'Nuclear, Power & Critical Infrastructure' },
-  { value: 'Aviation & Airports', label: 'Aviation & Airport Security' },
-  { value: 'Prisons & Correctional', label: 'Prisons & Correctional Services' },
-  { value: 'PSU / Government', label: 'Public Sector Undertaking (PSU) / Govt' },
-  { value: 'Corporate Security', label: 'Corporate & Industrial Security' },
-  { value: 'Other', label: 'Other Sector' },
-];
-
 const LEAD_SOURCE_OPTIONS = [
   { value: 'field_visit', label: 'Field Visit / On-Site' },
   { value: 'gem_portal', label: 'GeM Portal (Government e-Marketplace)' },
@@ -123,6 +112,38 @@ const LEAD_SOURCE_OPTIONS = [
 /** Stages a lead can be registered in — later stages are reached through the lifecycle actions (QA DEF-059). */
 const INITIAL_LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified'];
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** A supporting document on a logged interaction (Module 1 §8) — persisted to interaction_attachments. */
+interface InteractionAttachment {
+  file_url: string;
+  file_name: string;
+  file_size: number;
+  mime_type: string;
+}
+const MAX_INTERACTION_FILE_BYTES = 10 * 1024 * 1024;
+
+/** Signed direct upload through the shared uploads API (POST /uploads/sign → Cloudinary). */
+async function uploadInteractionFile(file: File): Promise<InteractionAttachment> {
+  const sig = await api.post<{ timestamp: number; signature: string; apiKey: string; cloudName: string; folder: string; allowedFormats: string }>('/uploads/sign', {
+    folder: 'interaction-documents',
+  });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('api_key', sig.apiKey);
+  form.append('timestamp', String(sig.timestamp));
+  form.append('signature', sig.signature);
+  form.append('folder', sig.folder);
+  form.append('allowed_formats', sig.allowedFormats); // signed by the API — must be sent exactly as returned
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(sig.cloudName)}/auto/upload`, { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.secure_url) throw new Error(data?.error?.message || 'Upload failed');
+  return {
+    file_url: data.secure_url as string,
+    file_name: file.name,
+    file_size: file.size,
+    mime_type: file.type || 'application/octet-stream',
+  };
+}
 /** A status that records the lead as won — CONVERTED, or legacy WON (from legacy OPEN / QUOTED leads); both need the PO. */
 const isWinStatus = (st?: string | null) => st === 'converted' || st === 'won';
 
@@ -147,8 +168,7 @@ const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
 
 const INTERACTION_TYPE_OPTIONS = [
   { value: 'call', label: 'Phone Call' },
-  { value: 'physical_visit', label: 'Physical Visit' },
-  { value: 'meeting', label: 'In-person Meeting' },
+  { value: 'physical_visit', label: 'Physical Visit / Meeting' },
   { value: 'video_conference', label: 'Video Conference' },
   { value: 'email', label: 'Email Correspondence' },
   { value: 'whatsapp', label: 'WhatsApp Message' },
@@ -157,66 +177,6 @@ const INTERACTION_TYPE_OPTIONS = [
 ];
 
 // Specific Demo Kit standard accessories mapping
-const getStandardKitAccessories = (productName?: string, category?: string) => {
-  const p = (productName || '').toLowerCase();
-  const c = (category || '').toLowerCase();
-
-  if (p.includes('metal detector') || p.includes('hhmd') || p.includes('dfmd') || c.includes('metal')) {
-    return [
-      'Rugged flight case with custom high-density EVA foam',
-      '2x Rechargeable NiMH battery packs + desktop cradle charger',
-      'Standard MHA test calibration piece & test knife sample',
-      'Ballistic nylon belt holster & safety wrist lanyard',
-      'Factory sensitivity verification & calibration certificate',
-    ];
-  }
-  if (p.includes('thermal') || p.includes('ti-') || p.includes('infrared') || c.includes('thermal')) {
-    return [
-      'Hermetic waterproof IP67 hard carrying case',
-      '2x High-capacity Li-ion batteries + AC/DC field charger',
-      'High-speed HDMI / Video-out cable for command viewing',
-      'Optical microfiber lens cleaning kit & protective cap',
-      'Field survey tripod with quick-release mounting plate',
-      'Thermal resolution test target & calibration report',
-    ];
-  }
-  if (p.includes('night vision') || p.includes('monocular') || p.includes('nvm') || c.includes('night vision')) {
-    return [
-      'Mil-spec Pelican protective case with desiccants',
-      'Combat helmet mount shroud & skull crusher harness',
-      'Sacrificial protective objective window & demist shield',
-      'Dual AA battery adapter cartridge & lens cleaning pen',
-      'Infrared (IR) covert test target card',
-      'OEM optical resolution test & FOM certification dossier',
-    ];
-  }
-  if (p.includes('breath') || p.includes('alco') || c.includes('analyser')) {
-    return [
-      'Hard carrying case with molded foam insert',
-      '100x Individually wrapped sterile sampling mouthpieces',
-      'Wireless Bluetooth mobile receipt printer + 5 paper rolls',
-      'Rechargeable battery pack & vehicle 12V auxiliary charger',
-      'Gas sensor calibration & verification test certificate',
-    ];
-  }
-  if (p.includes('barrier') || p.includes('boom') || p.includes('bollard') || c.includes('barrier')) {
-    return [
-      'Skid-mounted live demonstration barrier unit',
-      'Electro-hydraulic power unit (HPU) demo control console',
-      'Dual optical safety photocell sensor kit',
-      'Remote RF transmitter key fob controller (2 units)',
-      'Crash rating structural impact dossier & wiring schematic',
-    ];
-  }
-  return [
-    'Original ruggedized transit & deployment case',
-    'Standard AC power supply adapter (230V / 50Hz)',
-    'Full accessory connection wiring & interface harness',
-    'Certified demonstration verification sample kit',
-    'OEM operational manual and calibration compliance card',
-  ];
-};
-
 /** Leads fetched per request while the register scrolls. */
 const LEADS_PAGE_SIZE = 25;
 
@@ -297,6 +257,8 @@ export default function LeadsPage() {
   const [isCreateLeadOpen, setIsCreateLeadOpen] = useState(false);
   const [isLeadDetailOpen, setIsLeadDetailOpen] = useState(false);
   const [leadDetailTab, setLeadDetailTab] = useState<'overview' | 'activity' | 'products' | 'ownership' | 'linked'>('overview');
+  const [showLeadFullDetails, setShowLeadFullDetails] = useState(false);
+  const [showLeadStageActions, setShowLeadStageActions] = useState(false);
   const [isLogInteractionOpen, setIsLogInteractionOpen] = useState(false);
   const [isCustomer360Open, setIsCustomer360Open] = useState(false);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
@@ -539,9 +501,10 @@ export default function LeadsPage() {
     outcome: '',
     next_action: '',
     next_followup_date: '',
-    attachment_title: '',
-    attachment_url: '',
+    attachments: [] as InteractionAttachment[],
   });
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   // Win details captured when a lead is marked CONVERTED (QA DEF-054)
   const [winPoReference, setWinPoReference] = useState('');
@@ -614,47 +577,17 @@ export default function LeadsPage() {
     const list = demoEquipmentList || [];
     const activeProductId = demoForm.product_id;
 
-    const matched = activeProductId ? list.filter((e) => e.product_id === activeProductId) : [];
-    const others = activeProductId ? list.filter((e) => e.product_id !== activeProductId) : list;
-
-    const opts: { value: string; label: string }[] = [
-      { value: '', label: '-- Choose Registered Demo Model & Serial --' },
+    // Once a product is chosen, only that product's own demo units are offered
+    const units = activeProductId ? list.filter((e) => e.product_id === activeProductId) : list;
+    const opts: SelectOption[] = [
+      { value: '', label: activeProductId && !units.length ? '-- No demo unit for this product: pick Custom --' : '-- Choose Registered Demo Model & Serial --' },
     ];
 
-    const formatOptLabel = (e: any, isStar = false) => {
-      const isAvail = e.availability_status === 'available';
-      const isReserved = e.availability_status === 'reserved' || e.availability_status === 'in_use';
-      const isMaint = e.availability_status === 'maintenance';
-
-      const statusTag = isAvail
-        ? '🟢 [AVAILABLE]'
-        : isReserved
-        ? `🟡 [RESERVED${e.reserved_until ? ` to ${formatDateIN(e.reserved_until)}` : ''}]`
-        : isMaint
-        ? '🔴 [MAINTENANCE]'
-        : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
-
+    const formatOptLabel = (e: any) => {
       const cond = e.condition ? ` • ${e.condition}` : '';
-      return `${isStar ? '★ ' : ''}${statusTag} S/N: ${e.serial_no} — ${e.model} (${e.current_location} Depot${cond})`;
+      return `S/N: ${e.serial_no} — ${e.model} (${e.current_location} Depot${cond})`;
     };
-
-    if (matched.length > 0) {
-      opts.push(
-        ...matched.map((e) => ({
-          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: formatOptLabel(e, true),
-        }))
-      );
-    }
-
-    if (others.length > 0) {
-      opts.push(
-        ...others.map((e) => ({
-          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: formatOptLabel(e, false),
-        }))
-      );
-    }
+    opts.push(...availableFirst(units.map((e) => ({ value: kitValue(e), label: formatOptLabel(e), ...unitHint(e) }))));
 
     opts.push({
       value: 'custom',
@@ -1035,7 +968,7 @@ export default function LeadsPage() {
       setActionSuccess(null);
       const fullLead = await api.get(`/leads/${leadId}`);
       setSelectedLead(fullLead);
-      setLeadDetailTab('overview'); setIsLeadDetailOpen(true);
+      setLeadDetailTab('overview'); setShowLeadFullDetails(false); setShowLeadStageActions(false); setIsLeadDetailOpen(true);
     } catch (err: any) {
       console.error('Failed to inspect lead:', err);
     }
@@ -1572,7 +1505,7 @@ export default function LeadsPage() {
         lead_id: selectedLead.id,
         organisation_id: selectedLead.organisation_id,
         contact_id: selectedLead.primary_contact_id || undefined,
-        type: 'meeting',
+        type: discussionStage,
         occurred_on: discussionForm.discussion_date,
         remarks: `[${stageLabel}] Scheduled at ${discussionForm.discussion_time} (${discussionForm.mode}). Venue: ${discussionForm.venue}. Agenda: ${discussionForm.agenda}`,
         outcome: `${stageLabel} Touchpoint Scheduled`,
@@ -1622,6 +1555,10 @@ export default function LeadsPage() {
   const handleLogInteraction = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    if (attachmentUploading) {
+      setFormError('Please wait for the document upload to finish.');
+      return;
+    }
     setActionLoading(true);
 
     try {
@@ -1638,15 +1575,7 @@ export default function LeadsPage() {
         next_action: interactionForm.next_action || undefined,
         followup_date: interactionForm.next_followup_date || undefined,
         next_followup_date: interactionForm.next_followup_date || undefined,
-        attachments:
-          interactionForm.attachment_title && interactionForm.attachment_url
-            ? [
-                {
-                  file_name: interactionForm.attachment_title,
-                  file_url: interactionForm.attachment_url,
-                },
-              ]
-            : undefined,
+        attachments: interactionForm.attachments.length > 0 ? interactionForm.attachments : undefined,
       });
 
       setIsLogInteractionOpen(false);
@@ -1660,8 +1589,7 @@ export default function LeadsPage() {
         outcome: '',
         next_action: '',
         next_followup_date: '',
-        attachment_title: '',
-        attachment_url: '',
+        attachments: [],
       });
 
       if (selectedLead) {
@@ -1983,7 +1911,7 @@ export default function LeadsPage() {
             const daysLeft = closed ? null : daysFromToday(followup);
             const overdueDays = daysLeft !== null && daysLeft < 0 ? -daysLeft : 0;
             return (
-              <TableRow key={lead.id}>
+              <TableRow key={lead.id} onOpen={item.onOpen} openLabel={`Open lead ${item.title}`}>
                 <TableCell className="font-bold text-[#14213D]">
                   {lead.product_name || (lead.product_interests && lead.product_interests[0]?.name) || lead.organisation_name || 'Procurement Opportunity'}
                   <div className="text-[10px] text-[#4A5568] font-normal">
@@ -2051,9 +1979,7 @@ export default function LeadsPage() {
                         {item.primary.label}
                       </Button>
                     )}
-                    <Button size="sm" variant="secondary" onClick={item.onOpen} className="shadow-xs text-xs">
-                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                    </Button>
+                    <ChevronRight className="h-4 w-4 text-[#6B7280]" aria-hidden />
                   </div>
                 </TableCell>
               </TableRow>
@@ -3233,8 +3159,7 @@ export default function LeadsPage() {
                 description: 'What they are interested in, how the lead came in, and its current status.',
                 content: (
           <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1.5 sm:col-span-2">
+            <div>
                 <Select
                   label="Product Interests *"
                   required={leadForm.product_ids.length === 0}
@@ -3265,33 +3190,10 @@ export default function LeadsPage() {
                       })),
                   ]}
                 />
-              </div>
-              <Select
-                label="Lead Category *"
-                required
-                value={leadForm.category}
-                onChange={(e) => setLeadForm({ ...leadForm, category: e.target.value as LeadCategory })}
-                options={LEAD_CATEGORY_OPTIONS}
-              />
-              <Select
-                label="Lead Source *"
-                required
-                value={leadForm.source}
-                onChange={(e) => setLeadForm({ ...leadForm, source: e.target.value })}
-                options={LEAD_SOURCE_OPTIONS}
-              />
-              <Select
-                label="Lead Status *"
-                required
-                value={leadForm.lead_status}
-                onChange={(e) => setLeadForm({ ...leadForm, lead_status: e.target.value as LeadStatus })}
-                error={leadErrors.lead_status}
-                helperText="Later stages are reached from the lead's lifecycle actions"
-                options={LEAD_STATUS_OPTIONS.filter((o) => INITIAL_LEAD_STATUSES.includes(o.value))}
-              />
             </div>
+            {/* chips for the chosen products */}
             {leadForm.product_ids.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
+              <div className="flex flex-wrap gap-1.5">
                 {leadForm.product_ids.map((pid) => {
                   const prod = productsList.find((p) => p.id === pid);
                   return (
@@ -3318,9 +3220,32 @@ export default function LeadsPage() {
                 })}
               </div>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <Select
+                label="Lead Category *"
+                required
+                value={leadForm.category}
+                onChange={(e) => setLeadForm({ ...leadForm, category: e.target.value as LeadCategory })}
+                options={LEAD_CATEGORY_OPTIONS}
+              />
+              <Select
+                label="Lead Source *"
+                required
+                value={leadForm.source}
+                onChange={(e) => setLeadForm({ ...leadForm, source: e.target.value })}
+                options={LEAD_SOURCE_OPTIONS}
+              />
+              <Select
+                label="Lead Status *"
+                required
+                value={leadForm.lead_status}
+                onChange={(e) => setLeadForm({ ...leadForm, lead_status: e.target.value as LeadStatus })}
+                error={leadErrors.lead_status}
+                helperText="Later stages are reached from the lead's lifecycle actions"
+                options={LEAD_STATUS_OPTIONS.filter((o) => INITIAL_LEAD_STATUSES.includes(o.value))}
+              />
               <Input
-                label="Estimated Deal Value (₹ Lakh)"
+                label="Deal Value (₹ Lakh)"
                 type="number"
                 step="0.1"
                 min="0.01"
@@ -3329,11 +3254,6 @@ export default function LeadsPage() {
                 placeholder="e.g. 45.0"
                 error={leadErrors.value_lakh}
               />
-              <div className="sm:col-span-2 flex items-center sm:pt-5">
-                <span className="text-[11px] text-[#4A5568] italic">
-                  💡 Arihant Lead Engine automatically dedupes against account history and tags Fresh vs Re-Approached pipeline cycle.
-                </span>
-              </div>
             </div>
           </div>
                 ),
@@ -3425,138 +3345,135 @@ export default function LeadsPage() {
         maxWidth="4xl"
       >
         {selectedLead && (
-          <div className="space-y-5 text-xs">
-            {/* Meta Executive Metrics Strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE]">
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Current Stage</span>
-                <div className="mt-1">{getStatusBadge(selectedLead.lead_status || selectedLead.status)}</div>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Lead Category</span>
-                <div className="mt-1">
-                  <Badge variant="info" size="sm" className="font-bold">
-                    {selectedLead.category === 'new_lead'
-                      ? 'NEW LEAD'
-                      : selectedLead.category === 'active'
-                      ? 'ACTIVE'
-                      : selectedLead.category === 'expected'
-                      ? 'EXPECTED'
-                      : selectedLead.category === 'follow_up'
-                      ? 'FOLLOW-UP'
-                      : (selectedLead.category || 'NEW LEAD').toUpperCase()}
-                  </Badge>
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Classification</span>
-                <div className="mt-1">
-                  {selectedLead.lead_type === 're_approached' ? (
-                    <Badge variant="warning" size="sm">RE-APPROACHED</Badge>
-                  ) : (
-                    <Badge variant="info" size="sm">FRESH ACCOUNT</Badge>
-                  )}
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Estimated Deal</span>
-                <span className="font-extrabold text-[#0F5E63] mt-1 block text-sm font-mono">
-                  {formatLakh(selectedLead.value_lakh || selectedLead.estimated_value_lakh || 0)}
-                </span>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Probability</span>
-                <div className="mt-1">
-                  <Badge
-                    variant={
-                      selectedLead.probability === 'high'
-                        ? 'success'
-                        : selectedLead.probability === 'medium'
-                        ? 'warning'
-                        : 'default'
-                    }
-                    size="sm"
-                    className="font-bold uppercase text-[10px]"
-                  >
-                    {selectedLead.probability || 'MEDIUM'}
-                  </Badge>
-                </div>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Lead Source</span>
-                <span className="font-bold text-[#14213D] mt-1 block capitalize truncate">
-                  {LEAD_SOURCE_OPTIONS.find((s) => s.value === selectedLead.source)?.label || selectedLead.source || 'Direct Field Visit'}
-                </span>
-              </div>
-            </div>
-
-            {/* Allowed Lifecycle Transitions Stepper */}
-            <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
-                  <ArrowRight className="h-4 w-4 text-[#0F5E63]" />
-                  <span>Lifecycle Stage Transitions</span>
-                </span>
-              </div>
-
-              {actionSuccess && (
-                <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-[#0F5E63] text-xs font-semibold flex items-center justify-between animate-in fade-in">
-                  <div className="flex items-center gap-1.5">
-                    <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />
-                    <span>{actionSuccess}</span>
+          <div className="space-y-4 text-xs">
+            {/* Snapshot: the four things a salesperson needs before acting, plus the stage progress and next move */}
+            {(() => {
+              const PIPELINE = ['new', 'contacted', 'qualified', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'converted'];
+              const label = (st: string) => st.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+              const current = (selectedLead.lead_status || selectedLead.status || 'new').toLowerCase();
+              const curIdx = PIPELINE.indexOf(current);
+              const allowed: string[] = selectedLead.allowed_transitions || [];
+              const nextStage = PIPELINE.find((st, i) => i > curIdx && allowed.includes(st));
+              const sideActions = allowed.filter((st) => st !== nextStage && !PIPELINE.includes(st) || (st !== nextStage && PIPELINE.includes(st) && PIPELINE.indexOf(st) > curIdx && st !== 'converted'));
+              const closeActions = allowed.filter((st) => st === 'converted' || st === 'lost');
+              // A won lead offers only management's reopen actions (the API returns none to anyone else — QA DEF-055)
+              const otherActions =
+                current === 'converted' || current === 'won'
+                  ? allowed
+                  : sideActions.filter((st) => st !== 'lost' && st !== 'converted');
+              const nextFollowUp = selectedLead.next_followup_date || selectedLead.next_followup_at || selectedLead.follow_ups?.[0]?.due_date;
+              const secondaryButtons = (
+                <>
+                  {otherActions.map((st) => (
+                    <Button
+                      key={st}
+                      size="xs"
+                      variant="outline"
+                      className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
+                      isLoading={actionLoading && targetStatus === st}
+                      onClick={() => handleDirectAdvanceStatus(st)}
+                    >
+                      {current === 'converted' || current === 'won'
+                        ? `Reopen to ${label(st)} (management)`
+                        : st === 'follow_up'
+                        ? 'Schedule Follow-up'
+                        : st === 'on_hold'
+                        ? 'Put On Hold'
+                        : `Skip to ${label(st)}`}
+                    </Button>
+                  ))}
+                  {closeActions.map((st) => (
+                    <Button
+                      key={st}
+                      size="xs"
+                      variant={st === 'converted' ? 'success' : 'danger'}
+                      className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
+                      isLoading={actionLoading && targetStatus === st}
+                      onClick={() => handleDirectAdvanceStatus(st)}
+                    >
+                      {st === 'converted' ? 'Mark Converted' : 'Mark Lost'}
+                    </Button>
+                  ))}
+                </>
+              );
+              const hasSecondary = otherActions.length + closeActions.length > 0;
+              return (
+                <div className="rounded-xl bg-white border border-[#DCD8CE] divide-y divide-[#ECE9E2]">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 sm:p-4">
+                    <div>
+                      <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Stage</span>
+                      <div className="mt-1">{getStatusBadge(selectedLead.lead_status || selectedLead.status)}</div>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Deal Value</span>
+                      <span className="font-extrabold text-[#0F5E63] mt-1 block text-sm font-mono">
+                        {formatLakh(selectedLead.value_lakh || selectedLead.estimated_value_lakh || 0)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Probability</span>
+                      <div className="mt-1">
+                        <Badge
+                          variant={
+                            selectedLead.probability === 'high'
+                              ? 'success'
+                              : selectedLead.probability === 'medium'
+                              ? 'warning'
+                              : 'default'
+                          }
+                          size="sm"
+                          className="font-bold uppercase text-[10px]"
+                        >
+                          {selectedLead.probability || 'MEDIUM'}
+                        </Badge>
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Next Follow-up</span>
+                      <span className={`mt-1 block font-mono text-xs font-semibold ${nextFollowUp ? 'text-[#9A3412]' : 'text-[#6B7280]'}`}>
+                        {nextFollowUp ? formatDateIN(nextFollowUp) : 'None scheduled'}
+                      </span>
+                    </div>
                   </div>
-                  <button type="button" onClick={() => setActionSuccess(null)} className="text-[#0F5E63] hover:opacity-70 font-bold ml-2">×</button>
-                </div>
-              )}
 
-              {formError && (
-                <div className="p-2.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] text-xs font-medium">
-                  {formError}
-                </div>
-              )}
-
-              {(() => {
-                const PIPELINE = ['new', 'contacted', 'qualified', 'demo', 'proposal', 'tender_discussion', 'negotiation', 'converted'];
-                const label = (st: string) => st.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-                const current = (selectedLead.lead_status || selectedLead.status || 'new').toLowerCase();
-                const curIdx = PIPELINE.indexOf(current);
-                const allowed: string[] = selectedLead.allowed_transitions || [];
-                const nextStage = PIPELINE.find((st, i) => i > curIdx && allowed.includes(st));
-                const sideActions = allowed.filter((st) => st !== nextStage && !PIPELINE.includes(st) || (st !== nextStage && PIPELINE.includes(st) && PIPELINE.indexOf(st) > curIdx && st !== 'converted'));
-                const closeActions = allowed.filter((st) => st === 'converted' || st === 'lost');
-                // A won lead offers only management's reopen actions (the API returns none to anyone else — QA DEF-055)
-                const otherActions =
-                  current === 'converted' || current === 'won'
-                    ? allowed
-                    : sideActions.filter((st) => st !== 'lost' && st !== 'converted');
-                return (
-                  <div className="space-y-3">
-                    <ol className="flex flex-wrap items-center gap-1.5">
-                      {PIPELINE.map((st, i) => {
-                        const done = curIdx >= 0 && i < curIdx;
-                        const active = st === current;
-                        return (
-                          <li key={st} className="flex items-center gap-1.5">
-                            <span
-                              className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border ${
-                                active
-                                  ? 'bg-[#0F5E63] text-white border-[#0F5E63]'
-                                  : done
-                                  ? 'bg-[#E3EFEE] text-[#0F5E63] border-[#0F5E63]/30'
-                                  : 'bg-white text-[#4A5568] border-[#DCD8CE]'
-                              }`}
-                            >
-                              {done ? '✓ ' : ''}{label(st)}
-                            </span>
-                            {i < PIPELINE.length - 1 && <ArrowRight className="h-3 w-3 text-[#C9C4B8]" />}
+                  <div className="p-3 sm:p-4 space-y-3">
+                    {/* Stage progress: one segment per pipeline stage */}
+                    <div>
+                      <div className="flex items-center justify-between gap-3 text-[11px]">
+                        <span className="font-semibold text-[#14213D]">
+                          {curIdx >= 0 ? `Stage ${curIdx + 1} of ${PIPELINE.length} · ${label(current)}` : `Current stage: ${label(current)}`}
+                        </span>
+                        {nextStage && <span className="text-[#4A5568]">Next: {label(nextStage)}</span>}
+                      </div>
+                      <ol className="mt-2 grid grid-cols-8 gap-1" aria-label="Lead pipeline">
+                        {PIPELINE.map((st, i) => (
+                          <li
+                            key={st}
+                            title={label(st)}
+                            aria-current={st === current ? 'step' : undefined}
+                            className={`h-1.5 rounded-full ${
+                              st === current ? 'bg-[#0F5E63]' : curIdx >= 0 && i < curIdx ? 'bg-[#0F5E63]/40' : 'bg-[#ECE9E2]'
+                            }`}
+                          >
+                            <span className="sr-only">{label(st)}</span>
                           </li>
-                        );
-                      })}
-                    </ol>
+                        ))}
+                      </ol>
+                    </div>
 
-                    {!PIPELINE.includes(current) && (
-                      <div className="text-[11px] text-[#4A5568]">
-                        Current stage: <span className="font-semibold text-[#14213D]">{label(current)}</span>
+                    {actionSuccess && (
+                      <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#0F5E63]/30 text-[#0F5E63] text-xs font-semibold flex items-center justify-between animate-in fade-in">
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />
+                          <span>{actionSuccess}</span>
+                        </div>
+                        <button type="button" onClick={() => setActionSuccess(null)} className="text-[#0F5E63] hover:opacity-70 font-bold ml-2">×</button>
+                      </div>
+                    )}
+
+                    {formError && (
+                      <div className="p-2.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] text-xs font-medium">
+                        {formError}
                       </div>
                     )}
 
@@ -3564,56 +3481,45 @@ export default function LeadsPage() {
                       <div className="text-[11px] text-[#4A5568] italic">
                         This lead is in terminal stage ({label(current)}). No further transitions allowed.
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-                        {nextStage && (
+                    ) : nextStage ? (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
                           <Button
                             size="xs"
                             variant="primary"
-                            className="col-span-2 h-10 text-xs leading-tight sm:col-span-1 sm:h-7 sm:text-[11px]"
+                            className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
                             rightIcon={<ArrowRight className="h-3 w-3" />}
                             isLoading={actionLoading && targetStatus === nextStage}
                             onClick={() => handleDirectAdvanceStatus(nextStage)}
                           >
                             Move to {label(nextStage)}
                           </Button>
+                          {hasSecondary && (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
+                              aria-expanded={showLeadStageActions}
+                              rightIcon={showLeadStageActions ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                              onClick={() => setShowLeadStageActions((v) => !v)}
+                            >
+                              More actions
+                            </Button>
+                          )}
+                        </div>
+                        {showLeadStageActions && (
+                          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center animate-in fade-in duration-150">
+                            {secondaryButtons}
+                          </div>
                         )}
-                        {otherActions.map((st) => (
-                          <Button
-                            key={st}
-                            size="xs"
-                            variant="outline"
-                            className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
-                            isLoading={actionLoading && targetStatus === st}
-                            onClick={() => handleDirectAdvanceStatus(st)}
-                          >
-                            {current === 'converted' || current === 'won'
-                              ? `Reopen to ${label(st)} (management)`
-                              : st === 'follow_up'
-                              ? 'Schedule Follow-up'
-                              : st === 'on_hold'
-                              ? 'Put On Hold'
-                              : `Skip to ${label(st)}`}
-                          </Button>
-                        ))}
-                        {closeActions.map((st) => (
-                          <Button
-                            key={st}
-                            size="xs"
-                            variant={st === 'converted' ? 'success' : 'danger'}
-                            className="h-10 text-xs leading-tight sm:h-7 sm:text-[11px]"
-                            isLoading={actionLoading && targetStatus === st}
-                            onClick={() => handleDirectAdvanceStatus(st)}
-                          >
-                            {st === 'converted' ? 'Mark Converted' : 'Mark Lost'}
-                          </Button>
-                        ))}
                       </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">{secondaryButtons}</div>
                     )}
                   </div>
-                );
-              })()}
-            </div>
+                </div>
+              );
+            })()}
 
             {/* Section tabs */}
             <ScrollStrip role="tablist" aria-label="Lead sections" activeKey={leadDetailTab} wrapperClassName="border-b border-[#DCD8CE]" className="items-center gap-1 pb-px">
@@ -3642,170 +3548,126 @@ export default function LeadsPage() {
               ))}
             </ScrollStrip>
 
-            {leadDetailTab === 'overview' && (
-              <div className="space-y-5 animate-in fade-in duration-150">
-            {/* Two-Column Grid: 1. Organisation & Jurisdiction | 2. Key Contact Person */}
-            <div className="grid grid-cols-1 md:grid-cols-2 rounded-xl bg-white border border-[#DCD8CE] divide-y md:divide-y-0 md:divide-x divide-[#ECE9E2]">
-              {/* 1. Organisation & Jurisdiction Intelligence */}
-              <div className="p-4 sm:p-5 space-y-3">
-                <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
-                  <Building className="h-4 w-4 text-[#0F5E63]" />
-                  <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                    Organisation & Jurisdiction
-                  </span>
-                </div>
-                <div className="space-y-2 text-xs">
-                  <div>
-                    <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Organisation / Agency Name</span>
-                    <span className="font-bold text-[#14213D] text-sm block">
-                      {selectedLead.organisation_name || '—'}
-                    </span>
+            {/* Every tab shares one panel height so switching tabs doesn't resize the dialog; each tab's card fills it */}
+            <div className="flex min-h-[220px] flex-col">
+            {leadDetailTab === 'overview' && (() => {
+              const label = (st: string) => st.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+              const zoneName = selectedLead.zone_name || zonesList.find((z) => z.id === selectedLead.zone_id)?.name;
+              const createdOn = selectedLead.created_at
+                ? new Date(selectedLead.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
+                : null;
+              // Everything that is reference data rather than something to act on lives behind "Show all details"
+              const moreDetails: [string, React.ReactNode][] = [
+                ['Department / Unit / Wing', selectedLead.department],
+                ['Sector', SECTOR_OPTIONS.find((s) => s.value === selectedLead.sector)?.label || selectedLead.sector],
+                ['Zone', zoneName && (zoneName.toLowerCase().includes('zone') ? zoneName : `${zoneName} Zone`)],
+                ['Region Office', selectedLead.region_name || regionsList.find((r) => r.id === selectedLead.region_id)?.name],
+                ['Regional Manager', selectedLead.regional_manager_name],
+                ['Channel', label(selectedLead.channel || 'direct')],
+                ['Lead Source', LEAD_SOURCE_OPTIONS.find((s) => s.value === selectedLead.source)?.label || selectedLead.source],
+                [
+                  'Category',
+                  selectedLead.category === 'new_lead'
+                    ? 'New Lead'
+                    : selectedLead.category === 'follow_up'
+                    ? 'Follow-up'
+                    : selectedLead.category && label(selectedLead.category),
+                ],
+                ['Classification', selectedLead.lead_type === 're_approached' ? 'Re-approached' : 'Fresh Account'],
+                ['Registered On', createdOn && <span className="font-mono">{createdOn}</span>],
+              ];
+              return (
+                <div className="flex-1 rounded-xl bg-white border border-[#DCD8CE] divide-y divide-[#ECE9E2] animate-in fade-in duration-150">
+                  {/* Key contact with one-tap call / email */}
+                  <div className="flex flex-col gap-3 p-3 sm:p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#E3EFEE] text-[#0F5E63]">
+                        <User className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Key Contact</span>
+                        <span className="font-bold text-[#14213D] text-sm block truncate">
+                          {selectedLead.contact_name || 'No contact specified'}
+                        </span>
+                        {selectedLead.contact_designation && (
+                          <span className="text-[11px] text-[#4A5568] block truncate">{selectedLead.contact_designation}</span>
+                        )}
+                      </div>
+                    </div>
+                    {(selectedLead.contact_mobile || selectedLead.contact_email) && (
+                      <div className="flex flex-wrap gap-2 sm:justify-end">
+                        {selectedLead.contact_mobile && (
+                          <a
+                            href={`tel:${selectedLead.contact_mobile}`}
+                            className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-[#C9C4B8] bg-white px-3 font-mono text-xs font-semibold text-[#0F5E63] hover:bg-[#E3EFEE] sm:h-8"
+                          >
+                            <Phone className="h-3.5 w-3.5" />
+                            <span>{selectedLead.contact_mobile}</span>
+                          </a>
+                        )}
+                        {selectedLead.contact_email && (
+                          <a
+                            href={`mailto:${selectedLead.contact_email}`}
+                            title={selectedLead.contact_email}
+                            className="inline-flex h-10 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[#C9C4B8] bg-white px-3 font-mono text-xs font-semibold text-[#0F5E63] hover:bg-[#E3EFEE] sm:h-8 sm:max-w-[240px]"
+                          >
+                            <Mail className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">{selectedLead.contact_email}</span>
+                          </a>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Department / Unit / Wing</span>
-                    <span className="font-medium text-[#14213D]">
-                      {selectedLead.department || '—'}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#ECE9E2]">
-                    <div>
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Sector / Domain</span>
-                      <span className="font-medium text-[#14213D]">
-                        {SECTOR_OPTIONS.find((s) => s.value === selectedLead.sector)?.label || selectedLead.sector || 'Defence / Security'}
+
+                  {/* Who owns it and where it is */}
+                  <div className="grid grid-cols-2 gap-3 p-3 sm:p-4">
+                    <div className="min-w-0">
+                      <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Sales Owner</span>
+                      <span className="font-semibold text-[#14213D] block mt-0.5 truncate">
+                        {selectedLead.assigned_salesperson_name || selectedLead.assignee_name || 'Unassigned'}
                       </span>
                     </div>
-                    <div>
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Location (City, State)</span>
-                      <span className="font-medium text-[#14213D] flex items-center gap-1">
+                    <div className="min-w-0">
+                      <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Location</span>
+                      <span className="font-semibold text-[#14213D] mt-0.5 flex items-center gap-1 min-w-0">
                         <MapPin className="h-3 w-3 text-[#4A5568] shrink-0" />
-                        <span>
-                          {selectedLead.city ? `${selectedLead.city}, ` : ''}{selectedLead.state || 'India'}
+                        <span className="truncate">
+                          {[selectedLead.city, selectedLead.state].filter(Boolean).join(', ') || '—'}
                         </span>
                       </span>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#ECE9E2]">
-                    <div>
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Territory / Zone</span>
-                      <span className="font-medium text-[#14213D]">
-                        {selectedLead.zone_name
-                          ? (selectedLead.zone_name.toLowerCase().includes('zone') ? selectedLead.zone_name : `${selectedLead.zone_name} Zone`)
-                          : (zonesList.find((z) => z.id === selectedLead.zone_id)?.name
-                              ? (zonesList.find((z) => z.id === selectedLead.zone_id)!.name.toLowerCase().includes('zone')
-                                  ? zonesList.find((z) => z.id === selectedLead.zone_id)!.name
-                                  : `${zonesList.find((z) => z.id === selectedLead.zone_id)!.name} Zone`)
-                              : 'North Zone')}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Region Office</span>
-                      <span className="font-medium text-[#14213D]">
-                        {selectedLead.region_name || regionsList.find((r) => r.id === selectedLead.region_id)?.name || 'Delhi NCR'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
 
-              {/* 2. Key Contact Person Details */}
-              <div className="p-4 sm:p-5 space-y-3">
-                <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
-                  <User className="h-4 w-4 text-[#0F5E63]" />
-                  <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                    Key Contact Person
-                  </span>
-                </div>
-                <div className="space-y-2 text-xs">
-                  <div>
-                    <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Contact Person Name</span>
-                    <span className="font-bold text-[#14213D] text-sm block">
-                      {selectedLead.contact_name || 'No Contact Specified'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Designation / Rank</span>
-                    <span className="font-medium text-[#14213D]">
-                      {selectedLead.contact_designation || 'Officer / Authority'}
-                    </span>
-                  </div>
-                  <div className="pt-1 border-t border-[#ECE9E2] space-y-1.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase shrink-0">Mobile / Phone</span>
-                      {selectedLead.contact_mobile ? (
-                        <a
-                          href={`tel:${selectedLead.contact_mobile}`}
-                          className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline flex items-center gap-1.5"
-                        >
-                          <Phone className="h-3 w-3" />
-                          <span>{selectedLead.contact_mobile}</span>
-                        </a>
-                      ) : (
-                        <span className="text-[#4A5568] italic text-[11px]">—</span>
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[10px] font-semibold text-[#4A5568] uppercase shrink-0">Email Address</span>
-                      {selectedLead.contact_email ? (
-                        <a
-                          href={`mailto:${selectedLead.contact_email}`}
-                          className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline flex min-w-0 items-center gap-1.5 truncate max-w-[200px]"
-                          title={selectedLead.contact_email}
-                        >
-                          <Mail className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{selectedLead.contact_email}</span>
-                        </a>
-                      ) : (
-                        <span className="text-[#4A5568] italic text-[11px]">—</span>
-                      )}
-                    </div>
+                  {/* Reference details, collapsed by default */}
+                  <div className="p-3 sm:p-4">
+                    <button
+                      type="button"
+                      aria-expanded={showLeadFullDetails}
+                      onClick={() => setShowLeadFullDetails((v) => !v)}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg text-xs font-semibold text-[#0F5E63] hover:text-[#0B4A4E]"
+                    >
+                      <span>{showLeadFullDetails ? 'Hide details' : 'Show all details'}</span>
+                      {showLeadFullDetails ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    </button>
+                    {showLeadFullDetails && (
+                      <dl className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 animate-in fade-in duration-150">
+                        {moreDetails.map(([k, v]) => (
+                          <div key={k} className="min-w-0">
+                            <dt className="text-[10px] uppercase text-[#4A5568] font-bold">{k}</dt>
+                            <dd className="mt-0.5 font-medium text-[#14213D] [overflow-wrap:anywhere]">{v || '—'}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
                   </div>
                 </div>
-              </div>
-            </div>
-
-            {/* Ownership & Territorial Jurisdiction Strip */}
-            <div className="p-4 sm:p-5 rounded-xl bg-white border border-[#DCD8CE]">
-              <div className="flex items-center gap-2 border-b border-[#DCD8CE] pb-2 mb-3">
-                <Users className="h-4 w-4 text-[#0F5E63] shrink-0" />
-                <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                  Sales Ownership & Managerial Governance
-                </span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div>
-                  <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Assigned Sales Owner</span>
-                  <span className="font-bold text-[#14213D] block mt-0.5">
-                    {selectedLead.assigned_salesperson_name || selectedLead.assignee_name || 'Unassigned'}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Regional Manager / Escalation</span>
-                  <span className="font-bold text-[#14213D] block mt-0.5">
-                    {selectedLead.regional_manager_name || 'Reporting Head'}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Channel Route</span>
-                  <span className="font-bold text-[#14213D] block mt-0.5 uppercase font-mono">
-                    {selectedLead.channel || 'DIRECT'}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] font-semibold text-[#4A5568] uppercase block">Lead Created / Registered</span>
-                  <span className="font-mono text-xs text-[#14213D] block mt-0.5">
-                    {selectedLead.created_at ? new Date(selectedLead.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '—'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-              </div>
-            )}
+              );
+            })()}
 
             {leadDetailTab === 'activity' && (
-              <div className="space-y-5 animate-in fade-in duration-150">
+              <div className="flex flex-1 flex-col animate-in fade-in duration-150">
             {/* Interactions, Scheduled Follow-Up & Remarks */}
-            <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+            <div className="flex flex-1 flex-col p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
               <div className="flex items-center gap-2 border-b border-[#ECE9E2] pb-2">
                 <Clock className="h-4 w-4 text-[#0F5E63] shrink-0" />
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
@@ -3851,9 +3713,9 @@ export default function LeadsPage() {
                   </div>
                 </div>
               </div>
-              <div>
+              <div className="flex flex-1 flex-col">
                 <span className="text-[10px] font-bold text-[#4A5568] uppercase block mb-1">Remarks & Discussion Summary</span>
-                <div className="p-3 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#14213D] leading-relaxed">
+                <div className="flex-1 p-3 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#14213D] leading-relaxed">
                   {selectedLead.remarks || selectedLead.last_interaction_notes || selectedLead.interactions?.[0]?.remarks || (
                     <span className="text-[#4A5568] italic">No remarks provided during opportunity registration.</span>
                   )}
@@ -3865,9 +3727,9 @@ export default function LeadsPage() {
             )}
 
             {leadDetailTab === 'products' && (
-              <div className="space-y-5 animate-in fade-in duration-150">
+              <div className="flex flex-1 flex-col animate-in fade-in duration-150">
             {/* Product Interests Section */}
-            <div className="p-3 sm:p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
+            <div className="flex flex-1 flex-col p-3 sm:p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                   <Briefcase className="h-4 w-4 text-[#0F5E63]" />
@@ -3890,24 +3752,28 @@ export default function LeadsPage() {
               </div>
 
               {selectedLead.product_interests && selectedLead.product_interests.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
+                <ul className="divide-y divide-[#ECE9E2] rounded-lg bg-white border border-[#DCD8CE]">
                   {selectedLead.product_interests.map((p: any) => (
-                    <span
+                    <li
                       key={p.product_id || p.id}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-[#DCD8CE] text-xs font-medium text-[#14213D]"
+                      className="flex items-center justify-between gap-2 px-3 py-2.5 text-xs font-medium text-[#14213D]"
                     >
-                      <span>{p.name || p.product_name || productsList.find((x) => x.id === (p.product_id || p.id))?.name || 'Product Interest'}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <Briefcase className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
+                        <span className="truncate">{p.name || p.product_name || productsList.find((x) => x.id === (p.product_id || p.id))?.name || 'Product Interest'}</span>
+                      </span>
                       <button
                         type="button"
                         onClick={() => handleRemoveProductInterest(p.product_id || p.id)}
-                        className="text-[#6B7280] hover:text-[#881337] transition-colors"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[#6B7280] hover:bg-[#FCE8EC] hover:text-[#881337] transition-colors"
                         title="Remove product"
+                        aria-label="Remove product"
                       >
                         <X className="h-3.5 w-3.5" />
                       </button>
-                    </span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               ) : selectedLead.product_name ? (
                 <div className="flex flex-wrap gap-2">
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-[#DCD8CE] text-xs font-medium text-[#14213D]">
@@ -3915,7 +3781,7 @@ export default function LeadsPage() {
                   </span>
                 </div>
               ) : (
-                <span className="text-[11px] text-[#4A5568] italic">No products attached yet.</span>
+                <span className="flex flex-1 items-center justify-center text-center text-[11px] text-[#4A5568] italic">No products attached yet.</span>
               )}
             </div>
 
@@ -3923,9 +3789,9 @@ export default function LeadsPage() {
             )}
 
             {leadDetailTab === 'ownership' && (
-              <div className="space-y-5 animate-in fade-in duration-150">
+              <div className="flex flex-1 flex-col animate-in fade-in duration-150">
             {/* Salesperson Assignment History Audit */}
-            <div className="p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
+            <div className="flex flex-1 flex-col p-3 sm:p-4 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-[#14213D] uppercase tracking-wider flex items-center gap-1.5">
                   <ShieldCheck className="h-4 w-4 text-[#0F5E63]" />
@@ -3974,7 +3840,7 @@ export default function LeadsPage() {
                   ))}
                 </div>
               ) : (
-                <span className="text-[11px] text-[#4A5568] italic">
+                <span className="flex flex-1 items-center justify-center text-center text-[11px] text-[#4A5568] italic">
                   Initial assignment active. No salesperson reassignments recorded.
                 </span>
               )}
@@ -3985,13 +3851,15 @@ export default function LeadsPage() {
 
             {leadDetailTab === 'linked' && (
               <RelatedRecords
-                className="animate-in fade-in duration-150"
+                className="flex-1 animate-in fade-in duration-150"
                 to={{ kind: 'lead', id: selectedLead.id, organisationId: selectedLead.organisation_id }}
                 sections={['demos', 'proposals', 'tasks', 'visits']}
                 description="Demos and proposals raised from this lead, plus the customer's tasks and field visits."
                 addTask={{ title: `Follow up: ${selectedLead.organisation_name || 'lead'}` }}
               />
             )}
+
+            </div>
 
             {/* Action Bar */}
             <div className="flex flex-col gap-2 pt-2 border-t border-[#DCD8CE] sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
@@ -4347,27 +4215,15 @@ export default function LeadsPage() {
                 value={demoForm.product_id}
                 onChange={(e) => {
                   const pId = e.target.value;
-                  setDemoForm((prev) => ({ ...prev, product_id: pId }));
+                  setDemoForm((prev) => ({ ...prev, product_id: pId, equipment_required: kitForProduct(prev.equipment_required, pId, demoEquipmentList || []) }));
                 }}
                 options={[
                   { value: '', label: 'Select Product / Equipment' },
-                  ...productsList.map((p) => {
+                  ...availableFirst(productsList.map((p) => {
                     const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
-                    const avail = pUnits.filter((e) => e.availability_status === 'available');
-                    let statusTag = '';
-                    if (avail.length > 0) {
-                      const locs = Array.from(new Set(avail.map((u) => u.current_location).filter(Boolean)));
-                      statusTag = `[AVAILABLE: ${avail.length} of ${pUnits.length} in ${locs.join(', ')}]`;
-                    } else if (pUnits.length > 0) {
-                      statusTag = `[RESERVED / IN USE: ${pUnits.length} Units]`;
-                    } else {
-                      statusTag = `[NO DEMO FLEET UNIT]`;
-                    }
-                    return {
-                      value: p.id,
-                      label: `${statusTag} ${p.name}`,
-                    };
-                  }),
+                    const ready = pUnits.filter((e) => e.availability_status === 'available').length;
+                    return { value: p.id, label: `${p.name}`, ...fleetHint(ready, pUnits.length) };
+                  })),
                 ]}
               />
 
@@ -4400,50 +4256,6 @@ export default function LeadsPage() {
                 options={leadRegisteredEquipmentOptions}
               />
             </div>
-
-            {/* Fleet Availability Overview by Product (when no product is selected yet) - Full Width */}
-            {!activeLeadDemoFleet && (
-              <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                    Demo Equipment Fleet Availability & Status:
-                  </span>
-                  <span className="text-[10px] text-[#0F5E63] font-medium">Click to select equipment</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                  {productsList.slice(0, 9).map((p) => {
-                    const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
-                    const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
-                    const total = pUnits.length;
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => {
-                          setDemoForm((prev) => ({ ...prev, product_id: p.id }));
-                        }}
-                        className="flex min-h-10 items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group sm:min-h-0"
-                      >
-                        <span className="min-w-0 font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
-                          {p.name}
-                        </span>
-                        <span
-                          className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
-                            availCount > 0
-                              ? 'bg-[#E3EFEE] text-[#0B4A4E]'
-                              : total > 0
-                              ? 'bg-[#FBEBDD] text-[#7C2D12]'
-                              : 'bg-[#ECE9E2] text-[#4A5568]'
-                          }`}
-                        >
-                          {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             {/* Live Product Fleet Availability & Status HUD - Full Width */}
             {activeLeadDemoFleet && (
@@ -4494,67 +4306,6 @@ export default function LeadsPage() {
               </div>
             )}
 
-            {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) - Full Width */}
-            {!selectedLeadEquipUnit && activeLeadDemoFleet && activeLeadDemoFleet.units.length > 0 && (
-              <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
-                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                    Available Demo Kits in Fleet ({activeLeadDemoFleet.units.length}):
-                  </span>
-                  <span className="text-[10px] text-[#0F5E63] font-medium">Click any kit below to assign</span>
-                </div>
-                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                  {activeLeadDemoFleet.units.map((u) => {
-                    const isReady = u.availability_status === 'available';
-                    const isReserved = u.availability_status === 'reserved' || u.availability_status === 'in_use';
-                    return (
-                      <div
-                        key={u.id}
-                        onClick={() => {
-                          const val = `${u.model} | S/N: ${u.serial_no} (${u.current_location} Depot)`;
-                          setDemoForm((prev) => ({
-                            ...prev,
-                            equipment_required: val,
-                            product_id: u.product_id || prev.product_id,
-                          }));
-                        }}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-all hover:shadow-xs group gap-2"
-                      >
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-[#14213D] text-[11px] group-hover:text-[#0F5E63]">{u.model}</span>
-                            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
-                              S/N: {u.serial_no}
-                            </span>
-                            <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
-                            {isReady ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
-                                🟢 Ready
-                              </span>
-                            ) : isReserved ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
-                                🟡 Reserved
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FCE8EC] text-[#700F2D] border border-[#F3C7CF]">
-                                🔴 Maint
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[10px] text-[#4A5568]">
-                            📦 Kit includes: Flight case, dual Li-ion batteries, charger & calibration block
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-xs text-[#0F5E63] font-bold group-hover:underline">Select Kit →</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
             {/* Specific Demo Kit / Serial / Accessories Detail Card - FULL WIDTH, NOT SPLIT IN HALF */}
             {selectedLeadEquipUnit && (
               <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
@@ -4599,28 +4350,8 @@ export default function LeadsPage() {
                   </div>
                 </div>
 
-                {/* Included Standard Demo Kit Accessories - Full Width Grid */}
-                <div className="pt-2 border-t border-[#ECE9E2]">
-                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block mb-1.5">
-                    📦 Specific Demo Kit / Included Accessories & Calibration Items:
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
-                    {getStandardKitAccessories(selectedLeadEquipUnit.product_name, selectedLeadEquipUnit.product_category).map((item, idx) => (
-                      <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
-                        <CheckCircle className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                        <span className="truncate text-[11px]">{item}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Status Note Callout */}
-                {selectedLeadEquipUnit.availability_status === 'available' ? (
-                  <div className="p-2 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[11px] flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-[#0B4A4E] shrink-0" />
-                    <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedLeadEquipUnit.current_location} Depot.</span>
-                  </div>
-                ) : selectedLeadEquipUnit.availability_status === 'reserved' || selectedLeadEquipUnit.availability_status === 'in_use' ? (
+                {/* Warn when the chosen unit is busy or under maintenance */}
+                {selectedLeadEquipUnit.availability_status === 'available' ? null : selectedLeadEquipUnit.availability_status === 'reserved' || selectedLeadEquipUnit.availability_status === 'in_use' ? (
                   <div className="p-2 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[11px] flex items-center gap-2">
                     <AlertTriangle className="h-4 w-4 text-[#7C2D12] shrink-0" />
                     <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
@@ -4678,47 +4409,6 @@ export default function LeadsPage() {
                 ...leadDemoTeamOptions,
               ]}
             />
-
-            {/* Pre-selection Demo Team Member Roster (when none selected yet) */}
-            {!selectedLeadDemoMember && (
-              <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                  <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                    Demo Team Availability on {formatDateIN(demoForm.requested_date)}:
-                  </span>
-                  <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                  {(leadDemoTeamAvailability.length > 0 ? leadDemoTeamAvailability : usersList.filter((u) => ['demo_team', 'service_team', 'sales'].includes(u.role))).map((m) => {
-                    const isAvail = m.is_available ?? true;
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => setDemoForm((prev) => ({ ...prev, assigned_to: m.id }))}
-                        className="flex min-h-11 items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group sm:min-h-0"
-                      >
-                        <div className="min-w-0 space-y-0.5 truncate pr-1">
-                          <span className="font-semibold text-[#14213D] text-[11px] block truncate group-hover:text-[#0F5E63]">
-                            {m.full_name}
-                          </span>
-                          <span className="text-[10px] text-[#4A5568] block truncate">
-                            {m.role === 'demo_team' ? 'Demo Specialist' : m.role.replace(/_/g, ' ')} {m.phone ? `• ${m.phone}` : ''}
-                          </span>
-                        </div>
-                        <span
-                          className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
-                            isAvail ? 'bg-[#E3EFEE] text-[#0B4A4E]' : 'bg-[#FBEBDD] text-[#7C2D12]'
-                          }`}
-                        >
-                          {isAvail ? '🟢 Available' : '🟡 Booked'}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             {/* Selected Demo Team Member Live Availability & Notification Card */}
             {selectedLeadDemoMember && (
@@ -5348,16 +5038,23 @@ export default function LeadsPage() {
 
                     {customerManagementSummary?.previous_salespersons && customerManagementSummary.previous_salespersons.length > 0 ? (
                       <div className="space-y-1.5 pt-1">
-                        <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Previous Reassignment History:</span>
+                        <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Previous Salespersons &amp; Reassignments:</span>
                         {customerManagementSummary.previous_salespersons.map((h: any, idx: number) => (
                           <div
                             key={idx}
                             className="p-2 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between gap-2 text-[10px]"
                           >
                             <div className="min-w-0">
-                              <span className="font-semibold text-[#14213D]">
-                                {h.previous_salesperson_name || 'Unassigned'} → {h.new_salesperson_name}
-                              </span>
+                              {h.source ? (
+                                <span className="font-semibold text-[#14213D]">
+                                  {h.salesperson_name || 'Former team member'}
+                                  <span className="font-normal text-[#4A5568]"> · {h.source === 'lead' ? 'owned a lead' : 'logged interactions'}</span>
+                                </span>
+                              ) : (
+                                <span className="font-semibold text-[#14213D]">
+                                  {h.previous_salesperson_name || 'Unassigned'} → {h.new_salesperson_name}
+                                </span>
+                              )}
                               {h.reason && <span className="text-[#4A5568] block">Reason: {h.reason}</span>}
                             </div>
                             <span className="shrink-0 text-[#4A5568] font-mono text-[9px]">
@@ -5863,6 +5560,8 @@ export default function LeadsPage() {
         <form onSubmit={handleLogInteraction} className="text-xs">
           <FormSteps
             onCancel={() => setIsLogInteractionOpen(false)}
+            maxSteps={2}
+            stepTitles={['Interaction & Minutes', 'Next Step & Documents']}
             banner={
               formError && (
                 <div className="p-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D]">
@@ -5970,23 +5669,70 @@ export default function LeadsPage() {
                 ),
               },
               {
-                title: 'Attachment',
+                title: 'Documents',
                 icon: <Paperclip />,
-                description: 'Optional: link a supporting document such as a proposal or MOM.',
+                description: 'Optional: attach supporting documents such as a proposal or MOM.',
                 content: (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Document Name"
-              value={interactionForm.attachment_title}
-              onChange={(e) => setInteractionForm({ ...interactionForm, attachment_title: e.target.value })}
-              placeholder="e.g. RAF_MOM_Signed.pdf"
-            />
-            <Input
-              label="File URL / Storage Link"
-              value={interactionForm.attachment_url}
-              onChange={(e) => setInteractionForm({ ...interactionForm, attachment_url: e.target.value })}
-              placeholder="https://storage.arihant.com/docs/..."
-            />
+          <div className="space-y-2">
+            <label
+              className={`inline-flex min-h-10 cursor-pointer items-center gap-1 rounded-lg border border-[#C9C4B8] bg-white px-2.5 text-xs font-semibold text-[#0F5E63] hover:bg-[#E3EFEE] sm:min-h-8 ${attachmentUploading ? 'pointer-events-none opacity-50' : ''}`}
+            >
+              <Paperclip className="h-3.5 w-3.5" /> {attachmentUploading ? 'Uploading…' : 'Attach documents'}
+              <input
+                type="file"
+                multiple
+                accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx"
+                className="hidden"
+                disabled={attachmentUploading}
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files || []);
+                  e.target.value = '';
+                  if (files.length === 0) return;
+                  setAttachmentError(null);
+                  const tooBig = files.find((f) => f.size > MAX_INTERACTION_FILE_BYTES);
+                  if (tooBig) {
+                    setAttachmentError(`${tooBig.name} is larger than 10 MB.`);
+                    return;
+                  }
+                  setAttachmentUploading(true);
+                  try {
+                    const uploaded: InteractionAttachment[] = [];
+                    for (const file of files) uploaded.push(await uploadInteractionFile(file));
+                    setInteractionForm((prev) => ({ ...prev, attachments: [...prev.attachments, ...uploaded] }));
+                  } catch (err: any) {
+                    setAttachmentError(err.message || 'Document upload failed.');
+                  } finally {
+                    setAttachmentUploading(false);
+                  }
+                }}
+              />
+            </label>
+            {attachmentError && <p className="text-[11px] text-[#881337]">{attachmentError}</p>}
+            {interactionForm.attachments.length === 0 ? (
+              <p className="text-[11px] text-[#4A5568]">No documents attached. PDF, Word, Excel or photos · up to 10 MB each.</p>
+            ) : (
+              <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#DCD8CE]">
+                {interactionForm.attachments.map((a, i) => (
+                  <li key={a.file_url} className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs">
+                    <a href={a.file_url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-[#0F5E63] underline">
+                      {a.file_name}
+                    </a>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Remove ${a.file_name}`}
+                      className="h-10 w-10 shrink-0 px-0 sm:h-8 sm:w-8"
+                      onClick={() =>
+                        setInteractionForm((prev) => ({ ...prev, attachments: prev.attachments.filter((_, j) => j !== i) }))
+                      }
+                    >
+                      <X className="h-3.5 w-3.5 text-[#9A3412]" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
                 ),
               },

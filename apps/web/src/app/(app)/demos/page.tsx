@@ -39,14 +39,21 @@ import {
   FileText,
   CalendarDays,
   LayoutList,
+  ClipboardList,
+  Hourglass,
+  CalendarCheck,
+  CircleCheck,
+  Pencil,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useOpenParam } from '@/lib/use-open-param';
+import { DemoCalendar } from './_lib/DemoCalendar';
 import { canRead } from '@/lib/module-access';
 import { canOpen } from '@/lib/route-access';
 import { formatINR } from '@arihant/shared';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
+import { CreateDemoModal } from './_lib/CreateDemoModal';
 import {
   Button,
   Badge,
@@ -64,7 +71,7 @@ import {
   InfoCallout,
   Checkbox, Spinner, PageLoader, FormSteps, FormSection,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu,
-  RecordTable, RecordViews, formatDateIN, daysFromToday, toneFor, type BadgeProps, type RecordItem, formatDateTimeIN } from '@/components/ui';
+  RecordList, RecordTable, RecordViews, StepTrack, formatDateIN, daysFromToday, toneFor, type BadgeProps, type RecordItem, type TrackStep, formatDateTimeIN } from '@/components/ui';
 
 // =========================================================================
 // STRUCTURED FAILURE TAXONOMY METADATA (§17 & §18)
@@ -147,7 +154,8 @@ const FAILURE_REASON_METADATA: Record<
 
 // Demo lifecycle in workflow order — drives the status filter and the stage board lanes.
 const DEMO_STATUSES: { key: string; label: string }[] = [
-  { key: 'requested', label: 'Requested' },
+  // a new request waits for the demo coordinator to accept and plan it
+  { key: 'requested', label: 'Approval pending' },
   { key: 'under_planning', label: 'Under planning' },
   { key: 'team_assigned', label: 'Team assigned' },
   { key: 'equipment_reserved', label: 'Equipment reserved' },
@@ -183,6 +191,34 @@ const DEMO_STATUS_BADGE: Record<string, BadgeVariant> = {
 };
 const demoStatusBadge = (status?: string): BadgeVariant => DEMO_STATUS_BADGE[String(status || '')] ?? 'outline';
 
+/** A demo's stage as the pipeline board's columns: management approval, planning, date confirmed, done. */
+const DemoStageTrack: React.FC<{ status?: string }> = ({ status }) => {
+  if (status === 'cancelled') {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-[#E9C9B4] bg-[#FBEBDD] px-2.5 py-1 text-xs font-semibold text-[#9A3412]">
+        <XCircle className="h-3.5 w-3.5" aria-hidden /> Cancelled
+      </span>
+    );
+  }
+  const steps: TrackStep[] = [
+    { key: 'approval', label: status === 'requested' ? 'Approval pending' : 'Approved', icon: Hourglass },
+    { key: 'planning', label: 'Planning', icon: ClipboardList },
+    { key: 'confirmed', label: status === 'rescheduled' ? 'Rescheduled' : 'Confirmed', icon: CalendarCheck },
+    { key: 'done', label: status === 'failed' ? 'Failed' : 'Completed', icon: CircleCheck },
+  ];
+  const current =
+    status === 'requested' ? 0 : ['under_planning', 'team_assigned', 'equipment_reserved'].includes(String(status)) ? 1 : status === 'confirmed' || status === 'rescheduled' ? 2 : 3;
+  return (
+    <StepTrack
+      steps={steps}
+      current={current}
+      tone={status === 'requested' || status === 'rescheduled' ? 'warning' : status === 'failed' ? 'danger' : 'primary'}
+      complete={status === 'completed'}
+      label={`Stage: ${demoStatusLabel(status)}`}
+    />
+  );
+};
+
 // Action row at the end of a dialog form. From `sm` up it is the plain divider row it always was (each
 // dialog adds its own `sm:justify-*` / `sm:gap-*`). Phones (bottom sheet): pinned to the bottom edge of
 // the sheet with the buttons sharing the width, like the FormSteps footer. `!-mb-4` beats the bottom
@@ -190,72 +226,14 @@ const demoStatusBadge = (status?: string): BadgeVariant => DEMO_STATUS_BADGE[Str
 const SHEET_FOOTER =
   'flex items-center gap-2 border-t border-[#DCD8CE] pt-3 max-sm:sticky max-sm:-bottom-4 max-sm:z-10 max-sm:-mx-4 max-sm:!-mb-4 max-sm:bg-white max-sm:px-4 max-sm:pb-3 max-sm:[&>*]:min-w-0 max-sm:[&>*]:flex-1';
 
-const getStandardKitAccessories =(productName?: string, category?: string) => {
-  const name = (productName || '').toLowerCase();
-  const cat = (category || '').toLowerCase();
-
-  if (name.includes('metal detector') || name.includes('hhmd') || name.includes('dfmd') || cat.includes('security')) {
-    return [
-      'Rugged Pelican / EVA Hard Transport Case with foam inserts',
-      '2x Rechargeable 9V / 12V Li-ion Battery Packs (1 installed, 1 spare)',
-      'Intelligent Fast AC/DC Desktop Charging Adapter with status LED',
-      'Certified MHA / OEM Test Calibration Piece (Steel target rod & coin)',
-      'Factory Calibration Certificate & Technical Operator Manual',
-      'Tactical Belt Holster & Security Wrist Lanyard (for HHMD)',
-    ];
-  }
-  if (name.includes('thermal') || name.includes('infrared') || cat.includes('surveillance')) {
-    return [
-      'IP67 Weatherproof Heavy-Duty Flight Case with pressure valve',
-      '2x High-Capacity Smart Li-ion Battery Packs with power gauge',
-      'Dual-Bay Intelligent Battery Charging Dock & 12V Car Charger',
-      'Germanium Lens Protective Cap & Microfiber Optics Cleaning Kit',
-      'External Video Output Cable (HDMI / CVBS) for live monitor relay',
-      'OEM Calibration & Sensitivity Certificate (NABL Aligned)',
-    ];
-  }
-  if (name.includes('night vision') || name.includes('monocular') || cat.includes('optics')) {
-    return [
-      'Mil-Spec Padded Canvas Tactical Carrying Pouch & Hard Shell Case',
-      'Head-Mount / Helmet-Mount Harness Kit with Wilcox style shroud',
-      '4x CR123A Lithium Cells / Rechargeable Battery Module with charger',
-      'Sacrificial Daylight Lens Filter & Demist Shield assembly',
-      'Tube Performance Data Sheet (FOM & Resolution Test Certificate)',
-      'Waterproof Lens Cap, Eye-cup Shutter & Lens Cleaning Pen',
-    ];
-  }
-  if (name.includes('breath') || name.includes('analyser') || name.includes('alcohol')) {
-    return [
-      'Hard Protective Carry Case with precut foam storage',
-      '50x Individually Wrapped Hygienic Disposable Mouthpieces',
-      'Bluetooth Mobile Thermal Receipt Printer & 2x Paper Rolls',
-      'Rechargeable Li-ion Battery & Micro-USB Charging Cable + Car Adapter',
-      'OEM Dry Gas Simulator Calibration Certificate (Valid for 6 Months)',
-      'Device Tamper-Evident Security Seal & User Handbook',
-    ];
-  }
-  if (name.includes('barrier') || name.includes('tyre') || name.includes('perimeter')) {
-    return [
-      'Heavy-Duty Skid Mounting Hardware & Quick-Deploy Ground Anchors',
-      'Primary Hydraulic Power Pack & Emergency Manual Override Hand Pump',
-      '2x Long-Range Wireless Remote Control Transmitters (433 MHz)',
-      'High-Visibility Reflective Warning Strips & LED Strobe Beacon Kit',
-      'Installation Wiring Harness & Push-Button Desk Controller Console',
-      'Structural Impact Rating Test Certificate & Operation Manual',
-    ];
-  }
-  return [
-    'Heavy-Duty Padded Protective Carrying / Transport Case',
-    'Primary & Hot-Swappable Secondary Backup Battery Packs',
-    'Regulated AC Mains Power Supply & Fast Charging Cable',
-    'OEM Standard Factory Inspection & Calibration Test Certificate',
-    'Complete Field Operational Handbook & Safety Protocol Guide',
-    'Depot Handover Check-sheet with Tamper-Evident Security Seals',
-  ];
-};
 
 function DemosPageContent() {
   const { user, hasRole } = useAuth();
+  // Planning, dates and direct bookings belong to coordinators; sales raise requests (mirrors the API roles).
+  const isCoordinator = hasRole(['demo_team', 'management', 'regional_manager', 'admin']);
+  // Management approves a new request; the demo team then fixes the date with the client (admin can override both)
+  const canApprove = hasRole(['management', 'admin']);
+  const canConfirmDate = hasRole(['demo_team', 'admin']);
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
 
@@ -402,6 +380,8 @@ function DemosPageContent() {
   const [isEquipmentModalOpen, setIsEquipmentModalOpen] = useState(false);
   const [isRejectOpen, setIsRejectOpen] = useState(false);
   const [isAllocateOpen, setIsAllocateOpen] = useState(false);
+  // The allocate sheet doubles as "suggest an alternative" (§16): same unit picker, the requester decides.
+  const [allocateMode, setAllocateMode] = useState<'allocate' | 'suggest'>('allocate');
 
   // Selected reservation for custodian actions
   const [selectedReservation, setSelectedReservation] = useState<any | null>(null);
@@ -410,126 +390,6 @@ function DemosPageContent() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
-
-  // 1. Create Demo Request Form (9 specifications)
-  const [newDemo, setNewDemo] = useState({
-    organisation_id: '',
-    product_id: '',
-    location: '',
-    requested_date: addIsoDays(istToday(), 5),
-    assigned_to: '', // Salesperson
-    purpose: '',
-    expected_audience: '',
-    equipment_required: '',
-    special_requirements: '',
-    remarks: '',
-    visit_id: '',
-    travel_required: false,
-    travel_from: 'Delhi Depot',
-    travel_to: '',
-    travel_date: '',
-    travel_remarks: '',
-    service_escort_required: false,
-    service_engineer_id: '',
-    tender_id: '',
-    deal_value: '',
-  });
-  // Open tenders of the selected customer, for linking a demo to the bid it supports (drives equipment priority).
-  const [orgTenders, setOrgTenders] = useState<any[]>([]);
-  useEffect(() => {
-    setOrgTenders([]);
-    if (!newDemo.organisation_id || !canRead(user?.role, 'tenders')) return;
-    api
-      .get('/tenders', { organisation_id: newDemo.organisation_id, limit: 50 })
-      .then((res: any) => setOrgTenders((res?.data || []).filter((t: any) => !['lost', 'cancelled', 'not_participating', 'LOST', 'CANCELLED'].includes(t.status))))
-      .catch(() => setOrgTenders([]));
-  }, [newDemo.organisation_id, user?.role]);
-
-  // Selected demo equipment unit for Create New Demo Modal
-  const selectedNewDemoEquipUnit = useMemo(() => {
-    if (!newDemo.equipment_required || newDemo.equipment_required === 'custom') return null;
-    return (equipmentList || []).find(
-      (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === newDemo.equipment_required
-        || item.serial_no === newDemo.equipment_required
-        || item.id === newDemo.equipment_required
-    ) || null;
-  }, [equipmentList, newDemo.equipment_required]);
-
-  // Active product fleet availability breakdown for Create New Demo Modal
-  const activeNewDemoProductFleet = useMemo(() => {
-    const pId = newDemo.product_id;
-    if (!pId) return null;
-    const productUnits = (equipmentList || []).filter((e) => e.product_id === pId);
-    const available = productUnits.filter((e) => e.availability_status === 'available');
-    const reserved = productUnits.filter((e) => e.availability_status === 'reserved' || e.availability_status === 'in_use');
-    const maintenance = productUnits.filter((e) => e.availability_status === 'maintenance');
-    const locations = Array.from(new Set(available.map((e) => e.current_location).filter(Boolean)));
-
-    return {
-      total: productUnits.length,
-      availableCount: available.length,
-      reservedCount: reserved.length,
-      maintenanceCount: maintenance.length,
-      availableUnits: available,
-      locations,
-      units: productUnits,
-    };
-  }, [equipmentList, newDemo.product_id]);
-
-  // Options for registered demo equipment models from fleet matrix for Create New Demo Modal
-  const newDemoEquipmentOptions = useMemo(() => {
-    const list = equipmentList || [];
-    const activeProductId = newDemo.product_id;
-
-    const matched = activeProductId ? list.filter((e) => e.product_id === activeProductId) : [];
-    const others = activeProductId ? list.filter((e) => e.product_id !== activeProductId) : list;
-
-    const opts: { value: string; label: string }[] = [
-      { value: '', label: '-- Choose Registered Demo Model & Serial --' },
-    ];
-
-    const formatOptLabel = (e: any, isStar = false) => {
-      const isAvail = e.availability_status === 'available';
-      const isReserved = e.availability_status === 'reserved' || e.availability_status === 'in_use';
-      const isMaint = e.availability_status === 'maintenance';
-
-      const statusTag = isAvail
-        ? '🟢 [AVAILABLE]'
-        : isReserved
-        ? `🟡 [RESERVED${e.reserved_until ? ` to ${formatDateIN(e.reserved_until)}` : ''}]`
-        : isMaint
-        ? '🔴 [MAINTENANCE]'
-        : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
-
-      const cond = e.condition ? ` • ${e.condition}` : '';
-      return `${isStar ? '★ ' : ''}${statusTag} S/N: ${e.serial_no} — ${e.model} (${e.current_location} Depot${cond})`;
-    };
-
-    if (matched.length > 0) {
-      opts.push(
-        ...matched.map((e) => ({
-          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: formatOptLabel(e, true),
-        }))
-      );
-    }
-
-    if (others.length > 0) {
-      opts.push(
-        ...others.map((e) => ({
-          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: formatOptLabel(e, false),
-        }))
-      );
-    }
-
-    opts.push({
-      value: 'custom',
-      label: '✎ Other / Custom Demo Model or Equipment Kit',
-    });
-
-    return opts;
-  }, [equipmentList, newDemo.product_id]);
 
   // 2. Assign Team Form
   const [teamForm, setTeamForm] = useState({
@@ -587,14 +447,14 @@ function DemosPageContent() {
     completed: true,
     result: 'success' as 'success' | 'fail' | 'partial',
     failure_reason: 'TECHNICAL_FAILURE',
-    customer_response: 'Positive feedback; demonstrated operational readiness',
-    technical_performance: 'Optimal performance across all test targets',
-    product_suitability: 'Suitable for procurement tender specifications',
+    customer_response: '',
+    technical_performance: '',
+    product_suitability: '',
     decision_maker_present: true,
     competitor_involved: '',
-    next_step: 'Commercial quotation & GeM bid submission',
+    next_step: '',
     opportunity_stage: 'Proposal',
-    remarks: 'Demonstration successfully witnessed by procurement committee.',
+    remarks: '',
   });
 
   // 8. Add / Edit Equipment Form (with custodian & availability status)
@@ -794,71 +654,6 @@ function DemosPageContent() {
   // =========================================================================
   // ACTIONS & HANDLERS
   // =========================================================================
-
-  const handleCreateDemo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setActionError(null);
-    setActionSuccess(null);
-    setIsSubmitting(true);
-
-    try {
-      if ((calendarDay(newDemo.requested_date) || '') < istToday()) {
-        throw new Error('The requested trial date is in the past. Choose today or a later date.');
-      }
-      const payload: any = {
-        ...newDemo,
-        product_id: newDemo.product_id || undefined,
-        assigned_to: newDemo.assigned_to || undefined,
-        visit_id: newDemo.visit_id || undefined,
-        service_escort_required: newDemo.service_escort_required || false,
-        service_engineer_id: newDemo.service_escort_required && newDemo.service_engineer_id ? newDemo.service_engineer_id : undefined,
-        travel_from: newDemo.travel_required ? newDemo.travel_from : undefined,
-        travel_to: newDemo.travel_required ? newDemo.travel_to : undefined,
-        travel_date: newDemo.travel_required ? newDemo.travel_date : undefined,
-        travel_remarks: newDemo.travel_required ? newDemo.travel_remarks : undefined,
-        tender_id: newDemo.tender_id || undefined,
-        deal_value: newDemo.deal_value ? Number(newDemo.deal_value) : undefined,
-      };
-
-      // Strip all empty string properties so class-validator doesn't attempt UUID regex on ""
-      Object.keys(payload).forEach((key) => {
-        if (payload[key] === '') {
-          delete payload[key];
-        }
-      });
-
-      const created = await api.post('/demos', payload);
-      setActionSuccess(`Demo request ${created.demo_no} created successfully.`);
-      setIsCreateOpen(false);
-      setNewDemo({
-        organisation_id: '',
-        product_id: '',
-        location: '',
-        requested_date: addIsoDays(istToday(), 5),
-        assigned_to: '',
-        purpose: '',
-        expected_audience: '',
-        equipment_required: '',
-        special_requirements: '',
-        remarks: '',
-        visit_id: '',
-        travel_required: false,
-        travel_from: 'Delhi Depot',
-        travel_to: '',
-        travel_date: '',
-        travel_remarks: '',
-        service_escort_required: false,
-        service_engineer_id: '',
-        tender_id: '',
-        deal_value: '',
-      });
-      await fetchDemosData();
-    } catch (err: any) {
-      setActionError(err.message || 'Failed to create demo request.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   const handleOpenAssignTeam = async (demo: any) => {
     setSelectedDemo(demo);
@@ -1089,17 +884,33 @@ function DemosPageContent() {
   };
 
   // Custodian Open Allocate Alternative Unit Modal
-  const handleOpenAllocate = (reservation: any, demo: any) => {
+  const handleOpenAllocate = (reservation: any, demo: any, mode: 'allocate' | 'suggest' = 'allocate') => {
     setSelectedReservation(reservation);
     setSelectedDemo(demo);
+    setAllocateMode(mode);
     setAllocateForm({
-      equipment_id: '',
-      reason: 'Primary unit undergoing scheduled maintenance; alternative operational unit allocated',
+      // Accepting a suggestion pre-selects the suggested unit.
+      equipment_id: mode === 'allocate' && reservation.status === 'alternative_suggested' ? reservation.alternative_equipment_id || '' : '',
+      reason: '',
       reserved_from: reservation.reserved_from || demo.confirmed_date || demo.requested_date,
       reserved_to: reservation.reserved_to || demo.confirmed_date || demo.requested_date,
       remarks: '',
     });
     setIsAllocateOpen(true);
+  };
+
+  // §14: coordinator picks a new request up — Requested → Under Planning.
+  const handleStartPlanning = async (demo: any) => {
+    setActionError(null);
+    try {
+      await api.post(`/demos/${demo.id}/start-planning`, {});
+      setActionSuccess(`Demo request ${demo.demo_no} approved. ${demo.requested_by_name || 'The salesperson'} has been notified and it is now under planning.`);
+      // keep an open demo dialog in step with the list
+      setLinkedDemo((prev: any) => (prev && prev.id === demo.id ? { ...prev, status: 'under_planning' } : prev));
+      await fetchDemosData();
+    } catch (err: any) {
+      setActionError(err.message || 'Could not approve the request.');
+    }
   };
 
   // Custodian Allocate Alternative Unit Submit
@@ -1109,6 +920,16 @@ function DemosPageContent() {
     setActionError(null);
     setIsSubmitting(true);
     try {
+      if (allocateMode === 'suggest') {
+        await api.post(`/demos/reservations/${selectedReservation.id}/alternative`, {
+          alternative_equipment_id: allocateForm.equipment_id,
+          alternative_reason: allocateForm.reason,
+        });
+        setActionSuccess('Alternative unit suggested to the requester.');
+        setIsAllocateOpen(false);
+        await fetchDemosData();
+        return;
+      }
       await api.post(`/demos/reservations/${selectedReservation.id}/allocate`, allocateForm);
       setActionSuccess('Alternative depot equipment unit successfully allocated.');
       setIsAllocateOpen(false);
@@ -1295,7 +1116,7 @@ function DemosPageContent() {
   const renderStatusBadge = (status: string) => {
     switch (status) {
       case 'requested':
-        return <Badge variant="warning">REQUESTED</Badge>;
+        return <Badge variant="warning">APPROVAL PENDING</Badge>;
       case 'under_planning':
         return <Badge variant="info">UNDER PLANNING</Badge>;
       case 'confirmed':
@@ -1387,7 +1208,6 @@ function DemosPageContent() {
     const items: { key: string; label: string; href: string | null }[] = [
       demo.tender_id && { key: 'tender', label: `Tender ${demo.tender_no || ''}`.trim(), href: follow(`/tenders?highlight=${demo.tender_id}`) },
       demo.lead_id && { key: 'lead', label: 'From lead', href: follow(`/leads?open=${demo.lead_id}`) },
-      demo.organisation_id && canOpen(role, '/leads') && { key: 'customer', label: 'Customer 360', href: `/leads?customer=${demo.organisation_id}` },
       demo.service_ticket_id && { key: 'ticket', label: `Ticket ${demo.service_ticket_no || ''}`.trim(), href: follow(`/service?open=${demo.service_ticket_id}`) },
     ].filter(Boolean) as any[];
     if (!items.length && !demo.deal_value) return null;
@@ -1409,125 +1229,100 @@ function DemosPageContent() {
     );
   };
 
-  const renderDemoCard = (demo: any, inDialog = false) => (
-    <Card
-      key={demo.id}
-      className={
-        inDialog
-          ? // In the demo dialog the sheet is already the surface: on phones drop the card box (border, tint,
-            // padding) so the content uses the sheet's own 16px gutter instead of sitting ~36px in.
-            // `!` because the theme restyles any card inside a dialog with a higher-specificity rule.
-            'p-5 bg-white hover:border-[#0F5E63] border border-[#DCD8CE] rounded-xl transition-all shadow-2xs max-sm:p-0 max-sm:!rounded-none max-sm:!border-0 max-sm:!bg-transparent max-sm:!shadow-none'
-          : 'p-4 sm:p-5 bg-white hover:border-[#0F5E63] border border-[#DCD8CE] rounded-xl transition-all shadow-2xs'
-      }
-    >
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4 border-b border-[#DCD8CE] pb-3 sm:pb-4">
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-          <span className="font-mono text-xs font-bold text-[#0F5E63] px-2.5 py-1 rounded bg-[#E3EFEE] border border-[#DCD8CE]">
-            {demo.demo_no}
-          </span>
-          <h3 className="text-base sm:text-lg font-bold text-[#14213D] flex items-center gap-2 min-w-0">
-            <Building className="h-4 w-4 shrink-0 text-[#4A5568]" />
-            {demo.organisation_name || 'Client Organisation'}
-          </h3>
-          {renderStatusBadge(demo.status)}
-
-          {demo.visit_id && (
-            <span
-              className="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]"
-              title="Originating from planned customer field visit"
-            >
-              <MapPin className="h-3 w-3" />
-              VISIT LINKED
-            </span>
-          )}
-
-          {demo.travel_required && (
-            <span className="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
-              <Plane className="h-3 w-3" />
-              TRAVEL REQ.
-            </span>
+  // The demo dialog's body: approval banner, stage, the facts at a glance, kit bookings and the outcome.
+  const renderDemoCard = (demo: any) => (
+    <div key={demo.id} className="space-y-4">
+      {/* A new request is the demo team's to approve: the decision sits on top, not inside the Actions menu */}
+      {demo.status === 'requested' && (
+        <div className="flex flex-col gap-2 rounded-lg border border-[#E9C9B4] bg-[#FFF8EB] p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-[#7C2D12]">
+              {canApprove ? 'This demo request is waiting for your approval' : 'Waiting for management approval'}
+            </p>
+            <p className="text-[11px] text-[#4A5568]">
+              {canApprove
+                ? `Requested by ${demo.requested_by_name || 'sales'} for ${formatDemoDate(demo.requested_date)}. Approving notifies them and hands the date to the demo team.`
+                : canConfirmDate
+                  ? 'Once management approves it, you can confirm the date with the client.'
+                  : 'Management will approve it, then the demo team confirms the date. You will get a notification.'}
+            </p>
+          </div>
+          {canApprove && (
+            <div className="flex shrink-0 gap-2">
+              <Button type="button" size="sm" variant="ghost" className="text-[#9A3412]" onClick={() => openCancelDemo(demo)}>
+                Decline
+              </Button>
+              <Button type="button" size="sm" variant="primary" leftIcon={<CheckCircle2 className="h-4 w-4" />} onClick={() => handleStartPlanning(demo)}>
+                Approve request
+              </Button>
+            </div>
           )}
         </div>
-
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[#4A5568]">
-          <span>Version: {demo.version || 1}</span>
-          <span>•</span>
-          <span>Logged: {formatDemoDate(demo.created_at)}</span>
+      )}
+      {/* Where it stands (the pipeline's columns) and what kind of trip it is */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <DemoStageTrack status={demo.status} />
+        <div className="flex flex-wrap items-center gap-1.5">
+          {demo.visit_id && <Badge variant="info" size="sm"><MapPin className="mr-1 h-3 w-3" />From visit</Badge>}
+          {demo.travel_required && <Badge variant="info" size="sm"><Plane className="mr-1 h-3 w-3" />Travel</Badge>}
+          {demo.service_escort_required && <Badge variant="info" size="sm"><Wrench className="mr-1 h-3 w-3" />Service escort</Badge>}
         </div>
       </div>
       {renderDemoLinks(demo)}
 
-      {/* Body Specs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 my-3 sm:my-4 text-sm">
-        <div>
-          <span className="text-xs text-[#4A5568] uppercase tracking-wider block font-semibold">
-            Equipment / Product
-          </span>
-          <p className="font-semibold text-[#14213D] mt-0.5">
-            {demo.product_name || demo.equipment_required || 'Standard Security Suite'}
-          </p>
-          {demo.special_requirements && (
-            <p className="text-xs text-[#4A5568] mt-0.5 italic">
-              Req: {demo.special_requirements}
-            </p>
-          )}
-        </div>
+      {/* The four things the demo team plans around */}
+      {(() => {
+        const tile = 'rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2.5 min-w-0';
+        const tileLabel = 'text-[10px] font-semibold uppercase tracking-wider text-[#4A5568]';
+        const day = demo.confirmed_date || demo.requested_date;
+        const dd = demo.status === 'completed' || demo.status === 'cancelled' ? null : daysFromToday(day);
+        const reservations: any[] = demo.reservations || [];
+        const booked = reservations.filter((r) => r.status === 'approved');
+        const kit = booked.length
+          ? `Kit: ${booked.map((r) => r.serial_no || r.model).join(', ')}`
+          : reservations.some((r) => r.status === 'requested')
+            ? 'Kit approval pending'
+            : 'No kit reserved yet';
+        return (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className={tile}>
+              <div className={tileLabel}>{demo.confirmed_date ? 'Confirmed date' : 'Requested date'}</div>
+              <div className="mt-0.5 font-mono text-sm font-semibold text-[#14213D]">{formatDemoDate(day)}</div>
+              {dd !== null && (
+                <div className={`text-[11px] ${dd < 0 ? 'text-[#9A3412]' : 'text-[#4A5568]'}`}>
+                  {dd === 0 ? 'Today' : dd > 0 ? `In ${dd} day${dd === 1 ? '' : 's'}` : `${-dd} day${dd === -1 ? '' : 's'} ago`}
+                </div>
+              )}
+            </div>
+            <div className={tile}>
+              <div className={tileLabel}>Location</div>
+              <div className="mt-0.5 truncate text-sm font-semibold text-[#14213D]" title={demo.location || demo.city}>{demo.location || demo.city || '—'}</div>
+              {demo.expected_audience && <div className="truncate text-[11px] text-[#4A5568]">Audience: {demo.expected_audience}</div>}
+            </div>
+            <div className={tile}>
+              <div className={tileLabel}>Demo specialist</div>
+              <div className={`mt-0.5 truncate text-sm font-semibold ${demo.assignee_name ? 'text-[#14213D]' : 'text-[#9A3412]'}`}>{demo.assignee_name || 'Not assigned yet'}</div>
+              <div className="truncate text-[11px] text-[#4A5568]">Requested by {demo.requested_by_name || 'sales'}</div>
+            </div>
+            <div className={tile}>
+              <div className={tileLabel}>Equipment</div>
+              <div className="mt-0.5 line-clamp-2 text-sm font-semibold text-[#14213D]">{demo.product_name || demo.equipment_required || '—'}</div>
+              <div className={`truncate text-[11px] ${booked.length ? 'text-[#0F5E63]' : 'text-[#4A5568]'}`}>{kit}</div>
+            </div>
+          </div>
+        );
+      })()}
 
-        <div>
-          <span className="text-xs text-[#4A5568] uppercase tracking-wider block font-semibold">
-            Location & Dates
-          </span>
-          <p className="font-semibold text-[#14213D] mt-0.5 flex items-center gap-1">
-            <MapPin className="h-3.5 w-3.5 text-[#4A5568]" />
-            {demo.location || demo.city || 'Depot HQ'}
-          </p>
-          <p className="text-xs text-[#4A5568] mt-0.5 flex items-center gap-1">
-            <Calendar className="h-3.5 w-3.5 text-[#4A5568]" />
-            {demo.confirmed_date ? (
-              <span className="text-[#0B4A4E] font-bold">
-                Confirmed: {formatDemoDate(demo.confirmed_date)}
-              </span>
-            ) : (
-              <span>Requested: {formatDemoDate(demo.requested_date)}</span>
-            )}
-          </p>
+      {(demo.purpose || demo.special_requirements) && (
+        <div className="space-y-1 text-sm text-[#14213D]">
+          {demo.purpose && <p className="whitespace-pre-wrap break-words"><span className="font-semibold text-[#4A5568]">Purpose: </span>{demo.purpose}</p>}
+          {demo.special_requirements && <p className="whitespace-pre-wrap break-words"><span className="font-semibold text-[#4A5568]">Site needs: </span>{demo.special_requirements}</p>}
         </div>
-
-        <div>
-          <span className="text-xs text-[#4A5568] uppercase tracking-wider block font-semibold">
-            Team & Logistics
-          </span>
-          <p className="font-semibold text-[#14213D] mt-0.5 flex items-center gap-1">
-            <Users className="h-3.5 w-3.5 text-[#4A5568]" />
-            Assignee:{' '}
-            {demo.assignee_name ? (
-              <span className="text-[#0F5E63] font-bold">{demo.assignee_name}</span>
-            ) : (
-              <span className="text-[#7C2D12] italic font-medium">Unassigned</span>
-            )}
-          </p>
-          <p className="text-xs text-[#4A5568] mt-0.5">
-            By: {demo.requested_by_name || 'Field Sales'}
-          </p>
-        </div>
-
-        <div>
-          <span className="text-xs text-[#4A5568] uppercase tracking-wider block font-semibold">
-            Objective & Audience
-          </span>
-          <p className="font-semibold text-[#14213D] mt-0.5 line-clamp-2 sm:line-clamp-1" title={demo.purpose}>
-            {demo.purpose || 'Technical procurement qualification'}
-          </p>
-          <p className="text-xs text-[#4A5568] mt-0.5">
-            Audience: {demo.expected_audience || 'DGQA / Police Officers'}
-          </p>
-        </div>
-      </div>
+      )}
 
       {/* Reschedule / Cancellation Banner if applicable */}
       {demo.reschedule_reason && (
-        <div className="p-2.5 mb-3 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12] flex items-center gap-2">
+        <div className="p-2.5 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12] flex items-center gap-2">
           <Clock className="h-4 w-4 text-[#9A3412] flex-shrink-0" />
           <span>
             <strong>Rescheduled from {formatDemoDate(demo.rescheduled_from)}:</strong>{' '}
@@ -1537,7 +1332,7 @@ function DemosPageContent() {
       )}
 
       {demo.cancellation_reason && (
-        <div className="p-2.5 mb-3 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] flex items-center gap-2">
+        <div className="p-2.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-xs text-[#700F2D] flex items-center gap-2">
           <XCircle className="h-4 w-4 text-[#881337] flex-shrink-0" />
           <span>
             <strong>Cancellation Reason:</strong> {demo.cancellation_reason}
@@ -1547,7 +1342,7 @@ function DemosPageContent() {
 
       {/* Equipment Bookings & Custodian Status (§16) */}
       {demo.reservations && demo.reservations.length > 0 ? (
-        <div className="mb-3 space-y-2 border-t border-[#ECE9E2] pt-3">
+        <div className="space-y-2 border-t border-[#ECE9E2] pt-3">
           <div className="flex items-center justify-between text-xs">
             <span className="font-bold text-[#14213D] flex items-center gap-1.5">
               <Package className="h-3.5 w-3.5 text-[#0F5E63]" />
@@ -1592,8 +1387,15 @@ function DemosPageContent() {
                 </div>
 
                 {/* Custodian actions if requested */}
+                {res.status === 'alternative_suggested' && hasRole(['demo_team', 'service_team', 'management', 'regional_manager', 'admin']) && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#ECE9E2]">
+                    <Button variant="outline" size="xs" className="h-9 flex-auto sm:h-7 sm:flex-none" onClick={() => handleOpenAllocate(res, demo)}>
+                      Allocate Suggested Unit
+                    </Button>
+                  </div>
+                )}
                 {res.status === 'requested' &&
-                  hasRole(['demo_team', 'service_team', 'management', 'admin']) && (
+                  hasRole(['demo_team', 'service_team', 'management', 'regional_manager', 'admin']) && (
                     // phones: the three custodian actions share the row as 36px targets
                     <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#ECE9E2]">
                       <Button
@@ -1616,6 +1418,14 @@ function DemosPageContent() {
                       <Button
                         variant="outline"
                         size="xs"
+                        onClick={() => handleOpenAllocate(res, demo, 'suggest')}
+                        className="h-9 flex-auto sm:h-7 sm:flex-none"
+                      >
+                        Suggest Alternative
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="xs"
                         onClick={() => handleOpenReject(res, demo)}
                         className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#FCE8EC] text-[#700F2D] border-[#F3C7CF] hover:bg-[#FCE8EC]"
                       >
@@ -1628,23 +1438,12 @@ function DemosPageContent() {
             ))}
           </div>
         </div>
-      ) : (
-        <div className="mb-3 p-2.5 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#4A5568] flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
-          <div className="flex items-center gap-2">
-            <Package className="h-3.5 w-3.5 shrink-0 text-[#0F5E63]" />
-            <span>
-              <strong className="text-[#14213D]">Assigned Kit / Product:</strong>{' '}
-              {demo.product_name || demo.equipment_required || 'Standard Suite'}
-            </span>
-          </div>
-          <Badge variant="outline">NO ACTIVE RESERVATION</Badge>
-        </div>
-      )}
+      ) : null}
 
       {/* Demo Outcome Banner (§17 & §18) - 9 Specifications Captured */}
       {demo.outcome && (
         <div
-          className={`p-3.5 mb-3 rounded-xl border text-xs space-y-2.5 ${
+          className={`p-3.5 rounded-xl border text-xs space-y-2.5 ${
             demo.outcome.result === 'success'
               ? 'bg-[#E3EFEE]/60 border-[#D0E5E3] text-[#0B4A4E]'
               : demo.outcome.result === 'fail'
@@ -1766,70 +1565,67 @@ function DemosPageContent() {
         </div>
       )}
 
-      {/* Action Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#DCD8CE] pt-3">
+    </div>
+  );
+
+  // Pinned to the bottom of the demo dialog: history on the left; the next step and every other action (pencil) on the right
+  const renderDemoFooter = (demo: any) => {
+    const open = demo.status !== 'completed' && demo.status !== 'cancelled';
+    // a new request's decision already sits in the approval banner
+    const next = demo.status === 'requested' ? undefined : toDemoRecord(demo).primary;
+    return (
+      <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 flex items-center justify-between gap-2 border-t border-[#ECE9E2] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5">
+        <Button variant="ghost" size="sm" leftIcon={<History className="h-4 w-4" />} onClick={() => handleOpenAudit(demo)}>
+          Audit trail
+        </Button>
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => handleOpenAudit(demo)}
-            className="text-xs text-[#4A5568] hover:text-[#0F5E63] hover:bg-[#E3EFEE]"
-          >
-            <History className="h-3.5 w-3.5 mr-1" />
-            Audit Trail
-          </Button>
-          {!inDialog && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setLinkedDemo(demo)}
-              className="text-xs text-[#4A5568] hover:text-[#0F5E63] hover:bg-[#E3EFEE]"
-            >
-              <Layers className="h-3.5 w-3.5 mr-1" />
-              Linked Records
+          {next && (
+            <Button size="sm" variant="primary" onClick={next.onClick} disabled={next.disabled}>
+              {next.label}
             </Button>
           )}
+              <RowMenu
+                label="Demo actions"
+                icon={<Pencil className="h-4 w-4" />}
+                items={[
+                  {
+                    key: 'assign',
+                    label: demo.assigned_to ? 'Change Team' : 'Assign Team',
+                    icon: <Users />,
+                    hidden: !(open && hasRole(['demo_team', 'management', 'regional_manager', 'admin'])),
+                    onSelect: () => handleOpenAssignTeam(demo),
+                  },
+                  {
+                    key: 'plan',
+                    label: 'Approve Request',
+                    icon: <ClipboardList />,
+                    hidden: !(demo.status === 'requested' && canApprove),
+                    onSelect: () => handleStartPlanning(demo),
+                  },
+                  {
+                    key: 'reserve',
+                    label: !isCoordinator ? 'Request Unit' : demo.reservations && demo.reservations.length > 0 ? 'Manage Kit & Serials' : 'Reserve Unit',
+                    icon: <Package />,
+                    hidden: !open,
+                    onSelect: () => handleOpenReserve(demo),
+                  },
+                  { key: 'confirm', label: 'Confirm Date', icon: <CheckCircle2 />, hidden: !(open && canConfirmDate && demo.status !== 'requested'), onSelect: () => openConfirmDate(demo) },
+                  { key: 'resched', label: 'Reschedule', icon: <Clock />, hidden: !(open && isCoordinator), onSelect: () => openRescheduleDemo(demo) },
+                  {
+                    key: 'outcome',
+                    label: isDemoDayAhead(demo) ? `Record Outcome (from ${dmy(demoDay(demo))})` : 'Record Outcome',
+                    icon: <ShieldCheck />,
+                    hidden: !open,
+                    disabled: isDemoDayAhead(demo),
+                    onSelect: () => handleOpenOutcome(demo),
+                  },
+                  { key: 'cancel', label: 'Cancel Demo', icon: <X />, danger: true, hidden: !open, onSelect: () => openCancelDemo(demo) },
+                ]}
+              />
         </div>
-
-        {(() => {
-          const open = demo.status !== 'completed' && demo.status !== 'cancelled';
-          return (
-            <RowMenu
-              buttonLabel="Actions"
-              label="Demo actions"
-              items={[
-                {
-                  key: 'assign',
-                  label: demo.assigned_to ? 'Change Team' : 'Assign Team',
-                  icon: <Users />,
-                  hidden: !(open && hasRole(['demo_team', 'management', 'regional_manager', 'admin'])),
-                  onSelect: () => handleOpenAssignTeam(demo),
-                },
-                {
-                  key: 'reserve',
-                  label: demo.reservations && demo.reservations.length > 0 ? 'Manage Kit & Serials' : 'Reserve Unit',
-                  icon: <Package />,
-                  hidden: !open,
-                  onSelect: () => handleOpenReserve(demo),
-                },
-                { key: 'confirm', label: 'Confirm Date', icon: <CheckCircle2 />, hidden: !open, onSelect: () => openConfirmDate(demo) },
-                { key: 'resched', label: 'Reschedule', icon: <Clock />, hidden: !open, onSelect: () => openRescheduleDemo(demo) },
-                {
-                  key: 'outcome',
-                  label: isDemoDayAhead(demo) ? `Record Outcome (from ${dmy(demoDay(demo))})` : 'Record Outcome',
-                  icon: <ShieldCheck />,
-                  hidden: !open,
-                  disabled: isDemoDayAhead(demo),
-                  onSelect: () => handleOpenOutcome(demo),
-                },
-                { key: 'cancel', label: 'Cancel Demo', icon: <X />, danger: true, hidden: !open, onSelect: () => openCancelDemo(demo) },
-              ]}
-            />
-          );
-        })()}
       </div>
-    </Card>
-  );
+    );
+  };
 
   const renderCoordinatorCard = (demo: any) => (
     <Card key={demo.id} className="p-4 sm:p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-2xs hover:border-[#0F5E63] transition-all">
@@ -1880,15 +1676,21 @@ function DemosPageContent() {
             Reserve Depot Unit
           </Button>
   
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => openConfirmDate(demo)}
-            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs"
-          >
-            <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-            Confirm Date
-          </Button>
+          {demo.status === 'requested' ? (
+            canApprove && (
+              <Button variant="primary" size="sm" onClick={() => handleStartPlanning(demo)} className="h-10 flex-auto sm:h-8 sm:flex-none text-xs">
+                <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                Approve request
+              </Button>
+            )
+          ) : (
+            canConfirmDate && (
+              <Button variant="primary" size="sm" onClick={() => openConfirmDate(demo)} className="h-10 flex-auto sm:h-8 sm:flex-none text-xs">
+                <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                Confirm Date
+              </Button>
+            )
+          )}
         </div>
       </div>
   
@@ -1932,7 +1734,7 @@ function DemosPageContent() {
                   )}
                 </div>
   
-                {res.status === 'requested' && (
+                {res.status === 'requested' && hasRole(['demo_team', 'service_team', 'management', 'regional_manager', 'admin']) && (
                   <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#E3EFEE]">
                     <Button
                       variant="outline"
@@ -1950,6 +1752,14 @@ function DemosPageContent() {
                       className="h-9 flex-auto sm:h-7 sm:flex-none bg-[#E3EFEE] text-[#0F5E63] border-[#D0E5E3] hover:bg-[#E3EFEE]"
                     >
                       Allocate Alt Unit
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => handleOpenAllocate(res, demo, 'suggest')}
+                      className="h-9 flex-auto sm:h-7 sm:flex-none"
+                    >
+                      Suggest Alternative
                     </Button>
                     <Button
                       variant="outline"
@@ -1992,6 +1802,9 @@ function DemosPageContent() {
     if (demo.travel_required) badges.push({ label: 'Travel', tone: 'info' });
     if (demo.service_escort_required) badges.push({ label: 'Service escort', tone: 'info' });
     if (reservations.some((r) => r.status === 'requested')) badges.push({ label: 'Kit approval pending', tone: 'warning' });
+    // a task on this demo needs manager sign-off: pending once it is handed in
+    if (demo.task_approval === 'pending') badges.push({ label: 'Task approval pending', tone: 'warning' });
+    else if (demo.task_approval === 'required') badges.push({ label: 'Task approval required', tone: 'info' });
 
     let primary: RecordItem['primary'];
     if (open) {
@@ -2001,14 +1814,18 @@ function DemosPageContent() {
         primary = isDemoDayAhead(demo)
           ? { label: `Outcome from ${dmy(demoDay(demo))}`, disabled: true, onClick: () => {} }
           : { label: 'Record outcome', onClick: () => handleOpenOutcome(demo) };
-      } else {
+      } else if (demo.status === 'requested' && canApprove) {
+        primary = { label: 'Approve request', onClick: () => handleStartPlanning(demo) };
+      } else if (demo.status !== 'requested' && canConfirmDate) {
         primary = { label: 'Confirm date', onClick: () => openConfirmDate(demo) };
+      } else if (!isCoordinator && !reservations.length) {
+        primary = { label: 'Request unit', onClick: () => handleOpenReserve(demo) };
       }
     }
     const quick: RecordItem['quick'] = [];
     if (open) {
-      quick.push({ label: 'Reschedule', icon: <Clock />, onClick: () => openRescheduleDemo(demo) });
-      quick.push({ label: reservations.length ? 'Manage kit & serials' : 'Reserve unit', icon: <Package />, onClick: () => handleOpenReserve(demo) });
+      if (isCoordinator) quick.push({ label: 'Reschedule', icon: <Clock />, onClick: () => openRescheduleDemo(demo) });
+      quick.push({ label: !isCoordinator ? 'Request unit' : reservations.length ? 'Manage kit & serials' : 'Reserve unit', icon: <Package />, onClick: () => handleOpenReserve(demo) });
     } else {
       quick.push({ label: 'Audit trail', icon: <History />, onClick: () => handleOpenAudit(demo) });
     }
@@ -2139,7 +1956,7 @@ function DemosPageContent() {
             icon={<Wrench className="h-4 w-4 text-[#881337]" />}
           />
           <StatCard
-            label="Module 6 Auto-Tickets"
+            label="Auto Service Tickets"
             value={failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length}
             subtext="Breakdown tickets auto-logged"
             valueColor="amber"
@@ -2453,6 +2270,16 @@ function DemosPageContent() {
                               <Badge variant={demoStatusBadge(demo.status)} size="sm" className="uppercase font-bold">
                                 {demoStatusLabel(demo.status)}
                               </Badge>
+                              {(demo.task_approval || (demo.reservations || []).some((r: any) => r.status === 'requested')) && (
+                                <div className="mt-1 text-[10px] font-semibold text-[#9A3412]">
+                                  {[
+                                    (demo.reservations || []).some((r: any) => r.status === 'requested') && 'Kit approval pending',
+                                    demo.task_approval === 'pending' ? 'Task approval pending' : demo.task_approval === 'required' && 'Task approval required',
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' · ')}
+                                </div>
+                              )}
                             </TableCell>
                             <TableCell className="text-right whitespace-nowrap">
                               <div className="flex items-center justify-end gap-2">
@@ -2481,10 +2308,19 @@ function DemosPageContent() {
               ) : undefined;
               return (
                 <RecordViews
-                  storageKey="demos"
-                  defaultView="list"
+                  // per role, so the demo team opens on the schedule while everyone else keeps the list
+                  storageKey={`demos:${user?.role || 'all'}`}
+                  defaultView={user?.role === 'demo_team' ? 'calendar' : 'list'}
                   items={demoItems}
                   list={demoList}
+                  calendar={
+                    <DemoCalendar
+                      demos={filteredDemos}
+                      onOpen={(d) => setLinkedDemo(d)}
+                      statusLabel={demoStatusLabel}
+                      statusTone={(st) => toneFor(demoStatusLabel(st))}
+                    />
+                  }
                   lanes={[...DEMO_STATUSES, ...extraLanes].map((l) => ({ ...l, tone: toneFor(l.label) }))}
                   laneOf={(i) => statusById.get(i.key) || ''}
                   summary={
@@ -2504,40 +2340,68 @@ function DemosPageContent() {
       {/* =================================================================== */}
       {/* TAB: MY DEMOS (Assigned to logged-in Specialist)                    */}
       {/* =================================================================== */}
-      {activeTab === 'my_demos' && (
-        <div className="space-y-4 animate-in fade-in duration-150">
-          <div className="p-4 rounded-xl bg-white border border-[#DCD8CE] shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-base font-bold text-[#14213D] flex items-center gap-2">
-                <Users className="h-5 w-5 text-[#0F5E63]" />
-                My Assigned Client Demonstrations
-              </h2>
-              <p className="text-xs text-[#4A5568] mt-0.5">
-                Demonstrations scheduled and routed specifically to you as the designated demo specialist or technician.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <span className="px-2.5 py-1 rounded-full bg-[#E3EFEE] text-[#0F5E63] font-bold border border-[#0F5E63]/20">
-                {myDemosList.length} Assigned {myDemosList.length === 1 ? 'Trial' : 'Trials'}
-              </span>
-            </div>
-          </div>
+      {activeTab === 'my_demos' && (() => {
+        // The demo specialist's day-to-day: their week at a glance, then only what is waiting on them.
+        const weekStart = addIsoDays(istToday(), -((new Date(`${istToday()}T00:00:00`).getDay() + 6) % 7));
+        const weekEnd = addIsoDays(weekStart, 6);
+        const live = myDemosList.filter((d) => d.status !== 'cancelled');
+        const thisWeek = live.filter((d) => demoDay(d) >= weekStart && demoDay(d) <= weekEnd).length;
+        const approvalPending = live.filter(
+          (d) => d.status === 'requested' || d.task_approval === 'pending' || (d.reservations || []).some((r: any) => r.status === 'requested'),
+        ).length;
+        const outcomeDue = live.filter((d) => d.status === 'confirmed' && !isDemoDayAhead(d)).length;
+        const actionItems = live.map(toDemoRecord).filter((i) => i.primary && !i.primary.disabled);
+        const stats = [
+          { label: 'This week', value: thisWeek, tone: 'text-[#0F5E63]' },
+          { label: 'Approval pending', value: approvalPending, tone: approvalPending ? 'text-[#9A3412]' : 'text-[#14213D]' },
+          { label: 'Outcome due', value: outcomeDue, tone: outcomeDue ? 'text-[#9A3412]' : 'text-[#14213D]' },
+        ];
+        return (
+          <div className="space-y-4 animate-in fade-in duration-150">
+            <Card padding="md" className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <h2 className="font-serif text-lg font-semibold text-[#14213D]">My demo schedule</h2>
+                <p className="text-xs text-[#4A5568]">Demos assigned to you. Open any demo to plan, reserve kit or record the outcome.</p>
+              </div>
+              <div className="grid grid-cols-3 gap-2 md:flex md:gap-3">
+                {stats.map((st) => (
+                  <div key={st.label} className="rounded-lg border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2 text-center md:min-w-[110px]">
+                    <div className={`font-mono text-lg font-bold ${st.tone}`}>{st.value}</div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-[#4A5568]">{st.label}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
 
-          {myDemosList.length === 0 ? (
-            <EmptyState
-              icon={<Users className="h-8 w-8 text-[#4A5568]" />}
-              title="No Demonstrations Assigned To You Yet"
-              description="When the sales team or demo coordinator schedules a client trial with you as the demo specialist, it will appear here with live notifications."
-            />
-          ) : (
-            (
-            <div className="grid grid-cols-1 gap-4">
-              {myDemosList.map((demo) => renderDemoCard(demo))}
-            </div>
-          )
-          )}
-        </div>
-      )}
+            {myDemosList.length === 0 ? (
+              <EmptyState
+                icon={<Users className="h-8 w-8 text-[#4A5568]" />}
+                title="No demos assigned to you yet"
+                description="When the coordinator schedules a client trial with you, it appears here on your week."
+              />
+            ) : (
+              <>
+                <Card padding="md">
+                  <DemoCalendar
+                    demos={myDemosList}
+                    onOpen={(d) => setLinkedDemo(d)}
+                    statusLabel={demoStatusLabel}
+                    statusTone={(st) => toneFor(demoStatusLabel(st))}
+                  />
+                </Card>
+                {actionItems.length > 0 && (
+                  <section className="space-y-2">
+                    <h3 className="font-serif text-sm font-semibold text-[#14213D]">
+                      Needs your action <span className="font-mono text-xs text-[#4A5568]">({actionItems.length})</span>
+                    </h3>
+                    <RecordList items={actionItems} />
+                  </section>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* =================================================================== */}
       {/* TAB 2: COORDINATOR PLANNING QUEUE                                  */}
@@ -2750,7 +2614,12 @@ function DemosPageContent() {
                         {unit.condition || 'Operational'}
                       </td>
                       <td className="py-3 px-4 text-xs font-mono text-[#4A5568]">
-                        {unit.reserved_until ? `Until ${unit.reserved_until}` : 'Immediate'}
+                        {/* §15: reserved window (next live booking) and when the unit is free again */}
+                        {unit.next_reserved_from
+                          ? `Booked ${formatDateIN(unit.next_reserved_from)} – ${formatDateIN(unit.next_reserved_to || unit.next_reserved_from)}`
+                          : unit.reserved_until
+                            ? `Until ${formatDateIN(unit.reserved_until)}`
+                            : 'Immediate'}
                       </td>
                       <td className="py-3 px-4 text-right">
                         {hasRole(['demo_team', 'service_team', 'admin']) && (
@@ -3323,541 +3192,14 @@ function DemosPageContent() {
       {/* =================================================================== */}
 
       {/* 1. New Demo Request Modal */}
-      <Modal
+      <CreateDemoModal
         isOpen={isCreateOpen}
         onClose={() => setIsCreateOpen(false)}
-        title="Create New Demo Trial Request"
-      >
-        <form onSubmit={handleCreateDemo} className="text-sm">
-          <FormSteps
-            onCancel={() => setIsCreateOpen(false)}
-            submit={
-              <Button variant="primary" type="submit" isLoading={isSubmitting}>
-                <span className="sm:hidden">Submit request</span>
-                <span className="hidden sm:inline">Submit Demo Request</span>
-              </Button>
-            }
-            steps={[
-              {
-                title: 'Customer',
-                icon: <Building />,
-                description: 'Who is the demo for? Link a tender or deal value so higher-value demos get priority on shared units.',
-                content: (
-          <div className="space-y-3">
-          <Select
-            label="Client Organisation *"
-            value={newDemo.organisation_id}
-            onChange={(e) => {
-              const orgId = e.target.value;
-              const org = organisations.find((o) => o.id === orgId);
-              setNewDemo({
-                ...newDemo,
-                organisation_id: orgId,
-                location: org ? `${org.city || 'Depot Site'}` : newDemo.location,
-                tender_id: '',
-              });
-            }}
-            options={[
-              { label: '— Select Client Organisation —', value: '' },
-              ...organisations.map((o) => ({ label: o.name, value: o.id })),
-            ]}
-            required
-          />
-
-          {/* Opportunity value: when two demos want the same unit, the higher-value one gets priority (§16) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {canRead(user?.role, 'tenders') && (
-              <Select
-                label="Linked tender (optional)"
-                value={newDemo.tender_id}
-                onChange={(e) => setNewDemo({ ...newDemo, tender_id: e.target.value })}
-                options={[
-                  { label: newDemo.organisation_id ? (orgTenders.length ? '— Not for a specific tender —' : 'No open tenders for this customer') : 'Select the customer first', value: '' },
-                  ...orgTenders.map((t) => ({
-                    label: `${t.tender_number || t.tender_no}${t.estimated_value ? ` · ${formatINR(Number(t.estimated_value))}` : ''}`,
-                    value: t.id,
-                  })),
-                ]}
-                disabled={!orgTenders.length}
-              />
-            )}
-            <Input
-              label="Deal value (₹, optional)"
-              type="number"
-              min={0}
-              step="1"
-              placeholder={newDemo.tender_id ? 'Defaults to the tender value' : 'Expected order value'}
-              value={newDemo.deal_value}
-              onChange={(e) => setNewDemo({ ...newDemo, deal_value: e.target.value })}
-            />
-          </div>
-          </div>
-                ),
-              },
-              {
-                title: 'Equipment',
-                icon: <Package />,
-                description: 'Which product should be demonstrated? Fleet availability below is live; pick a specific kit if needed.',
-                content: (
-            <div className="grid grid-cols-1 gap-4 items-start">
-              <div className="space-y-2">
-                <Select
-                  label="Equipment / Product Required for Demo *"
-                  value={newDemo.product_id}
-                  onChange={(e) => {
-                    const pId = e.target.value;
-                    setNewDemo({ ...newDemo, product_id: pId });
-                  }}
-                  options={[
-                    { label: '— Select Security Product / Equipment —', value: '' },
-                    ...products.map((p) => {
-                      const pUnits = (equipmentList || []).filter((e) => e.product_id === p.id);
-                      const avail = pUnits.filter((e) => e.availability_status === 'available');
-                      let statusTag = '';
-                      if (avail.length > 0) {
-                        const locs = Array.from(new Set(avail.map((u) => u.current_location).filter(Boolean)));
-                        statusTag = `[AVAILABLE: ${avail.length} of ${pUnits.length} in ${locs.join(', ')}]`;
-                      } else if (pUnits.length > 0) {
-                        statusTag = `[RESERVED / IN USE: ${pUnits.length} Units]`;
-                      } else {
-                        statusTag = `[NO DEMO FLEET UNIT]`;
-                      }
-                      return {
-                        value: p.id,
-                        label: `${statusTag} ${p.name}`,
-                      };
-                    }),
-                  ]}
-                  required
-                />
-
-                {/* Fleet Availability Overview by Product (when no product is selected yet) */}
-                {!activeNewDemoProductFleet && (
-                  <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
-                      <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                        Fleet availability
-                      </span>
-                      <span className="text-[10px] text-[#0F5E63] font-medium">Tap a product to select</span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-1.5">
-                      {products.slice(0, 6).map((p) => {
-                        const pUnits = (equipmentList || []).filter((e) => e.product_id === p.id);
-                        const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
-                        const total = pUnits.length;
-                        return (
-                          <button
-                            key={p.id}
-                            type="button"
-                            onClick={() => {
-                              setNewDemo((prev) => ({ ...prev, product_id: p.id }));
-                            }}
-                            className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
-                          >
-                            <span className="min-w-0 flex-1 font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
-                              {p.name}
-                            </span>
-                            <span
-                              className={`text-[10px] font-mono font-bold shrink-0 whitespace-nowrap ml-1.5 px-1.5 py-0.5 rounded ${
-                                availCount > 0
-                                  ? 'bg-[#E3EFEE] text-[#0B4A4E]'
-                                  : total > 0
-                                  ? 'bg-[#FBEBDD] text-[#7C2D12]'
-                                  : 'bg-[#ECE9E2] text-[#4A5568]'
-                              }`}
-                            >
-                              {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Live Product Fleet Availability & Status HUD */}
-                {activeNewDemoProductFleet && (
-                  <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-1.5 text-xs animate-in fade-in">
-                    <div className="flex flex-wrap items-center justify-between gap-1">
-                      <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                        Live Product Fleet Availability:
-                      </span>
-                      {activeNewDemoProductFleet.availableCount > 0 ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#0F5E63] animate-pulse" />
-                          AVAILABLE ({activeNewDemoProductFleet.availableCount} Ready)
-                        </span>
-                      ) : activeNewDemoProductFleet.total > 0 ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#9A3412]" />
-                          RESERVED ({activeNewDemoProductFleet.total} in Fleet)
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#ECE9E2] text-[#14213D] border border-[#C9C4B8]">
-                          No Fleet Unit
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                      <span className="text-[#4A5568]">
-                        {activeNewDemoProductFleet.availableCount > 0
-                          ? `Stationed at: ${activeNewDemoProductFleet.locations.join(', ')} Depot`
-                          : activeNewDemoProductFleet.total > 0
-                          ? `All units currently deployed or reserved.`
-                          : `Custom requisition required.`}
-                      </span>
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px]">
-                        <span>Fleet: <b>{activeNewDemoProductFleet.total}</b></span>
-                        <span className="text-[#0B4A4E]">Ready: <b>{activeNewDemoProductFleet.availableCount}</b></span>
-                        <span className="text-[#7C2D12]">In-Trial: <b>{activeNewDemoProductFleet.reservedCount}</b></span>
-                        {activeNewDemoProductFleet.maintenanceCount > 0 && (
-                          <span className="text-[#700F2D]">Maint: <b>{activeNewDemoProductFleet.maintenanceCount}</b></span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Select
-                  label="Specific Demo Kit / Serial / Accessories Needed"
-                  value={
-                    newDemoEquipmentOptions.some((o) => o.value === newDemo.equipment_required)
-                      ? newDemo.equipment_required
-                      : newDemo.equipment_required
-                      ? 'custom'
-                      : ''
-                  }
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val === 'custom') {
-                      setNewDemo({ ...newDemo, equipment_required: 'custom' });
-                    } else {
-                      const matchedEquip = (equipmentList || []).find(
-                        (item) => `${item.model} | S/N: ${item.serial_no} (${item.current_location} Depot)` === val
-                          || item.serial_no === val
-                          || item.id === val
-                      );
-                      setNewDemo((prev) => ({
-                        ...prev,
-                        equipment_required: val,
-                        product_id: matchedEquip?.product_id || prev.product_id,
-                      }));
-                    }
-                  }}
-                  options={newDemoEquipmentOptions}
-                />
-
-                {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) */}
-                {!selectedNewDemoEquipUnit && activeNewDemoProductFleet && activeNewDemoProductFleet.units.length > 0 && (
-                  <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
-                    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
-                      <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                        Available Demo Kits in Fleet ({activeNewDemoProductFleet.units.length}):
-                      </span>
-                      <span className="text-[10px] text-[#0F5E63] font-medium">Click to assign kit & accessories</span>
-                    </div>
-                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
-                      {activeNewDemoProductFleet.units.map((u) => {
-                        const isReady = u.availability_status === 'available';
-                        const isReserved = u.availability_status === 'reserved' || u.availability_status === 'in_use';
-                        return (
-                          <div
-                            key={u.id}
-                            onClick={() => {
-                              const val = `${u.model} | S/N: ${u.serial_no} (${u.current_location} Depot)`;
-                              setNewDemo((prev) => ({
-                                ...prev,
-                                equipment_required: val,
-                                product_id: u.product_id || prev.product_id,
-                              }));
-                            }}
-                            className="flex flex-col items-start gap-1.5 p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-colors shadow-xs sm:flex-row sm:items-center sm:justify-between sm:gap-0"
-                          >
-                            <div className="min-w-0 space-y-0.5 sm:pr-2">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-bold text-[#14213D] text-[11px]">{u.model}</span>
-                                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
-                                  S/N: {u.serial_no}
-                                </span>
-                                <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
-                              </div>
-                              <div className="text-[10px] text-[#4A5568]">
-                                📦 Kit includes: Flight case, dual Li-ion batteries, charger & calibration block
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {isReady ? (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
-                                  🟢 Ready
-                                </span>
-                              ) : isReserved ? (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
-                                  🟡 Reserved
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FCE8EC] text-[#700F2D] border border-[#F3C7CF]">
-                                  🔴 Maint
-                                </span>
-                              )}
-                              <span className="text-xs text-[#0F5E63] font-bold">Select →</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Specific Demo Kit / Serial / Accessories Detail Card */}
-                {selectedNewDemoEquipUnit && (
-                  <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
-                    <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-[#ECE9E2]">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-bold text-xs text-[#14213D]">{selectedNewDemoEquipUnit.model}</span>
-                        <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-white border border-[#DCD8CE] text-[#14213D] font-bold">
-                          S/N: {selectedNewDemoEquipUnit.serial_no}
-                        </span>
-                        <span className="text-[10px] text-[#4A5568]">📍 {selectedNewDemoEquipUnit.current_location} Depot</span>
-                      </div>
-                      <div>
-                        {selectedNewDemoEquipUnit.availability_status === 'available' ? (
-                          <Badge variant="success">● READY & AVAILABLE</Badge>
-                        ) : selectedNewDemoEquipUnit.availability_status === 'reserved' || selectedNewDemoEquipUnit.availability_status === 'in_use' ? (
-                          <Badge variant="warning">
-                            ○ RESERVED {selectedNewDemoEquipUnit.reserved_until ? `UNTIL ${formatDateIN(selectedNewDemoEquipUnit.reserved_until)}` : ''}
-                          </Badge>
-                        ) : (
-                          <Badge variant="danger">▲ MAINTENANCE: {selectedNewDemoEquipUnit.condition || 'Service Needed'}</Badge>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Metadata Grid */}
-                    <div className="grid grid-cols-2 gap-2 text-[10px]">
-                      <div>
-                        <span className="text-[#4A5568] block">Operational Condition:</span>
-                        <span className="font-semibold text-[#14213D]">{selectedNewDemoEquipUnit.condition || 'Operational'}</span>
-                      </div>
-                      <div>
-                        <span className="text-[#4A5568] block">Fleet Custodian:</span>
-                        <span className="font-semibold text-[#14213D]">{selectedNewDemoEquipUnit.responsible_person_name || 'Demo Team Coordinator'}</span>
-                      </div>
-                    </div>
-
-                    {/* Included Standard Demo Kit Accessories */}
-                    <div className="pt-1.5 border-t border-[#ECE9E2]">
-                      <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block mb-1">
-                        📦 Specific Demo Kit / Included Accessories & Calibration Items:
-                      </span>
-                      <div className="grid grid-cols-1 gap-1 text-[11px] text-[#14213D]">
-                        {getStandardKitAccessories(selectedNewDemoEquipUnit.product_name, selectedNewDemoEquipUnit.product_category).map((item, idx) => (
-                          <div key={idx} className="flex items-start gap-1.5 p-1 rounded bg-white border border-[#ECE9E2] sm:items-center">
-                            <CheckCircle className="mt-0.5 h-3 w-3 text-[#0F5E63] shrink-0 sm:mt-0" />
-                            <span className="min-w-0 sm:truncate">{item}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Status Note Callout */}
-                    {selectedNewDemoEquipUnit.availability_status === 'available' ? (
-                      <div className="p-1.5 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[10px] flex items-center gap-1.5">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-[#0B4A4E] shrink-0" />
-                        <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedNewDemoEquipUnit.current_location} Depot.</span>
-                      </div>
-                    ) : selectedNewDemoEquipUnit.availability_status === 'reserved' || selectedNewDemoEquipUnit.availability_status === 'in_use' ? (
-                      <div className="p-1.5 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[10px] flex items-center gap-1.5">
-                        <AlertTriangle className="h-3.5 w-3.5 text-[#7C2D12] shrink-0" />
-                        <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
-                      </div>
-                    ) : (
-                      <div className="p-1.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-[#700F2D] text-[10px] flex items-center gap-1.5">
-                        <AlertCircle className="h-3.5 w-3.5 text-[#700F2D] shrink-0" />
-                        <span>Unit marked under maintenance ({selectedNewDemoEquipUnit.condition}). You may select another serial or custom kit.</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-                ),
-              },
-              {
-                title: 'Schedule',
-                icon: <CalendarDays />,
-                description: 'When and where should the demo happen, who will attend, and who is the account owner?',
-                content: (
-          <div className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Requested Trial Date *"
-              type="date"
-              min={istToday()}
-              value={newDemo.requested_date}
-              onChange={(e) => setNewDemo({ ...newDemo, requested_date: e.target.value })}
-              required
-            />
-
-            <Input
-              label="Demo Site Location *"
-              placeholder="e.g. CRPF Group Centre, Delhi"
-              value={newDemo.location}
-              onChange={(e) => setNewDemo({ ...newDemo, location: e.target.value })}
-              required
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Expected Audience / Board Members"
-              placeholder="e.g. DIG Technical & Procurement Board"
-              value={newDemo.expected_audience}
-              onChange={(e) => setNewDemo({ ...newDemo, expected_audience: e.target.value })}
-            />
-
-            <Select
-              label="Assigned Salesperson / Account Representative"
-              value={newDemo.assigned_to}
-              onChange={(e) => setNewDemo({ ...newDemo, assigned_to: e.target.value })}
-              options={[
-                { label: '— Current User / Default Field Sales Rep —', value: '' },
-                ...teamMembers.map((m) => ({
-                  label: `${m.full_name} (${m.role.replace(/_/g, ' ')})`,
-                  value: m.id,
-                })),
-              ]}
-            />
-          </div>
-          </div>
-                ),
-              },
-              {
-                title: 'Purpose',
-                icon: <FileText />,
-                description: 'What should the demo prove, and what extra items or site arrangements are needed?',
-                content: (
-          <div className="space-y-3">
-          <Input
-            label="Purpose of Demonstration *"
-            placeholder="e.g. Live detection rate verification for GeM tender bid"
-            value={newDemo.purpose}
-            onChange={(e) => setNewDemo({ ...newDemo, purpose: e.target.value })}
-            required
-          />
-
-          <Input
-            label="Additional Custom Accessories / Test Samples Needed (Optional)"
-            placeholder="e.g. Test calibration pieces, knife sample, spare batteries, vehicle gate pass"
-            value={newDemo.remarks}
-            onChange={(e) => setNewDemo({ ...newDemo, remarks: e.target.value })}
-          />
-
-          <Input
-            label="Special Requirements / Site Conditions"
-            placeholder="e.g. Outdoor proving ground; generator power supply needed"
-            value={newDemo.special_requirements}
-            onChange={(e) => setNewDemo({ ...newDemo, special_requirements: e.target.value })}
-          />
-          </div>
-                ),
-              },
-              {
-                title: 'Logistics',
-                icon: <Plane />,
-                description: 'Does the demo team need to travel, or should a service engineer go along?',
-                content: (
-          <div className="space-y-4">
-          {/* Travel Requirement Toggle (§12) */}
-          <div className="space-y-3">
-            <Checkbox
-              checked={newDemo.travel_required}
-              onChange={(e) => setNewDemo({ ...newDemo, travel_required: e.target.checked })}
-              label="Travel Required for Demo Team"
-            />
-
-            {newDemo.travel_required && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Input
-                  label="From Depot"
-                  value={newDemo.travel_from}
-                  onChange={(e) => setNewDemo({ ...newDemo, travel_from: e.target.value })}
-                />
-                <Input
-                  label="To Destination"
-                  value={newDemo.travel_to}
-                  onChange={(e) => setNewDemo({ ...newDemo, travel_to: e.target.value })}
-                  placeholder="e.g. Patna Proving Site"
-                />
-                <Input
-                  label="Travel Date"
-                  type="date"
-                  value={newDemo.travel_date}
-                  onChange={(e) => setNewDemo({ ...newDemo, travel_date: e.target.value })}
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Service Team Escort for Live Trial Support */}
-          <div className="pt-4 border-t border-[#ECE9E2] space-y-3">
-            <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
-              <div>
-                <Checkbox
-                  checked={newDemo.service_escort_required}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setNewDemo({
-                      ...newDemo,
-                      service_escort_required: checked,
-                      service_engineer_id: checked ? newDemo.service_engineer_id : '',
-                    });
-                  }}
-                  label="Request Service Team Escort for Live Demo"
-                />
-                <p className="text-[11px] text-[#4A5568] mt-1 pl-6">
-                  Optional technical accompaniment. A Service Engineer will accompany the sales rep on this tour to assist with live equipment calibration, field setup, and emergency on-site troubleshooting.
-                </p>
-              </div>
-              <span className="ml-6 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 sm:ml-0">
-                <Wrench className="w-3 h-3 text-[#0F5E63]" />
-                Module 6 Sync
-              </span>
-            </div>
-
-            {newDemo.service_escort_required && (
-              <div className="pt-2.5 border-t border-[#ECE9E2] space-y-2">
-                <Select
-                  label="Select Available Service Engineer *"
-                  value={newDemo.service_engineer_id || ''}
-                  onChange={(e) => setNewDemo({ ...newDemo, service_engineer_id: e.target.value })}
-                  options={[
-                    { label: '— Select Service Engineer to Escort Tour —', value: '' },
-                    ...serviceEngineers.map((se) => ({
-                      label: `🔧 ${se.full_name} (${se.email})`,
-                      value: se.id,
-                    })),
-                  ]}
-                  required
-                />
-                <div className="p-2 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[11px] flex items-center gap-2">
-                  <Info className="h-3.5 w-3.5 text-[#0B4A4E] shrink-0" />
-                  <span>
-                    <b>Note:</b> Service Engineers do not schedule independent sales tours. When requested, they are attached to the sales representative&apos;s tour program for this demonstration. Management, Demo Team, Service Team, Salesperson, and Regional Manager will receive notifications.
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-          </div>
-                ),
-              },
-            ]}
-          />
-        </form>
-      </Modal>
+        onCreated={(d) => {
+          setActionSuccess(`Demo request ${d.demo_no} created successfully.`);
+          fetchDemosData();
+        }}
+      />
 
       {/* 2. Team Assignment Modal (§5 & §11) */}
       <Modal
@@ -4697,15 +4039,22 @@ function DemosPageContent() {
         </form>
       </Modal>
 
-      <Modal isOpen={!!linkedDemo} onClose={() => setLinkedDemo(null)} title={`Demo ${linkedDemo?.demo_no || ''}`} maxWidth="4xl">
+      <Modal
+        isOpen={!!linkedDemo}
+        onClose={() => setLinkedDemo(null)}
+        title={linkedDemo?.organisation_name || `Demo ${linkedDemo?.demo_no || ''}`}
+        description={linkedDemo ? `${linkedDemo.demo_no} · logged ${formatDemoDate(linkedDemo.created_at)}` : undefined}
+        maxWidth="4xl"
+      >
         {linkedDemo && (
           <div className="space-y-5">
-            {renderDemoCard(linkedDemo, true)}
+            {renderDemoCard(linkedDemo)}
             <RelatedRecords
               to={{ kind: 'demo', id: linkedDemo.id, organisationId: linkedDemo.organisation_id }}
               sections={['tasks', 'proposals', 'tenders', 'service']}
               description="Tasks on this demo, and the customer's proposals, tenders and service tickets."
             />
+            {renderDemoFooter(linkedDemo)}
           </div>
         )}
       </Modal>
@@ -4961,7 +4310,7 @@ function DemosPageContent() {
       <Modal
         isOpen={isAllocateOpen}
         onClose={() => setIsAllocateOpen(false)}
-        title="Allocate Alternative Equipment Unit"
+        title={allocateMode === 'suggest' ? 'Suggest an Alternative Unit' : 'Allocate Alternative Equipment Unit'}
       >
         <form onSubmit={handleAllocateAnotherSubmit} className="space-y-5 text-sm">
           <div className="p-3 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-xs text-[#0B4A4E]">
@@ -5026,7 +4375,7 @@ function DemosPageContent() {
             description="Why the unit is changing, the dates to hold it, and dispatch notes."
           >
           <Input
-            label="Reason for Reallocation *"
+            label={allocateMode === 'suggest' ? 'Why this unit instead *' : 'Reason for Reallocation *'}
             placeholder="e.g. Primary unit reserved; allocating alternate calibrated unit from Delhi depot"
             value={allocateForm.reason}
             onChange={(e) => setAllocateForm({ ...allocateForm, reason: e.target.value })}
@@ -5066,8 +4415,8 @@ function DemosPageContent() {
               isLoading={isSubmitting}
               disabled={!allocateForm.equipment_id || !allocateForm.reason}
             >
-              <span className="sm:hidden">Reallocate</span>
-              <span className="hidden sm:inline">Confirm Reallocation</span>
+              <span className="sm:hidden">{allocateMode === 'suggest' ? 'Suggest' : 'Reallocate'}</span>
+              <span className="hidden sm:inline">{allocateMode === 'suggest' ? 'Send Suggestion' : 'Confirm Reallocation'}</span>
             </Button>
           </div>
         </form>

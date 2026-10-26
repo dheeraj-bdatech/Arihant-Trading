@@ -12,6 +12,7 @@ import { Kysely, sql, Transaction } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { AppEvents } from '../../common/events/event-names.js';
+import { EventsGateway } from '../../common/realtime/events.gateway.js';
 import {
   SERVICE_REASON_REQUIRED,
   SERVICE_SLA_PAUSE_STATUSES,
@@ -39,6 +40,7 @@ import {
   type CreateTicketCommentDto,
   type ReviewServiceReportDto,
   type LinkOrganisationDto,
+  type AssignEngineerDto,
   UUID_REGEX,
 } from './service.dto.js';
 import {
@@ -122,6 +124,7 @@ export class ServiceService {
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly eventEmitter: EventEmitter2,
+    private readonly eventsGateway: EventsGateway,
   ) {}
 
   // =========================================================================
@@ -932,7 +935,9 @@ export class ServiceService {
     }
     if (o.plannedVisitDate !== undefined) set.planned_visit_date = o.plannedVisitDate;
 
-    if (!existing.first_response_at && !['received', 'created'].includes(to)) set.first_response_at = now;
+    // First response = a person acting on the ticket. A system move (auto-escalation, actorId null) or parking it
+    // (escalated / on hold) is not a response to the customer.
+    if (!existing.first_response_at && o.actorId && !['received', 'created', 'escalated', 'on_hold'].includes(to)) set.first_response_at = now;
     if (to === 'resolved') set.resolved_at = now;
     if (from === 'resolved' && to === 'in_progress') set.resolved_at = null;
     if (to === 'closed') set.closed_at = now;
@@ -1150,6 +1155,58 @@ export class ServiceService {
     return this.withAllowed(updated);
   }
 
+  /**
+   * §47: change the engineer on an open ticket without moving its status. Same dispatch rules as a status
+   * move (depot team / self for service engineers), optimistic lock, mandatory reason in the assignment history.
+   */
+  async assignEngineer(id: string, dto: AssignEngineerDto, user: AuthUser) {
+    if (!ASSIGN_ROLES.includes(user.role)) throw new ForbiddenException('You cannot assign engineers');
+    const existing: any = await this.findOneTicket(id, user);
+    const status = normalizeServiceStatus(existing.status);
+    if (SERVICE_DONE_STATUSES.includes(status)) {
+      throw new BadRequestException(`Only an open ticket can be reassigned (this one is ${SERVICE_STATUS_LABELS[status] || status})`);
+    }
+    if (!existing.assigned_to) {
+      throw new BadRequestException('This ticket has no engineer yet — use "Assign engineer" to dispatch one');
+    }
+    if (dto.version !== undefined && existing.version !== undefined && dto.version !== existing.version) {
+      throw new ConflictException(`This ticket was updated by another user (version mismatch: submitted ${dto.version}, current ${existing.version}) — please reload`);
+    }
+    const engineerId = String(dto.assigned_to || '').trim();
+    if (engineerId === existing.assigned_to) throw new BadRequestException('This engineer is already assigned to the ticket');
+    const reason = cleanText(dto.reason || '', 1000);
+    if (reason.length < 5) throw new BadRequestException('A reason (at least 5 characters) is required to reassign the engineer');
+    await this.assertMayAssign(user, engineerId);
+    await this.requireEngineer(this.db, engineerId);
+
+    const now = new Date();
+    const updated = await this.db.transaction().execute(async (trx) => {
+      const row = await trx
+        .updateTable('service_tickets')
+        .set({
+          assigned_to: engineerId,
+          assigned_engineer_id: engineerId,
+          version: (existing.version || 1) + 1,
+          updated_by: user.id,
+          updated_at: now,
+        } as any)
+        .where('id', '=', id)
+        .where('version', '=', existing.version ?? 1)
+        .returningAll()
+        .executeTakeFirst();
+      if (!row) throw new ConflictException('This ticket was updated by another user — please reload and try again');
+      await trx
+        .insertInto('ticket_assignment_history')
+        .values({ ticket_id: id, from_engineer: existing.assigned_to, to_engineer: engineerId, reason, changed_by: user.id })
+        .execute();
+      return row;
+    });
+
+    this.audit(user.id, 'service_ticket', id, 'reassign', { assigned_to: existing.assigned_to }, { assigned_to: engineerId, reason });
+    await this.emitTicketEvent(AppEvents.SERVICE_ASSIGNED, id, { actorId: user.id, engineerId, previousEngineerId: existing.assigned_to, reason });
+    return this.withAllowed(updated);
+  }
+
   // =========================================================================
   // 4. Closure, reopening & manual linking
   // =========================================================================
@@ -1350,6 +1407,7 @@ export class ServiceService {
     }
 
     const partsJson = this.normalizeParts(dto.parts_replaced);
+    const attachments = this.normalizeAttachments(dto.attachments);
     if (dto.visit_id) {
       const v = await this.db.selectFrom('service_visits').select('id').where('id', '=', dto.visit_id).where('ticket_id', '=', ticketId).executeTakeFirst();
       if (!v) throw new BadRequestException('Visit does not belong to this ticket');
@@ -1381,7 +1439,7 @@ export class ServiceService {
           further_work_description: dto.further_work_description ? cleanText(dto.further_work_description, 1000) : null,
           next_visit_date: nextVisit,
           report_url: dto.report_url || null,
-          attachments: JSON.stringify(dto.attachments || []),
+          attachments: JSON.stringify(attachments),
           report_status: 'Submitted',
           submitted_by: user.id,
           submitted_at: now,
@@ -1450,6 +1508,22 @@ export class ServiceService {
       };
     });
     return JSON.stringify(cleaned);
+  }
+
+  /** Report evidence: at most 10 `{ name, url }` entries with an http(s) URL; anything else is rejected. */
+  private normalizeAttachments(input: unknown): { name: string; url: string }[] {
+    if (input === undefined || input === null) return [];
+    if (!Array.isArray(input)) throw new BadRequestException('attachments must be a list of { name, url }');
+    if (input.length > 10) throw new BadRequestException('At most 10 attachments per service report');
+    return input.map((a, i) => {
+      if (!a || typeof a !== 'object') throw new BadRequestException(`attachments[${i}] must be an object { name, url }`);
+      const url = String((a as any).url ?? '').trim();
+      if (!/^https?:\/\/[^\s]+$/i.test(url) || url.length > 2000) {
+        throw new BadRequestException(`attachments[${i}].url must be an http(s) link`);
+      }
+      const name = cleanText((a as any).name ?? '', 200) || url.split('/').pop() || `Attachment ${i + 1}`;
+      return { name, url };
+    });
   }
 
   async reviewReport(ticketId: string, reportId: string, dto: ReviewServiceReportDto, user: AuthUser) {
@@ -1800,9 +1874,14 @@ export class ServiceService {
       q().select(count.as('c')).where('service_tickets.status', 'in', ['resolved', 'report_submitted', 'closed']).executeTakeFirst(),
       q().select(count.as('c')).where('service_tickets.priority', '=', 'critical').where('service_tickets.status', 'not in', open).executeTakeFirst(),
       q().select(count.as('c')).where('service_tickets.is_repeat_complaint', '=', true).executeTakeFirst(),
+      // §34 average closure time: closed tickets only, from when the complaint was received (a back-dated
+      // received day counts from 09:00 IST that day, as the SLA clock does) to closure.
       q()
-        .select(sql<number>`coalesce(round(avg(greatest(extract(epoch from (coalesce(service_tickets.closed_at, service_tickets.resolved_at, service_tickets.updated_at) - service_tickets.created_at)), 0) / 86400)::numeric, 1), 0)::float`.as('avg_days'))
-        .where('service_tickets.status', 'in', ['resolved', 'report_submitted', 'closed'])
+        .select(
+          sql<number>`coalesce(round(avg(greatest(extract(epoch from (service_tickets.closed_at - (case when service_tickets.received_date is not null and service_tickets.received_date < (service_tickets.created_at at time zone 'Asia/Kolkata')::date then (service_tickets.received_date + time '09:00') at time zone 'Asia/Kolkata' else service_tickets.created_at end))), 0) / 86400)::numeric, 1), 0)::float`.as('avg_days'),
+        )
+        .where('service_tickets.status', '=', 'closed')
+        .where('service_tickets.closed_at', 'is not', null)
         .executeTakeFirst(),
       q()
         .select(count.as('c'))
@@ -1988,7 +2067,7 @@ export class ServiceService {
   // =========================================================================
   async runSlaSweep(actorId: string | null = null) {
     const now = new Date();
-    const result = { escalated: 0, responseBreaches: 0, resolutionBreaches: 0 };
+    const result = { escalated: 0, responseBreaches: 0, resolutionBreaches: 0, visitOverdue: 0 };
 
     // 12.1 critical + unassigned too long → escalate to management (setting-driven)
     const hours = await getServiceSetting<number>(this.db, 'auto_escalation_critical_unassigned_hours', 1);
@@ -2049,6 +2128,83 @@ export class ServiceService {
       await this.emitTicketEvent(AppEvents.SERVICE_SLA_BREACHED, t.id, { kind: 'resolution' });
       result.resolutionBreaches++;
     }
+
+    // 12.4 planned visit date passed and the engineer has not started (§46). Once per planned date: a
+    // notification of this type for the ticket created on/after the planned day means it was already sent
+    // (rescheduling to a later date re-arms it).
+    const today = this.todayIst();
+    const visitLate = await this.db
+      .selectFrom('service_tickets')
+      .select(['id', 'assigned_to', 'planned_visit_date'])
+      .where('deleted_at', 'is', null)
+      .where('status', 'not in', [...SERVICE_DONE_STATUSES, ...SERVICE_SLA_PAUSE_STATUSES, 'in_progress'] as any)
+      .where('planned_visit_date', 'is not', null)
+      .where('planned_visit_date', '<', today as any)
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom('notifications')
+              .select('notifications.id')
+              .where('notifications.type', '=', 'service_visit_overdue')
+              .where('notifications.entity_type', '=', 'service_ticket')
+              .whereRef('notifications.entity_id', '=', 'service_tickets.id')
+              .where(sql<boolean>`notifications.created_at >= (service_tickets.planned_visit_date::timestamp at time zone 'Asia/Kolkata')`),
+          ),
+        ),
+      )
+      .execute();
+    for (const t of visitLate) {
+      try {
+        if (await this.notifyVisitOverdue(t.id)) result.visitOverdue++;
+      } catch {
+        /* one bad row must not stop the sweep */
+      }
+    }
     return result;
+  }
+
+  /** Visit-overdue alert to the assigned engineer and the zone's regional manager(s) (management when none). */
+  private async notifyVisitOverdue(ticketId: string): Promise<boolean> {
+    const ctx = await this.ticketContext(ticketId);
+    if (!ctx) return false;
+    const t = await this.db.selectFrom('service_tickets').select('planned_visit_date').where('id', '=', ticketId).executeTakeFirst();
+    const day = calendarDay(t?.planned_visit_date as any) || '';
+
+    const activeIds = async (role: 'regional_manager' | 'management', zoneId?: string | null) => {
+      let q = this.db.selectFrom('users').select('id').where('role', '=', role).where('is_active', '=', true);
+      if (zoneId) q = q.where('zone_id', '=', zoneId);
+      return (await q.execute()).map((r) => r.id);
+    };
+    let managers = ctx.zone_id ? await activeIds('regional_manager', ctx.zone_id) : [];
+    if (managers.length === 0) managers = await activeIds('management');
+    const targets = new Set<string>([...(ctx.assigned_to ? [ctx.assigned_to] : []), ...managers]);
+    if (targets.size === 0) return false;
+
+    const customer = ctx.claimed_organisation_name || ctx.organisation_name || 'Customer';
+    const rows = await this.db
+      .insertInto('notifications')
+      .values(
+        [...targets].map((userId) => ({
+          user_id: userId,
+          type: 'service_visit_overdue',
+          title: `Visit overdue: ${ctx.ticket_no}`,
+          body: `${customer} — the visit planned for ${day ? day.split('-').reverse().join('/') : 'an earlier date'} has not started. ${
+            userId === ctx.assigned_to ? 'Start the visit or reschedule it with a reason.' : 'Follow up with the engineer or reassign the ticket.'
+          }`,
+          entity_type: 'service_ticket',
+          entity_id: ticketId,
+          is_read: false,
+        })),
+      )
+      .returningAll()
+      .execute();
+    for (const r of rows) {
+      try {
+        this.eventsGateway.sendToUser(r.user_id, 'notification:new', r);
+      } catch {
+        /* realtime push is best-effort */
+      }
+    }
+    return true;
   }
 }

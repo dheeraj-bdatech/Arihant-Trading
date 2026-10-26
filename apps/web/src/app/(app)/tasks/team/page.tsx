@@ -63,7 +63,7 @@ import { errorMessage, fieldErrors, istToday, notifyTasksChanged, useTaskCategor
 import { DialogActions, TaskConflictCallout, TaskViewMenu, TaskViewRow, useToaster, useUrlFilters } from '../_lib/task-ui';
 import { DeadlineInput, UserSelect } from '../_lib/pickers';
 import { TaskActionDialog, type TaskDialogAction } from '../_lib/TaskActions';
-import { TaskCards, TaskPagination, TaskSearchInput, TaskTable, rowActorKinds, useTaskList } from '../_lib/TaskList';
+import { TASK_GROUP_BY_LABELS, TaskCards, TaskPagination, TaskSearchInput, TaskTable, rowActorKinds, useTaskList, type TaskGroupBy } from '../_lib/TaskList';
 import { NewTaskButton } from '../_lib/NewTaskModal';
 
 /** Filter params — also used by dashboard drill-down links, so the names must not change. */
@@ -105,7 +105,7 @@ const contextName = (k: ContextKey, id: string, rows: TaskRow[]): string | null 
 };
 /** Less-used filters, shown in the inline "More" row (Priority lives here so the main row fits one line with View). */
 const MORE_KEYS = ['priority', 'category_ids', 'recurrence_type', 'has_open_blocker', 'delay_class', 'no_update', 'deadline_from', 'deadline_to'] as const;
-const URL_KEYS = ['section', 'view', ...FILTERS, 'sort_by', 'sort_dir', 'page'] as const;
+const URL_KEYS = ['section', 'view', ...FILTERS, 'sort_by', 'sort_dir', 'page', 'group'] as const;
 const PAGE_SIZE = 25;
 
 const SORT_OPTIONS = [
@@ -153,16 +153,18 @@ function TeamTasks() {
   const sortBy = SORT_OPTIONS.some((o) => o.value === values.sort_by) ? values.sort_by : 'deadline';
   const sortDir = values.sort_dir === 'desc' ? 'desc' : values.sort_dir === 'asc' ? 'asc' : SORT_DEFAULT_DIR[sortBy];
   const activeFilters = FILTERS.filter((k) => values[k]).length;
+  const groupBy = (Object.keys(TASK_GROUP_BY_LABELS) as TaskGroupBy[]).find((g) => g === values.group);
   const listOf = (k: (typeof FILTERS)[number]) => (values[k] ? values[k].split(',').filter(Boolean) : []);
   /** Clears filters only — the chosen view, section and sort stay. */
   const clearFilters = () => set(Object.fromEntries(FILTERS.map((k) => [k, null])) as Record<(typeof FILTERS)[number], null>);
 
   const query = useMemo(() => {
     if (!allowed || section !== 'tasks') return null;
-    const q: Record<string, string | number> = { view, page, page_size: PAGE_SIZE, sort_by: sortBy, sort_dir: sortDir };
+    // Grouped lists load a fuller page so a person's / client's tasks are not split across pages.
+    const q: Record<string, string | number> = { view, page, page_size: groupBy ? 100 : PAGE_SIZE, sort_by: sortBy, sort_dir: sortDir };
     for (const k of FILTERS) if (values[k]) q[k] = values[k];
     return q;
-  }, [allowed, section, view, page, sortBy, sortDir, values]);
+  }, [allowed, section, view, page, sortBy, sortDir, values, groupBy]);
   const tasks = useTaskList(query);
 
   // Selection belongs to one page of one query.
@@ -381,6 +383,20 @@ function TeamTasks() {
                 ...TASK_DELAY_CLASSES.map((d) => ({ key: d, label: TASK_DELAY_CLASS_LABELS[d], active: values.delay_class === d, onSelect: () => set({ delay_class: d }) })),
               ]}
             />
+            <FilterMenu
+              label="Group by"
+              icon={<Layers />}
+              neutralKeys={['none']}
+              options={[
+                { key: 'none', label: 'No grouping', active: !groupBy, onSelect: () => set({ group: null }) },
+                ...(Object.keys(TASK_GROUP_BY_LABELS) as TaskGroupBy[]).map((g) => ({
+                  key: g,
+                  label: g === 'person' ? 'Assignee' : TASK_GROUP_BY_LABELS[g],
+                  active: groupBy === g,
+                  onSelect: () => set({ group: g }),
+                })),
+              ]}
+            />
             <button
               type="button"
               aria-pressed={values.no_update === 'true'}
@@ -464,7 +480,7 @@ function TeamTasks() {
           ) : (
             <div className={`space-y-3 transition-opacity ${tasks.loading ? 'opacity-60' : ''}`}>
               <BulkBar count={selected.size} total={tasks.data.total} onReassign={() => setBulk('reassign')} onExtend={() => setBulk('extend')} onClear={() => setSelected(new Set())} />
-              <TaskTable rows={tasks.data.data} showAssignee selected={selected} onSelectedChange={setSelected} rowActions={rowActions} />
+              <TaskTable rows={tasks.data.data} showAssignee groupBy={groupBy} selected={selected} onSelectedChange={setSelected} rowActions={rowActions} />
               <TaskCards rows={tasks.data.data} showAssignee selected={selected} onSelectedChange={setSelected} rowActions={rowActions} />
               <TaskPagination page={tasks.data.page} totalPages={tasks.data.totalPages} total={tasks.data.total} onPage={(p) => set({ page: String(p) }, { resetPage: false })} />
             </div>

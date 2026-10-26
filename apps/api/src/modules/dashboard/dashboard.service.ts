@@ -331,9 +331,11 @@ export class DashboardService {
       const totalT = emp.tasksTotal;
       const compT = emp.tasksCompleted;
       const overdueT = emp.tasksOverdue;
-      const rate = totalT > 0 ? Math.round((compT / totalT) * 100) : 100;
-      let rating: 'Excellent' | 'Good' | 'Needs Attention' | 'Critical';
-      if (rate >= 80 && overdueT === 0) rating = 'Excellent';
+      // no tasks assigned = nothing to rate (never a fake 100% / "Excellent")
+      const rate = totalT > 0 ? Math.round((compT / totalT) * 100) : null;
+      let rating: 'Excellent' | 'Good' | 'Needs Attention' | 'Critical' | 'No data';
+      if (rate === null) rating = 'No data';
+      else if (rate >= 80 && overdueT === 0) rating = 'Excellent';
       else if (rate >= 65 && overdueT <= 1) rating = 'Good';
       else if (overdueT <= 2) rating = 'Needs Attention';
       else rating = 'Critical';
@@ -343,14 +345,17 @@ export class DashboardService {
         email: emp.email,
         phone: emp.phone,
         role: emp.role,
-        region_name: emp.region_name || 'Territory Core',
+        region_name: emp.region_name || '—',
         tasks: { total: totalT, completed: compT, open: emp.tasksOpen, overdue: overdueT, blocked: emp.tasksBlocked, completionRate: rate },
         visits: { total: emp.visitsTotal, completed: emp.visitsCompleted, completed30d: emp.visitsCompleted30d },
         // pipeline = active leads only (same as the rep's own "My pipeline")
         leads: { total: emp.leadsTotal, active: emp.leadsActive, valueLakh: emp.pipelineLakh },
         activeBlockers,
         complianceRating: rating,
-        evidenceNote: `${compT}/${totalT} milestones delivered (${rate}%). ${overdueT} overdue deadlines, ${activeBlockers.length} active blockers.`,
+        evidenceNote:
+          rate === null
+            ? `No milestones assigned yet. ${activeBlockers.length} active blockers.`
+            : `${compT}/${totalT} milestones delivered (${rate}%). ${overdueT} overdue deadlines, ${activeBlockers.length} active blockers.`,
       };
     });
 

@@ -32,12 +32,19 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       const pgCode = (exception as any).code;
-      if (pgCode === '22P02') {
+      // body-parser errors (oversized / malformed body) carry their own HTTP status.
+      const bodyStatus = (exception as any).type && Number((exception as any).status);
+      if (bodyStatus && bodyStatus >= 400 && bodyStatus < 500) {
+        status = bodyStatus;
+        message = bodyStatus === HttpStatus.PAYLOAD_TOO_LARGE ? 'Request body is too large' : 'Malformed request body';
+      } else if (pgCode === '22P02') {
         status = HttpStatus.BAD_REQUEST;
         message = 'Invalid identifier syntax or data format';
       } else if (pgCode === '23505') {
         status = HttpStatus.CONFLICT;
-        message = (exception as any).detail || 'A record with this identifier or unique property already exists';
+        // Name the field, never echo the clashing value (it can be another person's email or phone).
+        const field = /^Key \(([^)]+)\)=/.exec(String((exception as any).detail || ''))?.[1];
+        message = field ? `A record with this ${field.replace(/_/g, ' ')} already exists` : 'A record with this identifier or unique property already exists';
       } else if (pgCode === '23503') {
         status = HttpStatus.BAD_REQUEST;
         message = (exception as any).detail || 'Referenced entity does not exist';

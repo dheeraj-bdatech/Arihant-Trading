@@ -331,7 +331,11 @@ export class DashboardWorkspaceService {
     const [visits, leads, proposals, demos, claims, bids, agenda, followups, proposalList, demoList, funnel, tasks, tenders] = await Promise.all([
       this.metrics.visitSummary(sql`v.assigned_to = ${me}`, today),
       this.metrics.leadPipeline(sql`l.assigned_to = ${me}`, today),
-      this.one(sql`select count(*)::int as c from proposals p where ${proposalOpen} and ${myProposal}`),
+      // Same visibility as GET /proposals for this role (own + region), so the card count matches the list it opens
+      this.one(sql`
+        select count(*)::int as c from proposals p left join organisations o on o.id = p.organisation_id
+        where p.is_deleted = false and upper(p.status) in ('REQUESTED', 'PROPOSAL_REQUESTED')
+          and (${myProposal}${user.region_id ? sql` or o.region_id = ${user.region_id}` : sql``})`),
       this.one(sql`select count(*)::int as c from demos d where d.requested_by = ${me} and d.status <> all(${DEMO_DONE}::text[])`),
       this.one(sql`
         select count(*) filter (where c.status in ('submitted', 'manager_approved', 'accounts_review', 'accounts_approved', 'clarification_required'))::int as live,
@@ -385,7 +389,7 @@ export class DashboardWorkspaceService {
         tasksBlocked: tasks.blocked,
         tendersWon: tenders.won,
         tendersLost: tenders.lost,
-        proposalsOpen: num(proposals.c),
+        proposalsRequested: num(proposals.c),
         demosOpen: num(demos.c),
         claimsLive: num(claims.live),
         claimsAmount: num(claims.amt),

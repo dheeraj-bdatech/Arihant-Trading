@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { availableFirst, fleetHint, kitForProduct, kitValue, unitHint } from '@/app/(app)/demos/_lib/fleet';
+import type { SelectOption } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
 import { useRouter } from 'next/navigation';
@@ -42,6 +44,7 @@ import {
   Wrench,
   LayoutList,
   SlidersHorizontal,
+  Pencil,
 } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
@@ -64,76 +67,25 @@ import {
   InfoCallout,
   Checkbox, CountUp, PageLoader, Spinner, FilterMenu,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, RowMenu,
-  FormSteps, FormSection, formatDateIN, formatDateTimeIN } from '@/components/ui';
+  FormSteps, FormSection, RecordViews, formatDateIN, formatDateTimeIN, type RecordItem, type RecordTone } from '@/components/ui';
 import type { RowMenuItem } from '@/components/ui/RowMenu';
 import type { FilterMenuOption } from '@/components/ui/FilterMenu';
 import { NewClaimButton } from '../expenses/_lib/ClaimFormModal';
+import { VisitCalendar, type VisitTone } from './_lib/VisitCalendar';
 
 // Specific Demo Kit standard accessories mapping
-const getStandardKitAccessories = (productName?: string, category?: string) => {
-  const p = (productName || '').toLowerCase();
-  const c = (category || '').toLowerCase();
-
-  if (p.includes('metal detector') || p.includes('hhmd') || p.includes('dfmd') || c.includes('metal')) {
-    return [
-      'Rugged flight case with custom high-density EVA foam',
-      '2x Rechargeable NiMH battery packs + desktop cradle charger',
-      'Standard MHA test calibration piece & test knife sample',
-      'Ballistic nylon belt holster & safety wrist lanyard',
-      'Factory sensitivity verification & calibration certificate',
-    ];
-  }
-  if (p.includes('thermal') || p.includes('ti-') || p.includes('infrared') || c.includes('thermal')) {
-    return [
-      'Hermetic waterproof IP67 hard carrying case',
-      '2x High-capacity Li-ion batteries + AC/DC field charger',
-      'High-speed HDMI / Video-out cable for command viewing',
-      'Optical microfiber lens cleaning kit & protective cap',
-      'Field survey tripod with quick-release mounting plate',
-      'Thermal resolution test target & calibration report',
-    ];
-  }
-  if (p.includes('night vision') || p.includes('monocular') || p.includes('nvm') || c.includes('night vision')) {
-    return [
-      'Mil-spec Pelican protective case with desiccants',
-      'Combat helmet mount shroud & skull crusher harness',
-      'Sacrificial protective objective window & demist shield',
-      'Dual AA battery adapter cartridge & lens cleaning pen',
-      'Infrared (IR) covert test target card',
-      'OEM optical resolution test & FOM certification dossier',
-    ];
-  }
-  if (p.includes('breath') || p.includes('alco') || c.includes('analyser')) {
-    return [
-      'Hard carrying case with molded foam insert',
-      '100x Individually wrapped sterile sampling mouthpieces',
-      'Wireless Bluetooth mobile receipt printer + 5 paper rolls',
-      'Rechargeable battery pack & vehicle 12V auxiliary charger',
-      'Gas sensor calibration & verification test certificate',
-    ];
-  }
-  if (p.includes('barrier') || p.includes('boom') || p.includes('bollard') || c.includes('barrier')) {
-    return [
-      'Skid-mounted live demonstration barrier unit',
-      'Electro-hydraulic power unit (HPU) demo control console',
-      'Dual optical safety photocell sensor kit',
-      'Remote RF transmitter key fob controller (2 units)',
-      'Crash rating structural impact dossier & wiring schematic',
-    ];
-  }
-  return [
-    'Original ruggedized transit & deployment case',
-    'Standard AC power supply adapter (230V / 50Hz)',
-    'Full accessory connection wiring & interface harness',
-    'Certified demonstration verification sample kit',
-    'OEM operational manual and calibration compliance card',
-  ];
-};
-
 // Same rules the API enforces: a visit's time window must end after it starts; field plans cannot be made
 // for a past day; a visit is reported on or after its planned day (all IST).
 const timeRangeError = (start?: string | null, end?: string | null): string | undefined =>
   start && end && end <= start ? `End time (${end}) must be after the start time (${start}).` : undefined;
+// Board columns for visits: what is coming, what still needs its report, what is done
+const VISIT_LANES: { key: VisitTone; label: string; tone: RecordTone }[] = [
+  { key: 'upcoming', label: 'Upcoming', tone: 'info' },
+  { key: 'overdue', label: 'Report overdue', tone: 'warning' },
+  { key: 'done', label: 'Done', tone: 'success' },
+  { key: 'cancelled', label: 'Cancelled', tone: 'neutral' },
+];
+const isActiveVisitStatus = (status?: string) => ['planned', 'modified', 'rescheduled'].includes(String(status));
 const isFutureVisit = (v: any) => (calendarDay(v?.planned_date) || '') > istToday();
 const REPORT_PENDING = ['planned', 'modified', 'rescheduled'];
 // Visit day has passed but no report yet (the API sets report_overdue; derive it for older payloads).
@@ -146,12 +98,18 @@ const fmtDay = (d: string) => {
 
 export default function VisitsPage() {
   const { user, hasRole } = useAuth();
+  // Salespeople can only plan visits for themselves (enforced by the API too)
+  const isSalesRole = hasRole('sales');
+  // The visiting rep files the post-visit report; management only reports visits they made themselves
+  const canFileReport = (v: any) => !hasRole('management') || v.assigned_to === user?.id;
   const router = useRouter();
   const [expandedVisitId, setExpandedVisitId] = useState<string | null>(null);
   const [expandedTripId, setExpandedTripId] = useState<string | null>(null);
 
   // Tab navigation
   const [activeTab, setActiveTab] = useState<'my_visits' | 'manager_dashboard' | 'trips' | 'customer_history' | 'employee_activity'>('my_visits');
+  // the visit open in the detail popup (looked up in the list so it refreshes after an action)
+  const [openVisitId, setOpenVisitId] = useState<string | null>(null);
 
   // Core Data
   const [visits, setVisits] = useState<any[]>([]);
@@ -280,48 +238,17 @@ export default function VisitsPage() {
     const list = demoEquipmentList || [];
     const activeProductId = demoDetails.product_id || newVisit.product_id;
 
-    // Filter matching equipment vs others
-    const matched = activeProductId ? list.filter((e) => e.product_id === activeProductId) : [];
-    const others = activeProductId ? list.filter((e) => e.product_id !== activeProductId) : list;
-
-    const opts: { value: string; label: string }[] = [
-      { value: '', label: '-- Choose Registered Demo Model & Serial --' },
+    // Once a product is chosen, only that product's own demo units are offered
+    const units = activeProductId ? list.filter((e) => e.product_id === activeProductId) : list;
+    const opts: SelectOption[] = [
+      { value: '', label: activeProductId && !units.length ? '-- No demo unit for this product: pick Custom --' : '-- Choose Registered Demo Model & Serial --' },
     ];
 
-    const formatOptLabel = (e: any, isStar = false) => {
-      const isAvail = e.availability_status === 'available';
-      const isReserved = e.availability_status === 'reserved' || e.availability_status === 'in_use';
-      const isMaint = e.availability_status === 'maintenance';
-
-      const statusTag = isAvail
-        ? '🟢 [AVAILABLE]'
-        : isReserved
-        ? `🟡 [RESERVED${e.reserved_until ? ` to ${formatDateIN(e.reserved_until)}` : ''}]`
-        : isMaint
-        ? '🔴 [MAINTENANCE]'
-        : `⚪ [${(e.availability_status || 'UNKNOWN').toUpperCase()}]`;
-
+    const formatOptLabel = (e: any) => {
       const cond = e.condition ? ` • ${e.condition}` : '';
-      return `${isStar ? '★ ' : ''}${statusTag} S/N: ${e.serial_no} — ${e.model} (${e.current_location} Depot${cond})`;
+      return `S/N: ${e.serial_no} — ${e.model} (${e.current_location} Depot${cond})`;
     };
-
-    if (matched.length > 0) {
-      opts.push(
-        ...matched.map((e) => ({
-          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: formatOptLabel(e, true),
-        }))
-      );
-    }
-
-    if (others.length > 0) {
-      opts.push(
-        ...others.map((e) => ({
-          value: `${e.model} | S/N: ${e.serial_no} (${e.current_location} Depot)`,
-          label: formatOptLabel(e, false),
-        }))
-      );
-    }
+    opts.push(...availableFirst(units.map((e) => ({ value: kitValue(e), label: formatOptLabel(e), ...unitHint(e) }))));
 
     opts.push({
       value: 'custom',
@@ -600,7 +527,7 @@ export default function VisitsPage() {
       if (rangeErr) throw new Error(rangeErr);
 
       const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-      const chosenOfficer = [newVisit.assigned_to, user?.id].find(
+      const chosenOfficer = [isSalesRole ? user?.id : newVisit.assigned_to, user?.id].find(
         (id) => typeof id === 'string' && UUID_REGEX.test(id.trim())
       )?.trim() || (usersList.find((u) => u.id && UUID_REGEX.test(u.id))?.id);
 
@@ -1019,6 +946,219 @@ export default function VisitsPage() {
     onSelect: () => setActiveTab(o.key as typeof activeTab),
   }));
 
+  // ── Calendar / Upcoming / Past ──
+  const visitTone = (v: any): VisitTone =>
+    v.status === 'cancelled' ? 'cancelled' : v.status === 'completed' || v.status === 'not_completed' ? 'done' : isReportOverdue(v) ? 'overdue' : 'upcoming';
+  const upcomingVisits = useMemo(
+    () =>
+      visits
+        .filter((v) => isActiveVisitStatus(v.status) && (calendarDay(v.planned_date) || '') >= istToday())
+        .sort((a, b) => `${calendarDay(a.planned_date)} ${a.start_time || ''}`.localeCompare(`${calendarDay(b.planned_date)} ${b.start_time || ''}`)),
+    [visits],
+  );
+  const pastVisits = useMemo(
+    () =>
+      visits
+        .filter((v) => !upcomingVisits.includes(v))
+        .sort((a, b) => `${calendarDay(b.planned_date)} ${b.start_time || ''}`.localeCompare(`${calendarDay(a.planned_date)} ${a.start_time || ''}`)),
+    [visits, upcomingVisits],
+  );
+  const openVisit = openVisitId ? visits.find((v) => v.id === openVisitId) || null : null;
+  const visitToneById = useMemo(() => new Map(visits.map((v) => [v.id, visitTone(v)])), [visits]);
+
+  // The manager's "also-meet" note on a visit
+  const renderDirective = (v: any) => (
+    <>
+    {/* Manager "Also-Meet" Banner Callout */}
+    {(v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention')) && (
+      <div className="p-3.5 rounded-xl bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12] flex items-start space-x-3 shadow-xs">
+        <Sparkles className="h-4 w-4 text-[#9A3412] shrink-0 mt-0.5" />
+        <div>
+          <span className="font-bold text-[#7C2D12] uppercase tracking-wider block text-[10px]">
+            REGIONAL MANAGER STRATEGIC "ALSO-MEET" DIRECTIVE:
+          </span>
+          <p className="mt-0.5 font-medium leading-relaxed">
+            {v.remarks}
+          </p>
+        </div>
+      </div>
+    )}
+    </>
+  );
+  // What the post-visit report recorded
+  const renderReport = (v: any) => (
+    <>
+    {/* Completed Report Callout */}
+    {v.updates && v.updates.length > 0 && (
+      <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D] space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="font-bold text-[#0F5E63] uppercase tracking-wider text-[10px] flex items-center gap-1">
+            <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63]" />
+            POST-VISIT INTELLIGENCE LOGGED:
+          </span>
+          {v.updates[0].updated_by_name && (
+            <span className="text-[10px] text-[#4A5568]">Logged by {v.updates[0].updated_by_name}</span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+          <div>
+            <span className="font-bold text-[#14213D]">Person Met: </span>
+            <span>{v.updates[0].person_met || 'N/A'}</span>
+          </div>
+          <div>
+            <span className="font-bold text-[#14213D]">Outcome: </span>
+            <span className="font-semibold text-[#0B4A4E]">{v.updates[0].outcome || 'Completed'}</span>
+          </div>
+          {v.updates[0].product_discussed && (
+            <div>
+              <span className="font-bold text-[#14213D]">Product Discussed: </span>
+              <span className="text-[#0F5E63] font-medium">{v.updates[0].product_discussed}</span>
+            </div>
+          )}
+          {v.updates[0].opportunity && (
+            <div>
+              <span className="font-bold text-[#14213D]">Opportunity: </span>
+              <span className="text-[#0B4A4E] font-medium">{v.updates[0].opportunity}</span>
+            </div>
+          )}
+          {v.updates[0].tender_opportunity && (
+            <div className="col-span-full">
+              <span className="font-bold text-[#0F5E63]">Tender / GeM Bid: </span>
+              <span className="font-mono text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded text-[11px] font-semibold border border-[#DCD8CE]">
+                {v.updates[0].tender_opportunity}
+              </span>
+            </div>
+          )}
+          {v.updates[0].demo_required && (
+            <div>
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded-full border border-[#DCD8CE]">
+                <Sparkles className="h-3 w-3" /> Technical Demo Requested
+              </span>
+            </div>
+          )}
+        </div>
+        {v.updates[0].discussion && (
+          <p className="text-[#14213D] italic border-l-2 border-[#0F5E63] pl-2 mt-1.5">
+            "{v.updates[0].discussion}"
+          </p>
+        )}
+        {v.updates[0].remarks && (
+          <p className="text-xs text-[#4A5568] bg-white p-2 rounded border border-[#DCD8CE] mt-1">
+            <span className="font-bold text-[#14213D]">Field Remarks: </span>{v.updates[0].remarks}
+          </p>
+        )}
+        {v.updates[0].followup_date && (
+          <div className="text-[11px] text-[#0F5E63] font-semibold flex items-center gap-1 mt-1.5">
+            <Clock className="h-3 w-3" />
+            Next Follow-up Commitment: {formatDateIN(v.updates[0].followup_date)}
+            {v.updates[0].next_action ? ` — ${v.updates[0].next_action}` : ''}
+          </div>
+        )}
+      </div>
+    )}
+    </>
+  );
+
+  const visitDayParts = (v: any) => {
+    const d = calendarDay(v.planned_date) || '';
+    const dt = d ? new Date(`${d}T00:00:00Z`) : null;
+    return {
+      weekday: dt ? dt.toLocaleDateString('en-IN', { weekday: 'short', timeZone: 'UTC' }) : '',
+      day: d ? Number(d.slice(8)) : '',
+      month: dt ? dt.toLocaleDateString('en-IN', { month: 'short', timeZone: 'UTC' }) : '',
+    };
+  };
+  const visitTime = (v: any) => (v.start_time ? `${String(v.start_time).slice(0, 5)}${v.end_time ? ` – ${String(v.end_time).slice(0, 5)}` : ''}` : 'All day');
+  const canReport = (v: any) => isActiveVisitStatus(v.status) && !isFutureVisit(v) && canFileReport(v);
+
+  // One compact row per visit; the whole row opens the visit
+  const renderVisitRow = (v: any) => {
+    const parts = visitDayParts(v);
+    const report = v.updates?.[0];
+    return (
+      <li key={v.id}>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setOpenVisitId(v.id)}
+          onKeyDown={(e) => e.key === 'Enter' && setOpenVisitId(v.id)}
+          className="flex cursor-pointer items-start gap-3 rounded-[12px] border border-[#DCD8CE] bg-white p-3 transition-colors hover:border-[#0F5E63] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30"
+        >
+          <div className="w-12 shrink-0 rounded-lg border border-[#ECE9E2] bg-[#FBFAF7] py-1 text-center">
+            <div className="text-[10px] font-semibold uppercase text-[#4A5568]">{parts.weekday}</div>
+            <div className="font-mono text-lg font-bold leading-none text-[#14213D]">{parts.day}</div>
+            <div className="text-[10px] text-[#4A5568]">{parts.month}</div>
+          </div>
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm font-semibold text-[#14213D]">{v.organisation_name || 'Client agency'}</span>
+              {getVisitBadges(v)}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[#4A5568]">
+              <span className="inline-flex items-center gap-1 font-mono text-[#14213D]">
+                <Clock className="h-3 w-3" />
+                {visitTime(v)}
+              </span>
+              <span className="inline-flex min-w-0 items-center gap-1">
+                <MapPin className="h-3 w-3 shrink-0" />
+                <span className="truncate">{v.location || '—'}</span>
+              </span>
+              {isManagerRole && v.assignee_name && <span>{v.assignee_name}</span>}
+            </div>
+            {report ? (
+              <p className="line-clamp-1 text-xs text-[#14213D]">
+                <span className="font-semibold text-[#0F5E63]">Outcome: </span>
+                {report.outcome || 'Completed'}
+                {report.person_met ? ` · met ${report.person_met}` : ''}
+              </p>
+            ) : (
+              v.purpose && <p className="line-clamp-1 text-xs text-[#14213D]">{v.purpose}</p>
+            )}
+          </div>
+          {canReport(v) && (
+            <Button
+              size="sm"
+              variant={isReportOverdue(v) ? 'primary' : 'secondary'}
+              className="shrink-0"
+              onClick={(e) => {
+                e.stopPropagation();
+                openReport(v);
+              }}
+            >
+              Submit report
+            </Button>
+          )}
+        </div>
+      </li>
+    );
+  };
+
+  // The visits as records for List / Cards / Board (Calendar uses the visits directly)
+  const visitItems: RecordItem[] = visits.map((v) => {
+    const tone = visitToneById.get(v.id) || 'upcoming';
+    const report = v.updates?.[0];
+    return {
+      key: v.id,
+      title: v.organisation_name || 'Client agency',
+      subtitle: [visitTime(v), v.location].filter(Boolean).join(' · '),
+      status: { label: VISIT_LANES.find((l) => l.key === tone)!.label, tone: VISIT_LANES.find((l) => l.key === tone)!.tone },
+      badges: [
+        v.travel_required && { label: 'Travel', tone: 'info' as const },
+        v.demo_required && { label: v.linked_demo_no ? `Demo ${v.linked_demo_no}` : 'Demo', tone: 'info' as const },
+        v.manager_assigned && { label: 'Manager assigned', tone: 'warning' as const },
+      ].filter(Boolean) as RecordItem['badges'],
+      due: { date: v.planned_date, label: 'Visit', done: tone !== 'upcoming' && tone !== 'overdue' },
+      owner: v.assignee_name,
+      facts: [
+        report ? { label: 'Outcome', value: report.outcome || 'Completed' } : v.purpose && { label: 'Purpose', value: v.purpose },
+        (v.contact_name || v.contact_person) && { label: 'Contact', value: v.contact_name || v.contact_person },
+        v.product_name && { label: 'Product', value: v.product_name },
+      ].filter(Boolean) as RecordItem['facts'],
+      primary: canReport(v) ? { label: 'Submit report', onClick: () => openReport(v) } : undefined,
+      onOpen: () => setOpenVisitId(v.id),
+    };
+  });
+
   // KPI Calculations
   const stats = useMemo(() => {
     const total = visits.length;
@@ -1313,7 +1453,7 @@ export default function VisitsPage() {
                 const defaultOfficer = (user?.id && UUID_REGEX.test(user.id))
                   ? user.id
                   : (usersList.find((u) => u.id && UUID_REGEX.test(u.id))?.id || '');
-                setNewVisit((prev) => ({ ...prev, assigned_to: prev.assigned_to || defaultOfficer }));
+                setNewVisit((prev) => ({ ...prev, assigned_to: isSalesRole ? defaultOfficer : prev.assigned_to || defaultOfficer }));
                 setIsScheduleOpen(true);
               }}
               variant="primary"
@@ -1529,7 +1669,10 @@ export default function VisitsPage() {
         <div className="space-y-3.5">
           {!isLoading && stats.overdue > 0 && filterStatus !== 'overdue' && (
             <InfoCallout variant="warning" title={`${stats.overdue} visit report${stats.overdue === 1 ? '' : 's'} overdue`}>
-              {stats.overdue === 1 ? 'A visit' : 'Some visits'} dated before today {stats.overdue === 1 ? 'is' : 'are'} still open. Submit the post-visit report, or reschedule / cancel the visit.{' '}
+              {stats.overdue === 1 ? 'A visit' : 'Some visits'} dated before today {stats.overdue === 1 ? 'is' : 'are'} still open.{' '}
+              {hasRole('management')
+                ? 'The assigned officer has not submitted the post-visit report yet.'
+                : 'Submit the post-visit report, or reschedule / cancel the visit.'}{' '}
               <button type="button" className="font-bold text-[#0F5E63] hover:underline" onClick={() => setFilterStatus('overdue')}>
                 Show overdue
               </button>
@@ -1542,348 +1685,25 @@ export default function VisitsPage() {
               No field visits match the active filters.
             </div>
           ) : (
-            visits.map((v) => (
-              <div
-                key={v.id}
-                className="p-5 rounded-xl border border-[#DCD8CE] bg-white hover:border-[#0F5E63] transition-all space-y-4 shadow-xs"
-              >
-                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                  <div className="space-y-1.5 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {getVisitBadges(v)}
-
-                      {v.manager_assigned && (
-                        <Badge variant="warning" size="sm" className="bg-[#FBEBDD] text-[#7C2D12] border-[#E9C9B4]">
-                          Manager Assigned
-                        </Badge>
-                      )}
-
-                      {v.travel_required && (
-                        <Badge variant="info" size="sm" className="bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3]">
-                          Travel Required
-                        </Badge>
-                      )}
-
-                      {v.planned_date && (() => {
-                        const planDate = new Date(v.planned_date);
-                        const createdDate = v.created_at ? new Date(v.created_at) : new Date();
-                        const diffDays = Math.round((planDate.getTime() - createdDate.getTime()) / (1000 * 3600 * 24));
-                        if (diffDays >= 5) {
-                          return (
-                            <Badge variant="outline" size="sm" className="bg-[#E3EFEE] text-[#0B4A4E] border-[#D0E5E3]">
-                              1-Wk Cycle
-                            </Badge>
-                          );
-                        }
-                        return null;
-                      })()}
-
-                      {v.demo_required && (
-                        v.linked_demo_no ? (
-                          <GuardedLink
-                            href={v.linked_demo_id ? `/demos?open=${v.linked_demo_id}` : `/demos`}
-                            className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-brand-primary/10 text-brand-primary border border-brand-primary/25 hover:underline flex items-center gap-1"
-                          >
-                            <Sparkles className="h-3 w-3" />
-                            DEMO: {v.linked_demo_no}
-                          </GuardedLink>
-                        ) : (
-                          <Badge variant="default" size="sm" className="bg-[#EEF1F5] text-[#14213D] border-[#DCD8CE]">
-                            DEMO TRIAL REQ.
-                          </Badge>
-                        )
-                      )}
-
-                      {v.organisation_id ? (
-                        <GuardedLink href={`/leads?customer=${v.organisation_id}`} className="text-sm font-bold text-[#14213D] hover:underline hover:text-[#0F5E63]" title="Open Customer 360">
-                          {v.organisation_name || 'Client Agency'}
-                        </GuardedLink>
-                      ) : (
-                        <span className="text-sm font-bold text-[#14213D]">{v.organisation_name || 'Client Agency'}</span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#4A5568]">
-                      <span className="flex items-center gap-1 text-[#14213D] font-medium">
-                        <MapPin className="h-3.5 w-3.5 text-[#0F5E63]" />
-                        {v.location || 'Site Location'}
-                      </span>
-                      <span className="flex items-center gap-1 font-mono text-[#14213D]">
-                        <Clock className="h-3.5 w-3.5 text-[#4A5568]" />
-                        {new Date(v.planned_date).toLocaleDateString('en-IN', {
-                          weekday: 'short',
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                        })}
-                        {v.start_time ? ` • ${v.start_time} - ${v.end_time || ''}` : ''}
-                      </span>
-                      <span className="flex items-center gap-1 text-[#4A5568]">
-                        <User className="h-3.5 w-3.5 text-[#4A5568]" />
-                        Officer: {v.assignee_name || 'Sales Staff'}
-                      </span>
-                      {v.product_name && (
-                        <span className="flex items-center gap-1 text-[#0B4A4E] font-medium">
-                          <Layers className="h-3.5 w-3.5 text-[#0F5E63]" />
-                          Product: {v.product_name}
-                        </span>
-                      )}
-                      {(v.contact_name || v.contact_person) && (
-                        <span className="flex items-center gap-1 text-[#0F5E63] font-medium">
-                          <User className="h-3.5 w-3.5 text-[#0F5E63]" />
-                          Contact: <span className="font-semibold text-[#14213D]">{v.contact_name || v.contact_person}</span>
-                        </span>
-                      )}
-                    </div>
-
-                    {v.purpose && (
-                      <p className="text-xs text-[#14213D] pt-1 font-medium">
-                        <span className="text-[#4A5568] font-semibold">Purpose:</span> {v.purpose}
-                      </p>
-                    )}
-
-                    {v.expected_outcome && (
-                      <p className="text-xs text-[#4A5568]">
-                        <span className="font-semibold text-[#4A5568]">Expected Outcome:</span> {v.expected_outcome}
-                      </p>
-                    )}
-
-                    {v.remarks && !v.remarks.includes('Manager Directive:') && !v.remarks.includes('Manager Intervention') && (
-                      <p className="text-xs text-[#4A5568] bg-[#FBFAF7] px-2.5 py-1.5 rounded-lg border border-[#DCD8CE] mt-1">
-                        <span className="font-semibold text-[#14213D]">Remarks: </span>
-                        {v.remarks}
-                      </p>
-                    )}
-
-                    {v.change_reason && (
-                      <div className="text-xs text-[#7C2D12] bg-[#FFF8EB]/80 p-2 rounded-lg border border-[#E9C9B4] mt-1">
-                        <span className="font-bold">Change Reason:</span> {v.change_reason}
-                        {v.rescheduled_from && (
-                          <span className="text-[#7C2D12] ml-2">(Rescheduled from {formatDateIN(v.rescheduled_from)})</span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Action Buttons */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    {/* Manager Also-Meet Intervention */}
-                    {hasRole(['management', 'regional_manager', 'admin']) && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setSelectedVisit(v);
-                          const directiveText = v.remarks?.includes('Manager Intervention / Directive:')
-                            ? v.remarks.split('Manager Intervention / Directive:')[1].trim()
-                            : v.remarks?.includes('Manager Directive:')
-                            ? v.remarks.split('Manager Directive:')[1].trim()
-                            : v.remarks?.includes('Manager Intervention:')
-                            ? v.remarks.split('Manager Intervention:')[1].trim()
-                            : '';
-                          setAlsoMeetData({
-                            instructions: directiveText,
-                            assign_additional: false,
-                            organisation_id: '',
-                            location: v.location || '',
-                            contact_person: '',
-                            purpose: 'Strategic procurement review / GeM requirements',
-                            start_time: '14:30',
-                            end_time: '16:00',
-                          });
-                          setIsAlsoMeetOpen(true);
-                        }}
-                        className="border-[#E9C9B4] text-[#7C2D12] hover:bg-[#FFF8EB]"
-                      >
-                        <UserPlus className="h-3.5 w-3.5 mr-1" />
-                        <span>Also-Meet Directive</span>
-                      </Button>
-                    )}
-
-                    {/* Post-Visit Update: only for planned or modified or rescheduled visits */}
-                    {['planned', 'modified', 'rescheduled'].includes(v.status) && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={isFutureVisit(v)}
-                          title={isFutureVisit(v) ? `The report can be submitted on or after ${fmtDay(calendarDay(v.planned_date) || '')}.` : undefined}
-                          onClick={() => {
-                            setSelectedVisit(v);
-                            setReportData({
-                              met_completed: true,
-                              person_met: '',
-                              discussion: '',
-                              product_discussed: v.product_name || '',
-                              outcome: '',
-                              opportunity: '',
-                              tender_opportunity: '',
-                              demo_required: v.demo_required || false,
-                              next_action: '',
-                              followup_date: '',
-                              remarks: '',
-                            });
-                            setIsReportOpen(true);
-                          }}
-                        >
-                          <FileEdit className="h-3.5 w-3.5 mr-1" />
-                          <span>Submit Report</span>
-                        </Button>
-
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setSelectedVisit(v);
-                            setRescheduleData({
-                              new_date: v.planned_date,
-                              start_time: v.start_time || '',
-                              end_time: v.end_time || '',
-                              reason: '',
-                            });
-                            setIsRescheduleOpen(true);
-                          }}
-                          className="text-[#0F5E63]"
-                        >
-                          <span>Reschedule</span>
-                        </Button>
-
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setSelectedVisit(v);
-                            setNewDestination({
-                              new_location: v.location || '',
-                              reason: '',
-                            });
-                            setIsDestinationOpen(true);
-                          }}
-                          className="text-[#14213D]"
-                        >
-                          <span>Change Station</span>
-                        </Button>
-
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setSelectedVisit(v);
-                            setCancelReason('');
-                            setIsCancelOpen(true);
-                          }}
-                          className="text-[#881337] hover:bg-[#FCE8EC]"
-                        >
-                          <span>Cancel</span>
-                        </Button>
-                      </>
-                    )}
-
-                    {/* Claim Expense for this visit — only the visit's own people can claim against it, and never a cancelled one */}
-                    {v.status !== 'cancelled' && !!user?.id && [v.assigned_to, v.planned_by, v.service_engineer_id].includes(user.id) && (
-                      <NewClaimButton size="sm" variant="ghost" className="text-[#0F5E63]" visitId={v.id} tripId={v.trip_id || undefined}>
-                        <Receipt className="h-3.5 w-3.5 mr-1 text-[#4A5568]" />
-                        <span>Claim Expense</span>
-                      </NewClaimButton>
-                    )}
-
-                    {/* Audit History */}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleOpenAudit(v)}
-                      className="text-[#4A5568] hover:text-[#14213D]"
-                    >
-                      <History className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Manager "Also-Meet" Banner Callout */}
-                {(v.manager_assigned || v.remarks?.includes('Manager Directive') || v.remarks?.includes('Manager Intervention')) && (
-                  <div className="p-3.5 rounded-xl bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12] flex items-start space-x-3 shadow-xs">
-                    <Sparkles className="h-4 w-4 text-[#9A3412] shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold text-[#7C2D12] uppercase tracking-wider block text-[10px]">
-                        REGIONAL MANAGER STRATEGIC "ALSO-MEET" DIRECTIVE:
-                      </span>
-                      <p className="mt-0.5 font-medium leading-relaxed">
-                        {v.remarks}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Completed Report Callout */}
-                {v.updates && v.updates.length > 0 && (
-                  <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-xs text-[#14213D] space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-[#0F5E63] uppercase tracking-wider text-[10px] flex items-center gap-1">
-                        <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5E63]" />
-                        POST-VISIT INTELLIGENCE LOGGED:
-                      </span>
-                      {v.updates[0].updated_by_name && (
-                        <span className="text-[10px] text-[#4A5568]">Logged by {v.updates[0].updated_by_name}</span>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <span className="font-bold text-[#14213D]">Person Met: </span>
-                        <span>{v.updates[0].person_met || 'N/A'}</span>
-                      </div>
-                      <div>
-                        <span className="font-bold text-[#14213D]">Outcome: </span>
-                        <span className="font-semibold text-[#0B4A4E]">{v.updates[0].outcome || 'Completed'}</span>
-                      </div>
-                      {v.updates[0].product_discussed && (
-                        <div>
-                          <span className="font-bold text-[#14213D]">Product Discussed: </span>
-                          <span className="text-[#0F5E63] font-medium">{v.updates[0].product_discussed}</span>
-                        </div>
-                      )}
-                      {v.updates[0].opportunity && (
-                        <div>
-                          <span className="font-bold text-[#14213D]">Opportunity: </span>
-                          <span className="text-[#0B4A4E] font-medium">{v.updates[0].opportunity}</span>
-                        </div>
-                      )}
-                      {v.updates[0].tender_opportunity && (
-                        <div className="col-span-full">
-                          <span className="font-bold text-[#0F5E63]">Tender / GeM Bid: </span>
-                          <span className="font-mono text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded text-[11px] font-semibold border border-[#DCD8CE]">
-                            {v.updates[0].tender_opportunity}
-                          </span>
-                        </div>
-                      )}
-                      {v.updates[0].demo_required && (
-                        <div>
-                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F5E63] bg-[#E3EFEE] px-2 py-0.5 rounded-full border border-[#DCD8CE]">
-                            <Sparkles className="h-3 w-3" /> Technical Demo Requested
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                    {v.updates[0].discussion && (
-                      <p className="text-[#14213D] italic border-l-2 border-[#0F5E63] pl-2 mt-1.5">
-                        "{v.updates[0].discussion}"
-                      </p>
-                    )}
-                    {v.updates[0].remarks && (
-                      <p className="text-xs text-[#4A5568] bg-white p-2 rounded border border-[#DCD8CE] mt-1">
-                        <span className="font-bold text-[#14213D]">Field Remarks: </span>{v.updates[0].remarks}
-                      </p>
-                    )}
-                    {v.updates[0].followup_date && (
-                      <div className="text-[11px] text-[#0F5E63] font-semibold flex items-center gap-1 mt-1.5">
-                        <Clock className="h-3 w-3" />
-                        Next Follow-up Commitment: {formatDateIN(v.updates[0].followup_date)}
-                        {v.updates[0].next_action ? ` — ${v.updates[0].next_action}` : ''}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))
+            <>
+              {/* Same view switch as the other registers (List · Cards · Board) plus the visit calendar */}
+              <RecordViews
+                storageKey="visits"
+                defaultView="calendar"
+                items={visitItems}
+                lanes={VISIT_LANES}
+                laneOf={(i) => visitToneById.get(i.key) || 'upcoming'}
+                list={<ul className="space-y-2">{[...upcomingVisits, ...pastVisits].map(renderVisitRow)}</ul>}
+                calendar={<VisitCalendar visits={visits} toneOf={visitTone} onOpen={(v) => setOpenVisitId(v.id)} />}
+                summary={
+                  <>
+                    <span className="font-mono font-semibold text-[#14213D]">{visits.length}</span> visits · {upcomingVisits.length} upcoming
+                    {stats.overdue ? <span className="font-semibold text-[#9A3412]"> · {stats.overdue} report{stats.overdue === 1 ? '' : 's'} overdue</span> : null}
+                  </>
+                }
+                empty="No field visits match the active filters."
+              />
+            </>
           )}
         </div>
       )}
@@ -2218,6 +2038,116 @@ export default function VisitsPage() {
       )}
 
       {/* ----------------------------------------------------------- */}
+      {/* VISIT DETAIL: everything about one visit, and what can be done with it */}
+      <Modal
+        isOpen={Boolean(openVisit)}
+        onClose={() => setOpenVisitId(null)}
+        title={openVisit?.organisation_name || 'Field visit'}
+        description={openVisit ? `${fmtDate(openVisit.planned_date)} · ${visitTime(openVisit)}` : undefined}
+        maxWidth="3xl"
+      >
+        {openVisit && (() => {
+          const v = openVisit;
+          const tile = 'rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2.5 min-w-0';
+          const tileLabel = 'text-[10px] font-semibold uppercase tracking-wider text-[#4A5568]';
+          const active = isActiveVisitStatus(v.status);
+          const mine = !!user?.id && [v.assigned_to, v.planned_by, v.service_engineer_id].includes(user.id);
+          const menu: RowMenuItem[] = [
+            { key: 'reschedule', label: 'Reschedule', icon: <CalendarDays />, hidden: !active, onSelect: () => openReschedule(v) },
+            { key: 'station', label: 'Change station', icon: <MapPin />, hidden: !active, onSelect: () => openDestination(v) },
+            { key: 'also', label: 'Also-meet directive', icon: <UserPlus />, hidden: !isManagerRole, onSelect: () => openAlsoMeet(v) },
+            { key: 'cancel', label: 'Cancel visit', icon: <XCircle />, danger: true, hidden: !active, onSelect: () => openCancel(v) },
+          ];
+          return (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {getVisitBadges(v)}
+                {v.manager_assigned && <Badge variant="warning" size="sm">Manager assigned</Badge>}
+                {v.travel_required && <Badge variant="info" size="sm">Travel</Badge>}
+                {v.demo_required &&
+                  (v.linked_demo_no ? (
+                    <GuardedLink href={v.linked_demo_id ? `/demos?open=${v.linked_demo_id}` : '/demos'} className="inline-flex items-center gap-1 rounded-full border border-[#D0E5E3] bg-[#E3EFEE] px-2 py-0.5 text-[10px] font-bold text-[#0F5E63] hover:underline">
+                      <Sparkles className="h-3 w-3" /> Demo {v.linked_demo_no}
+                    </GuardedLink>
+                  ) : (
+                    <Badge variant="default" size="sm">Demo requested</Badge>
+                  ))}
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <div className={tile}>
+                  <div className={tileLabel}>When</div>
+                  <div className="mt-0.5 font-mono text-sm font-semibold text-[#14213D]">{fmtDate(v.planned_date)}</div>
+                  <div className="text-[11px] text-[#4A5568]">{visitTime(v)}</div>
+                </div>
+                <div className={tile}>
+                  <div className={tileLabel}>Where</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-[#14213D]" title={v.location}>{v.location || '—'}</div>
+                  {v.product_name && <div className="truncate text-[11px] text-[#4A5568]">Product: {v.product_name}</div>}
+                </div>
+                <div className={tile}>
+                  <div className={tileLabel}>Officer</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-[#14213D]">{v.assignee_name || '—'}</div>
+                </div>
+                <div className={tile}>
+                  <div className={tileLabel}>Contact</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-[#14213D]">{v.contact_name || v.contact_person || '—'}</div>
+                </div>
+              </div>
+
+              {(v.purpose || v.expected_outcome) && (
+                <div className="space-y-1 text-sm text-[#14213D]">
+                  {v.purpose && <p className="whitespace-pre-wrap break-words"><span className="font-semibold text-[#4A5568]">Purpose: </span>{v.purpose}</p>}
+                  {v.expected_outcome && <p className="whitespace-pre-wrap break-words"><span className="font-semibold text-[#4A5568]">Expected outcome: </span>{v.expected_outcome}</p>}
+                </div>
+              )}
+              {v.remarks && !v.remarks.includes('Manager Directive:') && !v.remarks.includes('Manager Intervention') && (
+                <p className="rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] px-3 py-2 text-xs text-[#4A5568]">
+                  <span className="font-semibold text-[#14213D]">Remarks: </span>
+                  {v.remarks}
+                </p>
+              )}
+              {v.change_reason && (
+                <p className="rounded-lg border border-[#E9C9B4] bg-[#FFF8EB] px-3 py-2 text-xs text-[#7C2D12]">
+                  <span className="font-bold">Change reason:</span> {v.change_reason}
+                  {v.rescheduled_from && <span className="ml-1">(rescheduled from {formatDateIN(v.rescheduled_from)})</span>}
+                </p>
+              )}
+              {renderDirective(v)}
+              {renderReport(v)}
+
+              {/* Pinned to the bottom: history on the left; the report, expenses and other changes (pencil) on the right */}
+              <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 flex flex-wrap items-center justify-between gap-2 border-t border-[#ECE9E2] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5">
+                <Button variant="ghost" size="sm" leftIcon={<History className="h-4 w-4" />} onClick={() => handleOpenAudit(v)}>
+                  Audit trail
+                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {v.status !== 'cancelled' && mine && (
+                    <NewClaimButton size="sm" variant="secondary" visitId={v.id} tripId={v.trip_id || undefined}>
+                      <Receipt className="mr-1 h-3.5 w-3.5" />
+                      Claim expense
+                    </NewClaimButton>
+                  )}
+                  {active && canFileReport(v) && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      leftIcon={<FileEdit className="h-4 w-4" />}
+                      disabled={isFutureVisit(v)}
+                      title={isFutureVisit(v) ? `The report can be submitted on or after ${fmtDay(calendarDay(v.planned_date) || '')}.` : undefined}
+                      onClick={() => openReport(v)}
+                    >
+                      Submit report
+                    </Button>
+                  )}
+                  {menu.some((m) => !m.hidden) && <RowMenu label="Change this visit" icon={<Pencil className="h-4 w-4" />} items={menu} />}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
+
       {/* MODAL 1: PLAN CLIENT VISIT */}
       {/* ----------------------------------------------------------- */}
       <Modal
@@ -2246,23 +2176,27 @@ export default function VisitsPage() {
               {
                 title: 'Agency',
                 icon: <Building />,
-                description: 'Who is going, and which customer agency they will visit.',
+                description: isSalesRole
+                  ? 'Which customer agency you will visit.'
+                  : 'Who is going, and which customer agency they will visit.',
                 content: (
                   <div className="space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <Select
-                        label="Visiting Officer (Who is going)"
-                        required
-                        value={newVisit.assigned_to || ''}
-                        onChange={(e) => setNewVisit({ ...newVisit, assigned_to: e.target.value })}
-                        options={[
-                          { value: '', label: '-- Select Officer Who is Going --' },
-                          ...usersList.map((u) => ({
-                            value: u.id,
-                            label: `${u.full_name} (${u.role ? u.role.replace('_', ' ') : 'Officer'})`,
-                          })),
-                        ]}
-                      />
+                    <div className={`grid grid-cols-1 gap-3 ${isSalesRole ? '' : 'sm:grid-cols-2'}`}>
+                      {!isSalesRole && (
+                        <Select
+                          label="Visiting Officer (Who is going)"
+                          required
+                          value={newVisit.assigned_to || ''}
+                          onChange={(e) => setNewVisit({ ...newVisit, assigned_to: e.target.value })}
+                          options={[
+                            { value: '', label: '-- Select Officer Who is Going --' },
+                            ...usersList.map((u) => ({
+                              value: u.id,
+                              label: `${u.full_name} (${u.role ? u.role.replace('_', ' ') : 'Officer'})`,
+                            })),
+                          ]}
+                        />
+                      )}
 
                       <Select
                         label="Organisation (Choose Agency)"
@@ -2536,47 +2470,6 @@ export default function VisitsPage() {
                         ]}
                       />
 
-                      {/* Pre-selection Demo Team Member Roster (when none selected yet) */}
-                      {!selectedDemoMember && (
-                        <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                              Demo Team Availability on {formatDateIN(newVisit.planned_date)}:
-                            </span>
-                            <span className="text-[10px] text-[#0F5E63] font-medium">Click specialist to book</span>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                            {(demoTeamAvailability.length > 0 ? demoTeamAvailability : usersList.filter((u) => u.role === 'demo_team')).map((m) => {
-                              const isAvail = m.is_available ?? true;
-                              return (
-                                <button
-                                  key={m.id}
-                                  type="button"
-                                  onClick={() => setDemoDetails((prev) => ({ ...prev, demo_assigned_to: m.id }))}
-                                  className="flex items-center justify-between p-2 rounded bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
-                                >
-                                  <div className="space-y-0.5 truncate pr-1">
-                                    <span className="font-semibold text-[#14213D] text-[11px] block truncate group-hover:text-[#0F5E63]">
-                                      {m.full_name}
-                                    </span>
-                                    <span className="text-[10px] text-[#4A5568] block truncate">
-                                      {m.role === 'demo_team' ? 'Demo Specialist' : m.role.replace(/_/g, ' ')} {m.phone ? `• ${m.phone}` : ''}
-                                    </span>
-                                  </div>
-                                  <span
-                                    className={`text-[10px] font-bold shrink-0 ml-1 px-1.5 py-0.5 rounded ${
-                                      isAvail ? 'bg-[#E3EFEE] text-[#0B4A4E]' : 'bg-[#FBEBDD] text-[#7C2D12]'
-                                    }`}
-                                  >
-                                    {isAvail ? '🟢 Available' : '🟡 Booked'}
-                                  </span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
                       {/* Selected Demo Team Member Live Availability & Notification Card */}
                       {selectedDemoMember && (
                         <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs animate-in fade-in">
@@ -2634,30 +2527,18 @@ export default function VisitsPage() {
                           value={demoDetails.product_id || newVisit.product_id}
                           onChange={(e) => {
                             const pId = e.target.value;
-                            setDemoDetails({ ...demoDetails, product_id: pId });
+                            setDemoDetails({ ...demoDetails, product_id: pId, equipment_required: kitForProduct(demoDetails.equipment_required, pId, demoEquipmentList || []) });
                             if (pId && !newVisit.product_id) {
                               setNewVisit((prev) => ({ ...prev, product_id: pId }));
                             }
                           }}
                           options={[
                             { value: '', label: '-- Select Equipment Category / Product --' },
-                            ...products.map((p) => {
+                            ...availableFirst(products.map((p) => {
                               const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
-                              const avail = pUnits.filter((e) => e.availability_status === 'available');
-                              let statusTag = '';
-                              if (avail.length > 0) {
-                                const locs = Array.from(new Set(avail.map((u) => u.current_location).filter(Boolean)));
-                                statusTag = `[AVAILABLE: ${avail.length} of ${pUnits.length} in ${locs.join(', ')}]`;
-                              } else if (pUnits.length > 0) {
-                                statusTag = `[RESERVED / IN USE: ${pUnits.length} Units]`;
-                              } else {
-                                statusTag = `[NO DEMO FLEET UNIT]`;
-                              }
-                              return {
-                                value: p.id,
-                                label: `${statusTag} ${p.name} (${p.category || 'Security'})`,
-                              };
-                            }),
+                              const ready = pUnits.filter((e) => e.availability_status === 'available').length;
+                    return { value: p.id, label: `${p.name} (${p.category || 'Security'})`, ...fleetHint(ready, pUnits.length) };
+                            })),
                           ]}
                         />
 
@@ -2693,51 +2574,6 @@ export default function VisitsPage() {
                           options={registeredEquipmentOptions}
                         />
                       </div>
-
-                      {/* Fleet Availability Overview by Product (when no product is selected yet) - Full Width */}
-                      {!activeProductFleet && (
-                        <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2 text-xs">
-                          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                              Demo Equipment Fleet Availability & Status:
-                            </span>
-                            <span className="text-[10px] text-[#0F5E63] font-medium">Click to select equipment</span>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                            {products.slice(0, 9).map((p) => {
-                              const pUnits = (demoEquipmentList || []).filter((e) => e.product_id === p.id);
-                              const availCount = pUnits.filter((e) => e.availability_status === 'available').length;
-                              const total = pUnits.length;
-                              return (
-                                <button
-                                  key={p.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setDemoDetails((prev) => ({ ...prev, product_id: p.id }));
-                                    if (!newVisit.product_id) setNewVisit((prev) => ({ ...prev, product_id: p.id }));
-                                  }}
-                                  className="flex items-center justify-between p-2 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] text-left transition-colors group"
-                                >
-                                  <span className="font-semibold text-[#14213D] truncate text-[11px] group-hover:text-[#0F5E63]">
-                                    {p.name}
-                                  </span>
-                                  <span
-                                    className={`text-[10px] font-mono font-bold shrink-0 ml-1.5 px-1.5 py-0.5 rounded ${
-                                      availCount > 0
-                                        ? 'bg-[#E3EFEE] text-[#0B4A4E]'
-                                        : total > 0
-                                        ? 'bg-[#FBEBDD] text-[#7C2D12]'
-                                        : 'bg-[#ECE9E2] text-[#4A5568]'
-                                    }`}
-                                  >
-                                    {availCount > 0 ? `🟢 ${availCount}/${total} Ready` : total > 0 ? '🟡 In-Trial' : 'Requisition'}
-                                  </span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
 
                       {/* Live Product Fleet Availability & Status HUD - Full Width */}
                       {activeProductFleet && (
@@ -2788,67 +2624,6 @@ export default function VisitsPage() {
                         </div>
                       )}
 
-                      {/* Available Demo Kits & Serials Roster (when product is selected but specific unit not yet chosen) - Full Width */}
-                      {!selectedEquipUnit && activeProductFleet && activeProductFleet.units.length > 0 && (
-                        <div className="p-3 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
-                          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider">
-                              Available Demo Kits in Fleet ({activeProductFleet.units.length}):
-                            </span>
-                            <span className="text-[10px] text-[#0F5E63] font-medium">Click any kit below to assign</span>
-                          </div>
-                          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                            {activeProductFleet.units.map((u) => {
-                              const isReady = u.availability_status === 'available';
-                              const isReserved = u.availability_status === 'reserved' || u.availability_status === 'in_use';
-                              return (
-                                <div
-                                  key={u.id}
-                                  onClick={() => {
-                                    const val = `${u.model} | S/N: ${u.serial_no} (${u.current_location} Depot)`;
-                                    setDemoDetails((prev) => ({
-                                      ...prev,
-                                      equipment_required: val,
-                                      product_id: u.product_id || prev.product_id,
-                                    }));
-                                  }}
-                                  className="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg bg-white border border-[#ECE9E2] hover:border-[#0F5E63] cursor-pointer transition-all hover:shadow-xs group gap-2"
-                                >
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <span className="font-bold text-[#14213D] text-[11px] group-hover:text-[#0F5E63]">{u.model}</span>
-                                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] font-bold text-[#14213D]">
-                                        S/N: {u.serial_no}
-                                      </span>
-                                      <span className="text-[10px] text-[#4A5568]">📍 {u.current_location} Depot</span>
-                                      {isReady ? (
-                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]">
-                                          🟢 Ready
-                                        </span>
-                                      ) : isReserved ? (
-                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FBEBDD] text-[#7C2D12] border border-[#E9C9B4]">
-                                          🟡 Reserved
-                                        </span>
-                                      ) : (
-                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FCE8EC] text-[#700F2D] border border-[#F3C7CF]">
-                                          🔴 Maint
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="text-[10px] text-[#4A5568]">
-                                      📦 Kit includes: Flight case, dual Li-ion batteries, charger & calibration block
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <span className="text-xs text-[#0F5E63] font-bold group-hover:underline">Select Kit →</span>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
                       {/* Specific Demo Kit / Serial / Accessories Detail Card - FULL WIDTH, NOT SPLIT IN HALF */}
                       {selectedEquipUnit && (
                         <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] space-y-2.5 text-xs animate-in fade-in">
@@ -2893,28 +2668,8 @@ export default function VisitsPage() {
                             </div>
                           </div>
 
-                          {/* Included Standard Demo Kit Accessories - Full Width Grid */}
-                          <div className="pt-2 border-t border-[#ECE9E2]">
-                            <span className="text-[10px] font-bold text-[#4A5568] uppercase tracking-wider block mb-1.5">
-                              📦 Specific Demo Kit / Included Accessories & Calibration Items:
-                            </span>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 text-xs text-[#14213D]">
-                              {getStandardKitAccessories(selectedEquipUnit.product_name, selectedEquipUnit.product_category).map((item, idx) => (
-                                <div key={idx} className="flex items-center gap-1.5 p-1.5 rounded-lg bg-white border border-[#ECE9E2]">
-                                  <CheckCircle className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                                  <span className="truncate text-[11px]">{item}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Status Note Callout */}
-                          {selectedEquipUnit.availability_status === 'available' ? (
-                            <div className="p-2 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-[#0B4A4E] text-[11px] flex items-center gap-2">
-                              <CheckCircle2 className="h-4 w-4 text-[#0B4A4E] shrink-0" />
-                              <span>Kit verified and calibrated for client field demonstration. Immediate dispatch supported from {selectedEquipUnit.current_location} Depot.</span>
-                            </div>
-                          ) : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
+                          {/* Warn when the chosen unit is busy or under maintenance */}
+                          {selectedEquipUnit.availability_status === 'available' ? null : selectedEquipUnit.availability_status === 'reserved' || selectedEquipUnit.availability_status === 'in_use' ? (
                             <div className="p-2 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[11px] flex items-center gap-2">
                               <AlertTriangle className="h-4 w-4 text-[#7C2D12] shrink-0" />
                               <span>This serial is currently scheduled for another trial. Submitting will flag a scheduling overlap notice to the Demo Coordinator.</span>
@@ -3021,19 +2776,10 @@ export default function VisitsPage() {
                             }
                             className="h-4 w-4 rounded border-[#C9C4B8] text-[#0F5E63] focus:ring-[#0F5E63]"
                           />
-                          <div>
-                            <span className="text-xs font-bold text-[#14213D] block">
-                              Request Service Team Escort for Live Demo (Optional)
-                            </span>
-                            <span className="text-[11px] text-[#4A5568] block mt-0.5">
-                              Service Engineers do not plan separate tours. Attach a Service Engineer to this sales tour to assist during the live demonstration in case of technical issues or calibration needs.
-                            </span>
-                          </div>
+                          <span className="text-xs font-bold text-[#14213D]">
+                            Request Service Team Escort for Live Demo (Optional)
+                          </span>
                         </label>
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 shrink-0">
-                          <Wrench className="w-3 h-3 text-[#0F5E63]" />
-                          Joint Tour
-                        </span>
                       </div>
 
                       {demoDetails.service_escort_required && (
@@ -3740,6 +3486,27 @@ export default function VisitsPage() {
                         />
                       </div>
                     )}
+
+                    {/* §12: a missed meeting still gets a next step (e.g. officer on leave → revisit date) */}
+                    {!reportData.met_completed && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <Input
+                          label="Next Action"
+                          required={Boolean(reportData.followup_date)}
+                          value={reportData.next_action}
+                          onChange={(e) => setReportData({ ...reportData, next_action: e.target.value })}
+                          placeholder="e.g. Revisit once the officer is back from leave"
+                        />
+
+                        <Input
+                          label="Follow-Up Date"
+                          type="date"
+                          min={calendarDay(selectedVisit?.planned_date) || undefined}
+                          value={reportData.followup_date}
+                          onChange={(e) => setReportData({ ...reportData, followup_date: e.target.value })}
+                        />
+                      </div>
+                    )}
                   </div>
                 ),
               },
@@ -3836,6 +3603,7 @@ export default function VisitsPage() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input
                         label="Next Action Commitment"
+                        required={Boolean(reportData.followup_date)}
                         value={reportData.next_action}
                         onChange={(e) => setReportData({ ...reportData, next_action: e.target.value })}
                         placeholder="e.g. Dispatch demo unit from Delhi Depot"
@@ -3844,6 +3612,7 @@ export default function VisitsPage() {
                       <Input
                         label="Follow-Up Milestone Date"
                         type="date"
+                        min={calendarDay(selectedVisit?.planned_date) || undefined}
                         value={reportData.followup_date}
                         onChange={(e) => setReportData({ ...reportData, followup_date: e.target.value })}
                       />

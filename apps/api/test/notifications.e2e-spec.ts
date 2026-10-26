@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { Kysely } from 'kysely';
 import type { Database } from '@arihant/shared';
+import { configureApp } from '../src/common/app-setup';
 
 describe('Notifications & Unread Badge E2E Suite', () => {
   let app: INestApplication;
@@ -18,14 +19,7 @@ describe('Notifications & Unread Badge E2E Suite', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     db = moduleFixture.get<Kysely<Database>>('KYSELY_DB');

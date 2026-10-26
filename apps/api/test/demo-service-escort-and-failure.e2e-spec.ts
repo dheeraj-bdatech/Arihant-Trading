@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { istDay } from './helpers/ist-date';
+import { configureApp } from '../src/common/app-setup';
 
 describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () => {
   let app: INestApplication;
@@ -24,14 +25,7 @@ describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () =
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        forbidNonWhitelisted: true,
-      }),
-    );
+    configureApp(app); // same global setup as main.ts
     await app.init();
 
     db = app.get(KYSELY_DB);

@@ -92,6 +92,8 @@ export class ProposalTaskReminderConsumer {
 
   @OnEvent('proposal.*')
   async handleTaskReminder(envelope: DomainEventEnvelope) {
+    // Only outbox envelopes are processed; a raw payload on proposal.* (wildcard) must not crash or poison processed_events.
+    if (!envelope?.eventId || !envelope?.eventType) return;
     const { eventId, eventType, aggregateId, payload, suppressNotifications } = envelope;
 
     // DEF-104: an outcome ends the follow-up work — close the proposal's open follow-up tasks (even for silent syncs).

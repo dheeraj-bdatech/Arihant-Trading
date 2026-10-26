@@ -470,6 +470,9 @@ export default function ProposalsPage() {
     }
   });
 
+  // Deep link from dashboard cards: /proposals?status=<status code>
+  useOpenParam((status) => pickStatus(status), true, 'status');
+
   /** The full record (findOne) carries its follow-ups and status history, so the tab counts are right at once. */
   const applyProposal = (full: any) => {
     if (!full) return;
