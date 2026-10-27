@@ -231,7 +231,7 @@ export default function NotificationsPage() {
       case 'task_digest':
         return { label: 'Open Team Tasks', href: '/tasks/team', icon: CheckSquare };
       case 'performance_review':
-        return { label: 'Open My Performance', href: '/tasks/my-performance', icon: CheckSquare };
+        return { label: 'Open My Performance', href: '/performance', icon: CheckSquare };
       case 'delivery':
         return { label: 'View Delivery', href: entityId ? `/deliveries?open=${entityId}` : '/deliveries', icon: Truck };
       case 'expense':

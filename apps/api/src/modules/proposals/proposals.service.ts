@@ -33,6 +33,7 @@ import {
 } from './proposals.workflow.js';
 import { AppEvents } from '../../common/events/event-names.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
+import { SINGLETON_RECORD_ID } from '../../common/events/audit.listener.js';
 import { ProposalTimelineProjection } from './consumers/timeline.projection.js';
 import {
   CreateProposalDto,
@@ -253,6 +254,7 @@ export class ProposalsService {
       throw new ForbiddenException('Only admin or management can update proposal settings');
     }
 
+    const before = await this.db.selectFrom('proposal_settings').selectAll().where('id', '=', 1).executeTakeFirst();
     await this.db
       .updateTable('proposal_settings')
       .set({
@@ -262,7 +264,21 @@ export class ProposalsService {
       .where('id', '=', 1)
       .execute();
 
-    return this.getSettings();
+    // Settings decide who approves (the approval threshold) and when reminders fire: every change is audited,
+    // with the old and new value of each field that changed
+    const after = await this.getSettings();
+    const changed = Object.keys(dto).filter((k) => String((before as any)?.[k]) !== String((after as any)?.[k]));
+    if (changed.length) {
+      this.eventEmitter.emit('audit.log', {
+        actorId: user.id,
+        entityType: 'proposal_settings',
+        entityId: SINGLETON_RECORD_ID,
+        action: 'proposal_settings_updated',
+        previousValue: Object.fromEntries(changed.map((k) => [k, (before as any)?.[k] ?? null])),
+        newValue: Object.fromEntries(changed.map((k) => [k, (after as any)?.[k] ?? null])),
+      });
+    }
+    return after;
   }
 
   /**

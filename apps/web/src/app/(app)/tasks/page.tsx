@@ -1,26 +1,32 @@
 'use client';
 
-import React, { Suspense, useCallback, useMemo } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { openTaskPeek } from './_lib/TaskPeek';
 import { CalendarClock, CheckSquare, ClipboardCheck, Columns3, Inbox, Layers, List, Pencil, Plus, ShieldCheck, Users } from 'lucide-react';
-import { Button, ButtonGroup, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader, RowMenu, Spinner } from '@/components/ui';
+import { Button, ButtonGroup, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader, RowMenu, Spinner } from '@/components/ui';
 import { TASK_FALLBACK_REVIEWER_ROLES } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
 import { addDays, istToday, useTaskSummary } from './_lib/task-lib';
-import { TASK_BOARD_SCOPES, TaskViewMenu, useTaskViews, useToaster, useUrlFilters, type TaskBoardScope } from './_lib/task-ui';
+import { TASK_BOARD_SCOPES, useTaskViews, useToaster, useUrlFilters, type TaskBoardScope } from './_lib/task-ui';
 import { ApprovalBoard, BlockerReviewBoard } from './_lib/QueueBoards';
 import { BoardFilterMenu, BoardSortMenu, QUICK_FILTERS, TaskBoard, taskMoveMenu, useBoardSort, useTaskMover, type QuickFilter } from './_lib/TaskBoard';
 import { TASK_GROUP_BY_LABELS, TaskCards, TaskPagination, TaskSearchInput, TaskTable, useTaskList, type TaskGroupBy } from './_lib/TaskList';
 import type { TaskRow } from './_lib/task-lib';
 import { NewTaskButton } from './_lib/NewTaskModal';
+import { TaskCharts } from './_lib/TaskCharts';
+import { SECTION_SCOPES, TASK_SECTIONS, TaskSectionProvider, TaskToolbar, taskSectionHref, type TaskSection } from './_lib/TaskSections';
+import { LeaveSection } from './_lib/LeaveSection';
+import { RecurringSection } from './_lib/RecurringSection';
 
 /**
  * `scope` picks the board: my tasks (default), team, blocker reviews or approvals — each only for roles that get it
  * (taskViewsFor). `mode=list` switches My tasks to the list; the other boards' lists are their own pages.
  * `queue=all` shows every pending blocker / approval (management, admin).
+ * `section` picks a tab on My / All tasks: the tasks themselves (default), Recurring or Leave & holidays (see TaskSections).
+ * The old `section=performance` link forwards to /performance.
  */
-const FILTER_KEYS = ['mode', 'scope', 'queue', 'filter', 'tab', 'search', 'page', 'dir', 'group'] as const;
+const FILTER_KEYS = ['mode', 'scope', 'queue', 'filter', 'tab', 'search', 'page', 'dir', 'group', 'section'] as const;
 const LIST_PAGES: Partial<Record<TaskBoardScope, string>> = { team: '/tasks/team', blockers: '/tasks/blockers', approvals: '/tasks/approvals' };
 const SCOPE_TITLE: Record<TaskBoardScope, { title: string; icon: React.ReactNode }> = {
   mine: { title: 'My Tasks', icon: <CheckSquare className="h-5 w-5" /> },
@@ -79,6 +85,17 @@ function Tasks() {
   // Until the summary loads, trust the URL; afterwards a board this role does not get falls back to My tasks.
   const wanted = (TASK_BOARD_SCOPES as string[]).includes(values.scope) ? (values.scope as TaskBoardScope) : 'mine';
   const scope: TaskBoardScope = !loaded || views.has(wanted) ? wanted : 'mine';
+  const section: TaskSection =
+    SECTION_SCOPES.includes(scope) && (TASK_SECTIONS as string[]).includes(values.section) ? (values.section as TaskSection) : 'tasks';
+  const onTasks = section === 'tasks';
+  // My performance moved out of Tasks: an old tab link lands on its page with the same period / filters.
+  useEffect(() => {
+    if (values.section !== 'performance') return;
+    const q = new URLSearchParams(window.location.search);
+    q.delete('section');
+    const qs = q.toString();
+    router.replace(qs ? `/performance?${qs}` : '/performance');
+  }, [values.section, router]);
   const queue = scope === 'blockers' || scope === 'approvals';
   const canSeeAllQueues = Boolean(user && TASK_FALLBACK_REVIEWER_ROLES.includes(user.role));
   const queueScope = values.queue === 'all' && canSeeAllQueues ? 'all' : 'mine';
@@ -90,7 +107,7 @@ function Tasks() {
   const search = values.search || undefined;
   const teamView = s?.can_view_all ? 'all' : 'team';
   const view = scope === 'team' ? teamView : 'mine';
-  const statusBoard = board && !queue;
+  const statusBoard = onTasks && board && !queue;
 
   // Completed sorts by finish time; every other tab sorts by deadline, soonest first unless the user flips it.
   const dueSort = tab === 'completed' ? undefined : values.dir === 'desc' ? 'desc' : 'asc';
@@ -98,8 +115,8 @@ function Tasks() {
   // Grouped lists load a fuller page so a group is not split across pages.
   const pageSize = groupBy ? 100 : 20;
   const listQuery = useMemo(
-    () => (board ? null : { view: 'mine', ...tabQuery(tab, today), ...(dueSort ? { sort_by: 'deadline', sort_dir: dueSort } : {}), search, page, page_size: pageSize }),
-    [board, tab, today, dueSort, search, page, pageSize],
+    () => (board || !onTasks ? null : { view: 'mine', ...tabQuery(tab, today), ...(dueSort ? { sort_by: 'deadline', sort_dir: dueSort } : {}), search, page, page_size: pageSize }),
+    [board, onTasks, tab, today, dueSort, search, page, pageSize],
   );
   const openQuery = useMemo(() => (statusBoard ? { view, statuses: BOARD_OPEN, sort_by: 'deadline', search, page_size: 100 } : null), [statusBoard, view, search]);
   const doneQuery = useMemo(() => (statusBoard ? { view, statuses: 'completed', sort_by: 'updated_at', sort_dir: 'desc', search, page_size: 25 } : null), [statusBoard, view, search]);
@@ -137,9 +154,12 @@ function Tasks() {
   };
 
   const boardRows = useMemo(() => [...(open.data?.data || []), ...(done.data?.data || [])], [open.data, done.data]);
-  const loadError = queue ? null : board ? open.error || done.error : list.error;
+  const loadError = queue || !onTasks ? null : board ? open.error || done.error : list.error;
 
-  const onScope = useCallback((next: TaskBoardScope) => set({ scope: next === 'mine' ? null : next, mode: null, queue: null, filter: null }), [set]);
+  const onScope = useCallback((next: TaskBoardScope) => set({ scope: next === 'mine' ? null : next, mode: null, queue: null, filter: null, section: null }), [set]);
+  // A tab starts clean: every section keeps its own filters in the query string, so only the board scope carries over.
+  const onSection = useCallback((next: TaskSection) => router.replace(taskSectionHref(next, scope), { scroll: false }), [router, scope]);
+  const sectionCtx = useMemo(() => ({ scope, onScope, section, onSection }), [scope, onScope, section, onSection]);
   const onFilter = useCallback((f: QuickFilter) => set({ filter: f === 'all' ? null : f }), [set]);
   const showList = () => (LIST_PAGES[scope] ? router.push(LIST_PAGES[scope]!) : set({ mode: 'list' }));
 
@@ -154,178 +174,189 @@ function Tasks() {
   ];
 
   return (
-    <PageContainer>
-      <PageHeader
-        title={SCOPE_TITLE[scope].title}
-        icon={SCOPE_TITLE[scope].icon}
-        actions={
-          <div className="flex items-center gap-2">
-            <ButtonGroup attached role="group" aria-label="Layout">
-              <Button size="sm" variant={board ? 'primary' : 'secondary'} aria-pressed={board} leftIcon={<Columns3 className="h-4 w-4" />} onClick={() => set({ mode: null })}>
-                <span className="hidden sm:inline">Board</span>
-                <span className="sr-only sm:hidden">Board view</span>
-              </Button>
-              <Button size="sm" variant={board ? 'secondary' : 'primary'} aria-pressed={!board} leftIcon={<List className="h-4 w-4" />} onClick={showList}>
-                <span className="hidden sm:inline">List</span>
-                <span className="sr-only sm:hidden">List view</span>
-              </Button>
-            </ButtonGroup>
-            <NewTaskButton size="sm" leftIcon={<Plus className="h-4 w-4" />}>
-              New Task
-            </NewTaskButton>
-          </div>
-        }
-      />
-
-      {/* One toolbar row: View first, then search and the Filter / Sort dropdowns. */}
-      <Card className="relative z-20 overflow-visible p-3">
-        <div className="flex flex-col gap-2 md:flex-row md:items-center">
-          <TaskViewMenu active={scope} onScope={onScope} className="self-start md:self-auto" />
-          <div className="w-full min-w-[200px] md:w-auto md:flex-1">
-            <TaskSearchInput
-              compact
-              label={`Search ${SCOPE_TITLE[scope].title.toLowerCase()}`}
-              placeholder={queue ? 'Search task, title or person' : 'Search task number or title'}
-              value={values.search}
-              onSearch={(q) => set({ search: q })}
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {queue ? (
-              canSeeAllQueues && (
-                <FilterMenu
-                  label="Show"
-                  icon={<Inbox />}
-                  neutralKeys={[]}
-                  align="right"
-                  options={[
-                    { key: 'mine', label: 'Routed to me', active: queueScope === 'mine', onSelect: () => set({ queue: null }) },
-                    { key: 'all', label: scope === 'blockers' ? 'All pending blockers' : 'All awaiting approval', active: queueScope === 'all', onSelect: () => set({ queue: 'all' }) },
-                  ]}
-                />
-              )
-            ) : board ? (
-              <>
-                <BoardFilterMenu rows={boardRows} value={filter} onChange={onFilter} />
-                <BoardSortMenu value={sort} onChange={setSort} />
-              </>
-            ) : (
-              <FilterMenu
-                label="Show"
-                icon={<CalendarClock />}
-                neutralKeys={[]}
-                align="right"
-                options={listTabs.map((t) => ({
-                  key: t.id,
-                  label: TAB_LABELS[t.id],
-                  count: t.count || undefined,
-                  urgent: t.urgent,
-                  active: tab === t.id,
-                  onSelect: () => set({ tab: t.id === 'open' ? null : t.id }),
-                }))}
-              />
-            )}
-            {!queue && !board && (
-              <FilterMenu
-                label="Group by"
-                icon={<Layers />}
-                neutralKeys={['none']}
-                align="right"
-                options={[
-                  { key: 'none', label: 'No grouping', active: !groupBy, onSelect: () => set({ group: null }) },
-                  ...(Object.keys(TASK_GROUP_BY_LABELS) as TaskGroupBy[]).map((g) => ({
-                    key: g,
-                    label: g === 'person' ? 'Assigned by' : TASK_GROUP_BY_LABELS[g],
-                    active: groupBy === g,
-                    onSelect: () => set({ group: g }),
-                  })),
-                ]}
-              />
-            )}
-          </div>
-        </div>
-      </Card>
-
-      {loadError && (
-        <InfoCallout variant="danger" title="Could not load tasks">
-          {loadError}
-        </InfoCallout>
-      )}
-
-      {scope === 'blockers' ? (
-        <BlockerReviewBoard search={values.search} scope={queueScope} teamView={teamView} notify={push} onChanged={reloadSummary} />
-      ) : scope === 'approvals' ? (
-        <ApprovalBoard search={values.search} scope={queueScope} teamView={teamView} notify={push} onChanged={reloadSummary} />
-      ) : board ? (
-        !open.data || !done.data ? (
-          !loadError && <PageLoader rows={4} label="Loading board" />
-        ) : (
-          <>
-            {open.data.total > open.data.data.length && (
-              <InfoCallout variant="neutral">
-                Showing the first {open.data.data.length} of {open.data.total} open tasks. Search to narrow the board{scope === 'team' ? ', or use the List view for every task.' : '.'}
-              </InfoCallout>
-            )}
-            {boardRows.length === 0 && search ? (
-              <EmptyState
-                icon={CheckSquare}
-                title="No tasks match your search"
-                description="Try a different task number or title."
-                action={
-                  <Button variant="secondary" onClick={() => set({ search: null })}>
-                    Clear search
+    <TaskSectionProvider value={sectionCtx}>
+      <PageContainer>
+        <PageHeader
+          title={SCOPE_TITLE[scope].title}
+          icon={SCOPE_TITLE[scope].icon}
+          actions={
+            onTasks && (
+              <div className="flex items-center gap-2">
+                <ButtonGroup attached role="group" aria-label="Layout">
+                  <Button size="sm" variant={board ? 'primary' : 'secondary'} aria-pressed={board} leftIcon={<Columns3 className="h-4 w-4" />} onClick={() => set({ mode: null })}>
+                    <span className="hidden sm:inline">Board</span>
+                    <span className="sr-only sm:hidden">Board view</span>
                   </Button>
-                }
-              />
-            ) : (
-              <TaskBoard
-                rows={boardRows}
-                isManager={isManager}
-                showAssignee={scope === 'team'}
-                filter={filter}
-                sort={sort}
-                notes={
-                  done.data.total > done.data.data.length
-                    ? { completed: `Latest ${done.data.data.length} of ${done.data.total} shown${scope === 'mine' ? ' — older work is in List → Completed.' : '.'}` }
-                    : undefined
-                }
-                onChanged={refreshBoard}
-                notify={push}
-              />
-            )}
-          </>
-        )
-      ) : !list.data ? (
-        !loadError && <PageLoader rows={5} label="Loading tasks" />
-      ) : list.data.data.length === 0 ? (
-        <EmptyState
-          icon={CheckSquare}
-          title={search ? 'No tasks match your search' : EMPTY[tab].title}
-          description={search ? 'Try a different task number or title, or clear the search.' : EMPTY[tab].description}
-          action={
-            search ? (
-              <Button variant="secondary" onClick={() => set({ search: null })}>
-                Clear search
-              </Button>
-            ) : tab === 'today' ? (
-              <Button variant="secondary" onClick={() => set({ tab: 'upcoming' })}>
-                See upcoming
-              </Button>
-            ) : undefined
+                  <Button size="sm" variant={board ? 'secondary' : 'primary'} aria-pressed={!board} leftIcon={<List className="h-4 w-4" />} onClick={showList}>
+                    <span className="hidden sm:inline">List</span>
+                    <span className="sr-only sm:hidden">List view</span>
+                  </Button>
+                </ButtonGroup>
+                <NewTaskButton size="sm" leftIcon={<Plus className="h-4 w-4" />}>
+                  New Task
+                </NewTaskButton>
+              </div>
+            )
           }
         />
-      ) : (
-        <div className={`space-y-3 transition-opacity ${list.loading ? 'opacity-60' : ''}`}>
-          {mover.dialogs.conflict}
-          <TaskTable rows={list.data.data} rowActions={listActions} groupBy={groupBy} dueSort={dueSort} onDueSort={dueSort ? () => set({ dir: dueSort === 'asc' ? 'desc' : null }) : undefined} />
-          <TaskCards rows={list.data.data} rowActions={listActions} />
-          <TaskPagination page={list.data.page} totalPages={list.data.totalPages} total={list.data.total} onPage={(p) => set({ page: String(p) }, { resetPage: false })} />
-        </div>
-      )}
 
-      {mover.dialogs.action}
-      <Toaster />
-    </PageContainer>
+        {section === 'recurring' ? (
+          <RecurringSection />
+        ) : section === 'leave' ? (
+          <LeaveSection />
+        ) : (
+          <>
+            {/* One toolbar row: View first, then search and the Filter / Sort dropdowns; the section tabs underneath. */}
+            <TaskToolbar>
+              <div className="w-full min-w-[200px] md:w-auto md:flex-1">
+                <TaskSearchInput
+                  compact
+                  label={`Search ${SCOPE_TITLE[scope].title.toLowerCase()}`}
+                  placeholder={queue ? 'Search task, title or person' : 'Search task number or title'}
+                  value={values.search}
+                  onSearch={(q) => set({ search: q })}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {queue ? (
+                  canSeeAllQueues && (
+                    <FilterMenu
+                      label="Show"
+                      icon={<Inbox />}
+                      neutralKeys={[]}
+                      align="right"
+                      options={[
+                        { key: 'mine', label: 'Routed to me', active: queueScope === 'mine', onSelect: () => set({ queue: null }) },
+                        { key: 'all', label: scope === 'blockers' ? 'All pending blockers' : 'All awaiting approval', active: queueScope === 'all', onSelect: () => set({ queue: 'all' }) },
+                      ]}
+                    />
+                  )
+                ) : board ? (
+                  <>
+                    <BoardFilterMenu rows={boardRows} value={filter} onChange={onFilter} />
+                    <BoardSortMenu value={sort} onChange={setSort} />
+                  </>
+                ) : (
+                  <FilterMenu
+                    label="Show"
+                    icon={<CalendarClock />}
+                    neutralKeys={[]}
+                    align="right"
+                    options={listTabs.map((t) => ({
+                      key: t.id,
+                      label: TAB_LABELS[t.id],
+                      count: t.count || undefined,
+                      urgent: t.urgent,
+                      active: tab === t.id,
+                      onSelect: () => set({ tab: t.id === 'open' ? null : t.id }),
+                    }))}
+                  />
+                )}
+                {!queue && !board && (
+                  <FilterMenu
+                    label="Group by"
+                    icon={<Layers />}
+                    neutralKeys={['none']}
+                    align="right"
+                    options={[
+                      { key: 'none', label: 'No grouping', active: !groupBy, onSelect: () => set({ group: null }) },
+                      ...(Object.keys(TASK_GROUP_BY_LABELS) as TaskGroupBy[]).map((g) => ({
+                        key: g,
+                        label: g === 'person' ? 'Assigned by' : TASK_GROUP_BY_LABELS[g],
+                        active: groupBy === g,
+                        onSelect: () => set({ group: g }),
+                      })),
+                    ]}
+                  />
+                )}
+              </div>
+            </TaskToolbar>
+
+            {loadError && (
+              <InfoCallout variant="danger" title="Could not load tasks">
+                {loadError}
+              </InfoCallout>
+            )}
+
+            {scope === 'blockers' ? (
+              <BlockerReviewBoard search={values.search} scope={queueScope} teamView={teamView} notify={push} onChanged={reloadSummary} />
+            ) : scope === 'approvals' ? (
+              <ApprovalBoard search={values.search} scope={queueScope} teamView={teamView} notify={push} onChanged={reloadSummary} />
+            ) : board ? (
+              !open.data || !done.data ? (
+                !loadError && <PageLoader rows={4} label="Loading board" />
+              ) : (
+                <>
+                  {/* Where the open work stands, from the rows on this board */}
+                  {!search && <TaskCharts rows={boardRows} />}
+                  {open.data.total > open.data.data.length && (
+                    <InfoCallout variant="neutral">
+                      Showing the first {open.data.data.length} of {open.data.total} open tasks. Search to narrow the board{scope === 'team' ? ', or use the List view for every task.' : '.'}
+                    </InfoCallout>
+                  )}
+                  {boardRows.length === 0 && search ? (
+                    <EmptyState
+                      icon={CheckSquare}
+                      title="No tasks match your search"
+                      description="Try a different task number or title."
+                      action={
+                        <Button variant="secondary" onClick={() => set({ search: null })}>
+                          Clear search
+                        </Button>
+                      }
+                    />
+                  ) : (
+                    <TaskBoard
+                      rows={boardRows}
+                      isManager={isManager}
+                      showAssignee={scope === 'team'}
+                      filter={filter}
+                      sort={sort}
+                      notes={
+                        done.data.total > done.data.data.length
+                          ? { completed: `Latest ${done.data.data.length} of ${done.data.total} shown${scope === 'mine' ? ' — older work is in List → Completed.' : '.'}` }
+                          : undefined
+                      }
+                      onChanged={refreshBoard}
+                      notify={push}
+                    />
+                  )}
+                </>
+              )
+            ) : !list.data ? (
+              !loadError && <PageLoader rows={5} label="Loading tasks" />
+            ) : list.data.data.length === 0 ? (
+              <EmptyState
+                icon={CheckSquare}
+                title={search ? 'No tasks match your search' : EMPTY[tab].title}
+                description={search ? 'Try a different task number or title, or clear the search.' : EMPTY[tab].description}
+                action={
+                  search ? (
+                    <Button variant="secondary" onClick={() => set({ search: null })}>
+                      Clear search
+                    </Button>
+                  ) : tab === 'today' ? (
+                    <Button variant="secondary" onClick={() => set({ tab: 'upcoming' })}>
+                      See upcoming
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <div className={`space-y-3 transition-opacity ${list.loading ? 'opacity-60' : ''}`}>
+                {mover.dialogs.conflict}
+                <TaskTable rows={list.data.data} rowActions={listActions} groupBy={groupBy} dueSort={dueSort} onDueSort={dueSort ? () => set({ dir: dueSort === 'asc' ? 'desc' : null }) : undefined} />
+                <TaskCards rows={list.data.data} rowActions={listActions} />
+                <TaskPagination page={list.data.page} totalPages={list.data.totalPages} total={list.data.total} onPage={(p) => set({ page: String(p) }, { resetPage: false })} />
+              </div>
+            )}
+
+            {mover.dialogs.action}
+          </>
+        )}
+        <Toaster />
+      </PageContainer>
+    </TaskSectionProvider>
   );
 }
 

@@ -29,11 +29,13 @@ import {
   MessageSquarePlus,
   TrendingUp,
   History,
+  Gauge,
+  FileSearch,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useSidebar } from '@/lib/sidebar-context';
-import { ROLE_PROFILES, type UserRole, type BosModuleKey } from '@arihant/shared';
+import { ROLE_PROFILES, taskViewsFor, type UserRole, type BosModuleKey } from '@arihant/shared';
 import { useBadgeCounts, type BadgeCounts } from '@/app/(app)/expenses/_lib/expense-lib';
 import { useTaskSummary, type TaskSummary } from '@/app/(app)/tasks/_lib/task-lib';
 
@@ -839,8 +841,8 @@ function withExpenseItems(groups: NavGroup[], role: UserRole, counts: BadgeCount
 }
 
 /**
- * Module 8: each role gets one "Tasks" entry. Team, blockers, approvals, accountability and evidence are
- * reached from the module's View menu (TaskViewMenu), so the badge sums everything waiting on this user.
+ * Module 8: each role gets one "Tasks" entry. Team, blockers and approvals are reached from the module's View menu
+ * (TaskViewMenu), so the badge sums everything waiting on this user. Performance pages have their own group.
  */
 function withTaskItems(groups: NavGroup[], s: TaskSummary | null): NavGroup[] {
   const waiting = (s?.my_overdue || 0) + (s?.pending_blockers || 0) + (s?.pending_approvals || 0);
@@ -852,6 +854,67 @@ function withTaskItems(groups: NavGroup[], s: TaskSummary | null): NavGroup[] {
         : item,
     ),
   }));
+}
+
+/** Every entry is named after the page it opens, so the sidebar and the address bar always agree. */
+const ROUTE_LABELS: Record<string, string> = {
+  '/dashboard': 'Dashboard',
+  '/leads': 'Leads',
+  '/tenders': 'Tenders',
+  '/proposals': 'Proposals',
+  '/regional': 'Regional',
+  '/regional/performance': 'Regional performance',
+  '/visits': 'Visits',
+  '/demos': 'Demos',
+  '/deliveries': 'Deliveries',
+  '/service': 'Service',
+  '/expenses': 'Expenses',
+  '/tasks': 'Tasks',
+  '/performance': 'My performance',
+  '/performance/team': 'Team performance',
+  '/performance/evidence': 'Evidence',
+  '/notifications': 'Notifications',
+  '/reports': 'Reports',
+  '/audit': 'Audit',
+  '/admin': 'Admin',
+  '/feedback': 'Feedback',
+};
+
+function routeLabel(href: string): string | undefined {
+  const [path, query = ''] = href.split('?');
+  if (path === '/demos' && /(^|&)tab=failures/.test(query)) return 'Demo failures';
+  return ROUTE_LABELS[path];
+}
+
+function withRouteLabels(groups: NavGroup[]): NavGroup[] {
+  return groups.map((g) => ({ ...g, items: g.items.map((item) => ({ ...item, label: routeLabel(item.href) || item.label })) }));
+}
+
+/**
+ * One "Performance" group for every role, right after the group holding Tasks: My performance for everyone, Team
+ * performance and Evidence for managers and authorised viewers (same rule as the API, taskViewsFor), and the role's
+ * Regional performance entry moved in from wherever it sat.
+ */
+function withPerformanceGroup(groups: NavGroup[], role: UserRole, s: TaskSummary | null): NavGroup[] {
+  const views = taskViewsFor(role, s);
+  const moved: NavItem[] = [];
+  const rest = groups
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((i) => {
+        if (i.href !== '/regional/performance') return true;
+        moved.push(i);
+        return false;
+      }),
+    }))
+    .filter((g) => g.items.length > 0);
+  const items: NavItem[] = [{ label: 'My performance', href: '/performance', icon: TrendingUp, moduleKey: 'tasks' }];
+  if (views.has('accountability')) items.push({ label: 'Team performance', href: '/performance/team', icon: Gauge, moduleKey: 'tasks' });
+  if (views.has('evidence')) items.push({ label: 'Evidence', href: '/performance/evidence', icon: FileSearch, moduleKey: 'tasks' });
+  if (moved[0]) items.push(moved[0]);
+  const group: NavGroup = { title: 'PERFORMANCE', items };
+  const at = rest.findIndex((g) => g.items.some((i) => i.href === '/tasks'));
+  return at >= 0 ? [...rest.slice(0, at + 1), group, ...rest.slice(at + 1)] : [...rest, group];
 }
 
 interface NavCounts {
@@ -913,7 +976,7 @@ export const Sidebar: React.FC = () => {
   const { summary: taskSummary } = useTaskSummary(Boolean(user));
   const navCounts = useNavCounts(Boolean(user));
   const navGroups = useMemo(
-    () => withTenderItems(withTaskItems(withExpenseItems(getRoleNavGroups(role), role, expenseCounts), taskSummary), navCounts),
+    () => withRouteLabels(withPerformanceGroup(withTenderItems(withTaskItems(withExpenseItems(getRoleNavGroups(role), role, expenseCounts), taskSummary), navCounts), role, taskSummary)),
     [role, expenseCounts, taskSummary, navCounts],
   );
 

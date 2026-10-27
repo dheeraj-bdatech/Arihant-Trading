@@ -84,6 +84,8 @@ const PRESET_QUICK_TAGS = [
 ];
 
 const STORAGE_KEY = 'arihant_bos_uiux_feedback_records';
+/** Public pages customers open (service requests, lead chat links). */
+const CUSTOMER_ROUTES = ['/service-request', '/lead-chat'];
 
 export const UIUXFeedbackFab: React.FC = () => {
   const pathname = usePathname();
@@ -214,6 +216,9 @@ export const UIUXFeedbackFab: React.FC = () => {
     downloadAnchor.click();
     downloadAnchor.remove();
   };
+
+  // Staff-only tool: never on the customer-facing pages
+  if (CUSTOMER_ROUTES.some((route) => pathname.startsWith(route))) return null;
 
   return (
     <div

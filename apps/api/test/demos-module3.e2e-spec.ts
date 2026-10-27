@@ -567,6 +567,12 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
           purpose: 'Failure analysis test demo',
         });
       demoId = res.body.id;
+      // An outcome needs a confirmed demo: management approves, the demo team confirms the date
+      await request(app.getHttpServer()).post(`/api/demos/${demoId}/start-planning`).set('Authorization', `Bearer ${mgmtToken}`);
+      await request(app.getHttpServer())
+        .post(`/api/demos/${demoId}/confirm`)
+        .set('Authorization', `Bearer ${demoTeamToken}`)
+        .send({ confirmed_date: istDay(0) });
     });
 
     it('Submitting failed demo without failure_reason is REJECTED with 400 Bad Request', async () => {

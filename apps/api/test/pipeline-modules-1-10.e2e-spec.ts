@@ -353,7 +353,7 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
         lead_id: lead1Id,
         tender_id: tenderId,
         product_id: productId,
-        requested_date: day(2), // differs from the visit's auto-demo date (60 s idempotency window is per org+requester+date)
+        requested_date: day(2), // differs from the visit's auto-demo date (60 s idempotency window is per org+requester+date+product)
         location: `${TAG} Trial Ground`,
         purpose: `${TAG} live trial`,
         service_escort_required: true,
@@ -370,6 +370,9 @@ describe(`Pipeline Modules 1–10 — one customer end to end (${TAG})`, () => {
     // DEF-024: an outcome is recorded only on / after the demo day. The trial was requested for day(2); move its date to
     // today to stand for "the trial day has arrived" before the demo team records the result.
     await db.updateTable('demos').set({ requested_date: today, confirmed_date: today } as any).where('id', '=', demoId).execute();
+    // An outcome needs a confirmed demo: management approves the request, the demo team confirms the date
+    ok(await http().post(`/api/demos/${demoId}/start-planning`).set(bearer(u.mgmt)), [200, 201]);
+    ok(await http().post(`/api/demos/${demoId}/confirm`).set(bearer(u.demo)).send({ confirmed_date: today }), [200, 201]);
 
     // Link: a failed outcome with TECHNICAL_FAILURE opens a service ticket for the same org and links it back.
     const out = ok(

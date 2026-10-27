@@ -6,6 +6,7 @@ import type { SelectOption } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { INDIAN_STATES, canonicalState, resolveLocation, stateOfCity } from './_lib/india-geo';
 import { SECTOR_OPTIONS } from './_lib/sectors';
+import { LeadConversation } from './_lib/LeadConversation';
 import { calendarDay } from '@/lib/calendar-day';
 import {
   Target,
@@ -219,11 +220,17 @@ export default function LeadsPage() {
     sector: '',
     lead_source: '',
     followup: '',
+    created_from: '',
+    created_to: '',
     sort_by: 'created_at',
     sort_dir: 'desc' as 'asc' | 'desc',
   });
   // Type / Source / Sector live in the "More" inline panel under the filter row.
   const [moreLeadFiltersOpen, setMoreLeadFiltersOpen] = useState(false);
+  // Created-date From / To live in the "Dates" inline panel under the filter row.
+  const [leadDatesOpen, setLeadDatesOpen] = useState(false);
+  // A From after To is not sent (the API rejects it); the panel shows the error instead.
+  const leadDateRangeInvalid = Boolean(leadFilters.created_from && leadFilters.created_to && leadFilters.created_from > leadFilters.created_to);
 
   // 2. Customers / Organisations State
   const [customers, setCustomers] = useState<any[]>([]);
@@ -256,7 +263,7 @@ export default function LeadsPage() {
   // Modal Dialogs State
   const [isCreateLeadOpen, setIsCreateLeadOpen] = useState(false);
   const [isLeadDetailOpen, setIsLeadDetailOpen] = useState(false);
-  const [leadDetailTab, setLeadDetailTab] = useState<'overview' | 'activity' | 'products' | 'ownership' | 'linked'>('overview');
+  const [leadDetailTab, setLeadDetailTab] = useState<'overview' | 'activity' | 'conversation' | 'products' | 'ownership' | 'linked'>('overview');
   const [showLeadFullDetails, setShowLeadFullDetails] = useState(false);
   const [showLeadStageActions, setShowLeadStageActions] = useState(false);
   const [isLogInteractionOpen, setIsLogInteractionOpen] = useState(false);
@@ -719,8 +726,20 @@ export default function LeadsPage() {
       sector: leadFilters.sector || undefined,
       source: leadFilters.lead_source || undefined,
       followup: leadFilters.followup || undefined,
+      created_from: (!leadDateRangeInvalid && leadFilters.created_from) || undefined,
+      created_to: (!leadDateRangeInvalid && leadFilters.created_to) || undefined,
     }),
-    [leadFilters.search, leadFilters.lead_status, leadFilters.lead_type, leadFilters.sector, leadFilters.lead_source, leadFilters.followup],
+    [
+      leadFilters.search,
+      leadFilters.lead_status,
+      leadFilters.lead_type,
+      leadFilters.sector,
+      leadFilters.lead_source,
+      leadFilters.followup,
+      leadFilters.created_from,
+      leadFilters.created_to,
+      leadDateRangeInvalid,
+    ],
   );
 
   // Fetch Dashboard Stats (lead counts follow the register filters; answers to superseded filters are dropped)
@@ -1823,10 +1842,23 @@ export default function LeadsPage() {
       leadFilters.lead_type ||
       leadFilters.sector ||
       leadFilters.lead_source ||
-      leadFilters.followup,
+      leadFilters.followup ||
+      leadFilters.created_from ||
+      leadFilters.created_to,
   );
   const clearLeadFilters = () =>
-    setLeadFilters((prev) => ({ ...prev, search: '', lead_status: '', lead_type: '', sector: '', lead_source: '', followup: '' }));
+    setLeadFilters((prev) => ({
+      ...prev,
+      search: '',
+      lead_status: '',
+      lead_type: '',
+      sector: '',
+      lead_source: '',
+      followup: '',
+      created_from: '',
+      created_to: '',
+    }));
+  const leadDatesActive = Boolean(leadFilters.created_from || leadFilters.created_to);
   const moreLeadFiltersActive = [leadFilters.lead_type, leadFilters.lead_source, leadFilters.sector].filter(Boolean).length;
 
   // Lead register as priority cards / stage board (RecordViews).
@@ -2049,10 +2081,10 @@ export default function LeadsPage() {
       subtext: `Total Leads: ${totalLeadsCount}`,
       variant: 'primary',
       icon: <Compass className="h-4 w-4 text-[#0F5E63]" />,
-      active: false,
+      active: leadFilters.lead_status === 'active',
       onClick: () => {
         setActiveTab('leads');
-        clearLeadFilters();
+        updateLeadFilter({ lead_status: leadFilters.lead_status === 'active' ? '' : 'active' });
       },
     },
     {
@@ -2168,9 +2200,9 @@ export default function LeadsPage() {
                   label="Stage"
                   icon={<Layers />}
                   className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
-                  options={[{ key: 'all', label: 'All lifecycle stages' }, ...LEAD_STAGE_FILTERS].map((o) => ({
+                  options={[{ key: 'all', label: 'All lifecycle stages' }, { key: 'active', label: 'Active pipeline (all open)' }, ...LEAD_STAGE_FILTERS].map((o) => ({
                     ...o,
-                    count: o.key === 'all' ? undefined : leadStageCounts[o.key] || undefined,
+                    count: o.key === 'all' ? undefined : o.key === 'active' ? activePipelineCount || undefined : leadStageCounts[o.key] || undefined,
                     active: (leadFilters.lead_status || 'all') === o.key,
                     onSelect: () => updateLeadFilter({ lead_status: o.key === 'all' ? '' : o.key }),
                   }))}
@@ -2200,6 +2232,16 @@ export default function LeadsPage() {
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                   <span>More</span>
                   {moreLeadFiltersActive > 0 && <span className="filter-menu-chip">{moreLeadFiltersActive}</span>}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLeadDatesOpen((o) => !o)}
+                  aria-expanded={leadDatesOpen}
+                  className={`filter-menu-btn ${leadDatesOpen || leadDatesActive ? 'filter-menu-btn--on' : ''}`}
+                >
+                  <CalendarDays className="h-3.5 w-3.5" />
+                  <span>Dates</span>
+                  {leadDatesActive && <span className="filter-menu-chip">On</span>}
                 </button>
                 <FilterMenu
                   label="Sort"
@@ -2346,6 +2388,52 @@ export default function LeadsPage() {
             )}
           </div>
         )}
+
+        {/* "Dates" inline panel: leads created From / To (IST days, both inclusive). Phones: two equal columns. */}
+        {activeTab === 'leads' && leadDatesOpen && (
+          <div className="grid grid-cols-2 gap-2 border-t border-[#ECE9E2] pt-2.5 text-xs sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+            <span className="col-span-2 font-semibold text-[#4A5568]">Created date</span>
+            <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
+              From
+              <input
+                type="date"
+                aria-label="Created from"
+                value={leadFilters.created_from}
+                max={leadFilters.created_to || undefined}
+                onChange={(e) => updateLeadFilter({ created_from: e.target.value })}
+                aria-invalid={leadDateRangeInvalid || undefined}
+                className={`h-10 w-full min-w-0 rounded-lg border bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none sm:h-8 sm:w-auto ${leadDateRangeInvalid ? 'border-[#881337]' : 'border-[#C9C4B8]'}`}
+              />
+            </label>
+            <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
+              To
+              <input
+                type="date"
+                aria-label="Created to"
+                value={leadFilters.created_to}
+                min={leadFilters.created_from || undefined}
+                onChange={(e) => updateLeadFilter({ created_to: e.target.value })}
+                aria-invalid={leadDateRangeInvalid || undefined}
+                className={`h-10 w-full min-w-0 rounded-lg border bg-white px-2.5 text-xs text-[#14213D] focus:border-[#0F5E63] focus:outline-none sm:h-8 sm:w-auto ${leadDateRangeInvalid ? 'border-[#881337]' : 'border-[#C9C4B8]'}`}
+              />
+            </label>
+            {leadDateRangeInvalid && (
+              <span role="alert" className="col-span-2 font-medium text-[#881337]">
+                From date must be on or before To date.
+              </span>
+            )}
+            {leadDatesActive && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => updateLeadFilter({ created_from: '', created_to: '' })}
+                className="col-span-2 justify-self-start text-xs text-[#4A5568] hover:text-[#881337]"
+              >
+                Reset dates
+              </Button>
+            )}
+          </div>
+        )}
       </Card>
 
       {/* ========================================================================= */}
@@ -2364,7 +2452,11 @@ export default function LeadsPage() {
                 <EmptyState
                   icon={Target}
                   title="No opportunities match your filter"
-                  description="Try adjusting your stage, type, or search filters, or register a new lead."
+                  description={
+                    leadDatesActive
+                      ? 'No leads were created in this date range with the current filters. Try widening the dates or clearing filters.'
+                      : 'Try adjusting your stage, type, or search filters, or register a new lead.'
+                  }
                   action={
                     hasActiveLeadFilters ? (
                       <Button size="sm" variant="secondary" onClick={clearLeadFilters}>
@@ -3542,6 +3634,7 @@ export default function LeadsPage() {
               {([
                 ['overview', 'Overview', null],
                 ['activity', 'Activity & Notes', null],
+                ['conversation', 'Conversation', selectedLead.message_count || 0],
                 ['products', 'Products', (selectedLead.product_interests || []).length || (selectedLead.product_name ? 1 : 0)],
                 ['ownership', 'Ownership History', (selectedLead.assignment_history || []).length],
                 ['linked', 'Linked Records', null],
@@ -3863,6 +3956,13 @@ export default function LeadsPage() {
             </div>
 
               </div>
+            )}
+
+            {leadDetailTab === 'conversation' && (
+              <LeadConversation
+                leadId={selectedLead.id}
+                onPosted={() => setSelectedLead((prev: any) => (prev ? { ...prev, message_count: (prev.message_count || 0) + 1 } : prev))}
+              />
             )}
 
             {leadDetailTab === 'linked' && (

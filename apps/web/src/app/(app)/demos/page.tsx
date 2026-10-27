@@ -43,7 +43,6 @@ import {
   Hourglass,
   CalendarCheck,
   CircleCheck,
-  Pencil,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -1284,55 +1283,112 @@ function DemosPageContent() {
       </div>
       {renderDemoLinks(demo)}
 
-      {/* The four things the demo team plans around */}
+      {/* The plan at a glance: the day on the left; where, who and what kit beside it; the brief underneath */}
       {(() => {
-        const tile = 'rounded-[12px] border border-[#ECE9E2] bg-[#FBFAF7] px-3 py-2.5 min-w-0';
-        const tileLabel = 'text-[10px] font-semibold uppercase tracking-wider text-[#4A5568]';
-        const day = demo.confirmed_date || demo.requested_date;
-        const dd = demo.status === 'completed' || demo.status === 'cancelled' ? null : daysFromToday(day);
+        const label = 'text-[10px] font-semibold uppercase tracking-wider text-[#4A5568]';
+        const day = calendarDay(demo.confirmed_date || demo.requested_date);
+        const open = demo.status !== 'completed' && demo.status !== 'cancelled';
+        const dd = open ? daysFromToday(day) : null;
+        const when = day ? new Date(`${day}T00:00:00+05:30`) : null;
+        const part = (o: Intl.DateTimeFormatOptions) => (when ? when.toLocaleDateString('en-GB', { ...o, timeZone: 'Asia/Kolkata' }) : '');
         const reservations: any[] = demo.reservations || [];
         const booked = reservations.filter((r) => r.status === 'approved');
-        const kit = booked.length
-          ? `Kit: ${booked.map((r) => r.serial_no || r.model).join(', ')}`
-          : reservations.some((r) => r.status === 'requested')
-            ? 'Kit approval pending'
-            : 'No kit reserved yet';
+        const pending = reservations.some((r) => r.status === 'requested');
+        const facts = [
+          {
+            key: 'where',
+            icon: <MapPin className="h-4 w-4" />,
+            label: 'Location',
+            value: demo.location || demo.city || '—',
+            sub: demo.expected_audience ? `Audience of ${demo.expected_audience}` : null,
+          },
+          {
+            key: 'who',
+            icon: <Users className="h-4 w-4" />,
+            label: 'Demo specialist',
+            value: demo.assignee_name || 'Not assigned yet',
+            missing: !demo.assignee_name,
+            sub: `Requested by ${demo.requested_by_name || 'sales'}`,
+          },
+          {
+            key: 'kit',
+            icon: <Package className="h-4 w-4" />,
+            label: 'Equipment',
+            value: demo.product_name || demo.equipment_required || '—',
+            sub: booked.length ? (
+              <Badge size="sm" variant="success">Kit: {booked.map((r) => r.serial_no || r.model).join(', ')}</Badge>
+            ) : pending ? (
+              <Badge size="sm" variant="warning">Kit approval pending</Badge>
+            ) : open ? (
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <Badge size="sm" variant="warning">No kit reserved</Badge>
+                <button type="button" onClick={() => handleOpenReserve(demo)} className="text-[11px] font-semibold text-[#0F5E63] hover:underline">
+                  {isCoordinator ? 'Reserve unit' : 'Request unit'}
+                </button>
+              </span>
+            ) : (
+              'No kit was reserved'
+            ),
+          },
+        ];
+        const brief = [
+          demo.purpose && { label: 'Purpose', value: demo.purpose },
+          demo.special_requirements && { label: 'Site needs', value: demo.special_requirements },
+        ].filter(Boolean) as { label: string; value: string }[];
         return (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <div className={tile}>
-              <div className={tileLabel}>{demo.confirmed_date ? 'Confirmed date' : 'Requested date'}</div>
-              <div className="mt-0.5 font-mono text-sm font-semibold text-[#14213D]">{formatDemoDate(day)}</div>
-              {dd !== null && (
-                <div className={`text-[11px] ${dd < 0 ? 'text-[#9A3412]' : 'text-[#4A5568]'}`}>
-                  {dd === 0 ? 'Today' : dd > 0 ? `In ${dd} day${dd === 1 ? '' : 's'}` : `${-dd} day${dd === -1 ? '' : 's'} ago`}
+          <div className="overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white">
+            <div className="flex flex-col sm:flex-row">
+              <div className="m-3 mb-0 flex items-center justify-between gap-3 rounded-[12px] bg-[#E3EFEE] px-4 py-3 sm:mb-3 sm:mr-0 sm:w-40 sm:shrink-0 sm:flex-col sm:items-start sm:justify-center">
+                <div>
+                  <div className={`${label} !text-[#0B4A4E]`}>{demo.confirmed_date ? 'Confirmed date' : 'Requested date'}</div>
+                  {when ? (
+                    <div className="mt-1 flex items-baseline gap-1.5">
+                      <span className="font-serif text-3xl font-bold leading-none text-[#14213D]">{part({ day: 'numeric' })}</span>
+                      <span className="font-mono text-xs font-semibold uppercase text-[#14213D]">{part({ month: 'short', year: 'numeric' })}</span>
+                    </div>
+                  ) : (
+                    <div className="mt-1 font-mono text-sm font-semibold text-[#14213D]">TBD</div>
+                  )}
                 </div>
-              )}
+                {when && (
+                  <div className="flex flex-col items-end gap-1 sm:items-start">
+                    <span className="text-xs font-medium text-[#0B4A4E]">{part({ weekday: 'long' })}</span>
+                    {dd !== null && (
+                      <Badge size="sm" variant={dd <= 0 ? 'urgent' : dd <= 3 ? 'warning' : 'info'}>
+                        {dd === 0 ? 'Today' : dd === 1 ? 'Tomorrow' : dd > 0 ? `In ${dd} days` : `${-dd} day${dd === -1 ? '' : 's'} ago`}
+                      </Badge>
+                    )}
+                  </div>
+                )}
+              </div>
+              <dl className="grid min-w-0 flex-1 grid-cols-1 divide-y divide-[#ECE9E2] sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)] sm:divide-x sm:divide-y-0">
+                {facts.map((f) => (
+                  <div key={f.key} className="flex min-w-0 gap-2.5 px-4 py-3">
+                    <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#E3EFEE] text-[#0F5E63]">{f.icon}</span>
+                    <div className="min-w-0 space-y-0.5">
+                      <dt className={label}>{f.label}</dt>
+                      <dd className={`line-clamp-2 text-sm font-semibold ${f.missing ? 'text-[#9A3412]' : 'text-[#14213D]'}`} title={typeof f.value === 'string' ? f.value : undefined}>
+                        {f.value}
+                      </dd>
+                      {f.sub && <dd className="text-[11px] text-[#4A5568]">{f.sub}</dd>}
+                    </div>
+                  </div>
+                ))}
+              </dl>
             </div>
-            <div className={tile}>
-              <div className={tileLabel}>Location</div>
-              <div className="mt-0.5 truncate text-sm font-semibold text-[#14213D]" title={demo.location || demo.city}>{demo.location || demo.city || '—'}</div>
-              {demo.expected_audience && <div className="truncate text-[11px] text-[#4A5568]">Audience: {demo.expected_audience}</div>}
-            </div>
-            <div className={tile}>
-              <div className={tileLabel}>Demo specialist</div>
-              <div className={`mt-0.5 truncate text-sm font-semibold ${demo.assignee_name ? 'text-[#14213D]' : 'text-[#9A3412]'}`}>{demo.assignee_name || 'Not assigned yet'}</div>
-              <div className="truncate text-[11px] text-[#4A5568]">Requested by {demo.requested_by_name || 'sales'}</div>
-            </div>
-            <div className={tile}>
-              <div className={tileLabel}>Equipment</div>
-              <div className="mt-0.5 line-clamp-2 text-sm font-semibold text-[#14213D]">{demo.product_name || demo.equipment_required || '—'}</div>
-              <div className={`truncate text-[11px] ${booked.length ? 'text-[#0F5E63]' : 'text-[#4A5568]'}`}>{kit}</div>
-            </div>
+            {brief.length > 0 && (
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 border-t border-[#ECE9E2] px-4 py-3 text-sm">
+                {brief.map((b) => (
+                  <React.Fragment key={b.label}>
+                    <dt className={`${label} pt-0.5`}>{b.label}</dt>
+                    <dd className="min-w-0 whitespace-pre-wrap break-words text-[#14213D]">{b.value}</dd>
+                  </React.Fragment>
+                ))}
+              </dl>
+            )}
           </div>
         );
       })()}
-
-      {(demo.purpose || demo.special_requirements) && (
-        <div className="space-y-1 text-sm text-[#14213D]">
-          {demo.purpose && <p className="whitespace-pre-wrap break-words"><span className="font-semibold text-[#4A5568]">Purpose: </span>{demo.purpose}</p>}
-          {demo.special_requirements && <p className="whitespace-pre-wrap break-words"><span className="font-semibold text-[#4A5568]">Site needs: </span>{demo.special_requirements}</p>}
-        </div>
-      )}
 
       {/* Reschedule / Cancellation Banner if applicable */}
       {demo.reschedule_reason && (
@@ -1589,18 +1645,25 @@ function DemosPageContent() {
     const next = demo.status === 'requested' ? undefined : toDemoRecord(demo).primary;
     return (
       <div className="sticky -bottom-4 z-10 -mx-4 -mb-4 flex items-center justify-between gap-2 border-t border-[#ECE9E2] bg-white px-4 py-3 sm:-bottom-5 sm:-mx-5 sm:-mb-5 sm:px-5">
-        <Button variant="ghost" size="sm" leftIcon={<History className="h-4 w-4" />} onClick={() => handleOpenAudit(demo)}>
-          Audit trail
+        {/* phones: the history button is just its icon so the next step and Actions keep one line */}
+        <Button variant="ghost" size="sm" className="shrink-0" leftIcon={<History className="h-4 w-4" />} onClick={() => handleOpenAudit(demo)} aria-label="Audit trail">
+          <span className="hidden sm:inline">Audit trail</span>
         </Button>
-        <div className="flex items-center gap-2">
-          {next && (
-            <Button size="sm" variant="primary" onClick={next.onClick} disabled={next.disabled}>
+        <div className="flex min-w-0 items-center gap-2 [&>.row-menu__btn]:shrink-0 [&>.row-menu__btn]:whitespace-nowrap">
+          {/* a step that is not open yet reads as a note, not a greyed-out button */}
+          {next?.disabled ? (
+            <span className="flex min-w-0 items-center gap-1.5 text-xs text-[#4A5568]">
+              <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span className="truncate">Outcome opens {formatDemoDate(demoDay(demo))}</span>
+            </span>
+          ) : next ? (
+            <Button size="sm" variant="primary" onClick={next.onClick}>
               {next.label}
             </Button>
-          )}
+          ) : null}
               <RowMenu
                 label="Demo actions"
-                icon={<Pencil className="h-4 w-4" />}
+                buttonLabel="Actions"
                 items={[
                   {
                     key: 'assign',
@@ -1629,7 +1692,8 @@ function DemosPageContent() {
                     key: 'outcome',
                     label: isDemoDayAhead(demo) ? `Record Outcome (from ${dmy(demoDay(demo))})` : 'Record Outcome',
                     icon: <ShieldCheck />,
-                    hidden: !open,
+                    // the API records an outcome only for a confirmed demo (approved, date agreed with the client)
+                    hidden: !(open && demo.status === 'confirmed'),
                     disabled: isDemoDayAhead(demo),
                     onSelect: () => handleOpenOutcome(demo),
                   },
@@ -4089,6 +4153,7 @@ function DemosPageContent() {
               to={{ kind: 'demo', id: linkedDemo.id, organisationId: linkedDemo.organisation_id }}
               sections={['tasks', 'proposals', 'tenders', 'service']}
               description="Tasks on this demo, and the customer's proposals, tenders and service tickets."
+              className="border-t border-[#ECE9E2] pt-5"
             />
             {renderDemoFooter(linkedDemo)}
           </div>

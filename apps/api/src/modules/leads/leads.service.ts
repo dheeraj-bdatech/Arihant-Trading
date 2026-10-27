@@ -24,13 +24,14 @@ import {
   sameOrgNameAndCity,
 } from '../organisations/organisation-dedupe.js';
 import { resolveLocation } from '../organisations/india-geo.js';
-import { CLOSED_LEAD_STATUSES } from '@arihant/shared';
+import { CLOSED_LEAD_STATUSES, LEAD_CUSTOMER_CHAT_ROLES } from '@arihant/shared';
 import type { Database, AuthUser, PaginatedResult, LeadStatus, LeadCategory, LeadType, UserRole } from '@arihant/shared';
 import type {
   CreateLeadDto,
   UpdateLeadDto,
   ChangeLeadStatusDto,
   AssignLeadDto,
+  CreateLeadMessageDto,
   LeadFilterQueryDto,
   LeadListQueryDto,
 } from './leads.dto.js';
@@ -59,6 +60,8 @@ type LeadFilterDimension = 'status' | 'lead_type' | 'followup';
 /** The lead is in this stage (aliases included). */
 const leadStatusIs = (status: string) => {
   const target = status.toLowerCase();
+  // "active" is the whole open pipeline (every stage that is not closed) — what the Active Pipeline card counts.
+  if (target === 'active') return LEAD_IS_OPEN;
   return sql<boolean>`${LEAD_STAGE} = any(${LEAD_STAGE_ALIASES[target] ?? [target]}::text[])`;
 };
 
@@ -193,6 +196,21 @@ export class LeadsService {
     if (query.followup && omit !== 'followup') {
       const condition = leadFollowupIs(query.followup, todayInKolkata());
       if (condition) baseQuery = baseQuery.where(condition);
+    }
+
+    // Created-date range: whole IST calendar days, both inclusive (a lead created at 23:59 IST on the "to" day is in)
+    const createdFrom = query.created_from ? calendarDay(query.created_from) : null;
+    const createdTo = query.created_to ? calendarDay(query.created_to) : null;
+    if (query.created_from && !createdFrom) throw new BadRequestException('created_from must be a date (YYYY-MM-DD)');
+    if (query.created_to && !createdTo) throw new BadRequestException('created_to must be a date (YYYY-MM-DD)');
+    if (createdFrom && createdTo && createdFrom > createdTo) {
+      throw new BadRequestException('created_from must be on or before created_to');
+    }
+    if (createdFrom) {
+      baseQuery = baseQuery.where(sql<boolean>`leads.created_at >= ${createdFrom}::date::timestamp at time zone 'Asia/Kolkata'`);
+    }
+    if (createdTo) {
+      baseQuery = baseQuery.where(sql<boolean>`leads.created_at < (${createdTo}::date + 1)::timestamp at time zone 'Asia/Kolkata'`);
     }
 
     return baseQuery;
@@ -337,6 +355,35 @@ export class LeadsService {
     return buildPaginatedResult(leadsWithInterests, total, page, limit);
   }
 
+  /**
+   * Who may open a lead: a salesperson only their own; a Regional Manager their region's leads plus the ones they
+   * supervise, own, or that a direct report owns. Other roles that reach the lead endpoints see every lead.
+   */
+  private assertLeadVisible(
+    lead: {
+      assigned_to: string | null;
+      regional_manager_id: string | null;
+      assignee_reporting_manager_id: string | null;
+      region_id: string | null;
+      zone_id: string | null;
+    },
+    user: AuthUser,
+  ) {
+    if (user.role === 'sales' && lead.assigned_to !== user.id) {
+      throw new ForbiddenException('You are not authorized to view this lead.');
+    }
+
+    if (user.role === 'regional_manager') {
+      if (
+        lead.regional_manager_id !== user.id &&
+        lead.assigned_to !== user.id &&
+        lead.assignee_reporting_manager_id !== user.id
+      ) {
+        assertRegionScope(user, lead.region_id, lead.zone_id);
+      }
+    }
+  }
+
   async findOne(id: string, user: AuthUser) {
     const lead = await this.db
       .selectFrom('leads')
@@ -376,19 +423,7 @@ export class LeadsService {
       throw new NotFoundException(`Lead with id '${id}' not found`);
     }
 
-    if (user.role === 'sales' && lead.assigned_to !== user.id) {
-      throw new ForbiddenException('You are not authorized to view this lead.');
-    }
-
-    if (user.role === 'regional_manager') {
-      if (
-        lead.regional_manager_id !== user.id &&
-        lead.assigned_to !== user.id &&
-        lead.assignee_reporting_manager_id !== user.id
-      ) {
-        assertRegionScope(user, lead.region_id, lead.zone_id);
-      }
-    }
+    this.assertLeadVisible(lead, user);
 
     // Fallback if primary contact details were not joined
     if (!lead.contact_name) {
@@ -513,6 +548,13 @@ export class LeadsService {
     const lastInteraction = interactions[0];
     const nextFollowUp = followUps[0];
 
+    // Shown on the Conversation tab before it is opened (the thread itself loads from GET /leads/:id/messages)
+    const messageCount = await this.db
+      .selectFrom('lead_messages')
+      .select(sql<number>`count(*)::int`.as('n'))
+      .where('lead_id', '=', id)
+      .executeTakeFirst();
+
     return {
       ...lead,
       estimated_value_lakh: lead.value_lakh,
@@ -525,6 +567,7 @@ export class LeadsService {
       assignment_history: assignmentHistory,
       interactions: interactionsWithAttachments,
       follow_ups: followUps,
+      message_count: messageCount?.n ?? 0,
     };
   }
 
@@ -1429,6 +1472,96 @@ export class LeadsService {
     }
 
     return { success: true };
+  }
+
+  // =========================================================================
+  // Conversation thread — anyone who may open the lead reads and posts; messages are append-only
+  // =========================================================================
+
+  /** The lead's id once the user may open it (findOne's rule, without loading the whole lead). */
+  async findVisibleLeadId(id: string, user: AuthUser) {
+    const lead = await this.db
+      .selectFrom('leads')
+      .innerJoin('organisations', 'leads.organisation_id', 'organisations.id')
+      .leftJoin('users as assignee', 'leads.assigned_to', 'assignee.id')
+      .select([
+        'leads.id',
+        'leads.assigned_to',
+        'leads.regional_manager_id',
+        'assignee.reporting_manager_id as assignee_reporting_manager_id',
+        'organisations.region_id',
+        'organisations.zone_id',
+      ])
+      .where('leads.id', '=', id)
+      .executeTakeFirst();
+
+    if (!lead) {
+      throw new NotFoundException(`Lead with id '${id}' not found`);
+    }
+    this.assertLeadVisible(lead, user);
+    return lead.id;
+  }
+
+  private leadMessagesQuery() {
+    return this.db
+      .selectFrom('lead_messages')
+      .leftJoin('users', 'lead_messages.author_id', 'users.id')
+      .select([
+        'lead_messages.id',
+        'lead_messages.lead_id',
+        'lead_messages.author_id',
+        'lead_messages.body',
+        'lead_messages.audience',
+        'lead_messages.from_customer',
+        'lead_messages.customer_name',
+        'lead_messages.created_at',
+        'users.full_name as author_name',
+        'users.role as author_role',
+      ]);
+  }
+
+  /** The lead's conversation, oldest first. */
+  async getMessages(leadId: string, user: AuthUser) {
+    await this.findVisibleLeadId(leadId, user);
+    return this.leadMessagesQuery()
+      .where('lead_messages.lead_id', '=', leadId)
+      .orderBy('lead_messages.created_at', 'asc')
+      .execute();
+  }
+
+  /**
+   * Adds a team message. `audience: 'customer'` also shows it to the customer on the lead's chat link, so it needs a
+   * role that may write to customers and a link that is switched on.
+   */
+  async addMessage(leadId: string, dto: CreateLeadMessageDto, user: AuthUser) {
+    await this.findVisibleLeadId(leadId, user);
+    const body = dto.body.trim();
+    const audience = dto.audience ?? 'team';
+
+    if (audience === 'customer') {
+      if (!LEAD_CUSTOMER_CHAT_ROLES.includes(user.role)) {
+        throw new ForbiddenException('Only the lead owner, managers and admins can write to the customer.');
+      }
+      const link = await this.db
+        .selectFrom('lead_chat_links')
+        .select('id')
+        .where('lead_id', '=', leadId)
+        .where('revoked_at', 'is', null)
+        .executeTakeFirst();
+      if (!link) {
+        throw new BadRequestException('Share a chat link with the customer before writing to them.');
+      }
+    }
+
+    const { id } = await this.db
+      .insertInto('lead_messages')
+      .values({ lead_id: leadId, author_id: user.id, body, audience })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    this.eventEmitter.emit(AppEvents.LEAD_MESSAGE_POSTED, { leadId, fromCustomer: false });
+
+    return this.leadMessagesQuery().where('lead_messages.id', '=', id).executeTakeFirstOrThrow();
   }
 
   /**

@@ -48,6 +48,17 @@ export function statusBadgeVariant(status: string | null | undefined): 'default'
   return 'default';
 }
 
+/** Warranty coverage in words; tickets store either a code (in_warranty / amc / out_of_warranty) or a label. */
+export function warrantyLabel(value: string | null | undefined): string {
+  const v = String(value || '').trim();
+  const code = v.toLowerCase().replace(/[\s-]+/g, '_');
+  if (code === 'in_warranty' || code === 'under_warranty') return 'In warranty';
+  if (code === 'amc' || code === 'under_amc') return 'Under AMC';
+  if (code === 'out_of_warranty' || code === 'billable') return 'Out of warranty (billable)';
+  if (code === 'partial_coverage') return 'Partial coverage';
+  return v ? v.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()) : 'Not recorded';
+}
+
 export const isSlaPaused = (ticket: any): boolean =>
   !!ticket?.sla_pause_started_at || SERVICE_SLA_PAUSE_STATUSES.includes(normalizeServiceStatus(ticket?.status));
 

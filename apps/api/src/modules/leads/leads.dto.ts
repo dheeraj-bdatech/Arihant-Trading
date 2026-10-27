@@ -11,6 +11,7 @@ import {
   Matches,
   IsIn,
   Min,
+  MaxLength,
 } from 'class-validator';
 import type {
   LeadCategory,
@@ -19,8 +20,9 @@ import type {
   LeadStatus,
   LeadType,
   LeadLossReason,
+  LeadMessageAudience,
 } from '@arihant/shared';
-import { INDIAN_MOBILE_PATTERN, INTERACTION_TYPES } from '@arihant/shared';
+import { INDIAN_MOBILE_PATTERN, INTERACTION_TYPES, LEAD_MESSAGE_MAX_LENGTH } from '@arihant/shared';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Any non-whitespace character — one decorator that rejects missing, empty and whitespace-only text with one message. */
@@ -427,6 +429,16 @@ export class LeadFilterQueryDto {
   @IsString()
   @IsOptional()
   followup?: 'due_today' | 'overdue' | 'upcoming' | 'no_followup';
+
+  /** Lead created on or after this IST calendar day (YYYY-MM-DD), inclusive. */
+  @IsString()
+  @IsOptional()
+  created_from?: string;
+
+  /** Lead created on or before this IST calendar day (YYYY-MM-DD), inclusive. */
+  @IsString()
+  @IsOptional()
+  created_to?: string;
 }
 
 export class LeadListQueryDto extends LeadFilterQueryDto {
@@ -443,4 +455,30 @@ export class LeadListQueryDto extends LeadFilterQueryDto {
   @IsString()
   @IsOptional()
   sort_dir?: 'asc' | 'desc';
+}
+
+export class CreateLeadMessageDto {
+  @IsString({ message: 'Message is required' })
+  @Matches(NOT_BLANK, { message: 'Message cannot be empty' })
+  @MaxLength(LEAD_MESSAGE_MAX_LENGTH, { message: `Message must be at most ${LEAD_MESSAGE_MAX_LENGTH} characters` })
+  body!: string;
+
+  /** 'team' (default) stays internal; 'customer' is also shown to the customer on the lead's chat link. */
+  @IsOptional()
+  @IsIn(['team', 'customer'], { message: "Audience must be 'team' or 'customer'" })
+  audience?: LeadMessageAudience;
+}
+
+/** The customer's chat link token (public chat page). */
+export class LeadChatQueryDto {
+  @IsString({ message: 'Chat link is incomplete' })
+  @MaxLength(100)
+  token!: string;
+}
+
+export class LeadChatPostDto extends LeadChatQueryDto {
+  @IsString({ message: 'Message is required' })
+  @Matches(NOT_BLANK, { message: 'Message cannot be empty' })
+  @MaxLength(LEAD_MESSAGE_MAX_LENGTH, { message: `Message must be at most ${LEAD_MESSAGE_MAX_LENGTH} characters` })
+  body!: string;
 }

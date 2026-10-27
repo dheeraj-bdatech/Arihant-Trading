@@ -1114,7 +1114,7 @@ body {
 }
 
 /* legacy tailwindcss-animate class names used across pages */
-.animate-in { animation: bos-fade 220ms var(--ease-out) both; }
+.animate-in { animation: bos-fade 220ms var(--ease-out) backwards; }
 .fade-in { animation-name: bos-fade; }
 .slide-in-from-left { animation-name: bos-slide-left; }
 .slide-in-from-bottom-2, .slide-in-from-bottom-4 { animation-name: bos-rise; }
@@ -1128,9 +1128,11 @@ body {
 @keyframes bos-pop { from { opacity: 0; transform: scale(0.96) translateY(6px) } to { opacity: 1; transform: none } }
 @keyframes bos-slide-left { from { transform: translateX(-100%) } to { transform: none } }
 
-/* page content: children rise in sequence */
-.route-enter { animation: bos-route3d 320ms var(--ease-out) both; }
-.page-stagger > * { animation: bos-rise3d 520ms var(--ease-out) both; transform-origin: 50% 0; }
+/* page content: children rise in sequence. `backwards`, not `both`: a finished transform/opacity animation that
+   stays filled keeps each block its own stacking context, so a dropdown in one block (the filter row's View /
+   filter menus) paints underneath the blocks after it however high its z-index. */
+.route-enter { animation: bos-route3d 320ms var(--ease-out) backwards; }
+.page-stagger > * { animation: bos-rise3d 520ms var(--ease-out) backwards; transform-origin: 50% 0; }
 .page-stagger > *:nth-child(1) { animation-delay: 0ms; }
 .page-stagger > *:nth-child(2) { animation-delay: 50ms; }
 .page-stagger > *:nth-child(3) { animation-delay: 100ms; }

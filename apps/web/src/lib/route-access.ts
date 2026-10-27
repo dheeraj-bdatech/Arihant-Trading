@@ -18,6 +18,7 @@ export const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] 
   { path: '/expenses/categories', name: 'Expense Categories & Masters', roles: ['management', 'admin'] },
   { path: '/expenses/accounts', name: 'Expense Accounts Queue', roles: ['accounts', 'management', 'admin'] },
   { path: '/expenses', name: 'Travel & Expense Reimbursements', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
+  { path: '/performance', name: 'Performance', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/tasks', name: 'Task & Productivity Management', roles: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'] },
   { path: '/reports', name: 'Consolidated Reporting & Exports', roles: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'] },
   { path: '/admin', name: 'Administration & System Audit', roles: ['management', 'admin'] },

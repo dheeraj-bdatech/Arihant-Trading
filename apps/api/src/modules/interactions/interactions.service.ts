@@ -1,5 +1,6 @@
 import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Injectable, Inject, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
@@ -14,6 +15,7 @@ export class InteractionsService {
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly outboxService: OutboxService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -285,6 +287,33 @@ export class InteractionsService {
     });
 
     this.outboxService.triggerImmediate();
+
+    // Field work in the security audit trail: the interaction, and the follow-up it booked
+    this.eventEmitter.emit('audit.log', {
+      actorId: user.id,
+      entityType: 'interaction',
+      entityId: result.id,
+      action: 'interaction_logged',
+      newValue: {
+        type: result.type,
+        occurred_on: occurredOn,
+        lead_id: result.lead_id,
+        contact_id: result.contact_id,
+        outcome: result.outcome,
+        remarks: result.remarks,
+        next_action: result.next_action,
+        attachments: result.attachments.length,
+      },
+    });
+    if (result.follow_up) {
+      this.eventEmitter.emit('audit.log', {
+        actorId: user.id,
+        entityType: 'follow_up',
+        entityId: result.follow_up.id,
+        action: 'follow_up_scheduled',
+        newValue: { due_date: followupDate, assigned_to: user.id, lead_id: result.lead_id, interaction_id: result.id, remarks: result.follow_up.remarks },
+      });
+    }
 
     return result;
   }

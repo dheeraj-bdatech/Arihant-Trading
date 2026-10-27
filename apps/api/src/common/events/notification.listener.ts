@@ -1488,6 +1488,36 @@ export class NotificationListener {
     }
   }
 
+  /**
+   * A lead's conversation changed: open conversation tabs re-read it (the signal carries only the lead id, so the
+   * API's access rules decide who sees what). A customer's message also alerts the lead owner and their RM.
+   */
+  @OnEvent(AppEvents.LEAD_MESSAGE_POSTED)
+  async handleLeadMessagePosted(p: {
+    leadId: string;
+    fromCustomer: boolean;
+    ownerId?: string | null;
+    regionalManagerId?: string | null;
+    organisationName?: string;
+    customerName?: string | null;
+    excerpt?: string;
+  }) {
+    this.eventsGateway.broadcast('lead:message', { lead_id: p.leadId });
+    if (!p.fromCustomer) return;
+
+    const recipients = new Set([p.ownerId, p.regionalManagerId].filter(Boolean) as string[]);
+    for (const userId of recipients) {
+      await this.createAndPushNotification({
+        userId,
+        type: 'lead_customer_message',
+        title: `Customer message on ${p.organisationName || 'a lead'}`,
+        body: `${p.customerName || 'Customer'}: “${p.excerpt || ''}”`,
+        entityType: 'lead',
+        entityId: p.leadId,
+      });
+    }
+  }
+
   @OnEvent(AppEvents.LEAD_STATUS_CHANGED)
   async handleLeadStatusChanged(eventInput: any) {
     const { payload, eventId } = this.unpackEvent<{

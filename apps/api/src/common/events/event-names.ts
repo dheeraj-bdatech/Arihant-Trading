@@ -110,6 +110,8 @@ export const AppEvents = {
   LEAD_STATUS_CHANGED: 'lead.status_changed',
   LEAD_CONVERTED: 'lead.converted',
   LEAD_LOST: 'lead.lost',
+  /** A message was added to a lead's conversation (by the team, or by the customer over the chat link). */
+  LEAD_MESSAGE_POSTED: 'lead.message_posted',
   INTERACTION_CREATED: 'interaction.created',
   INTERACTION_UPDATED: 'interaction.updated',
   FOLLOWUP_CREATED: 'followup.created',

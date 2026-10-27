@@ -794,7 +794,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
         const n = res.data.length;
         push('success', `${n > 1 ? `${n} recurring series created` : 'Recurring series created'} — ${res.generated} upcoming task${res.generated === 1 ? '' : 's'} generated.`);
         setCreated({ href: `/tasks/templates/${res.data[0]?.id}`, message: 'Series created.', failures: [] });
-        const seriesHref = res.data[0] ? `/tasks/templates/${res.data[0].id}` : '/tasks/templates';
+        const seriesHref = res.data[0] ? `/tasks/templates/${res.data[0].id}` : '/tasks?section=recurring';
         if (modal) {
           onDirtyChange?.(false);
           onCreated?.({ message: `${n > 1 ? `${n} recurring series created` : 'Recurring series created'} — ${res.generated} upcoming task${res.generated === 1 ? '' : 's'} generated.`, href: seriesHref });

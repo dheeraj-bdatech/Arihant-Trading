@@ -8,26 +8,21 @@ import {
   Ban,
   CircleCheck,
   CircleDashed,
-  CalendarDays,
   CheckSquare,
   ClipboardCheck,
   Columns3,
   Download,
-  FileBadge,
   FileText,
-  Gauge,
   Hourglass,
   LayoutList,
   OctagonAlert,
   Paperclip,
   RefreshCw,
-  Repeat,
   Settings2,
   ShieldAlert,
   ShieldCheck,
   Timer,
   Trash2,
-  TrendingUp,
   Users,
 } from 'lucide-react';
 import { Badge, Button, Card, FilterMenu, InfoCallout, Modal, Spinner, StepTrack, type FilterMenuOption, type TrackStep } from '@/components/ui';
@@ -189,7 +184,7 @@ export function useTaskViews() {
 
 /** Pages reached from the View menu; the list pages of the boards map back to their board. */
 const BOARD_LIST_PAGES: Record<string, TaskBoardScope> = { '/tasks/team': 'team', '/tasks/blockers': 'blockers', '/tasks/approvals': 'approvals' };
-const TASK_PAGES = ['/tasks/waiting', '/tasks/templates', '/tasks/accountability', '/tasks/evidence', '/tasks/my-performance', '/tasks/calendar', '/tasks/settings'];
+const TASK_PAGES = ['/tasks/settings'];
 
 /** View-menu key for a task page: a board's list page maps to its board scope, any other page to its own path ('' if none). */
 export function taskViewKey(pathname: string | null | undefined): string {
@@ -199,7 +194,8 @@ export function taskViewKey(pathname: string | null | undefined): string {
 }
 
 /**
- * Every task screen behind one "View" dropdown, filtered by role. Boards (My / Team tasks, Blocker reviews,
+ * Every task board (and Settings) behind one "View" dropdown, filtered by role. Leave & holidays is a tab on My / All
+ * tasks (TaskSections); performance pages live in their own area (/performance). Boards (My / Team tasks, Blocker reviews,
  * Approvals) switch in place via `onScope` on the Tasks page, or open it from elsewhere; the rest open their page.
  * `active` defaults to the current page (taskViewKey), so the sub-pages can drop it in as the first filter-row control.
  */
@@ -236,16 +232,12 @@ export const TaskViewMenu: React.FC<{ active?: string; onScope?: (scope: TaskBoa
     if (views.has('team')) o.push(board('team', s?.can_view_all && !s?.has_team ? 'All tasks' : 'Team tasks', <Users />, { count: n(s?.needs_reassignment) }));
     if (views.has('blockers')) o.push(board('blockers', 'Blocker reviews', <ShieldCheck />, { count: n(s?.pending_blockers), urgent: true }));
     if (views.has('approvals')) o.push(board('approvals', 'Approvals', <ClipboardCheck />, { count: n(s?.pending_approvals), urgent: true }));
-    o.push(page('/tasks/waiting', 'Waiting on me', <Hourglass />, { count: n(s?.waiting_on_me) }));
-    o.push(page('/tasks/templates', 'Recurring', <Repeat />));
-    if (views.has('accountability')) o.push(page('/tasks/accountability', 'Accountability', <Gauge />));
-    if (views.has('evidence')) o.push(page('/tasks/evidence', 'Performance evidence', <FileBadge />));
-    o.push(page('/tasks/my-performance', 'My performance', <TrendingUp />));
-    o.push(page('/tasks/calendar', 'Leave & holidays', <CalendarDays />));
     if (views.has('settings')) o.push(page('/tasks/settings', 'Settings', <Settings2 />));
     return o;
   }, [s, views, active, onScope, router]);
 
+  // Nothing to switch to (no team board, review queue or manager page): no menu at all.
+  if (options.length < 2) return null;
   return <FilterMenu label="View" icon={<LayoutList />} options={options} neutralKeys={[]} align={align} className={`shrink-0 ${className || ''}`} />;
 };
 

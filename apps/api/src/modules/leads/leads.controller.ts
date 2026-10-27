@@ -16,6 +16,7 @@ import {
   ChangeLeadStatusDto,
   AssignLeadDto,
   AddProductInterestDto,
+  CreateLeadMessageDto,
   LeadFilterQueryDto,
   LeadListQueryDto,
 } from './leads.dto.js';
@@ -23,12 +24,16 @@ import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import type { AuthUser } from '@arihant/shared';
+import { LEAD_CUSTOMER_CHAT_ROLES, type AuthUser } from '@arihant/shared';
+import { LeadChatService } from './lead-chat.service.js';
 
 @Controller('leads')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class LeadsController {
-  constructor(private readonly leadsService: LeadsService) {}
+  constructor(
+    private readonly leadsService: LeadsService,
+    private readonly leadChat: LeadChatService,
+  ) {}
 
   @Get('dashboard')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
@@ -85,6 +90,43 @@ export class LeadsController {
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
   async findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.leadsService.findOne(id, user);
+  }
+
+  // Conversation thread: the roles that may open a lead, scoped to the leads they may open (in the service)
+  @Get(':id/messages')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
+  async getMessages(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.leadsService.getMessages(id, user);
+  }
+
+  @Post(':id/messages')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
+  async addMessage(
+    @Param('id') id: string,
+    @Body() dto: CreateLeadMessageDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.leadsService.addMessage(id, dto, user);
+  }
+
+  // Customer chat link: who may write to the customer (LEAD_CUSTOMER_CHAT_ROLES) manages it; anyone who may open the
+  // lead sees whether one is on
+  @Get(':id/chat-link')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
+  async getChatLink(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.leadChat.getLink(id, user);
+  }
+
+  @Post(':id/chat-link')
+  @Roles(...LEAD_CUSTOMER_CHAT_ROLES)
+  async createChatLink(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.leadChat.createLink(id, user);
+  }
+
+  @Delete(':id/chat-link')
+  @Roles(...LEAD_CUSTOMER_CHAT_ROLES)
+  async revokeChatLink(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.leadChat.revokeLink(id, user);
   }
 
   @Post()

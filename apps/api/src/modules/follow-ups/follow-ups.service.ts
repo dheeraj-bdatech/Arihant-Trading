@@ -1,5 +1,6 @@
 import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Injectable, Inject, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { OutboxService } from '../../common/outbox/outbox.service.js';
@@ -26,6 +27,7 @@ export class FollowUpsService {
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly outboxService: OutboxService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /** Loads a follow-up the user may act on: sales only their own, RMs their region or team, others any. */
@@ -280,7 +282,19 @@ export class FollowUpsService {
     });
 
     this.outboxService.triggerImmediate();
+    this.audit(user, result.id, 'follow_up_scheduled', null, {
+      due_date: dto.due_date,
+      due_time: dto.due_time || null,
+      assigned_to: dto.assigned_to,
+      lead_id: dto.lead_id || null,
+      remarks: dto.remarks || null,
+    });
     return result;
+  }
+
+  /** Follow-up work in the security audit trail (entity type `follow_up`), written once the change is committed. */
+  private audit(user: AuthUser, followUpId: string, action: string, previousValue: Record<string, unknown> | null, newValue: Record<string, unknown>) {
+    this.eventEmitter.emit('audit.log', { actorId: user.id, entityType: 'follow_up', entityId: followUpId, action, previousValue, newValue });
   }
 
   async complete(id: string, dto: CompleteFollowUpDto, user: AuthUser) {
@@ -386,6 +400,20 @@ export class FollowUpsService {
     });
 
     this.outboxService.triggerImmediate();
+    this.audit(user, id, 'follow_up_completed', { status: existing.status }, {
+      status: 'completed',
+      outcome: dto.outcome,
+      remarks: dto.remarks || null,
+      next_followup_date: dto.next_followup_date || null,
+    });
+    if (result.nextFollowUp) {
+      this.audit(user, result.nextFollowUp.id, 'follow_up_scheduled', null, {
+        due_date: result.nextFollowUp.due_date,
+        assigned_to: result.nextFollowUp.assigned_to,
+        lead_id: result.nextFollowUp.lead_id,
+        remarks: result.nextFollowUp.remarks,
+      });
+    }
     return result;
   }
 
@@ -428,6 +456,13 @@ export class FollowUpsService {
       return res;
     });
 
+    this.audit(
+      user,
+      id,
+      'follow_up_rescheduled',
+      { due_date: calendarDay(existing.due_date as any), due_time: existing.due_time ?? null },
+      { due_date: dto.new_due_date, due_time: dto.new_due_time || null, reason: dto.reason?.trim() || null },
+    );
     return updated;
   }
 
@@ -447,6 +482,7 @@ export class FollowUpsService {
       .returningAll()
       .executeTakeFirstOrThrow();
 
+    this.audit(user, id, 'follow_up_cancelled', { status: existing.status }, { status: 'cancelled', reason: dto.reason || null });
     return updated;
   }
 }

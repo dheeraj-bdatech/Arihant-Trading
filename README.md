@@ -77,6 +77,8 @@ You can also use the **1-Click Role Persona Switcher** on the login page or top 
 
 ## 📦 Core Functional Modules
 
+The full list of all 16 modules, where each lives in the app, and the build timeline is in [docs/MODULES.md](docs/MODULES.md).
+
 ### 1. GeM Tenders Pipeline (`/tenders`)
 - 30 live GeM tenders imported from North sheet.
 - Red pulsing alert tags for tenders closing $\le$ 7 days (`CLOSING TODAY`, `3 DAYS LEFT`).

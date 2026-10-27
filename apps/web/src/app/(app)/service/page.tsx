@@ -29,7 +29,6 @@ import {
   Ban,
   Search,
   Layers,
-  ChevronRight,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -63,10 +62,14 @@ import {
   toneFor,
   type BadgeProps,
   type RecordItem,
-  ScrollStrip, formatDateTimeIN } from '@/components/ui';
+  ScrollStrip, formatDateTimeIN,
+  BarList,
+  SectionHeader,
+  type BarListItem } from '@/components/ui';
 import { allowedNextServiceStatuses, normalizeServiceStatus, type ServiceStatus } from '@arihant/shared';
 import {
   errMsg,
+  warrantyLabel,
   statusLabel,
   statusBadgeVariant,
   isFinished,
@@ -452,6 +455,13 @@ export default function ServicePage() {
 
   const canLinkRole = LINK_ROLES.includes(role);
   const workload: any[] = stats?.employeeWorkload || [];
+  // Closure time per priority comes in hours (a same-day closure must not round to 0 days); shown as h or d.
+  const fmtDuration = (h: number) => (h < 24 ? `${h.toFixed(1)} h` : `${(h / 24).toFixed(1)} d`);
+  const closureRows = (['critical', 'high', 'medium', 'low'] as const)
+    .map((p) => ({ p, row: (stats?.avgClosureByPriority || []).find((r: any) => r.priority === p) }))
+    .filter((x): x is { p: 'critical' | 'high' | 'medium' | 'low'; row: any } => Boolean(x.row));
+  const closedTotal = closureRows.reduce((n, x) => n + Number(x.row.closed), 0);
+  const closureOverall = closedTotal ? fmtDuration(closureRows.reduce((n, x) => n + Number(x.row.avgHours) * Number(x.row.closed), 0) / closedTotal) : '—';
 
   /** `phoneCls`: phone-only sizing (full-width, 40px targets); the desktop look is restored behind `sm:`. */
   const renderAction = (t: any, a: TicketAction, size: 'xs' | 'sm' = 'sm', phoneCls?: string) => (
@@ -513,7 +523,7 @@ export default function ServicePage() {
       due: { date: t.sla_resolution_due_at, label: 'SLA due', done },
       owner: t.assignee_name || 'Unassigned',
       facts: [
-        { label: 'Warranty', value: t.warranty_status === 'in_warranty' ? 'In Warranty' : t.warranty_status === 'amc' ? 'Under AMC' : 'Billable / Out of Warranty' },
+        { label: 'Warranty', value: warrantyLabel(t.warranty_status_snapshot || t.warranty_status) },
         { label: 'Machine S/N', value: t.equipment_serial || '—' },
         { label: 'Received', value: fmtDay(t.received_date || t.created_at) },
         { label: 'Source', value: t.complaint_source || 'Phone' },
@@ -524,20 +534,21 @@ export default function ServicePage() {
     };
   });
 
-  // recordItems is displayedTickets mapped 1:1, so row i and recordItems[i] are the same ticket
+  // recordItems is displayedTickets mapped 1:1, so row i and recordItems[i] are the same ticket.
+  // A row opens the ticket (click or Enter); priority sits under the number and the equipment under the customer,
+  // so the table fits a laptop-width card without scrolling sideways.
   const ticketList = displayedTickets.length ? (
     <RecordTable items={recordItems}>
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Ticket Ref</TableHead>
-            <TableHead>Customer & Site</TableHead>
+            <TableHead>Ticket</TableHead>
+            <TableHead>Customer & equipment</TableHead>
             <TableHead>Complaint</TableHead>
-            <TableHead>Priority</TableHead>
             <TableHead>Engineer</TableHead>
-            <TableHead>SLA Due</TableHead>
+            <TableHead>SLA due</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right">Next step</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -549,27 +560,32 @@ export default function ServicePage() {
             const daysLeft = open && !breached && !paused ? daysFromToday(t.sla_resolution_due_at) : null;
             const unverified = isUnverified(t);
             const customer = unverified ? t.claimed_organisation_name : t.organisation_name || 'Client Agency / Command Station';
-            const site = [unverified && 'Unverified customer', t.location || t.city, t.equipment_serial && `S/N ${t.equipment_serial}`].filter(Boolean).join(' · ');
+            const site = [unverified && 'Unverified customer', t.product_name, t.location || t.city, t.equipment_serial && `S/N ${t.equipment_serial}`].filter(Boolean).join(' · ');
             return (
-              <TableRow key={t.id}>
-                <TableCell className="font-bold whitespace-nowrap">
-                  <span className="font-mono text-[#0F5E63]">{t.ticket_no || '-'}</span>
-                </TableCell>
-                <TableCell className="font-bold text-[#14213D]">
-                  {customer}
-                  {site && <div className="text-[10px] text-[#4A5568] font-normal">{site}</div>}
-                </TableCell>
-                <TableCell className="text-[#4A5568] max-w-[240px] truncate" title={t.complaint || undefined}>
-                  {t.complaint || 'No complaint text'}
-                </TableCell>
+              <TableRow
+                key={t.id}
+                tabIndex={0}
+                aria-label={`Open ticket ${t.ticket_no || ''}`}
+                onClick={() => handleOpenDetail(t)}
+                onKeyDown={(e) => e.key === 'Enter' && handleOpenDetail(t)}
+                className="cursor-pointer hover:bg-[#FBFAF7] focus:outline-none focus-visible:bg-[#E3EFEE]/60"
+              >
                 <TableCell className="whitespace-nowrap">
-                  {t.priority ? (
-                    <Badge variant={priorityBadge(t.priority)} size="sm" className="uppercase font-bold">
-                      {upperLabel(t.priority)}
-                    </Badge>
-                  ) : (
-                    <span className="text-[#4A5568]">-</span>
+                  <span className="font-mono font-bold text-[#0F5E63]">{t.ticket_no || '-'}</span>
+                  {t.priority && (
+                    <div className="mt-1">
+                      <Badge variant={priorityBadge(t.priority)} size="sm" className="uppercase font-bold">
+                        {upperLabel(t.priority)}
+                      </Badge>
+                    </div>
                   )}
+                </TableCell>
+                <TableCell className="max-w-[210px] whitespace-normal">
+                  <div className="font-bold text-[#14213D] break-words">{customer}</div>
+                  {site && <div className="text-[10px] text-[#4A5568] break-words">{site}</div>}
+                </TableCell>
+                <TableCell className="text-[#4A5568] max-w-[170px] truncate" title={t.complaint || undefined}>
+                  {t.complaint || 'No complaint text'}
                 </TableCell>
                 <TableCell className="text-[#4A5568] whitespace-nowrap">{t.assignee_name || 'Unassigned'}</TableCell>
                 <TableCell className="font-mono whitespace-nowrap">
@@ -584,22 +600,19 @@ export default function ServicePage() {
                     daysLeft <= 7 && <div className="text-[10px] font-bold text-[#881337]">{daysLeft === 0 ? 'DUE TODAY' : `${daysLeft} DAYS LEFT`}</div>
                   )}
                 </TableCell>
-                <TableCell className="whitespace-nowrap">
-                  <Badge variant={ticketStatusBadge(t.status)} size="sm" className="uppercase font-bold">
-                    {upperLabel(statusLabel(t.status))}
+                <TableCell className="max-w-[150px] whitespace-normal">
+                  <Badge variant={ticketStatusBadge(t.status)} size="sm" className="whitespace-normal text-left font-semibold">
+                    {statusLabel(t.status)}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right whitespace-nowrap">
-                  <div className="inline-flex items-center gap-2">
-                    {primary && (
-                      <Button size="sm" variant="primary" className="shadow-xs text-xs" disabled={primary.disabled} onClick={primary.onClick}>
-                        {primary.label}
-                      </Button>
-                    )}
-                    <Button size="sm" variant="secondary" className="shadow-xs text-xs" onClick={() => handleOpenDetail(t)}>
-                      Inspect <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                <TableCell className="max-w-[160px] text-right" onClick={(e) => e.stopPropagation()}>
+                  {primary ? (
+                    <Button size="xs" variant="primary" className="h-auto min-h-7 whitespace-normal py-1 text-left text-xs leading-tight shadow-xs" disabled={primary.disabled} onClick={primary.onClick}>
+                      {primary.label}
                     </Button>
-                  </div>
+                  ) : (
+                    <span className="text-[11px] text-[#6B7280]">—</span>
+                  )}
                 </TableCell>
               </TableRow>
             );
@@ -675,7 +688,7 @@ export default function ServicePage() {
         <StatCard
           label="Completed & Signed"
           value={stats?.completedTickets ?? 0}
-          subtext={`Avg closure ${stats?.avgClosureDays ?? 0}d from intake`}
+          subtext={`Avg closure ${closureOverall} from intake`}
           icon={<CheckCircle2 className="h-5 w-5 text-[#0F5E63]" />}
           variant="emerald"
           role="button"
@@ -686,6 +699,63 @@ export default function ServicePage() {
           className={`col-span-2 md:col-span-1 ${activeRing(activeTab === 'completed')}`}
         />
       </StatGrid>
+
+      {/* §34 at a glance: who holds the open work, how long closing takes, and the repeat complaints. */}
+      {stats && (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card padding="md" className="space-y-2">
+            <SectionHeader title="Open queue" description={`${stats.pendingTickets ?? 0} open tickets. Pick a bar to filter the list.`} />
+            <BarList
+              label="Open queue"
+              labelWidth="50%"
+              emptyText="No open tickets."
+              items={[
+                { key: 'assigned', label: 'Assigned to an engineer', value: stats.assignedTickets ?? 0 },
+                { key: 'unassigned', label: 'Not yet assigned', value: Math.max(0, (stats.pendingTickets ?? 0) - (stats.assignedTickets ?? 0)), active: activeFlag === 'unassigned', onSelect: () => pickFlag('unassigned') },
+                { key: 'repeat', label: 'Repeat complaints', value: stats.repeatComplaints ?? 0, detail: 'Same machine reported again', active: activeFlag === 'repeat', onSelect: () => pickFlag('repeat') },
+              ]}
+            />
+          </Card>
+          <Card padding="md" className="space-y-2">
+            <SectionHeader title="Average closure time" description={`${closureOverall} overall · complaint received to closed, by priority`} />
+            <BarList
+              label="Average closure time by priority"
+              emptyText="No ticket has been closed yet."
+              items={closureRows.map(({ p, row }): BarListItem => ({
+                key: p,
+                label: p.charAt(0).toUpperCase() + p.slice(1),
+                value: Number(row.avgHours),
+                display: fmtDuration(Number(row.avgHours)),
+                detail: `${row.closed} closed`,
+              }))}
+            />
+          </Card>
+          <Card padding="md" className="space-y-2">
+            <SectionHeader
+              title="Engineer workload"
+              description="Open tickets per engineer, busiest first."
+              actions={
+                workload.length > 0 && (
+                  <Button size="xs" variant="ghost" onClick={() => setIsWorkloadModalOpen(true)}>
+                    All engineers
+                  </Button>
+                )
+              }
+            />
+            <BarList
+              label="Open tickets per engineer"
+              emptyText="No engineer has an open ticket."
+              items={workload.slice(0, 6).map((ew: any) => ({
+                key: ew.id,
+                label: ew.name,
+                value: ew.activeTickets,
+                display: `${ew.activeTickets} open`,
+                detail: `${ew.overdueTickets} overdue · ${ew.completedTickets} completed`,
+              }))}
+            />
+          </Card>
+        </div>
+      )}
 
       {/* One filter row: search, then compact dropdowns. */}
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
@@ -896,8 +966,8 @@ export default function ServicePage() {
                     <Badge variant="outline" size="sm" className="font-mono text-[10px]">
                       {st.priority?.toUpperCase()} PRIORITY
                     </Badge>
-                    <Badge variant="outline" size="sm" className="font-mono text-[10px]">
-                      {st.warranty_status_snapshot || st.warranty_status || 'Under Warranty'}
+                    <Badge variant="outline" size="sm" className="text-[10px]">
+                      {warrantyLabel(st.warranty_status_snapshot || st.warranty_status)}
                     </Badge>
                     {st.is_chargeable && (
                       <Badge variant="urgent" size="sm">
@@ -922,7 +992,11 @@ export default function ServicePage() {
                   <p className="text-xs text-[#14213D] font-medium mt-1 break-words">{st.complaint || st.complaint_description}</p>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs pt-2 border-t border-[#ECE9E2]">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 text-xs pt-2 border-t border-[#ECE9E2]">
+                  <div className="min-w-0">
+                    <span className="text-[#4A5568] block text-[10px]">Equipment</span>
+                    <span className="font-semibold text-[#14213D] break-words">{st.product_name || 'Not linked to a product'}</span>
+                  </div>
                   <div>
                     <span className="text-[#4A5568] block text-[10px]">Machine S/N</span>
                     <span className="font-mono font-bold text-[#14213D]">{st.equipment_serial || st.serial_number || 'N/A'}</span>
@@ -1033,7 +1107,7 @@ export default function ServicePage() {
                     <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-white space-y-2">
                       <span className="font-bold text-[#14213D] block">Billing & coverage</span>
                       <div className="text-[#4A5568] space-y-1">
-                        <p><strong>Coverage:</strong> {st.warranty_status_snapshot || st.warranty_status || 'Under Warranty'}</p>
+                        <p><strong>Coverage:</strong> {warrantyLabel(st.warranty_status_snapshot || st.warranty_status)}</p>
                         <p><strong>Is chargeable:</strong> {st.is_chargeable ? 'Yes (billable spares / labour)' : 'No (covered FOC)'}</p>
                         <p><strong>Billing status:</strong> {st.billing_status || 'Not chargeable'}</p>
                         <p><strong>Resolved:</strong> {st.resolved_at ? formatDateTimeIN(st.resolved_at) : '—'}</p>

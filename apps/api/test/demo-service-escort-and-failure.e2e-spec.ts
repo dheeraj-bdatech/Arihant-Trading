@@ -10,6 +10,7 @@ describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () =
   let app: INestApplication;
   let db: any;
   let salesToken: string;
+  let mgmtToken: string;
   let demoTeamToken: string;
   let serviceEngineerToken: string;
 
@@ -37,6 +38,13 @@ describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () =
     expect(salesRes.status).toBe(200);
     salesToken = salesRes.body.accessToken;
     salesUserId = salesRes.body.user.id;
+
+    // Login Management (approves demo requests)
+    const mgmtRes = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: 'mgmt@arihant.com', password: 'password123' });
+    expect(mgmtRes.status).toBe(200);
+    mgmtToken = mgmtRes.body.accessToken;
 
     // Login Demo Team
     const demoTeamRes = await request(app.getHttpServer())
@@ -199,6 +207,17 @@ describe('Demo Service Escort and Technical Failure Auto-Ticket E2E Suite', () =
         reserved_to: targetDate,
       });
     expect(reserveRes.status).toBe(201);
+
+    // Management approves the request and the demo team confirms today's date: an outcome needs a confirmed demo
+    const approveRes = await request(app.getHttpServer())
+      .post(`/api/demos/${demoId}/start-planning`)
+      .set('Authorization', `Bearer ${mgmtToken}`);
+    expect(approveRes.status).toBe(201);
+    const confirmRes = await request(app.getHttpServer())
+      .post(`/api/demos/${demoId}/confirm`)
+      .set('Authorization', `Bearer ${demoTeamToken}`)
+      .send({ confirmed_date: targetDate });
+    expect(confirmRes.status).toBe(201);
 
     // Submit outcome with TECHNICAL_FAILURE
     const outcomeRes = await request(app.getHttpServer())

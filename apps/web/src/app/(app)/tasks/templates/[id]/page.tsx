@@ -560,7 +560,7 @@ export default function RecurringTaskDetailPage() {
         <InfoCallout variant="danger" title="Could not open this recurring task">
           <div className="space-y-2">
             <p>{loadError || 'Not found.'}</p>
-            <Link href="/tasks/templates">
+            <Link href="/tasks?section=recurring">
               <Button size="sm" variant="secondary" leftIcon={<ArrowLeft className="h-4 w-4" />}>
                 Back to recurring tasks
               </Button>
@@ -579,14 +579,6 @@ export default function RecurringTaskDetailPage() {
     <PageContainer>
       <PageHeader title={`Recurring task — ${t.title}`} icon={<Repeat className="h-5 w-5" />} />
       <TasksNav />
-
-      <div>
-        <Link href="/tasks/templates">
-          <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="h-4 w-4" />}>
-            Recurring tasks
-          </Button>
-        </Link>
-      </div>
 
       {conflict && <TaskConflictCallout onRefresh={load} />}
 

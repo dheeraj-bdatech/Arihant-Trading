@@ -48,6 +48,55 @@ export interface LeadFilterDto extends PaginationQueryDto {
   assigned_to?: string;
 }
 
+/** Longest message a lead's conversation accepts, in characters. */
+export const LEAD_MESSAGE_MAX_LENGTH = 2000;
+
+/** Who sees a lead message: the team only, or the customer too (over the lead's chat link). */
+export type LeadMessageAudience = 'team' | 'customer';
+
+/** Roles that may share a lead's chat link with the customer and write to them (the roles that edit leads). */
+export const LEAD_CUSTOMER_CHAT_ROLES: UserRole[] = ['management', 'regional_manager', 'sales', 'admin'];
+
+/** A message in a lead's conversation thread, as GET / POST /leads/:id/messages return it. */
+export interface LeadMessageDto {
+  id: string;
+  lead_id: string;
+  author_id: string | null;
+  author_name: string | null;
+  author_role: UserRole | null;
+  body: string;
+  audience: LeadMessageAudience;
+  from_customer: boolean;
+  customer_name: string | null;
+  created_at: string;
+}
+
+/** The lead's customer chat link as the team sees it; `url_path` only in the answer that made the link. */
+export interface LeadChatLinkDto {
+  active: boolean;
+  created_at: string | null;
+  created_by_name: string | null;
+  url_path?: string;
+}
+
+/** A customer-facing message, as the public chat page shows it. */
+export interface LeadChatMessageDto {
+  id: string;
+  body: string;
+  from_customer: boolean;
+  sender_name: string;
+  created_at: string;
+}
+
+/** What the public chat page loads with a valid link. */
+export interface LeadChatViewDto {
+  organisation_name: string;
+  product_name: string | null;
+  owner_name: string | null;
+  customer_name: string | null;
+  messages: LeadChatMessageDto[];
+}
+
 export interface VisitFilterDto extends PaginationQueryDto {
   status?: string;
   assigned_to?: string;

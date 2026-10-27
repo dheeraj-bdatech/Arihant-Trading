@@ -819,13 +819,16 @@ export class DemosService {
     if (dto.confirmed_date) assertNotPastDemoDate(dto.confirmed_date, 'confirmed demo date');
 
     return this.db.transaction().execute(async (trx) => {
-      // 1. Check network retry idempotency: identical request by same user within past 60 seconds
+      // 1. Check network retry idempotency: identical request by same user within past 60 seconds. Identical means the
+      // same product too (two products for one customer and day are two demos), and a cancelled demo is never returned.
       const sixtySecondsAgo = new Date(Date.now() - 60000);
       const duplicate = await trx
         .selectFrom('demos')
         .where('organisation_id', '=', dto.organisation_id)
         .where('requested_by', '=', user.id)
         .where('requested_date', '=', dto.requested_date)
+        .where((eb) => (dto.product_id ? eb('product_id', '=', dto.product_id) : eb('product_id', 'is', null)))
+        .where('status', '<>', 'cancelled')
         .where('created_at', '>=', sixtySecondsAgo)
         .selectAll()
         .executeTakeFirst();
@@ -1545,15 +1548,17 @@ export class DemosService {
 
       await this.syncEquipmentAvailability(trx as any, reservation.equipment_id, user.id, 'reservation approved');
 
-      // Update demo status to equipment_reserved if still in requested or under_planning
+      // An approved kit advances only an approved demo (Under Planning). Before management approval the booking is
+      // preparation and the demo stays Requested, as when the coordinator books a unit directly (reserveEquipment).
       await trx
         .updateTable('demos')
         .set({
           status: 'equipment_reserved',
           updated_at: new Date(),
+          version: sql`version + 1`,
         })
         .where('id', '=', reservation.demo_id)
-        .where('status', 'in', ['requested', 'under_planning'])
+        .where('status', '=', 'under_planning')
         .execute();
 
       this.eventEmitter.emit('audit.log', {
@@ -1673,7 +1678,7 @@ export class DemosService {
       await this.syncEquipmentAvailability(trx as any, dto.equipment_id, user.id, 'unit allocated');
       if (oldEquipId !== dto.equipment_id) await this.syncEquipmentAvailability(trx as any, oldEquipId, user.id, 'replaced by another unit');
 
-      // Update demo status
+      // Same rule as approveReservation: only an approved demo (Under Planning) moves to Equipment Reserved
       await trx
         .updateTable('demos')
         .set({
@@ -1682,7 +1687,7 @@ export class DemosService {
           version: sql`version + 1`,
         })
         .where('id', '=', reservation.demo_id)
-        .where('status', 'in', ['requested', 'under_planning'])
+        .where('status', '=', 'under_planning')
         .execute();
 
       this.eventEmitter.emit('audit.log', {
@@ -2013,6 +2018,10 @@ export class DemosService {
       if (demo.status === 'completed') {
         throw new BadRequestException('Cannot cancel an already completed demonstration.');
       }
+      // A second cancel would overwrite the recorded reason and log the cancellation twice
+      if (demo.status === 'cancelled') {
+        throw new BadRequestException('This demo is already cancelled.');
+      }
 
       // 1. Release all equipment reservations (§15 & §26)
       const reservations = await trx
@@ -2119,6 +2128,23 @@ export class DemosService {
 
       if (demo.status === 'cancelled') {
         throw new BadRequestException('Cannot submit outcome for a cancelled demo.');
+      }
+
+      // A completed demo's outcome is final: a second submission would rewrite the result behind the analytics
+      if (demo.status === 'completed') {
+        throw new ConflictException({
+          code: 'OUTCOME_LOCKED',
+          message: 'This demo is completed and its outcome is locked.',
+        });
+      }
+
+      // An outcome follows the agreed trial: approved by management and its date confirmed with the client first.
+      // (A "did not happen" outcome keeps the demo Confirmed, so it can be replaced once the trial takes place.)
+      if (demo.status !== 'confirmed') {
+        throw new BadRequestException({
+          code: 'DEMO_NOT_CONFIRMED',
+          message: `Confirm the demo date before recording its outcome (this demo is still "${demo.status.replace(/_/g, ' ')}").`,
+        });
       }
 
       // An outcome describes a trial that has happened: only on or after the (confirmed) demo day, IST.

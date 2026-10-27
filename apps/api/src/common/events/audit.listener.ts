@@ -4,6 +4,11 @@ import { Kysely } from 'kysely';
 import { KYSELY_DB } from '../database/database.module.js';
 import type { Database } from '@arihant/shared';
 
+/** audit_log.entity_id of a single-row settings record (proposal settings, task settings, the audit log itself). */
+export const SINGLETON_RECORD_ID = '00000000-0000-0000-0000-000000000001';
+/** audit_log.entity_id when there is no record to point at (a sign-in attempt for an unknown email). */
+export const NO_RECORD_ID = '00000000-0000-0000-0000-000000000000';
+
 export interface AuditEventPayload {
   actorId: string | null;
   entityType: string;

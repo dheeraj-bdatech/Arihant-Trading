@@ -145,6 +145,30 @@ export interface LeadProductInterestsTable {
   created_by: string | null;
 }
 
+/** A message in a lead's conversation thread; append-only (never edited or deleted). */
+export interface LeadMessagesTable {
+  id: Generated<string>;
+  lead_id: string;
+  author_id: string | null;
+  body: string;
+  /** 'team' = internal only; 'customer' = sent to, or written by, the customer over the chat link */
+  audience: Generated<'team' | 'customer'>;
+  from_customer: Generated<boolean>;
+  customer_name: string | null;
+  created_at: Generated<Date>;
+}
+
+/** The private chat link a lead's customer uses; one per lead, only the token's SHA-256 is stored. */
+export interface LeadChatLinksTable {
+  id: Generated<string>;
+  lead_id: string;
+  token_hash: string;
+  created_by: string | null;
+  created_at: Generated<Date>;
+  revoked_at: Date | null;
+  revoked_by: string | null;
+}
+
 export interface LeadAssignmentHistoryTable {
   id: Generated<string>;
   lead_id: string;
@@ -1883,6 +1907,8 @@ export interface Database {
   contacts: ContactsTable;
   leads: LeadsTable;
   lead_product_interests: LeadProductInterestsTable;
+  lead_messages: LeadMessagesTable;
+  lead_chat_links: LeadChatLinksTable;
   lead_assignment_history: LeadAssignmentHistoryTable;
   follow_ups: FollowUpsTable;
   interactions: InteractionsTable;

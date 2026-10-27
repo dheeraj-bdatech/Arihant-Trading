@@ -27,3 +27,4 @@ export * from './ToolbarBox';
 export * from './FilterMenu';
 export * from './RowMenu';
 export * from './StepTrack';
+export * from './BarList';

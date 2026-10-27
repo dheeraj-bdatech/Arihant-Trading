@@ -245,8 +245,9 @@ export class ServiceController {
   async updateSlaRule(
     @Param('id') id: string,
     @Body() dto: { response_hours?: number; resolution_hours?: number; business_hours_only?: boolean },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.serviceService.updateSlaRule(id, dto);
+    return this.serviceService.updateSlaRule(id, dto, user);
   }
 
   @Get('settings/config')
@@ -259,7 +260,8 @@ export class ServiceController {
   async updateServiceSetting(
     @Param('key') key: string,
     @Body() body: { value: any },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.serviceService.updateServiceSetting(key, body.value);
+    return this.serviceService.updateServiceSetting(key, body.value, user);
   }
 }

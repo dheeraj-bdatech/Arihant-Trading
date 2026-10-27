@@ -1891,7 +1891,7 @@ export class ServiceService {
     const count = sql<number>`count(service_tickets.id)::int`;
     const countOf = (f: TicketListFilters) => q(f).select(count.as('c')).executeTakeFirst();
 
-    const [byStatus, assigned, overdue, critical, repeat, closure, slaBreached, portalNew, unverified, workloadRows, engineers] = await Promise.all([
+    const [byStatus, assigned, overdue, critical, repeat, closure, slaBreached, portalNew, unverified, workloadRows, engineers, closureByPriority] = await Promise.all([
       q(noStage).select(['service_tickets.status', count.as('c')]).groupBy('service_tickets.status').execute(),
       q(noStage).select(count.as('c')).where('service_tickets.assigned_to', 'is not', null).where('service_tickets.status', 'not in', open).executeTakeFirst(),
       countOf({ ...noFlags, overdue: true }),
@@ -1929,6 +1929,17 @@ export class ServiceService {
         }
         return e.execute();
       })(),
+      // the same closure rule per priority, in hours so a same-day closure does not round to zero (closure-time chart)
+      q(noStage)
+        .select([
+          'service_tickets.priority as priority',
+          sql<number>`coalesce(round(avg(greatest(extract(epoch from (service_tickets.closed_at - (case when service_tickets.received_date is not null and service_tickets.received_date < (service_tickets.created_at at time zone 'Asia/Kolkata')::date then (service_tickets.received_date + time '09:00') at time zone 'Asia/Kolkata' else service_tickets.created_at end))), 0) / 3600)::numeric, 1), 0)::float`.as('avg_hours'),
+          sql<number>`count(*)::int`.as('closed'),
+        ])
+        .where('service_tickets.status', '=', 'closed')
+        .where('service_tickets.closed_at', 'is not', null)
+        .groupBy('service_tickets.priority')
+        .execute(),
     ]);
 
     const byEmployee = new Map(workloadRows.map((r) => [r.employee_id, r]));
@@ -1970,6 +1981,7 @@ export class ServiceService {
       criticalTickets: critical?.c || 0,
       repeatComplaints: repeat?.c || 0,
       avgClosureDays: closure?.avg_days || 0,
+      avgClosureByPriority: closureByPriority.map((r) => ({ priority: r.priority, avgHours: r.avg_hours || 0, closed: r.closed })),
       slaBreached: slaBreached?.c || 0,
       portalNew: portalNew?.c || 0,
       unverifiedCustomers: unverified?.c || 0,
@@ -2048,7 +2060,7 @@ export class ServiceService {
     return this.db.selectFrom('sla_rules').selectAll().orderBy('priority', 'asc').orderBy('warranty_type', 'asc').execute();
   }
 
-  async updateSlaRule(id: string, dto: { response_hours?: number; resolution_hours?: number; business_hours_only?: boolean }) {
+  async updateSlaRule(id: string, dto: { response_hours?: number; resolution_hours?: number; business_hours_only?: boolean }, user: AuthUser) {
     if (!UUID_REGEX.test(id)) throw new NotFoundException('SLA rule not found');
     const r = dto.response_hours;
     const s = dto.resolution_hours;
@@ -2059,19 +2071,33 @@ export class ServiceService {
     if ((r ?? existing.response_hours) > (s ?? existing.resolution_hours)) {
       throw new BadRequestException('Response time cannot be longer than resolution time');
     }
-    return this.db
+    const updated = await this.db
       .updateTable('sla_rules')
       .set({ response_hours: r, resolution_hours: s, business_hours_only: dto.business_hours_only, updated_at: new Date() })
       .where('id', '=', id)
       .returningAll()
       .executeTakeFirstOrThrow();
+
+    // SLA targets drive breach flags and escalations: record what changed and who changed it
+    const fields = (['response_hours', 'resolution_hours', 'business_hours_only'] as const).filter((k) => existing[k] !== updated[k]);
+    if (fields.length) {
+      this.eventEmitter.emit('audit.log', {
+        actorId: user.id,
+        entityType: 'sla_rule',
+        entityId: id,
+        action: 'sla_rule_updated',
+        previousValue: { priority: existing.priority, warranty_type: existing.warranty_type, ...Object.fromEntries(fields.map((k) => [k, existing[k]])) },
+        newValue: { priority: updated.priority, warranty_type: updated.warranty_type, ...Object.fromEntries(fields.map((k) => [k, updated[k]])) },
+      });
+    }
+    return updated;
   }
 
   async getServiceSettings() {
     return this.db.selectFrom('service_settings').selectAll().orderBy('key', 'asc').execute();
   }
 
-  async updateServiceSetting(key: string, value: any) {
+  async updateServiceSetting(key: string, value: any, user: AuthUser) {
     if (!/^[a-z0-9_]{3,64}$/.test(key)) throw new BadRequestException('Setting key must be lowercase letters, digits and underscores');
     if (value === undefined) throw new BadRequestException('value is required');
     const numericKeys = ['repeat_complaint_window_days', 'reopen_window_days', 'auto_escalation_critical_unassigned_hours', 'portal_rate_limit_per_hour', 'portal_rate_limit_per_phone_per_day', 'portal_duplicate_window_minutes', 'business_day_start_hour', 'business_day_end_hour'];
@@ -2080,12 +2106,25 @@ export class ServiceService {
       if (!Number.isFinite(n) || n < 0 || n > 3650) throw new BadRequestException(`${key} must be a number between 0 and 3650`);
       value = n;
     }
-    return this.db
+    const before = await this.db.selectFrom('service_settings').select('value').where('key', '=', key).executeTakeFirst();
+    const saved = await this.db
       .insertInto('service_settings')
       .values({ key, value: JSON.stringify(value), description: `Configured ${key}`, updated_at: new Date() })
       .onConflict((oc) => oc.column('key').doUpdateSet({ value: JSON.stringify(value), updated_at: new Date() }))
       .returningAll()
       .executeTakeFirstOrThrow();
+
+    if (JSON.stringify(before?.value ?? null) !== JSON.stringify(saved.value)) {
+      this.eventEmitter.emit('audit.log', {
+        actorId: user.id,
+        entityType: 'service_setting',
+        entityId: saved.id,
+        action: 'service_setting_updated',
+        previousValue: before ? { [key]: before.value } : null,
+        newValue: { [key]: saved.value },
+      });
+    }
+    return saved;
   }
 
   // =========================================================================

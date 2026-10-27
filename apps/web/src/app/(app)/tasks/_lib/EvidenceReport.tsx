@@ -2,7 +2,7 @@
 
 /**
  * Performance evidence report renderer (Blueprint §43), shared by /tasks/evidence (live + frozen snapshots)
- * and /tasks/my-performance. Purely factual: counts, dates and days. There is deliberately no monetary
+ * and the My performance tab on /tasks. Purely factual: counts, dates and days. There is deliberately no monetary
  * field, recommendation or score here — the disclaimer is rendered by the page above this component.
  *
  * Also exports the period picker, the delay-mix bar and the review card used by the Module 8 evidence pages.
@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { Lock, Snowflake } from 'lucide-react';
 import {
   Badge,
+  BarList,
   Card,
   InfoCallout,
   SectionHeader,
@@ -25,7 +26,6 @@ import {
 import {
   TASK_DELAY_CLASS_LABELS,
   TASK_PRIORITY_LABELS,
-  TASK_REASSIGN_REASON_LABELS,
   formatTaskDate,
   formatTaskDateTime,
   type PerformanceReviewStatus,
@@ -176,7 +176,6 @@ export interface EvidenceReportData {
 
 export const BASIS_LABEL: Record<TaskEvidenceBasis, string> = { deadline: 'By original deadline', completion: 'By completion date' };
 
-const pct = (v: number | null | undefined) => (v === null || v === undefined ? '—' : `${v}%`);
 const days = (v: number | null | undefined) => `${v ?? 0} d`;
 const roleLabel = (r: string) => r.replace(/_/g, ' ');
 const Num: React.FC<{ children: React.ReactNode }> = ({ children }) => <span className="font-mono tabular-nums">{children}</span>;
@@ -372,16 +371,6 @@ const Section: React.FC<{ n?: string; title: string; description?: string; child
   </Card>
 );
 
-const KV: React.FC<{ rows: [string, React.ReactNode][] }> = ({ rows }) => (
-  <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-3">
-    {rows.map(([k, v]) => (
-      <Meta key={k} label={k}>
-        {typeof v === 'string' || typeof v === 'number' ? <Num>{v}</Num> : v}
-      </Meta>
-    ))}
-  </dl>
-);
-
 const EXCLUDED_LABEL: Record<NonNullable<EvidenceTaskRow['excluded']>, string> = {
   cancelled: 'Excluded · cancelled',
   backlog: 'Excluded · backlog entry',
@@ -406,7 +395,8 @@ const TaskLink: React.FC<{ id?: string | null; number: string }> = ({ id, number
     <span className="font-mono text-xs font-semibold text-[#14213D] whitespace-nowrap">{number}</span>
   );
 
-const TaskAppendix: React.FC<{ tasks: EvidenceTaskRow[] }> = ({ tasks }) => {
+/** Every task in the period with its delay class (the evidence page and My performance). */
+export const TaskAppendix: React.FC<{ tasks: EvidenceTaskRow[] }> = ({ tasks }) => {
   if (!tasks.length) return <p className="text-sm text-[#6B7280]">No tasks fall in this period.</p>;
   return (
     <>
@@ -516,7 +506,7 @@ const TaskAppendix: React.FC<{ tasks: EvidenceTaskRow[] }> = ({ tasks }) => {
   );
 };
 
-const BlockerHistory: React.FC<{ rows: EvidenceBlockerRow[]; taskIds: Map<string, string> }> = ({ rows, taskIds }) => {
+export const BlockerHistory: React.FC<{ rows: EvidenceBlockerRow[]; taskIds: Map<string, string> }> = ({ rows, taskIds }) => {
   if (!rows.length) return <p className="text-sm text-[#6B7280]">No blockers were raised in this period.</p>;
   return (
     <>
@@ -582,30 +572,93 @@ const BlockerHistory: React.FC<{ rows: EvidenceBlockerRow[]; taskIds: Map<string
   );
 };
 
-const Reassignments: React.FC<{ rows: EvidenceReassignment[] }> = ({ rows }) => (
-  <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#ECE9E2]">
-    {rows.map((h) => (
-      <li key={h.id} className="px-3 py-2 space-y-0.5">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <TaskLink id={h.task_id} number={h.task_number} />
-          <span className="text-sm text-[#14213D] min-w-0 truncate">{h.title}</span>
-          {h.counted_as_miss && <FlagChip tone="danger">Counted as a miss</FlagChip>}
-        </div>
-        <p className="text-xs text-[#4A5568]">
-          To {h.to_name || '—'} · {TASK_REASSIGN_REASON_LABELS[h.reason_type as TaskReassignReason] || h.reason_type} · <DateTime value={h.created_at} />
-          {h.was_overdue ? ` · overdue by ${h.overdue_days} d at the time` : ''}
-        </p>
-        <p className="text-xs text-[#14213D] break-words">{h.reason}</p>
-      </li>
-    ))}
-  </ul>
-);
+/**
+ * Blueprint §43 — the evidence the BOS generates, as five small charts: work assigned, completion status, deadline
+ * compliance, approved blockers and repeated misses. Counts only (no score, no money); the task list below carries
+ * the detail. Shared by the evidence page and My performance.
+ */
+export const EvidenceCharts: React.FC<{ report: EvidenceReportData }> = ({ report: r }) => {
+  const w = r.work_assigned;
+  const c = r.completion;
+  const cp = r.compliance;
+  const b = r.blockers;
+  const m = r.repeated_misses;
+  const excluded = r.excluded.cancelled + r.excluded.backlog_entries + r.excluded.generated_late;
+  const pctText = (v: number | null) => (v === null ? '—' : `${v}%`);
+  const charts: { title: string; description: string; items: { key: string; label: string; value: number; detail?: string }[]; empty: string }[] = [
+    {
+      title: 'Work assigned',
+      description: `${w.total} counted · ${w.recurring} recurring, ${w.one_time} one-time`,
+      items: Object.entries(w.by_category)
+        .sort((x, y) => y[1] - x[1])
+        .map(([k, v]) => ({ key: k, label: k, value: v })),
+      empty: 'No tasks counted in this period.',
+    },
+    {
+      title: 'Completion status',
+      description: `${pctText(c.completion_rate_pct)} completed`,
+      items: [
+        { key: 'done', label: 'Completed', value: c.completed },
+        { key: 'awaiting', label: 'Awaiting approval', value: c.awaiting_approval },
+        { key: 'open', label: 'Still open', value: c.open },
+        { key: 'excluded', label: 'Excluded', value: excluded, detail: `${r.excluded.cancelled} cancelled · ${r.excluded.backlog_entries} backlog · ${r.excluded.generated_late} generated late` },
+      ],
+      empty: 'No tasks counted in this period.',
+    },
+    {
+      title: 'Deadline compliance',
+      description: `${pctText(cp.on_time_pct)} on time · ${days(cp.total_unexcused_delay_days)} unexcused delay`,
+      items: [
+        { key: 'on_time', label: 'On time', value: cp.on_time },
+        { key: 'late_excused', label: 'Late, excused', value: cp.late_excused, detail: 'Approved extension or accepted blocker' },
+        { key: 'late_unexcused', label: 'Late, unexcused', value: cp.late_unexcused },
+        { key: 'open_overdue', label: 'Open & overdue', value: cp.open_overdue },
+      ],
+      empty: 'No task finished or fell overdue in this period.',
+    },
+    {
+      title: 'Approved blockers',
+      description: `${b.raised} raised · ${days(b.excused_days)} excused`,
+      items: [
+        { key: 'accepted', label: 'Accepted', value: b.accepted, detail: 'Genuine dependencies, not execution delays' },
+        { key: 'rejected', label: 'Rejected', value: b.rejected },
+        { key: 'pending', label: 'Pending review', value: b.pending },
+        { key: 'late', label: 'Raised after deadline', value: b.raised_after_deadline },
+      ],
+      empty: 'No blockers raised in this period.',
+    },
+    {
+      title: 'Repeated misses',
+      description: `${r.reassignments.counted_as_miss} reassignment(s) counted as a miss`,
+      items: [
+        { key: 'recurring', label: 'Recurring missed', value: m.recurring_instances_missed },
+        { key: 'extensions', label: '2+ extensions', value: m.tasks_with_multiple_extensions },
+        { key: 'rework', label: 'Sent back for rework', value: m.rework_count },
+        { key: 'reopened', label: 'Reopened', value: m.reopen_count },
+        { key: 'reassigned', label: 'Reassigned away', value: r.reassignments.reassigned_away.length },
+      ],
+      empty: 'No repeated misses in this period.',
+    },
+  ];
+  return (
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {charts.map((ch) => (
+        <Card key={ch.title} padding="md" className="space-y-2">
+          <SectionHeader title={ch.title} description={ch.description} />
+          <BarList items={ch.items} label={ch.title} emptyText={ch.empty} labelWidth="50%" />
+        </Card>
+      ))}
+    </div>
+  );
+};
 
-/** The full evidence report. `reviewsSlot` replaces the read-only section 6 (e.g. My Performance with actions). */
-export const EvidenceReport: React.FC<{ report: EvidenceReportData; reviewsSlot?: React.ReactNode; snapshotLabel?: string }> = ({ report: r, reviewsSlot, snapshotLabel }) => {
+/**
+ * The evidence report on screen: who and which period, the §43 evidence as charts, then the period's tasks and
+ * blockers. The evidence page shows and writes reviews in its own card.
+ */
+export const EvidenceReport: React.FC<{ report: EvidenceReportData; snapshotLabel?: string }> = ({ report: r, snapshotLabel }) => {
   const taskIds = new Map(r.tasks.map((t) => [t.task_number, t.id]));
   const e = r.employee;
-  const excludedTotal = r.excluded.cancelled + r.excluded.backlog_entries + r.excluded.generated_late;
   return (
     <div className="space-y-4">
       <Card padding="md" className="space-y-4">
@@ -659,121 +712,13 @@ export const EvidenceReport: React.FC<{ report: EvidenceReportData; reviewsSlot?
         )}
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Section n="1" title="Work assigned" description="Tasks counted in this period (exclusions are listed in the appendix).">
-          <KV
-            rows={[
-              ['Tasks assessed', String(r.work_assigned.total)],
-              ['Recurring / one-time', `${r.work_assigned.recurring} / ${r.work_assigned.one_time}`],
-              ...Object.entries(r.work_assigned.by_priority).map(([k, v]) => [`Priority · ${TASK_PRIORITY_LABELS[k as TaskPriority] || k}`, String(v)] as [string, React.ReactNode]),
-              ...Object.entries(r.work_assigned.by_category).map(([k, v]) => [`Category · ${k}`, String(v)] as [string, React.ReactNode]),
-            ]}
-          />
-        </Section>
+      <EvidenceCharts report={r} />
 
-        <Section n="2" title="Completion status">
-          <KV
-            rows={[
-              ['Completed', String(r.completion.completed)],
-              ['Awaiting approval', String(r.completion.awaiting_approval)],
-              ['Still open', String(r.completion.open)],
-              ['Completion rate', pct(r.completion.completion_rate_pct)],
-              ['Excluded', String(excludedTotal)],
-              ['Cancelled / backlog / generated late', `${r.excluded.cancelled} / ${r.excluded.backlog_entries} / ${r.excluded.generated_late}`],
-            ]}
-          />
-        </Section>
-      </div>
-
-      <Section n="3" title="Deadline compliance" description="Measured against the original deadline. Excused time comes only from approved extensions and accepted blockers; time already overdue when an excuse was granted stays unexcused.">
-        <DelayMixBar
-          title="Delay classes in this period"
-          counts={{ on_time: r.compliance.on_time, late_excused: r.compliance.late_excused, late_unexcused: r.compliance.late_unexcused, open_overdue: r.compliance.open_overdue }}
-        />
-        <KV
-          rows={[
-            ['On time', String(r.compliance.on_time)],
-            ['On-time rate (of completed)', pct(r.compliance.on_time_pct)],
-            ['Late · excused', String(r.compliance.late_excused)],
-            ['Late · unexcused', String(r.compliance.late_unexcused)],
-            ['Open and overdue', String(r.compliance.open_overdue)],
-            ['Open, not yet due', String(r.compliance.open)],
-            ['Avg unexcused delay', days(r.compliance.avg_unexcused_delay_days)],
-            ['Total unexcused delay', days(r.compliance.total_unexcused_delay_days)],
-            ['Total excused delay', days(r.compliance.total_excused_delay_days)],
-            ['Extensions requested / granted', `${r.compliance.extensions_requested} / ${r.compliance.extensions_granted}`],
-          ]}
-        />
-      </Section>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Section n="4" title="Blockers" description="Accepted blockers are approved dependencies, not execution delays.">
-          <KV
-            rows={[
-              ['Raised', String(r.blockers.raised)],
-              ['Accepted', String(r.blockers.accepted)],
-              ['Rejected', String(r.blockers.rejected)],
-              ['Pending review', String(r.blockers.pending)],
-              ['Withdrawn', String(r.blockers.withdrawn)],
-              ['Raised after the deadline', String(r.blockers.raised_after_deadline)],
-              ['Excused days from blockers', days(r.blockers.excused_days)],
-            ]}
-          />
-          {Object.keys(r.blockers.accepted_by_type).length > 0 && (
-            <div>
-              <p className="text-[11px] uppercase tracking-wide text-[#4A5568] mb-1.5">Accepted by type</p>
-              <ul className="flex flex-wrap gap-1.5">
-                {Object.entries(r.blockers.accepted_by_type).map(([k, v]) => (
-                  <li key={k}>
-                    <Badge variant="default" size="sm">
-                      {blockerTypeLabel(k)} <span className="font-mono font-semibold ml-1">{v}</span>
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </Section>
-
-        <Section n="5" title="Repeated misses & rework">
-          <KV
-            rows={[
-              ['Recurring instances missed', String(r.repeated_misses.recurring_instances_missed)],
-              ['Tasks with 2+ extensions', String(r.repeated_misses.tasks_with_multiple_extensions)],
-              ['Sent back for rework', String(r.repeated_misses.rework_count)],
-              ['Reopened after completion', String(r.repeated_misses.reopen_count)],
-              ['Tasks reworked or reopened', String(r.repeated_misses.tasks_reworked_or_reopened)],
-              ['Reassigned away', `${r.reassignments.reassigned_away.length} (${r.reassignments.counted_as_miss} counted as a miss)`],
-            ]}
-          />
-          {r.reassignments.reassigned_away.length > 0 && (
-            <div>
-              <p className="text-[11px] uppercase tracking-wide text-[#4A5568] mb-1.5">Reassigned away</p>
-              <Reassignments rows={r.reassignments.reassigned_away} />
-              <p className="mt-1.5 text-[11px] text-[#4A5568]">Only reassignments for non-performance are counted as a miss.</p>
-            </div>
-          )}
-        </Section>
-      </div>
-
-      <Section n="6" title="Manager review" description={reviewsSlot ? undefined : 'Submitted reviews overlapping this period, with the employee’s response.'}>
-        {reviewsSlot ??
-          (r.reviews.length ? (
-            <div className="space-y-3">
-              {r.reviews.map((rv) => (
-                <ReviewCard key={rv.id} review={rv} />
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-[#6B7280]">No submitted manager review overlaps this period.</p>
-          ))}
-      </Section>
-
-      <Section title="Appendix A · Task list" description={`${r.tasks.length} task(s) in the period, including excluded ones.`}>
+      <Section title="Tasks in this period" description={`${r.tasks.length} task(s), including excluded ones (cancelled, backlog, generated late).`}>
         <TaskAppendix tasks={r.tasks} />
       </Section>
 
-      <Section title="Appendix B · Blocker history">
+      <Section title="Blockers raised">
         <BlockerHistory rows={r.blocker_list} taskIds={taskIds} />
       </Section>
     </div>
