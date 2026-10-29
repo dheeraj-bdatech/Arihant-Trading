@@ -4,23 +4,26 @@ import React, { useState } from 'react';
 import { Check, Plus } from 'lucide-react';
 import { Button, Badge, Input, formatDateIN } from '@/components/ui';
 import { api } from '@/lib/api';
-import { errMsg, MANAGER_ROLES, parsePartsReplaced } from './serviceHelpers';
+import { safeHttpUrl } from '@/lib/safe-url';
+import { errMsg, isAssignedEngineer, MANAGER_ROLES, parsePartsReplaced } from './serviceHelpers';
 
 interface Props {
   ticket: any;
   role: string;
+  userId: string;
   onNewReport: () => void;
   onChanged: () => void | Promise<void>;
 }
 
-export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChanged }) => {
+export const ReportsTab: React.FC<Props> = ({ ticket, role, userId, onNewReport, onChanged }) => {
   const [returning, setReturning] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ id: string; msg: string } | null>(null);
 
   const status = String(ticket.status);
-  const canFile = ['service_team', 'admin'].includes(role) && ['in_progress', 'resolved'].includes(status);
+  // the API takes a report only from the assigned (or an additional) engineer, or admin
+  const canFile = (role === 'admin' || (role === 'service_team' && isAssignedEngineer(ticket, userId))) && ['in_progress', 'resolved'].includes(status);
   const canReview = MANAGER_ROLES.includes(role) && ['report_submitted', 'revisit_required'].includes(status);
   const reports: any[] = ticket.reports || [];
 
@@ -63,6 +66,8 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
       ) : (
         reports.map((rep) => {
           const parts = parsePartsReplaced(rep.parts_replaced);
+          // stored links are free text: only an http(s) address is ever rendered as a link
+          const reportUrl = safeHttpUrl(rep.report_url);
           return (
             <div key={rep.id} className="space-y-2 rounded-xl border border-[#DCD8CE] bg-white p-3 sm:p-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -99,17 +104,17 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, onNewReport, onChang
                     {rep.next_visit_date ? ` · next visit ${formatDateIN(rep.next_visit_date)}` : ''}
                   </p>
                 )}
-                {rep.report_url && (
+                {reportUrl && (
                   <p>
-                    <a className="text-[#0F5E63] underline" href={rep.report_url} target="_blank" rel="noreferrer">Signed report document</a>
+                    <a className="text-[#0F5E63] underline" href={reportUrl} target="_blank" rel="noopener noreferrer">Signed report document</a>
                   </p>
                 )}
                 {Array.isArray(rep.attachments) && rep.attachments.length > 0 && (
                   <ul className="space-y-0.5">
                     {rep.attachments.map((f: { name?: string; url?: string }, i: number) =>
-                      f?.url ? (
+                      safeHttpUrl(f?.url) ? (
                         <li key={`${f.url}-${i}`}>
-                          <a className="text-[#0F5E63] underline" href={f.url} target="_blank" rel="noreferrer">
+                          <a className="text-[#0F5E63] underline" href={safeHttpUrl(f.url) as string} target="_blank" rel="noopener noreferrer">
                             {f.name || `Attachment ${i + 1}`}
                           </a>
                         </li>

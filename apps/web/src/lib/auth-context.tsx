@@ -122,6 +122,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     fetchProfile();
   }, [fetchProfile]);
 
+  // QA BUG-002: Back after Sign Out can restore a page from the browser's back/forward cache with the signed-in user
+  // (and the data on screen) still in memory. When a page comes back that way and the stored session is no longer
+  // the one this page holds, reload it: the fresh load finds no session and goes to /login.
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted && localStorage.getItem('arihant_auth_token') !== token) window.location.reload();
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
+  }, [token]);
+
   // Warm the sign-in route so signing out never leaves an empty screen while it compiles / downloads.
   useEffect(() => {
     router.prefetch?.('/login');

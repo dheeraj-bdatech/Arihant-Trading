@@ -242,7 +242,8 @@ export class TendersController {
   }
 
   @Get('finance/emd-tracking')
-  @Roles('management', 'accounts', 'tender_team', 'admin')
+  // RM: "EMD tracking" for their region (RBAC spec §2); the service scopes them to their tender list.
+  @Roles('management', 'accounts', 'tender_team', 'regional_manager', 'admin')
   async getFinanceEmdTracking(@CurrentUser() user: AuthUser) {
     return this.tendersService.getFinanceEmdTracking(user);
   }

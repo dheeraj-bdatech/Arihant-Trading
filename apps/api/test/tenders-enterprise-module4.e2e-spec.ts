@@ -14,6 +14,8 @@ const istToday = () => new Date(Date.now() + 330 * 60 * 1000).toISOString().slic
  * (a result can never be dated before the bid closing day — QA DEF-090).
  */
 const closesTodayIST = () => `${istToday()}T23:59:00+05:30`;
+/** The IST calendar day `days` from today, so open-bid deadlines never expire with the calendar. */
+const istDayPlus = (days: number) => new Date(Date.now() + 330 * 60 * 1000 + days * 86400000).toISOString().slice(0, 10);
 
 describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
   let app: INestApplication;
@@ -247,7 +249,7 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
           region_id: testRegionId,
           category: 'pq',
           publication_date: '2026-09-20',
-          submission_deadline: '2026-10-25T15:00:00Z',
+          submission_deadline: `${istDayPlus(30)}T15:00:00Z`,
           estimated_value: 45000000,
           emd_required: true,
           emd_amount: 900000,
@@ -366,7 +368,8 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
       const originalDeadline = tenderBefore.body.original_submission_deadline || tenderBefore.body.submission_deadline;
       expect(originalDeadline).toBeDefined();
 
-      const newDeadlineIso = '2026-11-10T17:00:00Z';
+      const newDeadlineDay = istDayPlus(45);
+      const newDeadlineIso = `${newDeadlineDay}T17:00:00Z`;
       const corrigendumRes = await request(app.getHttpServer())
         .post(`/api/tenders/${enterpriseTenderId}/corrigenda`)
         .set('Authorization', `Bearer ${mgmtToken}`)
@@ -382,7 +385,7 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
       const tenderAfter = await request(app.getHttpServer())
         .get(`/api/tenders/${enterpriseTenderId}`)
         .set('Authorization', `Bearer ${mgmtToken}`);
-      expect(new Date(tenderAfter.body.submission_deadline).toISOString().slice(0, 10)).toBe('2026-11-10');
+      expect(new Date(tenderAfter.body.submission_deadline).toISOString().slice(0, 10)).toBe(newDeadlineDay);
       expect(tenderAfter.body.original_submission_deadline).toBeDefined();
     });
   });
@@ -505,7 +508,7 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
         .send({
           tender_number: `${uniqueTenderNo}-GEN`,
           tender_title: 'Border Security Surveillance Sensors Supply (Main General Bid)',
-          submission_deadline: '2026-12-15T15:00:00Z',
+          submission_deadline: `${istDayPlus(60)}T15:00:00Z`,
         });
 
       expect(linkedRes.status).toBe(201);

@@ -38,6 +38,8 @@ interface Success {
 }
 
 const OTHER = '__other__';
+/** Same rule as the API (service-portal.service.ts NAME_RE): letters in any script, so Hindi or accented names pass. */
+const NAME_RE = /^[\p{L}][\p{L}\p{M}\s.'’\-]{1,99}$/u;
 
 type FormState = {
   organisation_name: string; department: string; city: string; state: string; location: string;
@@ -67,7 +69,7 @@ function validate(f: FormState, m: Meta): Record<string, string> {
   const name = f.contact_name.trim();
   if (name.length < L.person.min) e.contact_name = 'Enter the contact person\'s name.';
   else if (name.length > L.person.max) e.contact_name = `Keep this under ${L.person.max} characters.`;
-  else if (!/^[A-Za-z .'\-]+$/.test(name)) e.contact_name = 'Use letters, spaces and . \' - only.';
+  else if (!NAME_RE.test(name)) e.contact_name = 'Start with a letter; use letters (any script), spaces and . \' - only.';
   const phone = f.contact_phone.replace(/[\s-]/g, '');
   const mobile = /^(?:\+91|91|0)?[6-9]\d{9}$/.test(phone);
   const landline = /^\d{8,12}$/.test(phone);
@@ -106,7 +108,7 @@ function mapMessage(msg: string): string | null {
   const table: [RegExp, string][] = [
     [/organi[sz]ation/, 'organisation_name'], [/\bcity\b/, 'city'], [/\bstate\b/, 'state'],
     [/location|checkpoint/, 'location'], [/contact_?name|contact person|\bname\b/, 'contact_name'],
-    [/phone|mobile|landline/, 'contact_phone'], [/email/, 'contact_email'],
+    [/phone|mobile|landline/, 'contact_phone'], [/e-?mail/, 'contact_email'],
     [/serial/, 'equipment_serial'], [/complaint|problem|words/, 'complaint'], [/urgen/, 'urgency'],
     [/visit|date/, 'preferred_visit_date'], [/access/, 'site_access_notes'], [/consent|agree/, 'consent'],
     [/product|equipment/, 'product_text'],
@@ -127,6 +129,9 @@ export default function ServiceRequestPage() {
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState<Success | null>(null);
   const startedAt = useRef<number>(Date.now());
+  // Time the form has been open, on this device's own monotonic clock (a wrong device date cannot skew it).
+  const openedAt = useRef<number>(typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const honeypot = useRef<HTMLInputElement>(null);
   const inFlight = useRef(false);
   const summaryRef = useRef<HTMLDivElement>(null);
 
@@ -189,8 +194,10 @@ export default function ServiceRequestPage() {
       complaint: f.complaint.trim(),
       urgency: f.urgency,
       consent: true,
-      website: '',
+      // whatever a bot typed into the hidden field (people never see it)
+      website: honeypot.current?.value || '',
       form_started_at: startedAt.current,
+      form_elapsed_ms: Math.max(0, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - openedAt.current)),
     };
     const opt = (k: string, v: string) => { if (v.trim()) body[k] = v.trim(); };
     opt('department', f.department); opt('location', f.location);
@@ -232,6 +239,7 @@ export default function ServiceRequestPage() {
     setF({ ...EMPTY, problem_category: meta?.problem_categories?.[0] ?? 'Breakdown' });
     setTouched({}); setSubmitAttempted(false); setServerErrors({}); setSummary([]); setNotice(null);
     startedAt.current = Date.now();
+    openedAt.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
     setDone(null);
     window.scrollTo({ top: 0 });
   };
@@ -398,7 +406,7 @@ export default function ServiceRequestPage() {
 
       {/* Honeypot: hidden from people and assistive tech; bots fill it. */}
       <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
-        <label>Website<input type="text" name="website" tabIndex={-1} autoComplete="off" defaultValue="" /></label>
+        <label>Website<input ref={honeypot} type="text" name="website" tabIndex={-1} autoComplete="off" defaultValue="" /></label>
       </div>
 
       <Card padding="md" className="space-y-4">

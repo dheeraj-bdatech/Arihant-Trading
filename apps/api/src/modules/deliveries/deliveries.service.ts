@@ -37,6 +37,34 @@ const DELIVERY_LABEL: Record<string, string> = {
   cancelled: 'Cancelled',
 };
 const label = (status: string) => DELIVERY_LABEL[status] || status;
+
+/** One equipment serial: same rule as the public service portal's serial field. */
+const SERIAL_RE = /^[A-Za-z0-9][A-Za-z0-9\-_/. ]{0,79}$/;
+
+/**
+ * The consignment's serials, typed comma-separated: each one a plain serial, none blank, none repeated (QA BUG-024).
+ * Returns them re-joined as "A, B" (null when none were given); anything else is refused with what to fix.
+ */
+function normaliseSerials(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  const parts = raw.split(',').map((p) => p.trim());
+  const problems: string[] = [];
+  if (parts.some((p) => !p)) problems.push('remove the empty entry between commas');
+  const malformed = parts.filter((p) => p && !SERIAL_RE.test(p));
+  if (malformed.length) problems.push(`${malformed.map((p) => `"${p}"`).join(', ')} ${malformed.length === 1 ? 'is not a valid serial' : 'are not valid serials'} (letters, digits, - _ / . only)`);
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const p of parts.filter(Boolean)) {
+    const key = p.toUpperCase();
+    if (seen.has(key)) repeated.add(p);
+    seen.add(key);
+  }
+  if (repeated.size) problems.push(`${[...repeated].map((p) => `"${p}"`).join(', ')} ${repeated.size === 1 ? 'is' : 'are'} listed more than once`);
+  if (problems.length) {
+    throw new BadRequestException({ code: 'INVALID_SERIALS', message: `Check the equipment serials: ${problems.join('; ')}.` });
+  }
+  return parts.join(', ');
+}
 const DELIVERY_STATUSES: readonly DeliveryStatus[] = [...DELIVERY_FLOW, 'cancelled'];
 /** `status=a,b` → the known milestones it names (unknown keys are dropped, never sent to the enum column). */
 const parseStatuses = (value: string): DeliveryStatus[] =>
@@ -318,7 +346,7 @@ export class DeliveriesService {
         organisation_id: dto.organisation_id,
         product_id: dto.product_id || proposal?.product_id || null,
         model: dto.model?.trim() || null,
-        equipment_serial: dto.equipment_serial?.trim() || null,
+        equipment_serial: normaliseSerials(dto.equipment_serial),
         delivery_date: deliveryDay,
         delivery_location: dto.delivery_location.trim(),
         assigned_to: dto.assigned_to || user.id,
@@ -424,6 +452,8 @@ export class DeliveriesService {
       .updateTable('deliveries')
       .set({
         status: to,
+        // A consignment recorded as installed needed installation (QA BUG-027 showed "Installation required: No").
+        installation_required: to === 'installed' ? true : existing.installation_required,
         installation_date:
           dto.installation_date !== undefined
             ? dto.installation_date || null

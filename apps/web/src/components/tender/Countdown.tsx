@@ -49,7 +49,8 @@ const TONE_CLS: Record<DeadlineTone, string> = {
 export const DeadlineChip: React.FC<{ deadline?: string | Date | null; className?: string }> = ({ deadline, className }) => {
   const now = useNow(1000);
   const info = describeDeadline(deadline, now);
-  if (!info) return <Badge variant="urgent" size="sm">CLOSING SOON</Badge>;
+  // No (or an unreadable) deadline is not urgent: a neutral chip, never a "closing soon" alarm.
+  if (!info) return <Badge variant="default" size="sm" className={className}>No deadline</Badge>;
   return (
     <span
       title={`Closes ${new Date(deadline as string).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' })}`}

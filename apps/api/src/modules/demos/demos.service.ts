@@ -80,6 +80,16 @@ function dmy(value: unknown): string {
   return `${d}/${m}/${y}`;
 }
 
+/**
+ * A calendar value sent by a client, as the IST day ('YYYY-MM-DD') to write into a DATE column. Clients may echo a
+ * DATE back as the serialized instant they read (e.g. '2026-10-27T18:30:00.000Z' for 28 Oct on an IST server); cast
+ * straight to DATE, Postgres keeps the UTC date part and the day slips back by one.
+ */
+function toDay<T extends string | null | undefined>(value: T): T {
+  if (!value) return value;
+  return (calendarDay(value) ?? value) as T;
+}
+
 /** Demo dates are planned for today or later (IST), like field visits. */
 function assertNotPastDemoDate(value: unknown, what: string) {
   const day = calendarDay(value as any) || '';
@@ -116,6 +126,7 @@ export class DemosService {
         'demo_equipment.model',
         'demo_equipment.serial_no',
         'demo_equipment.current_location',
+        'demo_equipment.responsible_person',
         'demo_equipment.availability_status',
         'demo_equipment.condition',
         'demo_equipment.reserved_until',
@@ -185,13 +196,27 @@ export class DemosService {
     };
   }
 
+  /** Serial numbers are unique across the fleet (unique index): answer a clash with a readable 409, not a raw 23505. */
+  private async assertSerialFree(serialNo: string, exceptId?: string) {
+    let q = this.db.selectFrom('demo_equipment').select(['id', 'model']).where('serial_no', '=', serialNo);
+    if (exceptId) q = q.where('id', '!=', exceptId);
+    const taken = await q.executeTakeFirst();
+    if (taken) {
+      throw new ConflictException({
+        code: 'SERIAL_NO_TAKEN',
+        message: `Serial number ${serialNo} is already registered to another unit (${taken.model || 'demo unit'}).`,
+      });
+    }
+  }
+
   async createEquipment(dto: CreateEquipmentDto, actorId: string) {
+    await this.assertSerialFree(dto.serial_no.trim());
     const equip = await this.db
       .insertInto('demo_equipment')
       .values({
         product_id: dto.product_id,
         model: dto.model,
-        serial_no: dto.serial_no,
+        serial_no: dto.serial_no.trim(),
         current_location: dto.current_location,
         responsible_person: dto.responsible_person || actorId,
         availability_status: 'available',
@@ -219,6 +244,20 @@ export class DemosService {
       updated_at: new Date(),
     };
     if (dto.model !== undefined) updatePayload.model = dto.model;
+    if (dto.serial_no !== undefined && dto.serial_no.trim() !== (existing.serial_no || '')) {
+      await this.assertSerialFree(dto.serial_no.trim(), id);
+      updatePayload.serial_no = dto.serial_no.trim();
+    }
+    if (dto.product_id !== undefined && dto.product_id !== existing.product_id) {
+      // A booked unit keeps its product: the demos holding it were matched (or substituted) against that product.
+      if (existing.reservations.length > 0) {
+        throw new BadRequestException({
+          code: 'EQUIPMENT_HAS_BOOKINGS',
+          message: 'This unit is booked or requested for open demos. Release those bookings before changing its product.',
+        });
+      }
+      updatePayload.product_id = dto.product_id;
+    }
     if (dto.current_location !== undefined) updatePayload.current_location = dto.current_location;
     if (dto.responsible_person !== undefined) updatePayload.responsible_person = dto.responsible_person;
     if (dto.availability_status !== undefined) updatePayload.availability_status = dto.availability_status;
@@ -734,6 +773,39 @@ export class DemosService {
     if (!allowed) throw new NotFoundException('Demo not found');
   }
 
+  /**
+   * Row-level access for a custodian action on a reservation: the unit's responsible person may always act on it
+   * (§16, they approve their own kit); anyone else needs access to the demo the reservation belongs to.
+   */
+  private async assertReservationAccess(reservationId: string, user: AuthUser) {
+    const row = await this.db
+      .selectFrom('demo_reservations')
+      .innerJoin('demo_equipment', 'demo_reservations.equipment_id', 'demo_equipment.id')
+      .select(['demo_reservations.demo_id', 'demo_equipment.responsible_person'])
+      .where('demo_reservations.id', '=', reservationId)
+      .executeTakeFirst();
+    if (!row) throw new NotFoundException('Reservation not found');
+    if (row.responsible_person && row.responsible_person === user.id) return;
+    await this.assertDemoAccess(row.demo_id, user);
+  }
+
+  /** §11: another open demo the specialist already carries on that day (confirmed day, else requested day). */
+  private async findTeamConflict(trx: Kysely<Database>, assignedTo: string, day: string, excludeDemoId?: string) {
+    let q = trx
+      .selectFrom('demos')
+      .where('assigned_to', '=', assignedTo)
+      .where('status', 'not in', ['cancelled', 'completed'])
+      .where((eb) =>
+        eb.or([
+          eb('confirmed_date', '=', day),
+          eb.and([eb('confirmed_date', 'is', null), eb('requested_date', '=', day)]),
+        ]),
+      )
+      .select(['id', 'demo_no', 'location']);
+    if (excludeDemoId) q = q.where('id', '!=', excludeDemoId);
+    return q.executeTakeFirst();
+  }
+
   async findOneDemo(id: string, user: AuthUser) {
     await this.assertDemoAccess(id, user);
     const demo = await this.db
@@ -815,6 +887,9 @@ export class DemosService {
 
   async createDemo(dto: CreateDemoDto, user: AuthUser) {
     // A trial is requested for today or later (IST) — same rule as the tour planner.
+    dto.requested_date = toDay(dto.requested_date);
+    dto.confirmed_date = toDay(dto.confirmed_date);
+    dto.travel_date = toDay(dto.travel_date);
     assertNotPastDemoDate(dto.requested_date, 'requested trial date');
     if (dto.confirmed_date) assertNotPastDemoDate(dto.confirmed_date, 'confirmed demo date');
 
@@ -835,7 +910,20 @@ export class DemosService {
 
       if (duplicate) {
         this.logger.warn(`Idempotent retry detected for demo creation: ${duplicate.demo_no}`);
-        return duplicate;
+        // Flag it, so the screen can say the request already exists instead of reporting it as new (QA BUG-023).
+        return { ...duplicate, duplicate: true as const };
+      }
+
+      // §11: a specialist picked on the request is held to the same no-double-booking rule as assignTeam
+      if (dto.assigned_to) {
+        const day = dto.confirmed_date || dto.requested_date;
+        const conflict = await this.findTeamConflict(trx as any, dto.assigned_to, day);
+        if (conflict) {
+          throw new ConflictException({
+            code: 'TEAM_MEMBER_ALREADY_ASSIGNED',
+            message: `Team member is already assigned to Demo ${conflict.demo_no || conflict.id} at ${conflict.location || 'Site'} on ${dmy(day)}. Pick another specialist or leave it for the coordinator.`,
+          });
+        }
       }
 
       // 2. Insert new demo record
@@ -931,6 +1019,7 @@ export class DemosService {
 
   async updateDemo(id: string, dto: UpdateDemoDto, user: AuthUser) {
     await this.assertDemoAccess(id, user);
+    dto.requested_date = toDay(dto.requested_date);
     return this.db.transaction().execute(async (trx) => {
       const demo = await trx
         .selectFrom('demos')
@@ -1078,6 +1167,9 @@ export class DemosService {
   }
 
   async assignTeam(demoId: string, dto: AssignTeamDto, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
+    dto.confirmed_date = toDay(dto.confirmed_date);
+    dto.travel_date = toDay(dto.travel_date);
     return this.db.transaction().execute(async (trx) => {
       const demo = await trx
         .selectFrom('demos')
@@ -1096,26 +1188,11 @@ export class DemosService {
         throw new BadRequestException(`Cannot assign team to demo in terminal state "${demo.status}"`);
       }
 
-      const targetDate = dto.confirmed_date || demo.confirmed_date || demo.requested_date;
+      const targetDate = dto.confirmed_date || calendarDay((demo.confirmed_date || demo.requested_date) as any);
 
       // §11: Prevent team member double-booking on overlapping active demos
       if (targetDate) {
-        const conflict = await trx
-          .selectFrom('demos')
-          .where('assigned_to', '=', dto.assigned_to)
-          .where('id', '!=', demoId)
-          .where('status', 'not in', ['cancelled', 'completed'])
-          .where((eb) =>
-            eb.or([
-              eb('confirmed_date', '=', targetDate),
-              eb.and([
-                eb('confirmed_date', 'is', null),
-                eb('requested_date', '=', targetDate),
-              ]),
-            ]),
-          )
-          .select(['id', 'demo_no', 'location'])
-          .executeTakeFirst();
+        const conflict = await this.findTeamConflict(trx as any, dto.assigned_to, targetDate, demoId);
 
         if (conflict) {
           throw new ConflictException({
@@ -1201,8 +1278,8 @@ export class DemosService {
         throw new BadRequestException(`Cannot reserve equipment for demo in terminal state "${demo.status}"`);
       }
 
-      const fromDate = (dto.reserved_from || '').split('T')[0];
-      const toDate = (dto.reserved_to || fromDate).split('T')[0];
+      const fromDate = toDay(dto.reserved_from) || '';
+      const toDate = toDay(dto.reserved_to) || fromDate;
 
       if (!fromDate || !toDate) {
         throw new BadRequestException('Reservation start and end dates are required.');
@@ -1458,6 +1535,7 @@ export class DemosService {
     dto: SuggestAlternativeDto,
     user: AuthUser,
   ) {
+    await this.assertReservationAccess(reservationId, user);
     return this.db.transaction().execute(async (trx) => {
       const reservation = await trx
         .selectFrom('demo_reservations')
@@ -1511,6 +1589,7 @@ export class DemosService {
     dto: ApproveReservationDto,
     user: AuthUser,
   ) {
+    await this.assertReservationAccess(reservationId, user);
     return this.db.transaction().execute(async (trx) => {
       const reservation = await trx
         .selectFrom('demo_reservations')
@@ -1579,6 +1658,7 @@ export class DemosService {
     dto: RejectReservationDto,
     user: AuthUser,
   ) {
+    await this.assertReservationAccess(reservationId, user);
     return this.db.transaction().execute(async (trx) => {
       const reservation = await trx
         .selectFrom('demo_reservations')
@@ -1624,6 +1704,9 @@ export class DemosService {
     dto: AllocateAnotherUnitDto,
     user: AuthUser,
   ) {
+    await this.assertReservationAccess(reservationId, user);
+    dto.reserved_from = toDay(dto.reserved_from);
+    dto.reserved_to = toDay(dto.reserved_to);
     return this.db.transaction().execute(async (trx) => {
       const reservation = await trx
         .selectFrom('demo_reservations')
@@ -1708,6 +1791,8 @@ export class DemosService {
   // =========================================================================
 
   async confirmDemo(demoId: string, dto: ConfirmDemoDto, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
+    dto.confirmed_date = toDay(dto.confirmed_date);
     return this.db.transaction().execute(async (trx) => {
       const demo = await trx
         .selectFrom('demos')
@@ -1853,6 +1938,8 @@ export class DemosService {
   }
 
   async rescheduleDemo(demoId: string, dto: RescheduleDemoDto, user: AuthUser) {
+    await this.assertDemoAccess(demoId, user);
+    dto.new_date = toDay(dto.new_date);
     return this.db.transaction().execute(async (trx) => {
       const demo = await trx
         .selectFrom('demos')
@@ -1869,6 +1956,14 @@ export class DemosService {
 
       if (demo.status === 'completed' || demo.status === 'cancelled') {
         throw new BadRequestException(`Cannot reschedule demo in terminal state "${demo.status}"`);
+      }
+      // §14: a new request moves on only through management approval (Requested -> Under Planning). Rescheduling it
+      // would put it in the date-confirmation queue without that approval.
+      if (demo.status === 'requested') {
+        throw new BadRequestException({
+          code: 'DEMO_NOT_APPROVED',
+          message: 'Management has not approved this demo request yet. It can be rescheduled once it is approved.',
+        });
       }
 
       assertNotPastDemoDate(dto.new_date, 'new demo date');
@@ -2089,6 +2184,9 @@ export class DemosService {
 
   async submitOutcome(demoId: string, dto: SubmitDemoOutcomeDto, user: AuthUser) {
     await this.assertDemoAccess(demoId, user);
+    // A failure reason belongs to a failed trial only: never let it leak into a success / partial outcome's
+    // customer timeline, activity log or events.
+    if (dto.result !== 'fail') dto.failure_reason = undefined;
     // Failure reason is strictly REQUIRED if demo result is 'fail'
     if (dto.result === 'fail' && !dto.failure_reason) {
       throw new BadRequestException({

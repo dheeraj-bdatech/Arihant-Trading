@@ -182,6 +182,9 @@ function Details({ data, reference, token, reload, clockOffsetMs }: { data: Trac
   const showResolution = sla.resolution_due_at && !data.is_closed;
   const timeline = data.timeline || [];
   const messages = data.messages || [];
+  // Kept here, not in the panel: the reload after sending can drop the panel (e.g. "still there" reopens the work),
+  // and the customer must still see what happened.
+  const [feedbackResult, setFeedbackResult] = useState<string | null>(null);
 
   return (
     <div className="space-y-5">
@@ -272,7 +275,20 @@ function Details({ data, reference, token, reload, clockOffsetMs }: { data: Trac
         </Card>
       )}
 
-      {data.can_give_feedback && <FeedbackPanel reference={reference} token={token} onDone={reload} />}
+      {feedbackResult ? (
+        <InfoCallout variant="success" title="Thank you">{feedbackResult}</InfoCallout>
+      ) : (
+        data.can_give_feedback && (
+          <FeedbackPanel
+            reference={reference}
+            token={token}
+            onDone={(message) => {
+              setFeedbackResult(message);
+              reload();
+            }}
+          />
+        )
+      )}
 
       <Card padding="md" className="space-y-3">
         <h2 className="font-serif text-lg font-bold text-[#14213D]">Messages</h2>
@@ -337,14 +353,13 @@ function MessageBox({ reference, token, onSent }: { reference: string; token: st
   );
 }
 
-function FeedbackPanel({ reference, token, onDone }: { reference: string; token: string; onDone: () => void }) {
+function FeedbackPanel({ reference, token, onDone }: { reference: string; token: string; onDone: (message: string) => void }) {
   const [choice, setChoice] = useState<'confirm_resolved' | 'not_resolved' | null>(null);
   const [rating, setRating] = useState(0);
   const [remarks, setRemarks] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string[]>([]);
-  const [result, setResult] = useState<string | null>(null);
   const lock = useRef(false);
 
   const review = () => {
@@ -360,9 +375,8 @@ function FeedbackPanel({ reference, token, onDone }: { reference: string; token:
     if (remarks.trim()) body.remarks = remarks.trim();
     try {
       const res = await api.post<{ ok: boolean; message?: string }>('/public/service-requests/track/feedback', body);
-      setResult(res.message || 'Thank you for your feedback.');
       setConfirming(false);
-      onDone();
+      onDone(res.message || 'Thank you for your feedback.');
     } catch (e: any) {
       setConfirming(false);
       if (e?.status === 429) setErr(['Too many attempts. Please wait a few minutes.']);
@@ -370,8 +384,6 @@ function FeedbackPanel({ reference, token, onDone }: { reference: string; token:
       else setErr(['We could not send your feedback. Please try again.']);
     } finally { lock.current = false; setSending(false); }
   };
-
-  if (result) return <InfoCallout variant="success" title="Thank you">{result}</InfoCallout>;
 
   return (
     <Card padding="md" className="space-y-3">

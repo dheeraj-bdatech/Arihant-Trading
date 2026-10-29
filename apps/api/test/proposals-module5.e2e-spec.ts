@@ -398,17 +398,18 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
         .send({ status: 'APPROVED' });
       expect(unauthApprove.status).toBe(403);
 
-      // 4a. Regional Manager attempts to approve (Unauthorized - management/admin only)
-      const rmApprove = await request(app.getHttpServer())
-        .patch(`/api/proposals/${propId}/status`)
-        .set('Authorization', `Bearer ${rmToken}`)
-        .send({ status: 'APPROVED' });
-      expect(rmApprove.status).toBe(403);
-
-      // 4b. Management approves (Authorized, not creator)
-      res = await request(app.getHttpServer())
+      // 4a. ₹3.25 lakh is below the ₹10 lakh management threshold: Management is not the approver (b2bfac0)
+      const mgmtApprove = await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}/status`)
         .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ status: 'APPROVED' });
+      expect(mgmtApprove.status).toBe(403);
+      expect(mgmtApprove.body.message).toContain('approved by the Regional Manager');
+
+      // 4b. The Regional Manager approves (the band's approver, not the creator)
+      res = await request(app.getHttpServer())
+        .patch(`/api/proposals/${propId}/status`)
+        .set('Authorization', `Bearer ${rmToken}`)
         .send({ status: 'APPROVED' });
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('APPROVED');
@@ -449,7 +450,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
         .send({ status: 'READY_FOR_REVIEW' });
       await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}/status`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${rmToken}`)
         .send({ status: 'APPROVED' });
       await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}/status`)
@@ -513,7 +514,7 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
         .send({ status: 'READY_FOR_REVIEW' });
       await request(app.getHttpServer())
         .patch(`/api/proposals/${sentPropId}/status`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${rmToken}`)
         .send({ status: 'APPROVED' });
       await request(app.getHttpServer())
         .patch(`/api/proposals/${sentPropId}/status`)
@@ -646,10 +647,10 @@ describe('Module 5: Proposal Management E2E Test Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`)
         .send({ status: 'READY_FOR_REVIEW' });
 
-      // 3. Management approves the proposal
+      // 3. The Regional Manager approves the proposal (below the ₹10 lakh management threshold)
       const approveRes = await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}/status`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${rmToken}`)
         .send({ status: 'APPROVED' });
       expect(approveRes.status).toBe(200);
 

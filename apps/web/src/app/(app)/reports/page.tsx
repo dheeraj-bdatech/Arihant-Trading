@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { istToday } from '@/lib/ist-date';
+import { istToday, toIstLocalInput } from '@/lib/ist-date';
 import {
   FileSpreadsheet,
   Download,
@@ -701,6 +701,12 @@ export default function ConsolidatedReportsPage() {
   };
   const counts: Record<string, number> = { tenders: tenders.length, leads: leads.length, visits: visits.length, expenses: expenses.length, service: tickets.length, settlements: settlements.length };
 
+  /** An instant as IST "DD/MM/YYYY HH:mm" for a CSV cell; "N/A" when missing. */
+  const istStamp = (value: string | null | undefined): string => {
+    const local = toIstLocalInput(value);
+    return local ? `${local.slice(8, 10)}/${local.slice(5, 7)}/${local.slice(0, 4)} ${local.slice(11, 16)}` : 'N/A';
+  };
+
   // Generic CSV Exporter
   const exportToCsv = (filename: string, rows: Record<string, any>[]) => {
     if (!rows || rows.length === 0) return;
@@ -729,14 +735,16 @@ export default function ConsolidatedReportsPage() {
     document.body.removeChild(link);
   };
 
+  // The bids on screen (search and status filter applied), with IST dates and the bid value (QA BUG-013).
   const handleExportTenders = () => {
-    const exportData = tenders.map((t) => ({
+    const exportData = vTenders.map((t) => ({
       'Tender No': t.tender_no,
       'Organisation': t.organisation_name || t.department || 'N/A',
       'Category': tenderCategory(t),
       'Quantity': t.quantity || 0,
+      'Estimated Value (INR)': t.estimated_value || 0,
       'EMD Fee (INR)': t.emd_fee || 0,
-      'Bid Closing': t.bid_closing_date || 'N/A',
+      'Bid Closing (IST)': istStamp(t.bid_closing_date),
       'Status': t.status?.toUpperCase() || 'IDENTIFIED',
       'Zone': t.zone_name || t.zone_code || 'N/A',
       'City': t.city || 'N/A',

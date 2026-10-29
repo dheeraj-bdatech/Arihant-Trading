@@ -84,7 +84,7 @@ import {
   type BadgeProps,
 } from '@/components/ui';
 import { formatINR, formatTaskDate, formatTaskDateTime } from '@arihant/shared';
-import { istToday, istDateOf, addIsoDays, fromIstLocalInput } from '@/lib/ist-date';
+import { istToday, istDateOf, addIsoDays, fromIstLocalInput, isIstToday } from '@/lib/ist-date';
 
 /** Create-form default deadline: 14 IST days from today at 15:00 IST (a `datetime-local` value, IST wall clock). */
 const defaultTenderDeadline = () => `${addIsoDays(istToday(), 14)}T15:00`;
@@ -105,6 +105,10 @@ const STAGES = [
   { key: 'cancelled', label: 'Cancelled', color: 'default' as const },
   { key: 'on_hold', label: 'On Hold', color: 'warning' as const },
 ] as const;
+
+/** Display label of a stage code (an unknown code is shown de-underscored). */
+const stageLabelOf = (status?: string | null) =>
+  STAGES.find((s) => s.key === status)?.label || String(status || '').replace(/_/g, ' ');
 
 const TENDER_SORT_FIELDS = [
   { key: 'created_at', label: 'Date added' },
@@ -212,8 +216,13 @@ export default function TendersPage() {
   const highlightId = searchParams.get('highlight');
   const highlightOpened = useRef<string | null>(null);
 
+  // Finance, EMD & PBG view: same roles as GET /tenders/finance/emd-tracking. Accounts may read only that view
+  // (not the register, dashboard or reports), so for Accounts the page is the Finance view alone and fires nothing else.
+  const canSeeFinance = canRead(user?.role, 'tenderFinance');
+  const isFinanceOnly = canSeeFinance && !canRead(user?.role, 'tenders');
+
   // Current view (switched from the View menu, the first control of the filter row)
-  const [activeTab, setActiveTab] = useState<TenderView>('pipeline');
+  const [activeTab, setActiveTab] = useState<TenderView>(() => (isFinanceOnly ? 'finance_emd' : 'pipeline'));
 
   // Master lists
   // (the tenders register itself is useInfiniteList below, paged as the reader scrolls)
@@ -244,6 +253,9 @@ export default function TendersPage() {
     win_rate: 0,
     win_rate_percentage: 0,
   });
+  // The same metrics over the caller's whole scope (no register filter): the Analytics tiles and the Deadlines counts,
+  // whose views never show the register filters.
+  const [overallStats, setOverallStats] = useState<any>(null);
 
   // Executive Reports State (§21, §26, §27)
   const [organisationReport, setOrganisationReport] = useState<any[]>([]);
@@ -303,7 +315,6 @@ export default function TendersPage() {
     zone: 'North',
     region: 'Delhi NCR',
     category: 'general_mha',
-    current_stage: 'identified',
     requirement_text: '',
     quantity: 1,
     emd_fee: 0,
@@ -351,7 +362,7 @@ export default function TendersPage() {
   const [issueResolutionStatus, setIssueResolutionStatus] = useState('OPEN');
 
   const [actionError, setActionError] = useState<string | null>(null);
-  const [pageNotice, setPageNotice] = useState<{ type: 'success' | 'danger'; text: string } | null>(null);
+  const [pageNotice, setPageNotice] = useState<{ type: 'success' | 'danger' | 'info'; text: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // The Approvals Inbox reports its total (same server rule as the KPI) so every count on screen agrees. The inbox is
@@ -388,16 +399,32 @@ export default function TendersPage() {
   // 2. Fetch Executive Dashboard Metrics — over the register's active filters (see `filterParams`).
   const dashboardRequest = useRef(0);
   const fetchDashboardStats = async () => {
+    if (isFinanceOnly) return;
     const request = ++dashboardRequest.current;
+    const params = filterParams;
     try {
-      const res = await api.get('/tenders/dashboard', filterParams);
+      const res = await api.get('/tenders/dashboard', params);
       if (res && request === dashboardRequest.current) {
         setDashboardStats(res);
+        // An unfiltered answer is also the whole-scope picture (see `overallStats`); with a filter on, refresh that
+        // picture too so the Deadlines badge and Analytics tiles never lag behind a change made on the Pipeline tab.
+        if (Object.keys(params).length === 0) setOverallStats(res);
+        else fetchOverallStats();
       }
     } catch (err) {
       console.error('Failed to load dashboard stats:', err);
     }
   };
+
+  // Whole-scope metrics while a register filter is on (with no filter, fetchDashboardStats keeps them current).
+  const fetchOverallStats = useCallback(async () => {
+    try {
+      const res = await api.get('/tenders/dashboard');
+      if (res) setOverallStats(res);
+    } catch (err) {
+      console.error('Failed to load overall tender metrics:', err);
+    }
+  }, []);
 
   // 3. Fetch Executive Reports (§21 Organisation, Zone, Region, Salesperson)
   const fetchReports = async () => {
@@ -435,19 +462,21 @@ export default function TendersPage() {
     }
   };
 
-  // Tab Safety Guard for Sales Role (Prevent deep-linking or tab selection into management-only views)
+  // View guard: a role only ever sits on a view it may use (deep links, tab selection, role switches).
   useEffect(() => {
-    if (user?.role === 'sales' && ['approvals_inbox', 'finance_emd', 'analytics'].includes(activeTab)) {
+    if (isFinanceOnly) {
+      if (activeTab !== 'finance_emd') setActiveTab('finance_emd');
+    } else if (activeTab === 'finance_emd' && !canSeeFinance) {
+      setActiveTab('pipeline');
+    } else if (user?.role === 'sales' && ['approvals_inbox', 'analytics'].includes(activeTab)) {
       setActiveTab('pipeline');
     }
-  }, [user?.role, activeTab]);
+  }, [user?.role, activeTab, isFinanceOnly, canSeeFinance]);
 
-  // Sync searchParams with assignedFilter & enforce role scoping
+  // Sync searchParams with assignedFilter. Sales are not narrowed here: the API already limits them to the tenders
+  // they are assigned, own or created ("my tenders"), and they have no Assignee filter to clear one with.
   useEffect(() => {
-    if (user?.role === 'sales' && user?.id) {
-      setAssignedFilter(user.id);
-      return;
-    }
+    if (user?.role === 'sales') return;
     const scopeParam = searchParams.get('scope');
     const assignedParam = searchParams.get('assigned_to');
     if (scopeParam === 'my_tenders' && user?.id) {
@@ -467,25 +496,25 @@ export default function TendersPage() {
     if (categoryFilter) params.category = categoryFilter;
     if (zoneFilter) params.zone_id = zoneFilter;
     if (deadlineFilter) params.deadline = deadlineFilter;
-    if (user?.role === 'sales' && user?.id) {
-      params.assigned_to = user.id;
-    } else if (assignedFilter) {
-      params.assigned_to = assignedFilter;
-    }
+    if (assignedFilter) params.assigned_to = assignedFilter;
     return params;
-  }, [search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, assignedFilter, user?.role, user?.id]);
+  }, [search, statusFilter, categoryFilter, zoneFilter, deadlineFilter, assignedFilter]);
   registerFiltersActive.current = Object.keys(filterParams).length > 0;
 
   const fetchTendersPage = useCallback(
-    (page: number) => api.get('/tenders', { page, limit: TENDERS_PAGE_SIZE, sortBy, sortOrder, ...filterParams }),
-    [filterParams, sortBy, sortOrder],
+    (page: number) =>
+      // Accounts may not read the register (GET /tenders): never ask.
+      isFinanceOnly
+        ? Promise.resolve([])
+        : api.get('/tenders', { page, limit: TENDERS_PAGE_SIZE, sortBy, sortOrder, ...filterParams }),
+    [filterParams, sortBy, sortOrder, isFinanceOnly],
   );
-  const tendersList = useInfiniteList<any>(fetchTendersPage);
+  const tendersList = useInfiniteList<any>(fetchTendersPage, { enabled: !isFinanceOnly });
   const { rows: tenders, total: totalCount, loading: isLoading, refresh: fetchTenders } = tendersList;
 
   // Auto-open highlight if specified in URL query — once, even when the tender is not in the loaded pages.
   useEffect(() => {
-    if (!highlightId || isLoading || highlightOpened.current === highlightId) return;
+    if (isFinanceOnly || !highlightId || isLoading || highlightOpened.current === highlightId) return;
     highlightOpened.current = highlightId;
     const loaded = tenders.find((t: any) => t.id === highlightId);
     (loaded ? Promise.resolve(loaded) : api.get(`/tenders/${highlightId}`).catch(() => null)).then((found) => {
@@ -493,8 +522,9 @@ export default function TendersPage() {
     });
   }, [highlightId, isLoading, tenders]);
 
-  // Initial load
+  // Initial load (Accounts: none of these endpoints are open to it, and the Finance view loads its own data)
   useEffect(() => {
+    if (isFinanceOnly) return;
     fetchMasters();
     fetchReports();
   }, []);
@@ -508,7 +538,7 @@ export default function TendersPage() {
   // Real-time Event-Driven Synchronization via Socket.IO
   useEffect(() => {
     const socket = getSocket();
-    if (!socket) return;
+    if (!socket || isFinanceOnly) return;
 
     const handleTenderRealtimeEvent = () => {
       fetchTenders();
@@ -723,11 +753,12 @@ export default function TendersPage() {
         region: newTender.region,
         category: newTender.category,
         tender_category: newTender.category,
-        status: newTender.current_stage || 'identified',
-        current_stage: newTender.current_stage || 'identified',
+        // No stage is sent: every new bid starts at Identified and goes through internal approval (server rule).
         requirement_text: newTender.requirement_text.trim(),
         quantity: Number(newTender.quantity) || 1,
         emd_fee: Number(newTender.emd_fee) || 0,
+        // An EMD fee means EMD is payable: the dossier shows it and an EMD instrument is opened for Finance.
+        emd_required: Number(newTender.emd_fee) > 0,
         estimated_value_lakh: newTender.estimated_value_lakh ? Number(newTender.estimated_value_lakh) : undefined,
         publication_date: newTender.publication_date,
         submission_deadline: deadlineIso,
@@ -750,7 +781,6 @@ export default function TendersPage() {
         zone: 'North',
         region: 'Delhi NCR',
         category: 'general_mha',
-        current_stage: 'identified',
         requirement_text: '',
         quantity: 1,
         emd_fee: 0,
@@ -795,6 +825,27 @@ export default function TendersPage() {
         type: 'danger',
         text: `${tender.tender_number || tender.tender_no}: ${err?.message || 'Could not submit the tender for review.'}`,
       });
+    }
+  };
+
+  // Quick Action: Resume a held tender (POST /tenders/:id/resume restores the stage it was held at).
+  const resumingTenderId = useRef<string | null>(null);
+  const handleQuickResume = async (tender: any) => {
+    // One resume per click: a second request would be refused (no longer on hold) and replace the success notice.
+    if (resumingTenderId.current) return;
+    resumingTenderId.current = tender.id;
+    setPageNotice(null);
+    const tenderNo = tender.tender_number || tender.tender_no;
+    try {
+      await api.post(`/tenders/${tender.id}/resume`, {
+        expected_version: typeof tender.version === 'number' ? tender.version : undefined,
+      });
+      setPageNotice({ type: 'success', text: `${tenderNo} resumed at ${stageLabelOf(tender.status_before_hold || tender.status)}.` });
+      await Promise.all([fetchTenders(), fetchDashboardStats()]);
+    } catch (err: any) {
+      setPageNotice({ type: 'danger', text: `${tenderNo}: ${err?.message || 'Could not resume the tender.'}` });
+    } finally {
+      resumingTenderId.current = null;
     }
   };
 
@@ -880,17 +931,51 @@ export default function TendersPage() {
     setIsOutcomeOpen(true);
   };
 
+  // §25 affected-tender picker: a debounced lookup over every tender in scope (GET /tenders?search=…), not only the
+  // register pages loaded so far. The picked tender stays listed while the search text changes.
+  const [issueTenderQuery, setIssueTenderQuery] = useState('');
+  const [issueTenderMatches, setIssueTenderMatches] = useState<any[]>([]);
+  const [issueTenderPicked, setIssueTenderPicked] = useState<any | null>(null);
+  const [isSearchingIssueTenders, setIsSearchingIssueTenders] = useState(false);
+  useEffect(() => {
+    if (!isNewIssueOpen) return;
+    let alive = true;
+    setIsSearchingIssueTenders(true);
+    const timer = setTimeout(() => {
+      const q = issueTenderQuery.trim();
+      api
+        .get('/tenders', { ...(q ? { search: q } : {}), limit: 20, sortBy: 'created_at', sortOrder: 'desc' })
+        .then((res: any) => alive && setIssueTenderMatches(Array.isArray(res) ? res : res?.data || []))
+        .catch(() => alive && setIssueTenderMatches([]))
+        .finally(() => alive && setIsSearchingIssueTenders(false));
+    }, 300);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [isNewIssueOpen, issueTenderQuery]);
+  const issueTenderOptions = useMemo(
+    () =>
+      issueTenderPicked && !issueTenderMatches.some((t) => t.id === issueTenderPicked.id)
+        ? [issueTenderPicked, ...issueTenderMatches]
+        : issueTenderMatches,
+    [issueTenderMatches, issueTenderPicked],
+  );
+
   // Helper to open GeM / Portal Issue Modal (§25)
   const openNewIssueModal = (tender?: any) => {
     setActionError(null);
+    setIssueTenderQuery('');
     if (tender) {
       setSelectedTender(tender);
       setIssueTenderId(tender.id);
+      setIssueTenderPicked(tender);
       setIssueResponsiblePerson(tender.assigned_to || tender.assigned_person_id || '');
     } else {
       // Logged from the hub: no tender is pre-selected (never silently the first one) — the user picks it.
       setSelectedTender(null);
       setIssueTenderId('');
+      setIssueTenderPicked(null);
       setIssueResponsiblePerson('');
     }
     setNewIssueText('');
@@ -1049,7 +1134,8 @@ export default function TendersPage() {
   };
 
   // §24 Deadline Centre: groups come from the server (GET /tenders/deadline-centre) over every tender in scope,
-  // not from the paginated list. Only pre-submission bids can be urgent / upcoming / overdue (B2/B3).
+  // not from the paginated list, and the endpoint takes no search or filters (so the view shows none).
+  // Only pre-submission bids can be urgent / upcoming / overdue (B2/B3).
   const [deadlineCentre, setDeadlineCentre] = useState<any>(null);
   const fetchDeadlineCentre = useCallback(async () => {
     try {
@@ -1063,6 +1149,10 @@ export default function TendersPage() {
     // Re-fetch when the tab opens and whenever the tender list reloads (mutations, realtime events).
     if (activeTab === 'deadlines') fetchDeadlineCentre();
   }, [activeTab, tenders, fetchDeadlineCentre]);
+  useEffect(() => {
+    // Analytics and Deadlines show whole-scope numbers: while a register filter is on, read them unfiltered.
+    if ((activeTab === 'analytics' || activeTab === 'deadlines') && registerFiltersActive.current) fetchOverallStats();
+  }, [activeTab, tenders, fetchOverallStats]);
 
   const categorizedDeadlines = useMemo(() => {
     const list = (v: any): any[] => (Array.isArray(v) ? v : []);
@@ -1097,7 +1187,7 @@ export default function TendersPage() {
     setCategoryFilter('');
     setZoneFilter('');
     setDeadlineFilter('');
-    setAssignedFilter(user?.role === 'sales' ? (user?.id || '') : '');
+    setAssignedFilter('');
     setActiveHudFilter(null);
     setSortBy('created_at');
     setSortOrder('desc');
@@ -1200,6 +1290,15 @@ export default function TendersPage() {
   const isSales = user?.role === 'sales';
   // Same roles as POST /tenders/:id/outcome — regional managers follow up but do not declare the verdict.
   const canRecordOutcome = hasRole(['management', 'tender_team', 'sales', 'admin']);
+  // "Record Result" on a register row or a Deadlines card: a bid awaiting its verdict, not on hold (a hold blocks
+  // every stage move), and — for a submitted bid — closed already (bids open only after closing).
+  const canRecordResultOn = (t: any) =>
+    canRecordOutcome &&
+    !t.on_hold &&
+    ['submitted', 'technical_eval', 'commercial_eval'].includes(t.status) &&
+    !(t.status === 'submitted' && bidStillOpen(t));
+  // Same roles as POST /tenders/:id/hold and /resume.
+  const canResumeTender = hasRole(['management', 'regional_manager', 'tender_team', 'admin']);
   // A result is declared after the bid closes: the earliest valid result date is the IST day of the deadline.
   const outcomeDeadline = selectedTender?.submission_deadline || selectedTender?.bid_closing_date;
   const outcomeMinResultDate = outcomeDeadline ? istDateOf(outcomeDeadline) : undefined;
@@ -1208,19 +1307,23 @@ export default function TendersPage() {
   const isOpenIssue = (i: any) => !['RESOLVED', 'CLOSED'].includes(String(i?.resolution_status || 'OPEN').toUpperCase());
   const openPortalIssueCount = globalPortalIssues.filter(isOpenIssue).length;
   const nonZero = (v?: number) => (v && v > 0 ? v : undefined);
-  const urgentDeadlines = dashboardStats.urgent_deadlines || 0;
+  // Analytics and Deadlines are whole-scope views (no register filter applies to them).
+  const scopeStats = overallStats || dashboardStats;
+  const urgentDeadlines = scopeStats.urgent_deadlines || 0;
+  // (Accounts never sees this menu: its only view is Finance, pinned by the view guard, and the row is hidden.)
   const viewOptions: { id: TenderView; label: string; icon: React.ReactNode; count?: number | string; urgent?: boolean }[] = [
     { id: 'pipeline', label: isSales ? 'My bids' : 'Pipeline', icon: <FileText />, count: nonZero(totalCount || dashboardStats.total) },
     ...(!isSales
       ? [{ id: 'approvals_inbox' as const, label: 'Approvals & SLA', icon: <UserCheck />, count: nonZero(dashboardStats.pending_approvals), urgent: true }]
       : []),
     { id: 'calendar', label: isSales ? 'My calendar' : 'Tender calendar', icon: <Calendar /> },
-    ...(!isSales ? [{ id: 'finance_emd' as const, label: 'Finance, EMD & PBG', icon: <IndianRupee /> }] : []),
+    ...(canSeeFinance ? [{ id: 'finance_emd' as const, label: 'Finance, EMD & PBG', icon: <IndianRupee /> }] : []),
     {
       id: 'deadlines',
       label: isSales ? 'My deadlines' : 'Deadlines',
       icon: <Clock />,
-      count: nonZero(urgentDeadlines + (dashboardStats.upcoming_deadlines || 0)),
+      // Bids closing within 7 days — that window already contains the ≤ 48h ones, so they are not added again.
+      count: nonZero(scopeStats.upcoming_deadlines),
       urgent: urgentDeadlines > 0,
     },
     {
@@ -1254,14 +1357,16 @@ export default function TendersPage() {
     />
   );
 
-  // Pipeline and Deadlines both read the filtered tender list, so both get the search + filters.
-  const isListView = activeTab === 'pipeline' || activeTab === 'deadlines';
+  // Only the Pipeline register reads the filtered tender list, so only it gets the search + filters (the Deadlines
+  // view comes from GET /tenders/deadline-centre, which takes no query).
+  const isListView = activeTab === 'pipeline';
   // Category, Zone and Assignee live in the "More" panel (Category is also on the PQ / MHA cards).
   const moreActiveCount = [categoryFilter, zoneFilter, !isSales ? assignedFilter : ''].filter(Boolean).length;
   const phoneFilterCount = [statusFilter, deadlineFilter].filter(Boolean).length + moreActiveCount;
 
   // Pipeline register: each tender as a RecordItem (priority cards + stage board).
-  const stageById = new Map<string, string>(tenders.map((t) => [t.id, t.status]));
+  // On Hold is a flag over the stage the bid was held at (`status` is kept), so a held bid goes in the On Hold lane.
+  const stageById = new Map<string, string>(tenders.map((t) => [t.id, t.on_hold ? 'on_hold' : t.status]));
   const tenderLaneOf = (item: RecordItem) => stageById.get(item.key) || 'identified';
   const tenderLanes: BoardLane[] = [
     ...STAGES.map((s) => ({ key: s.key as string, label: s.label as string, tone: toneFor(s.label) })),
@@ -1272,14 +1377,18 @@ export default function TendersPage() {
     })),
   ];
   const tenderRecords: RecordItem[] = tenders.map((tender) => {
-    const stageLabel = STAGES.find((s) => s.key === tender.status)?.label || String(tender.status || '').replace(/_/g, ' ');
+    const isHeld = Boolean(tender.on_hold);
+    const stageLabel = isHeld ? 'On Hold' : stageLabelOf(tender.status);
     const isPqTender = (tender.category || '').toLowerCase().includes('pq');
     const isManagement = hasRole(['management', 'admin']);
     const open = () => openTenderDetails(tender);
 
     // The card itself opens the dossier (onOpen); a button only for a real next step in the lifecycle.
     let primary: RecordAction | undefined;
-    if (tender.status === 'identified') {
+    if (isHeld) {
+      // A hold blocks every stage move, so the only next step is Resume (back to the stage it was held at).
+      primary = canResumeTender ? { label: 'Resume', icon: <RefreshCw />, onClick: () => handleQuickResume(tender) } : undefined;
+    } else if (tender.status === 'identified') {
       primary = isManagement
         ? { label: 'Review', icon: <ShieldCheck />, onClick: open }
         : { label: 'Submit for Internal Review', icon: <Send />, onClick: () => handleQuickRequestApproval(tender) };
@@ -1298,12 +1407,7 @@ export default function TendersPage() {
           setIsTransitionOpen(true);
         },
       };
-    } else if (
-      canRecordOutcome &&
-      ['submitted', 'technical_eval', 'commercial_eval'].includes(tender.status) &&
-      // Bids open only after closing: no result can be recorded on a submitted bid before its closing time.
-      !(tender.status === 'submitted' && bidStillOpen(tender))
-    ) {
+    } else if (canRecordResultOn(tender)) {
       primary = {
         label: 'Record Result',
         icon: <Award />,
@@ -1315,7 +1419,8 @@ export default function TendersPage() {
     const categoryCode = String(tender.category || '').toLowerCase();
     if (categoryCode === 'pq') badges.push({ label: 'PQ', tone: 'info' });
     else if (categoryCode === 'general_mha') badges.push({ label: tenderCategoryLabel(categoryCode), tone: 'neutral' });
-    if (tender.status === 'awaiting_approval' && !isManagement) badges.push({ label: 'In review', tone: 'warning' });
+    if (isHeld) badges.push({ label: `Held at ${stageLabelOf(tender.status_before_hold || tender.status)}`, tone: 'neutral' });
+    else if (tender.status === 'awaiting_approval' && !isManagement) badges.push({ label: 'In review', tone: 'warning' });
     if (tender.assigned_to === user?.id || tender.assigned_person_id === user?.id) badges.push({ label: 'You', tone: 'info' });
 
     const location = [tender.city, tender.state].filter(Boolean).join(', ');
@@ -1359,8 +1464,11 @@ export default function TendersPage() {
           : status === 'lost' || status === 'rejected_internally' || status === 'cancelled'
             ? 'danger'
             : 'outline';
-  /** The submission deadline only drives urgency while the bid is still being prepared. */
-  const tenderPreSubmission = ['identified', 'awaiting_approval', 'under_preparation', 'on_hold'];
+  /**
+   * The submission deadline only drives urgency while the bid is still being prepared — the API's pre-submission
+   * stages (a PQ-qualified bid still has its main bid to file). A held bid keeps its stage, so it is covered too.
+   */
+  const tenderPreSubmission = ['identified', 'awaiting_approval', 'under_preparation', 'pq_qualified'];
   const tenderList = tenders.length ? (
     <RecordTable items={tenderRecords}>
       <Table>
@@ -1383,7 +1491,7 @@ export default function TendersPage() {
             // Deadline urgency (as on the reference register) only while the bid is still being prepared.
             const deadlineAt = deadline ? new Date(deadline).getTime() : NaN;
             const hoursLeft = tenderPreSubmission.includes(tender.status) && !Number.isNaN(deadlineAt) ? (deadlineAt - Date.now()) / 3600000 : null;
-            const location = [tender.city, tender.state].filter(Boolean).join(', ') + (tender.zone ? ` (${tender.zone})` : '');
+            const location = [tender.city, tender.state].filter(Boolean).join(', ') + (tender.zone_name ? ` (${tender.zone_name})` : '');
             const buyer = tender.department || tender.organisation_name || 'Government Buyer';
             const requirement = tender.requirement_text || tender.product_name || 'Defence Procurement Item';
             const owner = tender.tender_owner_name || tender.owner_name || 'Unassigned';
@@ -1395,7 +1503,8 @@ export default function TendersPage() {
             const emdText = emd > 0 ? `EMD: ${formatINR(emd)}` : 'EMD: Exempt';
             const value = record.value || emdText;
             const qty = Number(tender.line_items_quantity) > 0 ? Number(tender.line_items_quantity) : Number(tender.quantity) || 1;
-            const nextStep = record.quick ? record.primary : undefined;
+            // The row's next lifecycle step — the same button the phone card shows (`primary` is only ever a real step).
+            const nextStep = record.primary;
             return (
               <TableRow key={tender.id}>
                 <TableCell className="font-bold whitespace-nowrap">
@@ -1440,7 +1549,8 @@ export default function TendersPage() {
                     </Badge>
                   ) : hoursLeft !== null && hoursLeft <= 48 ? (
                     <Badge variant="urgent" size="sm" className="mt-1 flex w-fit">
-                      {hoursLeft <= 24 ? 'CLOSING TODAY' : `${Math.ceil(hoursLeft)}H LEFT`}
+                      {/* "Today" only when it closes on today's IST calendar day, not merely within 24 hours. */}
+                      {isIstToday(deadline) ? 'CLOSING TODAY' : `CLOSES IN ${Math.ceil(hoursLeft)}H`}
                     </Badge>
                   ) : hoursLeft !== null && hoursLeft <= 168 ? (
                     <Badge variant="info" size="sm" className="mt-1 flex w-fit">
@@ -1449,9 +1559,12 @@ export default function TendersPage() {
                   ) : null}
                 </TableCell>
                 <TableCell className="whitespace-nowrap">
-                  <Badge variant={tenderStageBadge(tender.status)} size="sm" className="uppercase font-bold">
+                  <Badge variant={tender.on_hold ? 'warning' : tenderStageBadge(tender.status)} size="sm" className="uppercase font-bold">
                     {record.status?.label || String(tender.status || '-').replace(/_/g, ' ')}
                   </Badge>
+                  {tender.on_hold && (
+                    <div className="mt-1 text-[10px] text-[#4A5568]">Held at {stageLabelOf(tender.status_before_hold || tender.status)}</div>
+                  )}
                 </TableCell>
                 <TableCell className="text-right whitespace-nowrap">
                   <div className="flex items-center justify-end gap-1.5">
@@ -1477,7 +1590,13 @@ export default function TendersPage() {
     <PageContainer>
       {/* 1. Page Header */}
       <PageHeader
-        title={user?.role === 'sales' ? 'My Assigned Tenders & Bids' : 'Tender Pipeline & Bids Command'}
+        title={
+          isFinanceOnly
+            ? 'Tender EMD & PBG Accounting'
+            : user?.role === 'sales'
+              ? 'My Tenders & Bids'
+              : 'Tender Pipeline & Bids Command'
+        }
         icon={
           <div className="p-2.5 rounded-xl bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20 shadow-2xs">
             <FileText className="h-6 w-6 text-[#0F5E63]" />
@@ -1485,20 +1604,32 @@ export default function TendersPage() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {hasRole(['management', 'tender_team', 'admin']) && (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="hidden sm:inline-flex"
-                  onClick={() => setIsImportOpen(true)}
-                  leftIcon={<Upload className="h-3.5 w-3.5 text-[#4A5568]" />}
-                >
-                  <span>Bulk Import</span>
-                </Button>
-              </>
+            {/* Tender masters & governance: same roles as the settings / categories / approvers / loss-reasons writes. */}
+            {hasRole(['management', 'admin']) && (
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label="Tender settings"
+                onClick={() => setIsSettingsOpen(true)}
+                leftIcon={<Settings className="h-3.5 w-3.5 text-[#4A5568]" />}
+              >
+                <span className="hidden sm:inline">Settings</span>
+              </Button>
             )}
-            {hasRole(['management', 'regional_manager', 'tender_team', 'admin']) && (
+            {/* Same roles as POST /tenders/import. */}
+            {hasRole(['management', 'admin']) && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="hidden sm:inline-flex"
+                onClick={() => setIsImportOpen(true)}
+                leftIcon={<Upload className="h-3.5 w-3.5 text-[#4A5568]" />}
+              >
+                <span>Bulk Import</span>
+              </Button>
+            )}
+            {/* Same roles as POST /tenders — identification is Tender Team and Sales (plus managers). */}
+            {hasRole(['management', 'regional_manager', 'tender_team', 'sales', 'admin']) && (
               <Button
                 variant="primary"
                 size="sm"
@@ -1578,7 +1709,9 @@ export default function TendersPage() {
         </StatGrid>
       )}
 
-      {/* 3. One filter row on every view: View menu first, then that view's search, filters and actions. */}
+      {/* 3. One filter row on every view: View menu first, then that view's search, filters and actions.
+          Accounts has a single view (Finance, EMD & PBG), so no row at all. */}
+      {!isFinanceOnly && (
       <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
           {viewMenu}
@@ -1604,7 +1737,7 @@ export default function TendersPage() {
                 <input
                   type="search"
                   aria-label="Search tenders"
-                  placeholder="Search tender no., portal, buyer, product, state…"
+                  placeholder="Search tender no., buyer, requirement, city, assignee…"
                   value={search}
                   onChange={(e) => {
                     setSearch(e.target.value);
@@ -1758,6 +1891,7 @@ export default function TendersPage() {
           </div>
         )}
       </Card>
+      )}
 
       {/* ========================================================================= */}
       {/* TAB 1: OPERATIONAL PIPELINE & BIDS */}
@@ -1844,13 +1978,22 @@ export default function TendersPage() {
       {/* ========================================================================= */}
       {/* TAB: FINANCE & EMD / PBG REPOSITORY */}
       {/* ========================================================================= */}
-      {activeTab === 'finance_emd' && user?.role !== 'sales' && (
+      {activeTab === 'finance_emd' && canSeeFinance && (
         <FinanceEmdView
           currentUser={user}
-          onOpenDossier={(id) => {
-            setDossierTenderId(id);
-            setIsDossierOpen(true);
-          }}
+          onOpenDossier={
+            // Accounts may not read a tender's dossier (GET /tenders/:id), so it is told why instead of seeing a 403.
+            isFinanceOnly
+              ? () =>
+                  setPageNotice({
+                    type: 'info',
+                    text: 'The full tender dossier is open to the Tender Team and Management. EMD and PBG instruments are tracked and updated here.',
+                  })
+              : (id) => {
+                  setDossierTenderId(id);
+                  setIsDossierOpen(true);
+                }
+          }
         />
       )}
 
@@ -1864,7 +2007,8 @@ export default function TendersPage() {
             description="Multi-tier pipeline intelligence across Classifications (PQ vs General / MHA), Territories, Salespeople, and Post-Mortem Win/Loss Analysis"
           />
 
-          {/* Section 1: Executive KPI Command HUD (§27 Monitoring Requirements) */}
+          {/* Section 1: Executive KPI Command HUD (§27 Monitoring Requirements) — whole scope, like the tables below
+              (this view has no filter row, so the register filters never narrow it). */}
           <div className="space-y-3">
             <h3 className="text-xs font-bold text-[#4A5568] uppercase tracking-wider flex items-center gap-1.5">
               <Layers className="h-4 w-4 text-[#0F5E63]" />
@@ -1879,7 +2023,7 @@ export default function TendersPage() {
                   <FileText className="h-4 w-4 text-[#0F5E63]" />
                 </div>
                 <div className="text-2xl font-black text-[#14213D] mt-1.5">
-                  {dashboardStats.total_tenders || 0}
+                  {scopeStats.total_tenders || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">All registered opportunities</p>
               </Card>
@@ -1890,7 +2034,7 @@ export default function TendersPage() {
                   <Badge variant="cyber" size="sm">Pre-Qual</Badge>
                 </div>
                 <div className="text-2xl font-black text-[#0F5E63] mt-1.5">
-                  {dashboardStats.pq_tenders || dashboardStats.pq_count || 0}
+                  {scopeStats.pq_tenders || scopeStats.pq_count || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">Pre-qualification category</p>
               </Card>
@@ -1901,7 +2045,7 @@ export default function TendersPage() {
                   <Badge variant="info" size="sm">MHA QR</Badge>
                 </div>
                 <div className="text-2xl font-black text-[#14213D] mt-1.5">
-                  {dashboardStats.general_mha_tenders || dashboardStats.general_mha_count || 0}
+                  {scopeStats.general_mha_tenders || scopeStats.general_mha_count || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">Paramilitary & central bids</p>
               </Card>
@@ -1912,7 +2056,7 @@ export default function TendersPage() {
                   <Badge variant="default" size="sm">Institutional</Badge>
                 </div>
                 <div className="text-2xl font-black text-[#14213D] mt-1.5">
-                  {dashboardStats.other_tenders || dashboardStats.other_count || 0}
+                  {scopeStats.other_tenders || scopeStats.other_count || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">State Police & PSUs</p>
               </Card>
@@ -1923,7 +2067,7 @@ export default function TendersPage() {
                   <Clock className="h-4 w-4 text-[#0F5E63]" />
                 </div>
                 <div className="text-2xl font-black text-[#0F5E63] mt-1.5">
-                  {dashboardStats.worked_upon || 0}
+                  {scopeStats.worked_upon || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">In prep, eval, or bid stage</p>
               </Card>
@@ -1937,7 +2081,7 @@ export default function TendersPage() {
                   <Send className="h-4 w-4 text-[#0F5E63]" />
                 </div>
                 <div className="text-2xl font-black text-[#0F5E63] mt-1.5">
-                  {dashboardStats.tenders_submitted || 0}
+                  {scopeStats.tenders_submitted || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">Bids filed on GeM/CPPP</p>
               </Card>
@@ -1948,7 +2092,7 @@ export default function TendersPage() {
                   <Award className="h-4 w-4 text-[#0F5E63]" />
                 </div>
                 <div className="text-2xl font-black text-[#0B4A4E] mt-1.5">
-                  {dashboardStats.tenders_won || 0}
+                  {scopeStats.tenders_won || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">L1 contracts secured</p>
               </Card>
@@ -1959,7 +2103,7 @@ export default function TendersPage() {
                   <XCircle className="h-4 w-4 text-[#881337]" />
                 </div>
                 <div className="text-2xl font-black text-[#881337] mt-1.5">
-                  {dashboardStats.tenders_lost || 0}
+                  {scopeStats.tenders_lost || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">Lost to competitor/disqualified</p>
               </Card>
@@ -1970,7 +2114,7 @@ export default function TendersPage() {
                   <Clock className="h-4 w-4 text-[#9A3412]" />
                 </div>
                 <div className="text-2xl font-black text-[#7C2D12] mt-1.5">
-                  {dashboardStats.pending_tenders || 0}
+                  {scopeStats.pending_tenders || 0}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">In flight across all stages</p>
               </Card>
@@ -1981,7 +2125,7 @@ export default function TendersPage() {
                   <TrendingUp className="h-4 w-4 text-[#0F5E63]" />
                 </div>
                 <div className="text-2xl font-black text-[#0B4A4E] mt-1.5">
-                  {winLossReport.win_rate !== undefined ? `${winLossReport.win_rate}%` : `${dashboardStats.win_rate || 0}%`}
+                  {winLossReport.win_rate !== undefined ? `${winLossReport.win_rate}%` : `${scopeStats.win_rate || 0}%`}
                 </div>
                 <p className="text-[10px] text-[#4A5568] mt-0.5">Won / Decided bids</p>
               </Card>
@@ -2011,7 +2155,7 @@ export default function TendersPage() {
                     <th className="p-2.5 text-center">Total</th>
                     <th className="p-2.5 text-center">PQ Bids</th>
                     <th className="p-2.5 text-center">General / MHA</th>
-                    <th className="p-2.5 text-center">In Prep / Review</th>
+                    <th className="p-2.5 text-center" title="Open bids: not yet won, lost, cancelled or rejected internally">Pending</th>
                     <th className="p-2.5 text-center">Submitted</th>
                     <th className="p-2.5 text-center">Won</th>
                     <th className="p-2.5 text-center">Lost</th>
@@ -2037,7 +2181,7 @@ export default function TendersPage() {
                           <td className="p-2.5 text-center font-bold text-[#0F5E63]">{org.total}</td>
                           <td className="p-2.5 text-center font-semibold text-[#0F5E63]">{org.pq_count || 0}</td>
                           <td className="p-2.5 text-center font-semibold text-[#14213D]">{org.general_mha_count || 0}</td>
-                          <td className="p-2.5 text-center text-[#7C2D12] font-semibold">{org.in_preparation || 0}</td>
+                          <td className="p-2.5 text-center text-[#7C2D12] font-semibold">{org.pending ?? org.pending_tenders ?? 0}</td>
                           <td className="p-2.5 text-center text-[#0B4A4E] font-semibold">{org.submitted || 0}</td>
                           <td className="p-2.5 text-center text-[#0B4A4E] font-bold">{org.won || 0}</td>
                           <td className="p-2.5 text-center text-[#881337] font-semibold">{org.lost || 0}</td>
@@ -2392,7 +2536,7 @@ export default function TendersPage() {
                     <div>
                       <div className="font-bold text-xs text-[#14213D] flex items-center justify-between font-mono">
                         <span className="truncate">{t.tender_number || t.tender_no}</span>
-                        <Badge variant="outline" size="sm">{t.tender_category || t.category || 'Tender'}</Badge>
+                        <Badge variant="outline" size="sm">{tenderCategoryLabel(t.tender_category || t.category, t.category_name) || 'Tender'}</Badge>
                       </div>
                       <p className="text-[11px] text-[#4A5568] mt-1 font-medium truncate">{t.department}</p>
                       <p className="text-[10px] text-[#4A5568] mt-0.5">
@@ -2413,7 +2557,8 @@ export default function TendersPage() {
             )}
           </div>
 
-          {/* Group 3: Pending Internal Approvals (§24) — same server count as the KPI and the Approvals Inbox */}
+          {/* Group 3: Pending Internal Approvals (§24) — from the Deadline Centre itself (same server rule as the
+              Approvals Inbox), never the register-filtered KPI, so it agrees with the rest of this unfiltered view. */}
           <div className="bg-white rounded-[14px] border border-[#DCD8CE] p-4 shadow-2xs space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -2421,17 +2566,17 @@ export default function TendersPage() {
                 <h4 className="text-sm font-bold text-[#14213D]">Pending Internal Approvals</h4>
               </div>
               <Badge variant="warning" size="sm">
-                <span className="font-mono">{dashboardStats.pending_approvals || 0}</span>&nbsp;Pending
+                <span className="font-mono">{categorizedDeadlines.awaitingSignoff.length}</span>&nbsp;Pending
               </Badge>
             </div>
-            {(dashboardStats.pending_approvals || 0) === 0 ? (
+            {categorizedDeadlines.awaitingSignoff.length === 0 ? (
               <div className="p-4 rounded-lg bg-[#FBFAF7] border border-dashed border-[#DCD8CE] text-xs text-[#4A5568] text-center">
                 No tender is awaiting internal approval.
               </div>
             ) : (
               <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] flex flex-wrap items-center justify-between gap-3 text-xs text-[#4A5568]">
                 <span>
-                  {dashboardStats.pending_approvals} tender{dashboardStats.pending_approvals === 1 ? ' is' : 's are'} waiting for a
+                  {categorizedDeadlines.awaitingSignoff.length} tender{categorizedDeadlines.awaitingSignoff.length === 1 ? ' is' : 's are'} waiting for a
                   Management decision.
                 </span>
                 {!isSales && (
@@ -2476,7 +2621,8 @@ export default function TendersPage() {
                       <Button size="xs" variant="secondary" onClick={() => openTenderDetails(t)}>
                         Inspect
                       </Button>
-                      {canRecordOutcome && (
+                      {/* Same lock as the register: no result before a submitted bid closes, none while on hold. */}
+                      {canRecordResultOn(t) && (
                         <Button size="xs" variant="primary" leftIcon={<Award className="h-3.5 w-3.5" />} onClick={() => openOutcomeModal(t)}>
                           Record Result
                         </Button>
@@ -2642,7 +2788,7 @@ export default function TendersPage() {
               {
                 title: 'Tender',
                 icon: <FileText />,
-                description: 'The bid number, the portal it is published on, and how it is classified.',
+                description: 'The bid number, the portal it is published on, and how it is classified. Every new tender starts as Identified and goes for internal approval.',
                 content: (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <Input
@@ -2671,16 +2817,6 @@ export default function TendersPage() {
                         { value: 'general_mha', label: 'General / MHA Tender' },
                         { value: 'pq', label: 'Pre-Qualification (PQ)' },
                         { value: 'other', label: 'Other Configured Tender' },
-                      ]}
-                    />
-                    <Select
-                      label="Current Stage (§19)"
-                      value={newTender.current_stage}
-                      onChange={(e) => setNewTender({ ...newTender, current_stage: e.target.value })}
-                      options={[
-                        { value: 'identified', label: '1. Tender Identified' },
-                        { value: 'awaiting_approval', label: '2. Submitted for Review' },
-                        { value: 'under_preparation', label: '4. Tender Preparation' },
                       ]}
                     />
                   </div>
@@ -3244,14 +3380,31 @@ export default function TendersPage() {
           )}
 
           <FormSection title="Issue" icon={<AlertOctagon />} description="Which tender, when it happened, and what went wrong.">
+            <Input
+              label="Find Tender"
+              type="search"
+              value={issueTenderQuery}
+              onChange={(e) => setIssueTenderQuery(e.target.value)}
+              placeholder="Type a tender no., buyer, requirement or city…"
+              helperText={
+                isSearchingIssueTenders
+                  ? 'Searching tenders…'
+                  : issueTenderMatches.length
+                    ? `${issueTenderMatches.length} matching tender${issueTenderMatches.length === 1 ? '' : 's'} — pick one below.`
+                    : 'No tender matches this search.'
+              }
+            />
             <Select
               label="Affected Tender (§25)"
               required
               value={issueTenderId}
-              onChange={(e) => setIssueTenderId(e.target.value)}
+              onChange={(e) => {
+                setIssueTenderId(e.target.value);
+                setIssueTenderPicked(issueTenderOptions.find((t) => t.id === e.target.value) || null);
+              }}
               options={[
                 { value: '', label: 'Select the affected tender...' },
-                ...tenders.map((t) => ({
+                ...issueTenderOptions.map((t) => ({
                   value: t.id,
                   label: `${t.tender_number || t.tender_no} - ${t.department || t.organisation_name || 'Tender'}`,
                 })),

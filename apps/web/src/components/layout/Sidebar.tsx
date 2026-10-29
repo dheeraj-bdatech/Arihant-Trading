@@ -369,6 +369,13 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               badgeVariant: 'warning',
             },
             {
+              // The tender page shows Accounts its Finance / EMD & PBG view only (RBAC spec §7).
+              label: 'Tender EMD & PBG',
+              href: '/tenders',
+              icon: FileText,
+              moduleKey: 'tenders',
+            },
+            {
               label: 'Financial & Tax Reports',
               href: '/reports',
               icon: FileSpreadsheet,
@@ -986,7 +993,7 @@ export const Sidebar: React.FC = () => {
     if (moduleKey === 'reports') {
       return ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'].includes(user.role);
     }
-    if (moduleKey === 'tenders' && user.role === 'sales') {
+    if (moduleKey === 'tenders' && (user.role === 'sales' || user.role === 'accounts')) {
       return true;
     }
     return roleProfile?.allowedModules?.includes(moduleKey as BosModuleKey);

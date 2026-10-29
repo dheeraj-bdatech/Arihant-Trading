@@ -39,6 +39,8 @@ import {
 } from 'lucide-react';
 import { Badge, Button, Card, Checkbox, InfoCallout, Modal, PageLoader, ScrollStrip } from '@/components/ui';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { canRead } from '@/lib/module-access';
 import {
   CATEGORY_DETAIL_KIND,
   MEAL_TYPES,
@@ -141,7 +143,9 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
   const [loading, setLoading] = useState(Boolean(claimId));
   const [loadError, setLoadError] = useState<string | null>(null);
   const [linkable, setLinkable] = useState<Linkable>({ trips: [], visits: [] });
-  const [customers, setCustomers] = useState<{ id: string; name: string }[]>([]);
+  // Linking a customer needs read access to the customer master (Accounts has none: it links a project instead).
+  const { user } = useAuth();
+  const canLinkCustomer = canRead(user?.role, 'organisations');
   const [projects, setProjects] = useState<{ id: string; code: string; name: string }[]>([]);
 
   const [header, setHeader] = useState({ title: '', trip_id: initialTripId || '', visit_id: initialVisitId || '', remarks: '' });
@@ -192,7 +196,6 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
 
   useEffect(() => {
     api.get<Linkable>('/expense-claims/linkable').then(setLinkable).catch(() => undefined);
-    api.get('/organisations', { limit: 100 }).then((r: any) => setCustomers((r.data || []).map((o: any) => ({ id: o.id, name: o.name })))).catch(() => setCustomers([]));
     api.get('/projects').then((r: any) => setProjects(r || [])).catch(() => setProjects([]));
   }, []);
 
@@ -228,6 +231,15 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
   const selectedTrip = linkable.trips.find((t) => t.id === header.trip_id);
   const selectedVisit = linkable.visits.find((v) => v.id === header.visit_id);
   const defaultCustomer = selectedVisit?.organisation_id || selectedTrip?.customer_id || claim?.visit_organisation_id || '';
+  // Names of customers already linked (saved items, trips, visits): the picker searches the server, so a linked
+  // customer may not be in the current results but must still show by name.
+  const customerNames = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const t of linkable.trips) if (t.customer_id && t.customer_name) names[t.customer_id] = t.customer_name;
+    for (const v of linkable.visits) names[v.organisation_id] = v.organisation_name;
+    for (const i of items) if (i.customer_id && i.customer_name) names[i.customer_id] = i.customer_name;
+    return names;
+  }, [linkable, items]);
   const defaultDate = selectedVisit?.planned_date || selectedTrip?.first_visit || selectedTrip?.trip_date || istToday();
 
   // ------------------------------------------------------------------ header
@@ -301,7 +313,7 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
   const saveItem = async () => {
     if (!editor || !claim) return;
     const cat = categoryById.get(editor.category_id);
-    const clientErrors = validateEditor(editor, cat);
+    const clientErrors = validateEditor(editor, cat, canLinkCustomer);
     setEditorErrors(clientErrors);
     if (Object.keys(clientErrors).length) return;
     setSavingItem(true);
@@ -718,7 +730,8 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
                       key={i.id}
                       draft={editor}
                       categories={categories}
-                      customers={customers}
+                      canLinkCustomer={canLinkCustomer}
+                      customerNames={customerNames}
                       projects={projects}
                       errors={editorErrors}
                       duplicateNotice={duplicateNotice}
@@ -746,7 +759,8 @@ export const ClaimForm: React.FC<ClaimFormProps> = ({ claimId: claimIdProp, init
                   <ItemEditor
                     draft={editor}
                     categories={categories}
-                    customers={customers}
+                    canLinkCustomer={canLinkCustomer}
+                    customerNames={customerNames}
                     projects={projects}
                     errors={editorErrors}
                     duplicateNotice={duplicateNotice}
@@ -912,7 +926,7 @@ function detailsFor(cat?: ExpenseCategory): Record<string, string> {
 }
 
 /** Mirrors the server rules so most mistakes are caught before a round-trip. */
-function validateEditor(d: ItemDraft, cat?: ExpenseCategory): Record<string, string> {
+function validateEditor(d: ItemDraft, cat?: ExpenseCategory, canLinkCustomer = true): Record<string, string> {
   const e: Record<string, string> = {};
   const today = istToday();
   if (!d.expense_date) e.expense_date = 'Expense date is required.';
@@ -926,7 +940,10 @@ function validateEditor(d: ItemDraft, cat?: ExpenseCategory): Record<string, str
   if (!/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0) e.amount = 'Enter an amount greater than zero (max 2 decimals).';
   else if (Number(amount) > 1_000_000) e.amount = 'Amount cannot exceed ₹10,00,000.00 per item.';
   if (cat) {
-    if (cat.requires_customer_or_project && !d.customer_id && !d.project_id) e.customer_id = `${cat.name} must be linked to a customer or a project.`;
+    if (cat.requires_customer_or_project && !d.customer_id && !d.project_id) {
+      if (canLinkCustomer) e.customer_id = `${cat.name} must be linked to a customer or a project.`;
+      else e.project_id = `${cat.name} must be linked to a project.`;
+    }
     if (cat.requires_remark && !d.remarks.trim()) e.remarks = `Remarks are mandatory for ${cat.name}.`;
     if (cat.max_amount_per_item !== null && Number(amount) > cat.max_amount_per_item) {
       if (cat.cap_is_hard) e.amount = `${cat.name} is capped at ${formatExpenseAmount(cat.max_amount_per_item)} per item.`;
@@ -1022,7 +1039,8 @@ const RouteFields: React.FC<{
 const ItemEditor: React.FC<{
   draft: ItemDraft;
   categories: ExpenseCategory[];
-  customers: { id: string; name: string }[];
+  canLinkCustomer: boolean;
+  customerNames: Record<string, string>;
   projects: { id: string; code: string; name: string }[];
   errors: Record<string, string>;
   duplicateNotice: string | null;
@@ -1030,7 +1048,7 @@ const ItemEditor: React.FC<{
   onChange: (d: ItemDraft) => void;
   onCancel: () => void;
   onSave: () => void;
-}> = ({ draft, categories, customers, projects, errors, duplicateNotice, busy, onChange, onCancel, onSave }) => {
+}> = ({ draft, categories, canLinkCustomer, customerNames, projects, errors, duplicateNotice, busy, onChange, onCancel, onSave }) => {
   const [showLink, setShowLink] = useState(false);
   const [showRemarks, setShowRemarks] = useState(false);
   const cat = categories.find((c) => c.id === draft.category_id);
@@ -1047,6 +1065,30 @@ const ItemEditor: React.FC<{
   const persons = Number(draft.details.persons) || 0;
   const linkOpen = Boolean(showLink || cat?.requires_customer_or_project || draft.customer_id || draft.project_id || errors.customer_id || errors.project_id);
   const remarksOpen = Boolean(showRemarks || cat?.requires_remark || draft.remarks || errors.remarks);
+
+  // Customers are searched on the server as you type: the master is larger than one page of results.
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [customerResults, setCustomerResults] = useState<{ id: string; name: string }[]>([]);
+  const [pickedNames, setPickedNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!canLinkCustomer || !linkOpen) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api
+        .get('/organisations', { search: customerQuery.trim() || undefined, limit: 20 })
+        .then((r: any) => !cancelled && setCustomerResults((r?.data || []).map((o: any) => ({ id: o.id, name: o.name }))))
+        .catch(() => !cancelled && setCustomerResults([]));
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [canLinkCustomer, linkOpen, customerQuery]);
+  const customerOptions = useMemo(() => {
+    const id = draft.customer_id;
+    const linked = id && !customerResults.some((c) => c.id === id) ? [{ id, name: pickedNames[id] || customerNames[id] || 'Linked customer' }] : [];
+    return [{ value: '', label: 'None' }, ...[...linked, ...customerResults].map((c) => ({ value: c.id, label: c.name }))];
+  }, [customerResults, draft.customer_id, pickedNames, customerNames]);
 
   return (
     <div className="rounded-[14px] border-2 border-[#0F5E63]/50 bg-white shadow-sm">
@@ -1209,14 +1251,26 @@ const ItemEditor: React.FC<{
             <div className="space-y-2">
               {cat.requires_customer_or_project && (
                 <p className="flex items-center gap-1.5 text-xs text-[#4A5568]">
-                  <Info className="h-3.5 w-3.5 text-[#0F5E63]" /> {cat.name} must be linked to a customer or a project.
+                  <Info className="h-3.5 w-3.5 text-[#0F5E63]" /> {cat.name} must be linked to {canLinkCustomer ? 'a customer or a project' : 'a project'}.
                 </p>
               )}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <FieldTile label="Customer" icon={<Building2 />} required={cat.requires_customer_or_project && !draft.project_id} error={errors.customer_id}>
-                  <TileSelect value={draft.customer_id} options={[{ value: '', label: 'None' }, ...customers.map((c) => ({ value: c.id, label: c.name }))]} onChange={(v) => set({ customer_id: v })} />
-                </FieldTile>
-                <FieldTile label="Project" icon={<Route />} error={errors.project_id}>
+              <div className={`grid grid-cols-1 gap-3 ${canLinkCustomer ? 'sm:grid-cols-2' : ''}`}>
+                {canLinkCustomer && (
+                  <FieldTile label="Customer" icon={<Building2 />} required={cat.requires_customer_or_project && !draft.project_id} error={errors.customer_id}>
+                    <TileSelect
+                      value={draft.customer_id}
+                      options={customerOptions}
+                      onSearchChange={setCustomerQuery}
+                      searchPlaceholder="Type to search customers…"
+                      onChange={(v) => {
+                        const hit = customerResults.find((c) => c.id === v);
+                        if (hit) setPickedNames((p) => ({ ...p, [hit.id]: hit.name }));
+                        set({ customer_id: v });
+                      }}
+                    />
+                  </FieldTile>
+                )}
+                <FieldTile label="Project" icon={<Route />} required={!canLinkCustomer && cat.requires_customer_or_project} error={errors.project_id}>
                   <TileSelect value={draft.project_id} options={[{ value: '', label: 'None' }, ...projects.map((p) => ({ value: p.id, label: `${p.code} · ${p.name}` }))]} onChange={(v) => set({ project_id: v })} />
                 </FieldTile>
               </div>
@@ -1231,7 +1285,7 @@ const ItemEditor: React.FC<{
 
           {(!linkOpen || !remarksOpen) && (
             <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {!linkOpen && <RevealButton onClick={() => setShowLink(true)}>Link a customer or project</RevealButton>}
+              {!linkOpen && <RevealButton onClick={() => setShowLink(true)}>{canLinkCustomer ? 'Link a customer or project' : 'Link a project'}</RevealButton>}
               {!remarksOpen && <RevealButton onClick={() => setShowRemarks(true)}>Add remarks</RevealButton>}
             </div>
           )}

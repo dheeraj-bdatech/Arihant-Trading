@@ -661,7 +661,9 @@ export class ExpenseClaimsService {
       );
     }
 
-    // Stage buckets partition the statuses, so the bucket amounts always add up to total_claimed (KPI cards).
+    // Stage buckets partition the statuses, so the bucket amounts always add up to total_claimed. approved_amount is
+    // what the claims in a bucket are worth after approval so far (approved where set, else claimed): the With
+    // Accounts and Paid cards show that, not the amount first claimed (QA BUG-007).
     const bucketKeys = Object.keys(EXPENSE_STAGE_BUCKETS) as ExpenseStageBucket[];
     const totals = await base
       .select([
@@ -672,13 +674,17 @@ export class ExpenseClaimsService {
         ...bucketKeys.flatMap((b) => [
           sql<number>`(count(c.id) filter (where c.status in (${sql.join(EXPENSE_STAGE_BUCKETS[b])})))::int`.as(`${b}_count`),
           sql<string>`coalesce(sum(c.total_claimed) filter (where c.status in (${sql.join(EXPENSE_STAGE_BUCKETS[b])})), 0)`.as(`${b}_amount`),
+          sql<string>`coalesce(sum(coalesce(c.total_approved, c.total_claimed)) filter (where c.status in (${sql.join(EXPENSE_STAGE_BUCKETS[b])})), 0)`.as(`${b}_approved_amount`),
         ]),
       ])
       .executeTakeFirst();
     const t = (totals || {}) as Record<string, unknown>;
     const buckets = Object.fromEntries(
-      bucketKeys.map((b) => [b, { count: Number(t[`${b}_count`] || 0), amount: Number(t[`${b}_amount`] || 0) }]),
-    ) as Record<ExpenseStageBucket, { count: number; amount: number }>;
+      bucketKeys.map((b) => [
+        b,
+        { count: Number(t[`${b}_count`] || 0), amount: Number(t[`${b}_amount`] || 0), approved_amount: Number(t[`${b}_approved_amount`] || 0) },
+      ]),
+    ) as Record<ExpenseStageBucket, { count: number; amount: number; approved_amount: number }>;
     const today = todayInKolkata();
 
     const rows = await base

@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { CalendarClock, ClipboardList, Package, Paperclip, Plus, Trash2, UserCheck } from 'lucide-react';
 import { Modal, Button, Input, Select, Textarea, InfoCallout, FormSteps } from '@/components/ui';
 import { api } from '@/lib/api';
+import { validateHttpUrl } from '@/lib/safe-url';
 import { errMsg, isConflict, todayLocal } from './serviceHelpers';
 
 const CONFIRMATION_TYPES = ['Signature', 'OTP', 'Email Confirmation', 'Photo of Signed Job Sheet'];
@@ -128,6 +129,8 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
       const r = Number(f.rating);
       if (!Number.isInteger(r) || r < 1 || r > 5) e.rating = 'Rating must be a whole number from 1 to 5.';
     }
+    const urlError = validateHttpUrl(f.reportUrl, 'The signed report document URL');
+    if (urlError) e.reportUrl = urlError;
     if (f.furtherWork) {
       if (f.furtherDesc.trim().length < 5) e.furtherDesc = 'Describe the further work needed (at least 5 characters).';
       if (!f.nextVisit) e.nextVisit = 'Pick the next visit date.';
@@ -361,7 +364,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
                     {uploadError && <p className="text-xs font-medium text-[#881337]">{uploadError}</p>}
                   </div>
 
-                  <Input label="Signed report document URL (optional)" value={f.reportUrl} onChange={(e) => set({ reportUrl: e.target.value })} placeholder="https://…" />
+                  <Input label="Signed report document URL (optional)" type="url" value={f.reportUrl} error={errors.reportUrl} onChange={(e) => set({ reportUrl: e.target.value })} placeholder="https://…" />
 
                   <div className="space-y-2">
                     <label className="flex min-h-10 cursor-pointer items-center gap-2 text-xs font-semibold text-[#14213D] sm:min-h-0">

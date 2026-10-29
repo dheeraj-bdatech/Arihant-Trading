@@ -753,9 +753,12 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
   };
 
   // ------------------------------------------------------------------ submit
+  // Synchronous guard: a double-click fires two submits before `submitting` re-renders the button, which created two
+  // identical tasks (QA BUG-022). Held from the request until it fails; after a success the form is done.
+  const submitInFlight = useRef(false);
   const submit = async (ev?: React.FormEvent) => {
     ev?.preventDefault();
-    if (submitting || created) return;
+    if (submitting || created || submitInFlight.current) return;
     setFormMessage(null);
     const clientErrors = validate();
     setErrors(clientErrors);
@@ -763,6 +766,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
       window.setTimeout(() => scrollToFirst(clientErrors), 0);
       return;
     }
+    submitInFlight.current = true;
     setSubmitting(true);
     setPhase(recurring ? 'Creating the series…' : count > 1 ? `Creating ${count} tasks…` : 'Creating the task…');
     const body: Record<string, unknown> = {
@@ -831,6 +835,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
         }
       }
     } catch (err) {
+      submitInFlight.current = false;
       const errs = { ...fieldErrors(err) };
       if ((err as any)?.data?.code === 'NO_APPROVER') errs.approval_required = errorMessage(err);
       setErrors(errs);

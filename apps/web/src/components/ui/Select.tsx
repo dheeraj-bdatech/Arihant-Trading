@@ -29,6 +29,11 @@ export interface SelectProps
   searchable?: boolean;
   searchPlaceholder?: string;
   placeholder?: string;
+  /**
+   * Server-side search: called with the typed query (and '' when the panel resets). The caller swaps in the
+   * matching `options`; the panel then shows them as given instead of filtering them again locally.
+   */
+  onSearchChange?: (query: string) => void;
 }
 
 export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
@@ -49,6 +54,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       placeholder,
       searchable = true,
       searchPlaceholder,
+      onSearchChange,
       ...props
     },
     ref,
@@ -95,16 +101,23 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
 
     const currentValue = value !== undefined ? String(value) : internalValue;
 
-    // Filter options based on user search query
+    // Server-side search: report every query change (typing, clearing, the reset on open/close)
+    const onSearchChangeRef = useRef(onSearchChange);
+    onSearchChangeRef.current = onSearchChange;
+    useEffect(() => {
+      onSearchChangeRef.current?.(searchQuery);
+    }, [searchQuery]);
+
+    // Filter options based on user search query (the caller already did it for a server-side search)
     const filteredOptions = useMemo(() => {
-      if (!searchQuery.trim()) return parsedOptions;
+      if (onSearchChange || !searchQuery.trim()) return parsedOptions;
       const q = searchQuery.toLowerCase().trim();
       return parsedOptions.filter(
         (opt) =>
           opt.label.toLowerCase().includes(q) ||
           opt.value.toLowerCase().includes(q),
       );
-    }, [parsedOptions, searchQuery]);
+    }, [parsedOptions, searchQuery, onSearchChange]);
 
     // Currently selected option object
     const selectedOption = useMemo(() => {

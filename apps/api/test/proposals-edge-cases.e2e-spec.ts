@@ -17,6 +17,16 @@ const futureDay = (days: number) => {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 };
+/**
+ * The suite's fixed dates were written around 26 Sep 2026. Each keeps its distance from that day, re-based on today
+ * (IST), so rules measured from "now" — the 30-day duplicate and reopen windows, follow-ups in the future, contact
+ * dates not in the future — hold whenever the suite runs.
+ */
+const SUITE_DAY = '2026-09-26';
+const day = (fixed: string) =>
+  new Date(Date.parse(`${fixed}T00:00:00Z`) + Date.parse(`${futureDay(0)}T00:00:00Z`) - Date.parse(`${SUITE_DAY}T00:00:00Z`))
+    .toISOString()
+    .slice(0, 10);
 /** Next Sunday strictly after today (for the weekend follow-up case). */
 const nextSunday = () => {
   const d = new Date(Date.now() + 5.5 * 3600000);
@@ -140,8 +150,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25',
-          required_date: '2026-09-20',
+          request_date: day('2026-09-25'),
+          required_date: day('2026-09-20'),
           duplicate_override_reason: 'E1 lead time validation',
         });
       expect([400, 422]).toContain(res.status);
@@ -172,8 +182,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-08-01',
-          required_date: '2026-09-30',
+          request_date: day('2026-08-01'),
+          required_date: day('2026-09-30'),
           reference: 'E2-PAST-DATE-BACKLOG',
           duplicate_override_reason: 'E2 past date backlog entry',
         });
@@ -189,8 +199,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-08-01',
-          required_date: '2026-08-10', // already in the past
+          request_date: day('2026-08-01'),
+          required_date: day('2026-08-10'), // already in the past
           reference: 'E3-PAST-REQUIRED-DATE',
           duplicate_override_reason: 'E3 past required date entry',
         });
@@ -206,8 +216,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Healthcare',
-          request_date: '2026-09-20',
-          required_date: '2026-09-21', // 1 day lead time <= urgent_days (1)
+          request_date: day('2026-09-20'),
+          required_date: day('2026-09-21'), // 1 day lead time <= urgent_days (1)
           reference: 'E4-URGENT-PROPOSAL',
           duplicate_override_reason: 'E4 urgent proposal entry',
         });
@@ -223,8 +233,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: '00000000-0000-0000-0000-000000000000',
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E5 inactive customer check',
         });
       expect([400, 404]).toContain(res.status);
@@ -237,8 +247,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .send({
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E6 missing customer',
         });
       expect(res.status).toBe(400);
@@ -257,8 +267,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
             { product_id: testProduct2Id, is_primary: false },
           ],
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E7 no primary',
         });
       expect([400, 422]).toContain(resNoPrimary.status);
@@ -274,8 +284,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
             { product_id: testProductId, is_primary: false },
           ],
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E7 duplicate product',
         });
       expect([400, 422]).toContain(resDuplicate.status);
@@ -291,8 +301,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           reference: 'E8-INITIAL',
           duplicate_override_reason: 'First proposal',
         });
@@ -305,8 +315,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-15',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-15'),
         });
       expect(resDup.status).toBe(409);
       expect(resDup.body.duplicate_detected).toBe(true);
@@ -319,8 +329,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-15',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-15'),
           duplicate_override_reason: 'Different requirement scope',
         });
       expect(resAllowed.status).toBe(201);
@@ -334,8 +344,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E9 test',
         });
       expect(res.status).toBe(201);
@@ -351,8 +361,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           remarks: '  <script>alert("xss")</script> Hindi विवरण: प्रस्ताव परीक्षण  ',
           reference: '   ',
           duplicate_override_reason: 'E10 text sanitation test',
@@ -371,8 +381,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           reference: 'MULTI-EMAIL-REF-001',
           duplicate_override_reason: 'E11 reference test',
         });
@@ -387,8 +397,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           requested_by_id: salesUserId,
           duplicate_override_reason: 'E12 on behalf test',
         });
@@ -412,8 +422,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E13 unassigned test',
         });
       expect(res.status).toBe(201);
@@ -439,9 +449,10 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
     });
 
     it('E15: Reassignment emits event and does NOT count as movement for staleness', async () => {
+      // Preparation is started by the responsible person or Admin (b2bfac0); Admin names the preparer here.
       const reassignRes = await request(app.getHttpServer())
         .post(`/api/proposals/${unassignedPropId}/start-preparation`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ responsible_person_id: salesUserId });
       expect([200, 201]).toContain(reassignRes.status);
 
@@ -473,9 +484,9 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${unassignedPropId}/send`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          sent_date: '2026-09-26',
+          sent_date: day('2026-09-26'),
           email_references: ['DISPATCH-E16'],
-          next_follow_up_date: '2026-09-30',
+          next_follow_up_date: day('2026-09-30'),
         });
       expect(sendRes.status).toBe(400);
       expect(JSON.stringify(sendRes.body.message).toLowerCase()).toContain('follow');
@@ -502,8 +513,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           responsible_person_id: salesUserId,
           follow_up_owner_id: salesUserId,
           duplicate_override_reason: 'E18 single owner test',
@@ -528,8 +539,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-01',
-          required_date: '2026-09-20',
+          request_date: day('2026-09-01'),
+          required_date: day('2026-09-20'),
           responsible_person_id: salesUserId,
           duplicate_override_reason: 'Group C base proposal',
           quoted_value: 450000, // DEF-029: a quoted value is required before review / approval
@@ -541,7 +552,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
       const res = await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/mark-converted`)
         .set('Authorization', `Bearer ${mgmtToken}`)
-        .send({ outcome_date: '2026-09-26' });
+        .send({ outcome_date: day('2026-09-26') });
       expect(res.status).toBe(409);
       expect(res.body.allowed_transitions).toBeDefined();
     });
@@ -558,39 +569,48 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
       expect(['REQUESTED', 'PROPOSAL_REQUESTED']).toContain(getRes.body.status);
     });
 
-    it('E21: Proposal approval is restricted to Management & Admin and self-approval is strictly blocked', async () => {
-      // Move to READY_FOR_REVIEW with RM as responsible person
-      await request(app.getHttpServer())
-        .post(`/api/proposals/${propId}/start-preparation`)
+    it('E21: Approval follows the value band (RM below the threshold, Management above) and self-approval is blocked', async () => {
+      // The RM becomes the preparer: management reassigns, the responsible person starts and submits (b2bfac0).
+      const reassign = await request(app.getHttpServer())
+        .patch(`/api/proposals/${propId}/reassign`)
         .set('Authorization', `Bearer ${mgmtToken}`)
-        .send({ responsible_person_id: rmUserId });
+        .send({ responsible_person_id: rmUserId, reason: 'RM prepares this quote' });
+      expect(reassign.status).toBe(200);
 
-      await request(app.getHttpServer())
+      const prep = await request(app.getHttpServer())
+        .post(`/api/proposals/${propId}/start-preparation`)
+        .set('Authorization', `Bearer ${rmToken}`)
+        .send({});
+      expect([200, 201]).toContain(prep.status);
+
+      const submit = await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/submit-for-review`)
         .set('Authorization', `Bearer ${rmToken}`)
         .send({ change_summary: 'Self approval check' });
+      expect([200, 201]).toContain(submit.status);
 
-      // 1. Regional Manager attempts approval -> 403 Access denied (management & admin only)
-      const rmApproveRes = await request(app.getHttpServer())
-        .post(`/api/proposals/${propId}/approve`)
-        .set('Authorization', `Bearer ${rmToken}`)
-        .send({ remarks: 'RM approval' });
-      expect(rmApproveRes.status).toBe(403);
-      expect(rmApproveRes.body.message).toContain('required role (management, admin)');
-
-      // 2. Creator (mgmtToken) attempts self-approval -> 403 Forbidden (Self-approval is blocked)
-      const selfApproveRes = await request(app.getHttpServer())
+      // 1. ₹4.5 lakh is below the ₹10 lakh management threshold: Management is not the approver -> 403
+      const mgmtApproveRes = await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/approve`)
         .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ remarks: 'Management approval' });
+      expect(mgmtApproveRes.status).toBe(403);
+      expect(mgmtApproveRes.body.message).toContain('approved by the Regional Manager');
+
+      // 2. The RM is the band approver but prepared it himself -> 403 (self-approval is blocked)
+      const selfApproveRes = await request(app.getHttpServer())
+        .post(`/api/proposals/${propId}/approve`)
+        .set('Authorization', `Bearer ${rmToken}`)
         .send({ remarks: 'Self approval' });
       expect(selfApproveRes.status).toBe(403);
       expect(selfApproveRes.body.message).toContain('Self-approval is blocked');
     });
 
     it('E22: Reviewer requests changes -> back to UNDER_PREPARATION, review_cycle_count incremented', async () => {
+      // Below the threshold the RM band reviews; the RM prepared this one, so Admin reviews it.
       const res = await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/request-changes`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ comment: 'Please attach detailed technical sheet' });
       expect([200, 201]).toContain(res.status);
       expect(res.body.status).toBe('UNDER_PREPARATION');
@@ -625,10 +645,10 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${propId}/fast-track-send`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          sent_date: '2026-09-26',
+          sent_date: day('2026-09-26'),
           email_references: ['FT-REF-001'],
           follow_up_owner_id: salesUserId,
-          next_follow_up_date: '2026-09-30',
+          next_follow_up_date: day('2026-09-30'),
           reason: 'Emergency executive bypass',
         });
       expect(ftDisabled.status).toBe(403);
@@ -644,10 +664,10 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${propId}/fast-track-send`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          sent_date: '2026-09-26',
+          sent_date: day('2026-09-26'),
           email_references: ['FT-REF-001'],
           follow_up_owner_id: salesUserId,
-          next_follow_up_date: '2026-09-30',
+          next_follow_up_date: day('2026-09-30'),
           reason: 'Emergency executive bypass',
         });
       expect([200, 201]).toContain(ftEnabled.status);
@@ -678,17 +698,17 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
 
       await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/approve`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ remarks: 'v2 approved' });
 
       const sendLateRes = await request(app.getHttpServer())
         .post(`/api/proposals/${propId}/send`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          sent_date: '2026-09-26', // Required date on propId was 2026-09-20
+          sent_date: day('2026-09-26'), // Required date on propId was 2026-09-20
           email_references: ['DISPATCH-LATE-001'],
           follow_up_owner_id: salesUserId,
-          next_follow_up_date: '2026-09-30',
+          next_follow_up_date: day('2026-09-30'),
         });
       expect([200, 201]).toContain(sendLateRes.status);
       expect(sendLateRes.body.sent_late).toBe(true);
@@ -703,8 +723,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
-          request_date: '2026-09-25',
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'),
+          required_date: day('2026-10-10'),
           responsible_person_id: salesUserId,
           duplicate_override_reason: 'E27 zero follow-up test',
           quoted_value: 450000, // DEF-029: a quoted value is required before review / approval
@@ -713,7 +733,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
 
       await request(app.getHttpServer())
         .post(`/api/proposals/${pId}/start-preparation`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${salesToken}`)
         .send({});
 
       await request(app.getHttpServer())
@@ -723,17 +743,17 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
 
       await request(app.getHttpServer())
         .post(`/api/proposals/${pId}/approve`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ remarks: 'Approved' });
 
       await request(app.getHttpServer())
         .post(`/api/proposals/${pId}/send`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          sent_date: '2026-09-26',
+          sent_date: day('2026-09-26'),
           email_references: ['ZERO-FU-REF'],
           follow_up_owner_id: salesUserId,
-          next_follow_up_date: '2026-09-30',
+          next_follow_up_date: day('2026-09-30'),
         });
 
       // Mark converted immediately without follow-ups
@@ -741,7 +761,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${pId}/mark-converted`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          outcome_date: '2026-09-26',
+          outcome_date: day('2026-09-26'),
           conversion_reference: 'PO-DIRECT-001',
         });
       expect([200, 201]).toContain(convRes.status);
@@ -772,8 +792,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E29 pre-send cancel',
         });
       const cId = cRes.body.id;
@@ -804,7 +824,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .send({
           lost_reason_code: 'Price',
           lost_reason_text: 'Competitor offered cheaper alternate',
-          outcome_date: '2026-09-26',
+          outcome_date: day('2026-09-26'),
         });
 
       // Manager reopens within window
@@ -830,7 +850,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
       const editBlocked = await request(app.getHttpServer())
         .patch(`/api/proposals/${propId}`)
         .set('Authorization', `Bearer ${mgmtToken}`)
-        .send({ required_date: '2026-12-01' });
+        .send({ required_date: day('2026-12-01') });
       expect(editBlocked.status).toBe(409);
 
       // DEF-080: terminal proposals are fully read-only (remarks too); management / admin reopen them to make changes
@@ -858,8 +878,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E33 date change test',
         });
       const pId = pRes.body.id;
@@ -868,7 +888,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
       const failChange = await request(app.getHttpServer())
         .patch(`/api/proposals/${pId}`)
         .set('Authorization', `Bearer ${mgmtToken}`)
-        .send({ required_date: '2026-10-20' });
+        .send({ required_date: day('2026-10-20') });
       expect([400, 422]).toContain(failChange.status);
 
       // With reason -> allowed
@@ -876,13 +896,13 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .patch(`/api/proposals/${pId}`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          required_date: '2026-10-20',
+          required_date: day('2026-10-20'),
           required_date_change_reason: 'Customer requested deadline extension',
         });
       expect(okChange.status).toBe(200);
       expect(okChange.body.required_date).toBeDefined();
       const dt = new Date(okChange.body.required_date);
-      expect(dt.getFullYear()).toBe(2026);
+      expect(dt.getFullYear()).toBe(Number(day('2026-10-20').slice(0, 4)));
     });
 
     it('E34: Invariant violations prevented in domain layer & DB constraints', async () => {
@@ -909,8 +929,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E35 soft delete test',
         });
       const draftId = draftRes.body.id;
@@ -937,8 +957,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25',
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'),
+          required_date: day('2026-10-10'),
           responsible_person_id: salesUserId,
           duplicate_override_reason: 'Group D base proposal',
           quoted_value: 450000, // DEF-029: a quoted value is required before review / approval
@@ -947,7 +967,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
 
       await request(app.getHttpServer())
         .post(`/api/proposals/${sentPropId}/start-preparation`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${salesToken}`)
         .send({});
 
       await request(app.getHttpServer())
@@ -957,17 +977,17 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
 
       await request(app.getHttpServer())
         .post(`/api/proposals/${sentPropId}/approve`)
-        .set('Authorization', `Bearer ${mgmtToken}`)
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({ remarks: 'Approved' });
 
       await request(app.getHttpServer())
         .post(`/api/proposals/${sentPropId}/send`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          sent_date: '2026-09-26',
+          sent_date: day('2026-09-26'),
           email_references: ['DISPATCH-E36'],
           follow_up_owner_id: salesUserId,
-          next_follow_up_date: '2026-09-29',
+          next_follow_up_date: day('2026-09-29'),
         });
     });
 
@@ -977,7 +997,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          contact_date: '2026-09-26',
+          contact_date: day('2026-09-26'),
           mode: 'Call',
           summary: 'Client acknowledged receipt',
           response: 'Positive',
@@ -990,7 +1010,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          contact_date: '2026-09-26',
+          contact_date: day('2026-09-26'),
           mode: 'Call',
           contact_person: 'Col. Sharma',
           summary: 'Client acknowledged receipt and asked for warranty details',
@@ -1006,7 +1026,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          contact_date: '2026-09-26',
+          contact_date: day('2026-09-26'),
           summary: 'Follow-up attempt',
           next_follow_up_date: '2020-01-01',
         });
@@ -1020,7 +1040,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${salesToken}`)
         .send({
-          contact_date: '2026-09-26',
+          contact_date: day('2026-09-26'),
           summary: 'Weekend follow-up scheduling',
           next_follow_up_date: nextSunday(),
         });
@@ -1032,7 +1052,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         .post(`/api/proposals/${sentPropId}/follow-ups`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          contact_date: '2026-09-26',
+          contact_date: day('2026-09-26'),
           summary: 'Director met client during annual defence summit',
           response: 'Positive',
           next_follow_up_date: futureDay(8),
@@ -1105,8 +1125,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E46 test proposal',
         });
 
@@ -1250,8 +1270,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           duplicate_override_reason: 'E61 optimistic locking test',
         });
       const pId = pRes.body.id;
@@ -1274,8 +1294,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
         customer_id: testOrgId,
         product_id: testProductId,
         sector: 'Defence',
-        request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-        required_date: '2026-10-10',
+        request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+        required_date: day('2026-10-10'),
         duplicate_override_reason: 'E62 idempotency test',
       };
 
@@ -1327,8 +1347,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Defence',
-          request_date: '2026-09-25', // pinned: the suite's timeline is late Sept 2026 (default would be today)
-          required_date: '2026-10-10',
+          request_date: day('2026-09-25'), // the suite's late-Sept timeline, re-based on today by day() (default would be today)
+          required_date: day('2026-10-10'),
           reference: '=CMD|calc.exe',
           duplicate_override_reason: 'E65 formula injection test',
         });
@@ -1362,8 +1382,8 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           customer_id: testOrgId,
           product_id: testProductId,
           sector: 'Commercial',
-          request_date: '2026-01-15',
-          required_date: '2026-02-15',
+          request_date: day('2026-01-15'),
+          required_date: day('2026-02-15'),
           status: 'REQUESTED',
           remarks: 'Historical import item 1',
         },
@@ -1371,7 +1391,7 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
           external_ref: extRef2,
           customer_id: '00000000-0000-0000-0000-000000000000', // Invalid customer
           product_id: testProductId,
-          required_date: '2026-02-15',
+          required_date: day('2026-02-15'),
         },
       ];
 

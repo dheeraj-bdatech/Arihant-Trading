@@ -47,6 +47,7 @@ export const IMPORTANT_KINDS = {
     and not (audit_log.previous_value is null and audit_log.new_value -> 'fromStatus' = 'null'::jsonb))`,
   ticket_reassigned: sql<boolean>`(audit_log.entity_type = 'service_ticket' and audit_log.action ~* 'reassign')`,
   expense_decision: sql<boolean>`(audit_log.entity_type in ('expense', 'expense_claim') and audit_log.action ~* 'approv|reject')`,
+  service_report_review: sql<boolean>`(audit_log.entity_type = 'service_report' and audit_log.action ~* '^report_(approved|returned)$')`,
 } as const;
 export type ImportantKind = keyof typeof IMPORTANT_KINDS;
 const KIND_KEYS = Object.keys(IMPORTANT_KINDS) as ImportantKind[];

@@ -282,4 +282,44 @@ describe('Module 3: Demo workflow guards (E2E)', () => {
       expect(row).toEqual({ status: 'cancelled', cancellation_reason: 'customer_cancelled' });
     });
   });
+
+  describe('6. Dates, approval and outcome hygiene (QA 28 Oct 2026)', () => {
+    it('a request still waiting for management approval cannot be rescheduled into the confirmation queue', async () => {
+      const demo = await newDemo(salesToken, { product_id: otherProductId, requested_date: istDay(31) });
+      const res = await api()
+        .post(`/api/demos/${demo.id}/reschedule`)
+        .set('Authorization', `Bearer ${demoTeamToken}`)
+        .send({ new_date: istDay(32), reason: 'Client asked for another day' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('DEMO_NOT_APPROVED');
+      expect(await status(demo.id)).toBe('requested');
+    });
+
+    it('a date sent back as a serialized instant is stored as its IST calendar day', async () => {
+      const day = istDay(33);
+      const demo = await newDemo(mgmtToken, { product_id: otherProductId, requested_date: day });
+      expect((await api().post(`/api/demos/${demo.id}/start-planning`).set('Authorization', `Bearer ${mgmtToken}`)).status).toBe(201);
+      // IST midnight of `day` as JSON serializes it: the previous UTC day at 18:30
+      const instant = new Date(`${day}T00:00:00+05:30`).toISOString();
+      const confirm = await api().post(`/api/demos/${demo.id}/confirm`).set('Authorization', `Bearer ${demoTeamToken}`).send({ confirmed_date: instant });
+      expect(confirm.status).toBe(201);
+      const row = await db.selectFrom('demos').select(sql<string>`confirmed_date::text`.as('d')).where('id', '=', demo.id).executeTakeFirstOrThrow();
+      expect(row.d).toBe(day);
+    });
+
+    it('a successful outcome never carries a failure reason into the customer timeline', async () => {
+      // productId: sections 2 and 3 already hold Management's "today" demos without a product / of otherProductId
+      const demo = await newDemo(mgmtToken, { product_id: productId, requested_date: istDay(0) });
+      expect((await api().post(`/api/demos/${demo.id}/start-planning`).set('Authorization', `Bearer ${mgmtToken}`)).status).toBe(201);
+      expect((await api().post(`/api/demos/${demo.id}/confirm`).set('Authorization', `Bearer ${demoTeamToken}`).send({ confirmed_date: istDay(0) })).status).toBe(201);
+      const res = await api()
+        .post(`/api/demos/${demo.id}/outcome`)
+        .set('Authorization', `Bearer ${demoTeamToken}`)
+        .send({ result: 'success', failure_reason: 'TECHNICAL_FAILURE', customer_response: 'Order likely' });
+      expect(res.status).toBe(201);
+      expect(res.body.failure_reason).toBeNull();
+      const interaction = await db.selectFrom('interactions').select('remarks').where('demo_id', '=', demo.id).executeTakeFirstOrThrow();
+      expect(interaction.remarks).not.toContain('Failure');
+    });
+  });
 });

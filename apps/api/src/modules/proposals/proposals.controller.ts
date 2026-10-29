@@ -181,7 +181,7 @@ export class ProposalsController {
   }
 
   @Patch(':id')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateProposalDto,
@@ -334,7 +334,7 @@ export class ProposalsController {
   }
 
   @Post(':id/mark-converted')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async markConverted(
     @Param('id') id: string,
     @Body() dto: MarkConvertedDto,
@@ -350,7 +350,7 @@ export class ProposalsController {
   }
 
   @Post(':id/mark-lost')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async markLost(
     @Param('id') id: string,
     @Body() dto: MarkLostDto,
@@ -366,7 +366,7 @@ export class ProposalsController {
   }
 
   @Post(':id/close')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async close(
     @Param('id') id: string,
     @Body() dto: CloseProposalDto,
@@ -401,7 +401,7 @@ export class ProposalsController {
   // 4. Follow-up & Versioning Endpoints
   // =========================================================================
   @Post(':id/follow-ups')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async addFollowup(
     @Param('id') id: string,
     @Body() dto: CreateProposalFollowupDto,
@@ -417,7 +417,7 @@ export class ProposalsController {
   }
 
   @Post(':id/postpone-follow-up')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async postponeFollowup(
     @Param('id') id: string,
     @Body() dto: PostponeFollowUpDto,
@@ -433,7 +433,7 @@ export class ProposalsController {
   }
 
   @Post(':id/versions')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async createVersion(
     @Param('id') id: string,
     @Body() dto: CreateProposalVersionDto,
@@ -454,7 +454,7 @@ export class ProposalsController {
 
   // Legacy fallback routes for backward compatibility
   @Patch(':id/status')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async changeStatus(
     @Param('id') id: string,
     @Body() dto: ChangeProposalStatusDto,
@@ -476,7 +476,7 @@ export class ProposalsController {
   }
 
   @Patch(':id/follow-up')
-  @Roles('management', 'regional_manager', 'sales', 'admin')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
   async updateFollowup(
     @Param('id') id: string,
     @Body() dto: any,

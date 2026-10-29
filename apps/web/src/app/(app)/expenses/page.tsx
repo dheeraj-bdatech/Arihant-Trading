@@ -452,7 +452,7 @@ function ExpensesHub() {
         }
       />
 
-      {/* KPIs from the server's buckets: every status sits in exactly one, so the stage amounts add up to Total claimed. */}
+      {/* KPIs from the server's buckets: every status sits in exactly one, so the claimed amounts add up to Total claimed. */}
       <StatGrid cols={4} className="gap-3">
         <StatCard label="Total Claimed" value={formatShort(totals?.total_claimed)} subtext={claimsText(totals?.count ?? 0)} variant="primary" icon={<Receipt className="h-5 w-5 text-[#0F5E63]" />} />
         <StatCard
@@ -461,8 +461,9 @@ function ExpensesHub() {
           subtext={`${claimsText(bucket('manager').count + bucket('clarification').count)}${bucket('clarification').count ? ` · ${bucket('clarification').count} sent back` : ''}`}
           variant="amber"
         />
-        <StatCard label="With Accounts" value={formatShort(bucket('accounts').amount)} subtext={`${claimsText(bucket('accounts').count)} approved by manager`} />
-        <StatCard label="Paid" value={formatShort(bucket('settled').amount)} subtext={`${claimsText(bucket('settled').count)} settled`} variant="emerald" />
+        {/* Approved amounts, not claimed: a ₹4,700 claim approved at ₹2,500 is paid ₹2,500 (QA BUG-007). */}
+        <StatCard label="With Accounts" value={formatShort(bucket('accounts').approved_amount ?? bucket('accounts').amount)} subtext={`${claimsText(bucket('accounts').count)} approved by manager`} />
+        <StatCard label="Paid" value={formatShort(bucket('settled').approved_amount ?? bucket('settled').amount)} subtext={`${claimsText(bucket('settled').count)} settled`} variant="emerald" />
       </StatGrid>
 
       {/* One filter row: search, status, region (for people who see others' claims) and dates. */}

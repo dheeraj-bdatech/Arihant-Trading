@@ -48,6 +48,7 @@ const KINDS: { key: string; label: string }[] = [
   { key: 'proposal_status', label: 'Proposal status changed' },
   { key: 'ticket_reassigned', label: 'Service ticket reassigned' },
   { key: 'expense_decision', label: 'Expense approved / rejected' },
+  { key: 'service_report_review', label: 'Service report approved / returned' },
 ];
 const kindLabel = (k: string) => KINDS.find((x) => x.key === k)?.label || 'Change';
 
@@ -58,6 +59,7 @@ const MODULE_OF: Record<string, string> = {
   visit: 'Visit',
   demo_equipment: 'Demo equipment',
   service_ticket: 'Service ticket',
+  service_report: 'Service report',
   expense: 'Expense',
   expense_claim: 'Expense claim',
   task: 'Task',

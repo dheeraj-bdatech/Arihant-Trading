@@ -76,6 +76,7 @@ import {
   isPortalTicket,
   isUnverified,
   isSlaPaused,
+  isAssignedEngineer,
   STATUS_ROLES,
   MANAGER_ROLES,
   LINK_ROLES,
@@ -113,7 +114,7 @@ const ACTION_LABEL: Partial<Record<ServiceStatus, string>> = {
   revisit_required: 'Revisit required',
   cancelled: 'Cancel ticket',
   reopened: 'Reopen ticket',
-  received: 'Back to received',
+  received: 'Back to intake (unassign)',
 };
 const EXCEPTION_TARGETS: ServiceStatus[] = ['awaiting_part', 'awaiting_customer', 'escalated', 'on_hold', 'revisit_required', 'cancelled'];
 const ACTION_ORDER = ['assigned', 'visit_scheduled', 'in_progress', 'report', 'resolved', 'closed', 'reassign', 'reopened', 'created', 'received'];
@@ -252,10 +253,11 @@ export default function ServicePage() {
       // No stats (endpoint failed): drop stale numbers so the tiles fall back to counts over the loaded list.
       setStats(statsRes || null);
     } catch (err) {
+      if (seq !== fetchSeq.current) return; // a newer request owns the screen: its result (or error) is what counts
       console.error('Failed to load service tickets:', err);
       setLoadError(errMsg(err, 'Failed to load service tickets.'));
     } finally {
-      setIsLoading(false);
+      if (seq === fetchSeq.current) setIsLoading(false);
     }
   }, [activeTab, priorityFilter, sourceFilter, activeFlag, debouncedSearch]);
 
@@ -349,7 +351,8 @@ export default function ServicePage() {
     const id = selectedIdRef.current;
     if (id) {
       try {
-        setSelectedTicket(await fetchDetail(id));
+        const fresh = await fetchDetail(id);
+        if (selectedIdRef.current === id) setSelectedTicket(fresh);
       } catch {
         /* ticket may have left this user's scope */
       }
@@ -401,7 +404,8 @@ export default function ServicePage() {
           tone: EXCEPTION_TARGETS.includes(target) ? 'exception' : ['assigned', 'visit_scheduled', 'in_progress', 'resolved'].includes(target) ? 'primary' : 'secondary',
         });
       }
-      if (['service_team', 'admin'].includes(role) && ['in_progress', 'resolved'].includes(status)) {
+      // the API takes a report only from the assigned (or an additional) engineer, or admin
+      if ((role === 'admin' || (role === 'service_team' && isAssignedEngineer(t, userId))) && ['in_progress', 'resolved'].includes(status)) {
         out.push({ kind: 'report', label: 'File service report', tone: 'primary' });
       }
       // §47: hand an open ticket to another engineer without a status change (a field engineer cannot; a chief can)
@@ -433,15 +437,18 @@ export default function ServicePage() {
     }
   };
 
-  // Open Ticket Detail
+  // Open Ticket Detail. Two quick clicks: only the last ticket asked for may open (an older reply is dropped).
   const handleOpenDetail = async (ticket: any) => {
     setCardError(null);
     setDetailTab('overview');
     selectedIdRef.current = ticket.id;
     try {
-      setSelectedTicket(await fetchDetail(ticket.id));
+      const full = await fetchDetail(ticket.id);
+      if (selectedIdRef.current !== ticket.id) return;
+      setSelectedTicket(full);
       setIsDetailModalOpen(true);
     } catch (err) {
+      if (selectedIdRef.current !== ticket.id) return;
       selectedIdRef.current = null;
       setCardError(errMsg(err, 'Could not open this ticket.'));
     }
@@ -1120,10 +1127,10 @@ export default function ServicePage() {
 
               {detailTab === 'visits' && <VisitsTab ticket={st} role={role} userId={userId} onChanged={refreshAll} />}
               {detailTab === 'reports' && (
-                <ReportsTab ticket={st} role={role} onNewReport={() => setActionCtx({ kind: 'report', ticket: st })} onChanged={refreshAll} />
+                <ReportsTab ticket={st} role={role} userId={userId} onNewReport={() => setActionCtx({ kind: 'report', ticket: st })} onChanged={refreshAll} />
               )}
               {detailTab === 'parts' && <PartsTab ticket={st} role={role} onChanged={refreshAll} />}
-              {detailTab === 'comments' && <NotesTab ticket={st} onChanged={refreshAll} />}
+              {detailTab === 'comments' && <NotesTab ticket={st} role={role} onChanged={refreshAll} />}
               {detailTab === 'history' && <AuditTab ticket={st} engineerNames={engineerNames} />}
               {detailTab === 'linked' && (
                 <RelatedRecords

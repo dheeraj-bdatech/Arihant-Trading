@@ -414,7 +414,7 @@ export default function DeliveriesPage() {
       subtitle: [delivery.organisation_name || 'Defence / Security Buyer', delivery.delivery_location].filter(Boolean).join(' · '),
       status: { label: deliveryStatusLabel(delivery.status), tone: toneFor(deliveryStatusLabel(delivery.status)) },
       due: { date: delivery.delivery_date, label: 'Delivery', done },
-      owner: delivery.assigned_name || undefined,
+      owner: delivery.assignee_name || undefined,
       facts,
       // Closed consignments (handover signed off / cancelled) have no further milestones.
       primary: closed
@@ -516,7 +516,7 @@ export default function DeliveriesPage() {
                     </div>
                   )}
                 </TableCell>
-                <TableCell className="text-[#4A5568] whitespace-nowrap">{delivery.assigned_name || '-'}</TableCell>
+                <TableCell className="text-[#4A5568] whitespace-nowrap">{delivery.assignee_name || '-'}</TableCell>
                 <TableCell className="whitespace-nowrap">
                   <Badge variant={deliveryBadge(delivery.status)} size="sm" className="uppercase font-bold">
                     {deliveryStatusLabel(delivery.status)}

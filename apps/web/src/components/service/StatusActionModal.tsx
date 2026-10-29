@@ -34,6 +34,7 @@ const HINTS: Partial<Record<ServiceStatus, string>> = {
   revisit_required: 'Record why another visit is needed.',
   resolved: 'A ticket is resolved by its service report (work done + customer sign-off).',
   in_progress: 'Work starts on or after the scheduled visit day.',
+  received: 'The assigned engineer is taken off the ticket and it goes back to the intake queue.',
 };
 
 const REASON_LABEL: Partial<Record<ServiceStatus, string>> = {

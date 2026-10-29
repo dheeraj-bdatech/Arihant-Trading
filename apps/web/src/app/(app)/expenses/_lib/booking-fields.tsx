@@ -123,11 +123,16 @@ export const TileSelect: React.FC<{
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
-}> = ({ id, value, options, onChange }) => (
+  /** Server-side search (see Select): the caller refetches `options` for each query. */
+  onSearchChange?: (query: string) => void;
+  searchPlaceholder?: string;
+}> = ({ id, value, options, onChange, onSearchChange, searchPlaceholder }) => (
   <Select
     id={id}
     value={value}
     options={options}
+    onSearchChange={onSearchChange}
+    searchPlaceholder={searchPlaceholder}
     onChange={(e) => onChange(e.target.value)}
     className="field-tile-control mt-0.5 h-7 border-0 bg-transparent px-0 py-0 text-[15px] ring-0 focus:ring-0"
   />

@@ -44,8 +44,12 @@ import {
   UUID_REGEX,
 } from './service.dto.js';
 import {
+  addBusinessHours,
+  businessDay,
+  businessMsBetween,
   cleanText,
   computeSla,
+  slaIsBusinessHours,
   detectRepeatComplaint,
   generateTicketNo,
   getServiceSetting,
@@ -191,35 +195,54 @@ export class ServiceService {
 
   /** Territory filter shared by lists, stats and detail. null = unrestricted. */
   private scopeWhere(user: AuthUser): ((eb: any) => any) | null {
+    // tender_team: "National GeM & State Bids" (Blueprint §5), national like the organisation master.
     if (user.role === 'management' || user.role === 'admin' || user.role === 'tender_team') return null;
 
     if (user.role === 'service_team') {
-      // Own tickets, the unassigned intake queue, and — for a chief service engineer — tickets of the
-      // engineers who report to them (so tickets they dispatched stay on their board).
-      return (eb: any) =>
-        eb.or([
+      // Own tickets, the unassigned intake queue of their own territory (plus not-yet-routed tickets with no
+      // territory at all), and — for a chief service engineer — tickets of the engineers who report to them
+      // (so tickets they dispatched stay on their board). An engineer with no zone / region keeps the national queue.
+      return (eb: any) => {
+        const territory = this.territoryParts(eb, user);
+        const unassignedQueue = territory.length
+          ? eb.and([
+              eb('service_tickets.assigned_to', 'is', null),
+              eb.or([
+                ...territory,
+                eb.and([eb('service_tickets.region_id', 'is', null), eb('organisations.zone_id', 'is', null), eb('organisations.region_id', 'is', null)]),
+              ]),
+            ])
+          : eb('service_tickets.assigned_to', 'is', null);
+        return eb.or([
           eb('service_tickets.assigned_to', '=', user.id),
-          eb('service_tickets.assigned_to', 'is', null),
+          unassignedQueue,
           sql<boolean>`service_tickets.additional_engineer_ids @> ${JSON.stringify([user.id])}::jsonb`,
           sql<boolean>`service_tickets.assigned_to in (select id from users where reporting_manager_id = ${user.id})`,
         ]);
+      };
     }
 
     // regional_manager, sales, demo_team: their own territory (+ tickets they raised)
     return (eb: any) => {
-      const parts: any[] = [];
-      if (user.zone_id) {
-        parts.push(eb('organisations.zone_id', '=', user.zone_id));
-        parts.push(sql<boolean>`service_tickets.region_id in (select id from regions where zone_id = ${user.zone_id})`);
-      }
-      if (user.region_id) {
-        parts.push(eb('organisations.region_id', '=', user.region_id));
-        parts.push(eb('service_tickets.region_id', '=', user.region_id));
-      }
+      const parts: any[] = this.territoryParts(eb, user);
       if (user.role !== 'regional_manager') parts.push(eb('service_tickets.created_by', '=', user.id));
       if (parts.length === 0) parts.push(sql<boolean>`false`);
       return eb.or(parts);
     };
+  }
+
+  /** The user's zone / region as ticket conditions (customer's territory or the ticket's own region). */
+  private territoryParts(eb: any, user: AuthUser): any[] {
+    const parts: any[] = [];
+    if (user.zone_id) {
+      parts.push(eb('organisations.zone_id', '=', user.zone_id));
+      parts.push(sql<boolean>`service_tickets.region_id in (select id from regions where zone_id = ${user.zone_id})`);
+    }
+    if (user.region_id) {
+      parts.push(eb('organisations.region_id', '=', user.region_id));
+      parts.push(eb('service_tickets.region_id', '=', user.region_id));
+    }
+    return parts;
   }
 
   /**
@@ -948,15 +971,30 @@ export class ServiceService {
       if (startedAt) {
         const ms = Math.max(0, now.getTime() - startedAt.getTime());
         set.sla_paused_minutes = (existing.sla_paused_minutes || 0) + Math.ceil(ms / 60000);
-        // the clock stood still, so every deadline slides by the time spent paused
-        if (existing.sla_resolution_due_at) set.sla_resolution_due_at = new Date(new Date(existing.sla_resolution_due_at).getTime() + ms);
-        if (!existing.first_response_at && existing.sla_response_due_at) set.sla_response_due_at = new Date(new Date(existing.sla_response_due_at).getTime() + ms);
+        // The clock stood still, so every deadline slides by the time spent paused. A working-hours SLA slides by
+        // the working time the pause consumed (a Friday-evening-to-Monday pause costs only Monday's hours), added
+        // back in working hours; a 24x7 SLA slides by wall-clock time.
+        const businessHours = await slaIsBusinessHours(db as any, existing.priority, existing.warranty_status_snapshot || existing.warranty_status);
+        const { startHour, endHour } = businessHours ? await businessDay(db as any) : { startHour: 9, endHour: 18 };
+        const slide = (due: unknown) => {
+          const d = new Date(due as any);
+          if (!businessHours) return new Date(d.getTime() + ms);
+          const worked = businessMsBetween(startedAt, now, startHour, endHour);
+          return worked > 0 ? addBusinessHours(d, worked / 3600000, startHour, endHour) : d;
+        };
+        if (existing.sla_resolution_due_at) set.sla_resolution_due_at = slide(existing.sla_resolution_due_at);
+        if (!existing.first_response_at && existing.sla_response_due_at) set.sla_response_due_at = slide(existing.sla_response_due_at);
       }
       set.sla_pause_started_at = null;
       slaImpact = 'resumed';
     }
 
-    if (o.assignedTo !== undefined) {
+    // Back to "received" returns the ticket to the intake queue: the engineer comes off it (§47 history row below).
+    const unassign = to === 'received' && o.assignedTo === undefined && !!existing.assigned_to;
+    if (unassign) {
+      set.assigned_to = null;
+      set.assigned_engineer_id = null;
+    } else if (o.assignedTo !== undefined) {
       set.assigned_to = o.assignedTo;
       set.assigned_engineer_id = o.assignedTo;
     }
@@ -994,7 +1032,18 @@ export class ServiceService {
       })
       .execute();
 
-    if (o.assignedTo && o.assignedTo !== existing.assigned_to) {
+    if (unassign) {
+      await db
+        .insertInto('ticket_assignment_history')
+        .values({
+          ticket_id: existing.id,
+          from_engineer: existing.assigned_to,
+          to_engineer: null,
+          reason: o.reason || 'Returned to the intake queue',
+          changed_by: o.actorId,
+        })
+        .execute();
+    } else if (o.assignedTo && o.assignedTo !== existing.assigned_to) {
       await db
         .insertInto('ticket_assignment_history')
         .values({
@@ -1294,6 +1343,10 @@ export class ServiceService {
         .execute();
       return row;
     });
+    if (needsApproval) {
+      // Closing signs off the report on file: audit that approval as reviewReport does (QA BUG-015).
+      this.audit(user.id, 'service_report', latest.id, 'report_approved', { report_status: latest.report_status }, { report_status: 'Approved', ticket_id: id, via: 'ticket_closure' });
+    }
 
     await this.announceTransition(existing, updated, user.id, remarks || null);
     return updated;
@@ -1435,6 +1488,7 @@ export class ServiceService {
 
     const partsJson = this.normalizeParts(dto.parts_replaced);
     const attachments = this.normalizeAttachments(dto.attachments);
+    const reportUrl = this.normalizeReportUrl(dto.report_url);
     if (dto.visit_id) {
       const v = await this.db.selectFrom('service_visits').select('id').where('id', '=', dto.visit_id).where('ticket_id', '=', ticketId).executeTakeFirst();
       if (!v) throw new BadRequestException('Visit does not belong to this ticket');
@@ -1465,7 +1519,7 @@ export class ServiceService {
           further_work_required: !!dto.further_work_required,
           further_work_description: dto.further_work_description ? cleanText(dto.further_work_description, 1000) : null,
           next_visit_date: nextVisit,
-          report_url: dto.report_url || null,
+          report_url: reportUrl,
           attachments: JSON.stringify(attachments),
           report_status: 'Submitted',
           submitted_by: user.id,
@@ -1537,6 +1591,21 @@ export class ServiceService {
     return JSON.stringify(cleaned);
   }
 
+  /** The signed-report link is rendered as a link for managers: only an absolute http(s) URL is stored. */
+  private normalizeReportUrl(input: unknown): string | null {
+    const raw = String(input ?? '').trim();
+    if (!raw) return null;
+    let ok = false;
+    try {
+      const u = new URL(raw);
+      ok = (u.protocol === 'http:' || u.protocol === 'https:') && raw.length <= 2000;
+    } catch {
+      ok = false;
+    }
+    if (!ok) throw new BadRequestException('report_url must be a full web address starting with https:// (or http://)');
+    return raw;
+  }
+
   /** Report evidence: at most 10 `{ name, url }` entries with an http(s) URL; anything else is rejected. */
   private normalizeAttachments(input: unknown): { name: string; url: string }[] {
     if (input === undefined || input === null) return [];
@@ -1567,12 +1636,15 @@ export class ServiceService {
     }
 
     if (dto.approved) {
-      return this.db
+      const approved = await this.db
         .updateTable('service_reports')
         .set({ report_status: 'Approved', approved_by: user.id, approved_at: new Date(), updated_at: new Date() })
         .where('id', '=', reportId)
         .returningAll()
         .executeTakeFirstOrThrow();
+      // QA BUG-015: signing off a report is an approval, so it belongs in the audit trail.
+      this.audit(user.id, 'service_report', reportId, 'report_approved', { report_status: report.report_status }, { report_status: 'Approved', ticket_id: ticketId });
+      return approved;
     }
 
     const reason = cleanText(dto.return_reason || '', 500);
@@ -1590,6 +1662,7 @@ export class ServiceService {
       }
       return r;
     });
+    this.audit(user.id, 'service_report', reportId, 'report_returned', { report_status: report.report_status }, { report_status: 'Returned for Correction', return_reason: reason, ticket_id: ticketId });
     await this.emitTicketEvent(AppEvents.SERVICE_STATUS_CHANGED, ticketId, { actorId: user.id, from: 'report_submitted', to: 'in_progress', reason: `Report returned: ${reason}` });
     return updated;
   }
@@ -1846,6 +1919,10 @@ export class ServiceService {
     const body = cleanText(dto.body, 4000);
     if (!body) throw new BadRequestException('Comment body is required');
     const isInternal = dto.is_internal !== undefined ? dto.is_internal : true;
+    // A customer-visible reply shows on the public tracking page: only the service desk speaks to the customer.
+    if (!isInternal && !ASSIGN_ROLES.includes(user.role)) {
+      throw new ForbiddenException('Only the service team, regional managers, management or admin can message the customer');
+    }
     return this.db
       .insertInto('ticket_comments')
       .values({ ticket_id: ticketId, author_id: user.id, body, is_internal: isInternal, mentions: JSON.stringify([]) })
@@ -1891,7 +1968,7 @@ export class ServiceService {
     const count = sql<number>`count(service_tickets.id)::int`;
     const countOf = (f: TicketListFilters) => q(f).select(count.as('c')).executeTakeFirst();
 
-    const [byStatus, assigned, overdue, critical, repeat, closure, slaBreached, portalNew, unverified, workloadRows, engineers, closureByPriority] = await Promise.all([
+    const [byStatus, assigned, overdue, critical, repeat, closure, slaBreached, portalNew, unverified, engineers, closureByPriority] = await Promise.all([
       q(noStage).select(['service_tickets.status', count.as('c')]).groupBy('service_tickets.status').execute(),
       q(noStage).select(count.as('c')).where('service_tickets.assigned_to', 'is not', null).where('service_tickets.status', 'not in', open).executeTakeFirst(),
       countOf({ ...noFlags, overdue: true }),
@@ -1909,16 +1986,6 @@ export class ServiceService {
       countOf({ ...noFlags, sla_breached: true }),
       countOf({ ...noFlags, portal: true }),
       countOf({ ...noFlags, unverified: true }),
-      q(noStage)
-        .innerJoin('users', 'service_tickets.assigned_to', 'users.id')
-        .select([
-          'users.id as employee_id',
-          sql<number>`count(service_tickets.id) filter (where service_tickets.status not in ('resolved','closed','report_submitted','cancelled'))::int`.as('active_tickets'),
-          sql<number>`count(service_tickets.id) filter (where service_tickets.status not in ('resolved','closed','report_submitted','cancelled') and (service_tickets.planned_visit_date < ${today}::date or service_tickets.sla_resolution_due_at < now()) and service_tickets.status not in ('awaiting_part','awaiting_customer','on_hold'))::int`.as('overdue_tickets'),
-          sql<number>`count(service_tickets.id) filter (where service_tickets.status in ('resolved','closed','report_submitted'))::int`.as('completed_tickets'),
-        ])
-        .groupBy('users.id')
-        .execute(),
       // every active engineer in scope, including those with an empty queue (AVAILABLE badge)
       (async () => {
         if (user.role === 'service_team') return this.assignableEngineers(user); // self, or a chief's team
@@ -1942,6 +2009,23 @@ export class ServiceService {
         .execute(),
     ]);
 
+    // Each listed engineer's real queue: counted over all their tickets, not through the viewer's territory scope or
+    // the list filters, so a peer whose tickets sit outside the viewer's scope is never shown as free (AVAILABLE).
+    const engineerIds = engineers.map((e) => e.id);
+    const workloadRows = engineerIds.length
+      ? await this.db
+          .selectFrom('service_tickets')
+          .select([
+            'service_tickets.assigned_to as employee_id',
+            sql<number>`count(service_tickets.id) filter (where service_tickets.status not in ('resolved','closed','report_submitted','cancelled'))::int`.as('active_tickets'),
+            sql<number>`count(service_tickets.id) filter (where service_tickets.status not in ('resolved','closed','report_submitted','cancelled') and (service_tickets.planned_visit_date < ${today}::date or service_tickets.sla_resolution_due_at < now()) and service_tickets.status not in ('awaiting_part','awaiting_customer','on_hold'))::int`.as('overdue_tickets'),
+            sql<number>`count(service_tickets.id) filter (where service_tickets.status in ('resolved','closed','report_submitted'))::int`.as('completed_tickets'),
+          ])
+          .where('service_tickets.deleted_at', 'is', null)
+          .where('service_tickets.assigned_to', 'in', engineerIds)
+          .groupBy('service_tickets.assigned_to')
+          .execute()
+      : [];
     const byEmployee = new Map(workloadRows.map((r) => [r.employee_id, r]));
     const employeeWorkload = engineers
       .map((e) => {

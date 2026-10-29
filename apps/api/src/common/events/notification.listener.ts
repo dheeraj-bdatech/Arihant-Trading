@@ -981,7 +981,7 @@ export class NotificationListener {
         userId,
         type: 'demo_confirmed',
         title: `Demo Confirmed: ${payload.demoNo}`,
-        body: `Demonstration for ${payload.organisationName} confirmed for ${payload.confirmedDate}.`,
+        body: `Demonstration for ${payload.organisationName} confirmed for ${this.ddmmyyyy(payload.confirmedDate)}.`,
         entityType: 'demo',
         entityId: payload.demoId,
       });
@@ -1008,7 +1008,7 @@ export class NotificationListener {
         userId,
         type: 'demo_rescheduled',
         title: `Demo Rescheduled: ${payload.demoNo}`,
-        body: `Demonstration for ${payload.organisationName} moved to ${payload.newDate}. Reason: "${payload.reason}".`,
+        body: `Demonstration for ${payload.organisationName} moved to ${this.ddmmyyyy(payload.newDate)}. Reason: "${payload.reason}".`,
         entityType: 'demo',
         entityId: payload.demoId,
       });
@@ -1118,7 +1118,7 @@ export class NotificationListener {
         userId,
         type: 'demo_service_escort_requested',
         title: `Service Escort Requested: Demo ${payload.demoNo}`,
-        body: `${payload.requestedByName} requested Service Team escort for live demo trial at ${payload.organisationName} (${payload.location || 'Site'}) on ${payload.requestedDate}.`,
+        body: `${payload.requestedByName} requested Service Team escort for live demo trial at ${payload.organisationName} (${payload.location || 'Site'}) on ${this.ddmmyyyy(payload.requestedDate)}.`,
         entityType: 'demo',
         entityId: payload.demoId,
       });
@@ -1753,7 +1753,7 @@ export class NotificationListener {
       userId: payload.assignedTo,
       type: 'followup_assigned',
       title: 'Action Required: Client Follow-up Scheduled',
-      body: `A follow-up has been scheduled for ${payload.dueDate}.`,
+      body: `A follow-up has been scheduled for ${this.ddmmyyyy(payload.dueDate)}.`,
       entityType: 'follow_up',
       entityId: payload.followUpId,
     });
@@ -1801,7 +1801,8 @@ export class NotificationListener {
       userId: payload.assignedTo,
       type: 'followup_overdue',
       title: '⚠️ OVERDUE: Customer Follow-up Pending',
-      body: `Follow-up for ${payload.organisationName || 'Client'} was due on ${payload.dueDate}. Immediate touchpoint needed.`,
+      // dueDate reaches the outbox as a serialised DATE ("2026-10-15T00:00:00.000Z"): show the IST day (QA BUG-017).
+      body: `Follow-up for ${payload.organisationName || 'Client'} was due on ${this.ddmmyyyy(payload.dueDate)}. Immediate touchpoint needed.`,
       entityType: 'follow_up',
       entityId: payload.followUpId,
     });

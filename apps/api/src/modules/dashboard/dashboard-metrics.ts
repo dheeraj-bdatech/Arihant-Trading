@@ -99,9 +99,10 @@ export function teamIds(managerId: string | null, zoneId: string | null): Cond {
 
 /**
  * A manager's territory: a zone, optionally narrowed to one region, plus — when no region is picked — the
- * records owned by the zone's field team (reps' leads, visits and bids at customers or tenders that carry no
- * zone tag still belong to the zone that manages the rep). `managerId` is the regional manager whose direct
- * reports count as the team (null for management looking at a zone).
+ * records owned by the zone's field team. For leads and visits that is only at customers with no zone tag: wherever
+ * a customer's zone is known, geography decides, so a rep's lead in another zone belongs to that zone (QA BUG-001).
+ * Bids owned by the team count wherever they are tagged (QA DEF-037 / DEF-038). `managerId` is the regional manager
+ * whose direct reports count as the team (null for management looking at a zone).
  *
  * The regional manager's home screen and Zonal Command both build their scope from this, so for the same zone
  * they report the same pipeline, visits and bids.
@@ -123,19 +124,22 @@ export function territoryLeads(t: Territory): Cond {
   if (t.regionId) return geo;
   const team = teamIds(t.managerId ?? null, t.zoneId);
   const rm = t.managerId ? sql` or l.regional_manager_id = ${t.managerId}` : sql``;
-  return sql`(${geo} or l.assigned_to in ${team}${rm})`;
+  // The manager's own leads always count (as on the lead register).
+  const own = t.managerId ? sql` or l.assigned_to = ${t.managerId}` : sql``;
+  return sql`(${geo}${own} or (o.zone_id is null and (l.assigned_to in ${team}${rm})))`;
 }
 
 export function territoryVisits(t: Territory): Cond {
   const geo = territoryGeo(t, orgTerritory);
   if (t.regionId) return geo;
-  return sql`(${geo} or v.assigned_to in ${teamIds(t.managerId ?? null, t.zoneId)})`;
+  return sql`(${geo} or (o.zone_id is null and v.assigned_to in ${teamIds(t.managerId ?? null, t.zoneId)}))`;
 }
 
 export function territoryTenders(t: Territory): Cond {
   const geo = territoryGeo(t, tenderTerritory);
   if (t.regionId || (!t.zoneId && !t.managerId)) return geo;
   const team = teamIds(t.managerId ?? null, t.zoneId);
+  // Bids follow the people (QA DEF-037 / DEF-038): a team member's bid counts even when tagged to another zone.
   return sql`(${geo} or t.assigned_to in ${team} or t.owner in ${team} or t.tender_owner_id in ${team})`;
 }
 

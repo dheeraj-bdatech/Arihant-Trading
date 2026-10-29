@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Modal,
   Button,
@@ -9,6 +9,7 @@ import {
   Input,
   Select,
   Textarea,
+  Checkbox,
   Table,
   TableHeader,
   TableBody,
@@ -49,6 +50,7 @@ import {
 import { api } from '@/lib/api';
 import { formatINR, formatTaskDate, formatTaskDateTime, TENDER_STATUS_LABELS } from '@arihant/shared';
 import { istToday, istNowLocalInput, fromIstLocalInput, toIstLocalInput } from '@/lib/ist-date';
+import { safeHttpUrl, validateHttpUrl } from '@/lib/safe-url';
 
 /** Server-computed submission readiness (GET /tenders/:id → document_readiness). */
 interface DocumentReadiness {
@@ -72,6 +74,77 @@ const RESULT_TARGETS = ['won', 'lost'];
 const LINKABLE_STAGES = ['won', 'pq_qualified'];
 /** Lifecycle card that lifts a hold (POST /resume restores the stage the tender was held at). */
 const RESUME_TARGET = 'resume';
+/** Stages whose bid / PQ closing time gates the result: a verdict is dated on or after the closing day. */
+const CLOSING_GATED_STAGES = ['submitted', 'pq_submitted'];
+
+/**
+ * @Roles of every endpoint the dossier calls (apps/api/src/modules/tenders/tenders.controller.ts). An action is shown
+ * only to the roles its endpoint accepts, so nobody is offered a button that answers 403.
+ */
+const ENDPOINT_ROLES = {
+  update: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'], // PATCH :id (team, Drive folder)
+  transition: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'], // POST :id/transitions
+  holdResume: ['management', 'regional_manager', 'tender_team', 'admin'], // POST :id/hold, :id/resume
+  approve: ['management', 'admin'], // POST :id/approve
+  result: ['management', 'tender_team', 'sales', 'admin'], // POST :id/result, :id/outcome
+  corrigendum: ['management', 'regional_manager', 'tender_team', 'admin'], // POST :id/corrigenda
+  lineItems: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'], // POST / DELETE :id/line-items
+  documents: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'], // POST / PATCH :id/documents
+  initChecklist: ['management', 'regional_manager', 'sales', 'tender_team', 'admin'], // POST :id/documents/init-checklist
+  instrument: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'], // POST :id/financial-instruments
+  comment: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'accounts', 'admin'], // POST :id/comments
+  linkedTender: ['management', 'regional_manager', 'tender_team', 'admin'], // POST :id/create-linked-tender
+  salesOrder: ['management', 'regional_manager', 'tender_team', 'sales', 'admin'], // POST :id/create-sales-order
+} as const;
+type DossierEndpoint = keyof typeof ENDPOINT_ROLES;
+
+/** Readable names for tender_activities.event_type codes (History tab); unknown codes are title-cased. */
+const ACTIVITY_LABELS: Record<string, string> = {
+  IDENTIFIED: 'Tender identified',
+  ON_HOLD: 'Put on hold',
+  RESUMED: 'Resumed',
+  DEADLINE_CHANGED: 'Deadline changed',
+  REOPENED: 'Reopened',
+  DELETED: 'Deleted',
+  TEAM_REASSIGNED: 'Team reassigned',
+  PORTAL_ISSUE_LOGGED: 'Portal issue logged',
+  PORTAL_ISSUE_UPDATED: 'Portal issue updated',
+  LINE_ITEM_ADDED: 'BOQ line added',
+  LINE_ITEM_UPDATED: 'BOQ line updated',
+  LINE_ITEM_DELETED: 'BOQ line removed',
+  DOCUMENT_ADDED: 'Document added',
+  DOCUMENT_UPDATED: 'Document updated',
+  DOCUMENT_DELETED: 'Document removed',
+  CHECKLIST_INITIALIZED: 'Document checklist initialised',
+  CORRIGENDUM_ISSUED: 'Corrigendum recorded',
+  FINANCIAL_INSTRUMENT_REQUESTED: 'EMD / PBG requested',
+  FINANCIAL_INSTRUMENT_UPDATED: 'EMD / PBG updated',
+  COMMENT_POSTED: 'Note posted',
+  LINKED_TENDER_CREATED: 'Linked General tender created',
+  SALES_ORDER_CREATED: 'Sales Order created',
+};
+const titleCaseCode = (code: string) =>
+  code.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+function activityLabel(eventType?: string | null): string {
+  const code = String(eventType || '').trim().toUpperCase();
+  if (!code) return 'Activity';
+  if (ACTIVITY_LABELS[code]) return ACTIVITY_LABELS[code];
+  // STATUS_TENDER_SUBMITTED → "Moved to Tender Submitted"; OUTCOME_WON → "Result recorded: Won".
+  if (code.startsWith('STATUS_')) {
+    const stage = code.slice('STATUS_'.length);
+    return `Moved to ${TENDER_STATUS_LABELS[stage] || titleCaseCode(stage)}`;
+  }
+  if (code.startsWith('OUTCOME_')) return `Result recorded: ${titleCaseCode(code.slice('OUTCOME_'.length))}`;
+  return titleCaseCode(code);
+}
+
+/** Lakh display for a rupee amount, or "—" when nothing was recorded (never a stand-in value). */
+const lakhOrDash = (value: unknown): string => {
+  const n = Number(value);
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(n) && n > 0
+    ? `₹ ${(n / 100000).toFixed(2)} Lakh`
+    : '—';
+};
 
 type DossierTransition = {
   status: string;
@@ -127,7 +200,7 @@ const RESULT_LOST: DossierTransition = {
 function prdTransitions(status: string, category: string, onHold: boolean): DossierTransition[] {
   if (onHold) {
     return [
-      { status: RESUME_TARGET, label: 'Resume', variant: 'primary', description: 'Lift the hold and continue from the stage the tender was held at.', defaultRemarks: '' },
+      { status: RESUME_TARGET, label: 'Resume', variant: 'primary', description: 'Lift the hold and continue from the stage the tender was held at.', defaultRemarks: 'Hold lifted; work continues from the held stage.' },
       CANCEL,
     ];
   }
@@ -136,6 +209,13 @@ function prdTransitions(status: string, category: string, onHold: boolean): Doss
     case 'identified':
       return [
         { status: 'awaiting_approval', label: 'Submit for Internal Review', variant: 'primary', description: 'Send to the authorised person (Management) for an approve / reject decision.', defaultRemarks: 'Submitted for internal review.' },
+        HOLD,
+        CANCEL,
+      ];
+    // Approve / reject happen in the Decision panel; the request can still be withdrawn, held or cancelled.
+    case 'awaiting_approval':
+      return [
+        { status: 'identified', label: 'Return to Identified', variant: 'secondary', description: 'Withdraw the internal-review request and send the tender back to Identified.', defaultRemarks: 'Internal review request withdrawn.' },
         HOLD,
         CANCEL,
       ];
@@ -248,23 +328,33 @@ export function TenderDossierModal({
     }
   }, [users, isOpen]);
 
-  /** A submitted bid before its closing time: evaluation / result stages stay locked (bids open after closing). */
-  const awaitingBidOpening = tender?.status === 'submitted' && bidStillOpen(tender);
+  /** True when the signed-in role is accepted by the endpoint behind an action (see ENDPOINT_ROLES). */
+  const can = (endpoint: DossierEndpoint) => (ENDPOINT_ROLES[endpoint] as readonly string[]).includes(currentUser?.role);
+
+  /**
+   * A submitted bid / PQ before its closing time: evaluation and result stages stay locked (bids open after closing,
+   * and the API only accepts a result dated on or after the closing day).
+   */
+  const awaitingBidOpening = CLOSING_GATED_STAGES.includes(tender?.status) && bidStillOpen(tender);
 
   const canReassign =
-    ['management', 'admin', 'tender_team', 'regional_manager'].includes(currentUser?.role) ||
-    tender?.tender_owner_id === currentUser?.id ||
-    tender?.owner === currentUser?.id;
+    can('update') &&
+    (['management', 'admin', 'tender_team', 'regional_manager'].includes(currentUser?.role) ||
+      tender?.tender_owner_id === currentUser?.id ||
+      tender?.owner === currentUser?.id);
+  const [reassignError, setReassignError] = useState<string | null>(null);
 
   const handleOpenReassign = () => {
     setReassignSalesperson(tender?.assigned_to || tender?.assigned_person_id || '');
     setReassignOwner(tender?.tender_owner_id || tender?.owner || '');
+    setReassignError(null);
     setIsReassignOpen(true);
   };
 
   const handleSaveReassign = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!tender?.id) return;
+    if (!tender?.id || isReassigning) return;
+    setReassignError(null);
     setIsReassigning(true);
     try {
       await api.patch(`/tenders/${tender.id}`, {
@@ -278,7 +368,8 @@ export function TenderDossierModal({
       await loadTender();
       onTenderUpdated?.();
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to update team assignment.' });
+      // Shown inside the dialog (the dossier banner is hidden behind it).
+      setReassignError(err?.message || 'Failed to update team assignment.');
     } finally {
       setIsReassigning(false);
     }
@@ -294,17 +385,23 @@ export function TenderDossierModal({
   const [transitionError, setTransitionError] = useState<string | null>(null);
 
   const handlePerformTransition = async (targetStatus: string, defaultRemarks?: string) => {
-    if (!tender?.id) return;
-    setIsTransitioning(true);
+    if (!tender?.id || isTransitioning) return;
     setFeedbackMsg(null);
     setTransitionError(null);
-    const remarks = transitionNotes || defaultRemarks || `Transitioned to ${targetStatus.replace(/_/g, ' ')}`;
+    // PQ Submitted and Tender Submitted both record the portal submission date (saved by the API).
+    if (SUBMISSION_STAGES.includes(targetStatus) && !portalSubmissionDate) {
+      setTransitionError('Enter the portal submission date.');
+      return;
+    }
+    setIsTransitioning(true);
+    const remarks = transitionNotes.trim() || defaultRemarks || `Transitioned to ${targetStatus.replace(/_/g, ' ')}`;
     try {
       // On Hold is a flag over the current stage (hold / resume), not a stage of its own.
       if (targetStatus === 'on_hold') {
         await api.post(`/tenders/${tender.id}/hold`, { reason: remarks });
       } else if (targetStatus === RESUME_TARGET) {
-        await api.post(`/tenders/${tender.id}/resume`, {});
+        // ResumeTenderDto: the remarks are saved in the status-history note.
+        await api.post(`/tenders/${tender.id}/resume`, { remarks });
       } else {
         await api.post(`/tenders/${tender.id}/transitions`, {
           target_status: targetStatus,
@@ -333,15 +430,26 @@ export function TenderDossierModal({
     }
   };
 
+  /**
+   * Whether this role may use a lifecycle card: hold / resume, the Won / Lost result form and plain stage moves each
+   * go through a different endpoint with its own @Roles.
+   */
+  const transitionPermitted = (tr: DossierTransition) =>
+    tr.status === 'on_hold' || tr.status === RESUME_TARGET
+      ? can('holdResume')
+      : RESULT_TARGETS.includes(tr.status)
+        ? can('result') && Boolean(onRecordOutcome)
+        : can('transition');
+
   // Before the bid closes, evaluation and result stages cannot be used yet (bids open only after closing), so they are
   // not offered as cards; the "Bids not opened yet" note names them instead.
   const getAllowedDossierTransitions = (status: string, category: string) =>
     prdTransitions(status, category, Boolean(tender?.on_hold)).filter(
-      (tr) => !(awaitingBidOpening && BID_OPENING_STAGES.includes(tr.status)),
+      (tr) => transitionPermitted(tr) && !(awaitingBidOpening && BID_OPENING_STAGES.includes(tr.status)),
     );
   const stagesAfterClosing = awaitingBidOpening
     ? prdTransitions(tender?.status, tender?.category, false)
-        .filter((tr) => BID_OPENING_STAGES.includes(tr.status))
+        .filter((tr) => BID_OPENING_STAGES.includes(tr.status) && transitionPermitted(tr))
         .map((tr) => tr.label)
     : [];
 
@@ -388,6 +496,8 @@ export function TenderDossierModal({
   const [driveFolderUrl, setDriveFolderUrl] = useState<string>('');
   const [isEditingDriveFolder, setIsEditingDriveFolder] = useState<boolean>(false);
   const [isSavingDriveFolder, setIsSavingDriveFolder] = useState<boolean>(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [driveFolderError, setDriveFolderError] = useState<string | null>(null);
   const [isAddCustomDocOpen, setIsAddCustomDocOpen] = useState(false);
   const [newCustomDoc, setNewCustomDoc] = useState({
     document_type: '',
@@ -396,10 +506,29 @@ export function TenderDossierModal({
     status: 'In Progress',
     file_url: '',
   });
+  const [customDocError, setCustomDocError] = useState<string | null>(null);
+  const [customDocUrlError, setCustomDocUrlError] = useState<string | null>(null);
+  const [isAddingCustomDoc, setIsAddingCustomDoc] = useState(false);
+
+  // PQ → General linked tender dialog (CreateLinkedTenderDto: number, title, IST submission deadline)
+  const [isLinkedTenderOpen, setIsLinkedTenderOpen] = useState(false);
+  const [linkedTenderForm, setLinkedTenderForm] = useState({ tender_number: '', tender_title: '', submission_deadline: '' });
+  const [linkedTenderError, setLinkedTenderError] = useState<string | null>(null);
+  const [isCreatingLinkedTender, setIsCreatingLinkedTender] = useState(false);
+
+  // Won → Sales Order: the PO / LoA reference is asked for only when the recorded result carries none
+  const [isSalesOrderOpen, setIsSalesOrderOpen] = useState(false);
+  const [salesOrderRef, setSalesOrderRef] = useState('');
+  const [salesOrderError, setSalesOrderError] = useState<string | null>(null);
+  const [isCreatingSalesOrder, setIsCreatingSalesOrder] = useState(false);
+  const [salesOrderCreated, setSalesOrderCreated] = useState(false);
+  const salesOrderInFlight = useRef(false);
 
   const [actionLoading, setActionLoading] = useState(false);
   const [linkedRefresh, setLinkedRefresh] = useState(0); // reloads the linked-records panel after a sales order
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  /** The tender currently open in the dossier: a slower response for a previously opened tender is ignored. */
+  const openTenderId = useRef<string | null>(null);
 
   // Executive Decision state on Overview Tab
   const [decisionType, setDecisionType] = useState<'approved' | 'rejected'>('approved');
@@ -445,40 +574,99 @@ export function TenderDossierModal({
       await loadTender();
       if (onTenderUpdated) onTenderUpdated();
     } catch (err: any) {
-      setDecisionError(
-        err?.response?.data?.message || err?.message || 'Failed to submit decision.',
-      );
+      setDecisionError(err?.message || 'Failed to submit decision.');
     } finally {
       setIsSubmittingDecision(false);
     }
   };
 
+  /**
+   * The dossier stays mounted between tenders, so everything typed or opened for one tender is cleared before the
+   * next one shows: a note, a pending hold confirm or a half-filled dialog must never be applied to another tender.
+   */
+  const resetPerTenderState = () => {
+    setTender(null);
+    setFeedbackMsg(null);
+    setActionLoading(false);
+    // Each tender opens on Overview, not on the tab left open for the previous one.
+    setActiveTab('overview');
+    // Lifecycle
+    setSelectedNextStatus('');
+    setTransitionNotes('');
+    setTransitionError(null);
+    setPortalSubmissionDate(istToday());
+    // Decision
+    setDecisionType('approved');
+    setDirectivesRemarks('');
+    setRejectionReason('');
+    setDecisionError(null);
+    // Team
+    setIsReassignOpen(false);
+    setReassignSalesperson('');
+    setReassignOwner('');
+    setReassignError(null);
+    // BOQ
+    setIsAddLineItemOpen(false);
+    setNewLineItem({ product_description: '', quantity: 1, unit: 'Nos', specification_summary: '', quoted_unit_price: '', is_compliant: 'Not Checked' });
+    setLineItemError(null);
+    setLineItemToDelete(null);
+    // Corrigendum
+    setIsCorrigendumOpen(false);
+    setNewCorrigendum({ corrigendum_number: '', new_deadline: '', summary: '' });
+    setCorrigendumError(null);
+    // EMD / PBG
+    setIsInstrumentOpen(false);
+    setNewInstrument({ instrument_type: 'EMD', amount: '', mode: 'DD', bank: '', reference_number: '', status: 'Requested' });
+    setInstrumentError(null);
+    // Discussion
+    setCommentText('');
+    // Documents & Drive folder
+    setAttachingDocId(null);
+    setAttachedFileName('');
+    setAttachedDriveUrl('');
+    setAttachError(null);
+    setDriveFolderUrl('');
+    setDriveFolderError(null);
+    setIsEditingDriveFolder(false);
+    setIsAddCustomDocOpen(false);
+    setNewCustomDoc({ document_type: '', is_mandatory: true, owner_id: '', status: 'In Progress', file_url: '' });
+    setCustomDocError(null);
+    setCustomDocUrlError(null);
+    // Linked tender & sales order
+    setIsLinkedTenderOpen(false);
+    setLinkedTenderForm({ tender_number: '', tender_title: '', submission_deadline: '' });
+    setLinkedTenderError(null);
+    setIsSalesOrderOpen(false);
+    setSalesOrderRef('');
+    setSalesOrderError(null);
+    setSalesOrderCreated(false);
+  };
+
   useEffect(() => {
-    if (isOpen && tenderId) {
-      setAttachingDocId(null);
-      setAttachedFileName('');
-      setAttachedDriveUrl('');
-      setIsEditingDriveFolder(false);
-      // Each tender opens on Overview, not on the tab left open for the previous one.
-      setActiveTab('overview');
+    openTenderId.current = isOpen && tenderId ? tenderId : null;
+    resetPerTenderState();
+    if (openTenderId.current) {
       loadTender();
     } else {
-      setTender(null);
-      setFeedbackMsg(null);
+      setLoading(false);
     }
   }, [isOpen, tenderId]);
 
+  /** Loads the tender open right now (never a previously open one, even from a slow handler of the old tender). */
   const loadTender = async () => {
-    if (!tenderId) return;
+    const requestedId = openTenderId.current;
+    if (!requestedId) return;
     setLoading(true);
     try {
-      const res = await api.get<any>(`/tenders/${tenderId}`);
+      const res = await api.get<any>(`/tenders/${requestedId}`);
+      if (openTenderId.current !== requestedId) return; // another tender was opened meanwhile
       setTender(res);
       setDriveFolderUrl(res?.tender_url || '');
     } catch (err: any) {
+      if (openTenderId.current !== requestedId) return;
       setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to load tender specifications' });
     } finally {
-      setLoading(false);
+      if (openTenderId.current === requestedId) setLoading(false);
     }
   };
 
@@ -546,7 +734,7 @@ export function TenderDossierModal({
   };
 
   const handleInitChecklist = async () => {
-    if (!tenderId) return;
+    if (!tenderId || actionLoading) return;
     setActionLoading(true);
     try {
       await api.post(`/tenders/${tenderId}/documents/init-checklist`, {});
@@ -585,8 +773,12 @@ export function TenderDossierModal({
   };
 
   const handleSaveDriveFolder = async (overrideUrl?: string) => {
-    if (!tenderId) return;
+    if (!tenderId || isSavingDriveFolder) return;
     const urlToSave = (overrideUrl !== undefined ? overrideUrl : driveFolderUrl).trim();
+    // Only http(s) links are stored: the folder is rendered as a clickable link.
+    const urlError = validateHttpUrl(urlToSave, 'Drive folder link');
+    setDriveFolderError(urlError);
+    if (urlError) return;
     setIsSavingDriveFolder(true);
     try {
       await api.patch(`/tenders/${tenderId}`, {
@@ -602,27 +794,36 @@ export function TenderDossierModal({
           : 'Tender Google Drive Workspace link cleared.',
       });
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to update Google Drive folder link' });
+      setDriveFolderError(err?.message || 'Failed to update Google Drive folder link');
     } finally {
       setIsSavingDriveFolder(false);
     }
   };
 
+  const closeAttachPanel = () => {
+    setAttachingDocId(null);
+    setAttachedFileName('');
+    setAttachedDriveUrl('');
+    setAttachError(null);
+  };
+
   const handleAttachFile = async (docId: string) => {
-    if (!tenderId) return;
+    if (!tenderId || actionLoading) return;
     const finalUrl = attachedDriveUrl.trim();
     const finalName = attachedFileName.trim() || (finalUrl ? 'Google Drive Document' : '');
     if (!finalName && !finalUrl) return;
+    const urlError = validateHttpUrl(finalUrl, 'Document link');
+    setAttachError(urlError);
+    if (urlError) return;
 
+    setActionLoading(true);
     try {
       await api.patch(`/tenders/${tenderId}/documents/${docId}`, {
         file_name: finalName || 'Drive Document.pdf',
         file_url: finalUrl || undefined,
         status: 'Ready',
       });
-      setAttachingDocId(null);
-      setAttachedFileName('');
-      setAttachedDriveUrl('');
+      closeAttachPanel();
       await loadTender();
       onTenderUpdated?.();
       setFeedbackMsg({
@@ -630,7 +831,10 @@ export function TenderDossierModal({
         text: `Document "${finalName}" linked successfully and marked Ready.`,
       });
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to attach file' });
+      // Shown in the attach panel next to the row being edited.
+      setAttachError(err?.message || 'Failed to attach file');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -650,9 +854,21 @@ export function TenderDossierModal({
     }
   };
 
+  const openAddCustomDoc = () => {
+    setCustomDocError(null);
+    setCustomDocUrlError(null);
+    setIsAddCustomDocOpen(true);
+  };
+
   const handleAddCustomDoc = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!tenderId || !newCustomDoc.document_type.trim()) return;
+    // Guarded against double submit: a second click while saving would add the same document twice.
+    if (!tenderId || isAddingCustomDoc || !newCustomDoc.document_type.trim()) return;
+    setCustomDocError(null);
+    const urlError = validateHttpUrl(newCustomDoc.file_url, 'File link');
+    setCustomDocUrlError(urlError);
+    if (urlError) return;
+    setIsAddingCustomDoc(true);
     try {
       const hasUrl = Boolean(newCustomDoc.file_url?.trim());
       await api.post(`/tenders/${tenderId}/documents`, {
@@ -669,7 +885,10 @@ export function TenderDossierModal({
       onTenderUpdated?.();
       setFeedbackMsg({ type: 'success', text: 'Custom compliance document added to checklist.' });
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to add document' });
+      // Shown inside the dialog (the dossier banner is hidden behind it).
+      setCustomDocError(err?.message || 'Failed to add document');
+    } finally {
+      setIsAddingCustomDoc(false);
     }
   };
 
@@ -734,7 +953,7 @@ export function TenderDossierModal({
   };
 
   const handlePostComment = async () => {
-    if (!tenderId || !commentText.trim()) return;
+    if (!tenderId || isCommentSubmitting || !commentText.trim()) return;
     setIsCommentSubmitting(true);
     try {
       await api.post(`/tenders/${tenderId}/comments`, {
@@ -750,54 +969,127 @@ export function TenderDossierModal({
     }
   };
 
-  const handleCreateLinkedTender = async () => {
-    if (!tenderId || !tender) return;
-    setActionLoading(true);
+  const openLinkedTenderDialog = () => {
+    if (!tender) return;
+    setLinkedTenderError(null);
+    setLinkedTenderForm({
+      tender_number: `${tender.tender_number || tender.tender_no || ''}-GEN`,
+      tender_title: `${tender.tender_title || 'Tender'} (Main General Bid)`,
+      submission_deadline: '',
+    });
+    setIsLinkedTenderOpen(true);
+  };
+
+  const handleCreateLinkedTender = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!tenderId || !tender || isCreatingLinkedTender) return;
+    setLinkedTenderError(null);
+    const tenderNumber = linkedTenderForm.tender_number.trim();
+    const tenderTitle = linkedTenderForm.tender_title.trim();
+    // The box holds IST wall-clock time; it is sent as the matching ISO instant.
+    const deadlineIso = fromIstLocalInput(linkedTenderForm.submission_deadline);
+    if (!tenderNumber || !tenderTitle || !deadlineIso) {
+      setLinkedTenderError('Tender number, title and the submission deadline (date and time, IST) are required.');
+      return;
+    }
+    if (new Date(deadlineIso).getTime() <= Date.now()) {
+      setLinkedTenderError('The submission deadline must be in the future.');
+      return;
+    }
+    setIsCreatingLinkedTender(true);
     try {
       const res = await api.post<any>(`/tenders/${tenderId}/create-linked-tender`, {
-        tender_number: `${tender.tender_number || tender.tender_no}-GEN`,
-        tender_title: `${tender.tender_title || 'Tender'} (Main General Bid)`,
+        tender_number: tenderNumber,
+        tender_title: tenderTitle,
+        submission_deadline: deadlineIso,
       });
+      setIsLinkedTenderOpen(false);
       setFeedbackMsg({
         type: 'success',
-        text: `General Bid created successfully: Ref ${res.internal_ref || res.tender_number}`,
+        text: `General Bid created successfully: Ref ${res?.internal_ref || res?.tender_number || tenderNumber}`,
       });
+      await loadTender();
       onTenderUpdated?.();
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to generate linked General tender' });
+      setLinkedTenderError(err?.message || 'Failed to generate linked General tender');
     } finally {
-      setActionLoading(false);
+      setIsCreatingLinkedTender(false);
     }
   };
 
-  const handleCreateSalesOrder = async () => {
-    if (!tenderId || !tender) return;
-    setActionLoading(true);
+  /** PO / LoA reference recorded with the award (never invented): the Sales Order carries it as order_reference. */
+  const awardOrderRef: string =
+    String(tender?.tender_result?.po_number || tender?.tender_result?.order_number || tender?.tender_result?.loa_number || '').trim();
+  /** A Sales Order already raised from this tender (logged on its timeline) — a second one would be refused (409). */
+  const hasSalesOrder =
+    salesOrderCreated || (tender?.activities || []).some((a: any) => String(a?.event_type || '').toUpperCase() === 'SALES_ORDER_CREATED');
+
+  const handleCreateSalesOrder = async (orderRef: string) => {
+    const ref = orderRef.trim();
+    if (!tenderId || !tender || !ref || salesOrderInFlight.current) return;
+    salesOrderInFlight.current = true;
+    setIsCreatingSalesOrder(true);
+    setSalesOrderError(null);
     try {
-      const res = await api.post<any>(`/tenders/${tenderId}/create-sales-order`, {
-        order_number: `SO-${tender.tender_number || tender.tender_no}`,
-        delivery_terms: 'F.O.R Destination within 60 days',
-      });
+      const res = await api.post<any>(`/tenders/${tenderId}/create-sales-order`, { order_number: ref });
+      setSalesOrderCreated(true);
+      setIsSalesOrderOpen(false);
       setFeedbackMsg({
         type: 'success',
-        text: `Sales Order registered in Deliveries pipeline: Ref ${res.sales_order?.delivery_no || res.order_number}`,
+        text: `Sales Order registered in Deliveries pipeline: Ref ${res?.sales_order?.delivery_no || res?.order_number || ref}`,
       });
       setLinkedRefresh((n) => n + 1);
+      await loadTender();
       onTenderUpdated?.();
     } catch (err: any) {
-      setFeedbackMsg({ type: 'error', text: err?.message || 'Failed to create sales order' });
+      // 409 = a Sales Order with this PO / LoA reference already exists; the server message names it. Shown in the
+      // dialog when it is open, otherwise under the Create Sales Order button.
+      setSalesOrderError(err?.message || 'Failed to create sales order');
     } finally {
-      setActionLoading(false);
+      salesOrderInFlight.current = false;
+      setIsCreatingSalesOrder(false);
     }
+  };
+
+  const startSalesOrder = () => {
+    setFeedbackMsg(null);
+    if (awardOrderRef) {
+      handleCreateSalesOrder(awardOrderRef);
+      return;
+    }
+    // No PO / LoA on the recorded result: ask for it (required).
+    setSalesOrderRef('');
+    setSalesOrderError(null);
+    setIsSalesOrderOpen(true);
   };
 
   // Submission readiness from the server (mandatory checklist items Ready). No checklist = not ready, never 100%.
   const docReadiness: DocumentReadiness | undefined = tender?.document_readiness;
   const docsSubmissionReady = Boolean(docReadiness?.checklist_created && docReadiness?.all_mandatory_ready);
+  // The server's required set = category template's mandatory items ∪ the tender's mandatory rows, so a template item
+  // missing from the checklist counts as not Ready; Initialise Checklist adds those rows.
+  const checklistTypes = new Set<string>((tender?.documents || []).map((d: any) => String(d?.document_type || '').trim()));
+  const templateDocsNotOnChecklist = (docReadiness?.missing || []).filter((type) => !checklistTypes.has(String(type).trim()));
+  const needsChecklistInit = Boolean(docReadiness) && (!docReadiness?.checklist_created || templateDocsNotOnChecklist.length > 0);
+  const readinessSummary = docReadiness
+    ? `${docReadiness.mandatory_ready} of ${docReadiness.mandatory_total} mandatory Ready (${docReadiness.percentage}%)${
+        docReadiness.checklist_created ? '' : ' · checklist not initialised'
+      }`
+    : 'Checklist not initialised';
   const boqLocked = CLOSED_STAGES.includes((tender?.status || '').toLowerCase());
   // Same roles as DELETE /tenders/:id/line-items/:itemId (sales only on their own tenders — enforced by the API).
-  const canDeleteLineItems =
-    !boqLocked && ['management', 'regional_manager', 'tender_team', 'sales', 'admin'].includes(currentUser?.role);
+  const canDeleteLineItems = !boqLocked && can('lineItems');
+  const canEditDocuments = can('documents');
+  // Internal review (PRD §22): the decision form while it is pending, otherwise the latest decided round.
+  const decisionPending = ['identified', 'awaiting_approval', 'awaiting_internal_approval'].includes((tender?.status || '').toLowerCase());
+  const latestDecision: any = (tender?.approvals || []).find((a: any) =>
+    ['APPROVED', 'REJECTED'].includes(String(a?.status || '').toUpperCase()),
+  );
+  const latestDecisionRejected = String(latestDecision?.status || '').toUpperCase() === 'REJECTED';
+  // Lifecycle cards: every move the stage allows, and the ones this role may use right now.
+  const inInternalReview = ['awaiting_approval', 'under_review'].includes(tender?.status);
+  const lifecycleStageMoves = tender ? prdTransitions(tender.status, tender.category, Boolean(tender.on_hold)) : [];
+  const lifecycleMoves = tender ? getAllowedDossierTransitions(tender.status, tender.category) : [];
   // Five tabs grouped by what the user is doing (PRD §19–27): Overview (details, decision, links), Lifecycle (stages,
   // deadline & corrigenda, result), Preparation (documents, BOQ, EMD / PBG), Discussion (comments, portal issues), History.
   const visibleTabs = (t: any) => {
@@ -810,7 +1102,7 @@ export function TenderDossierModal({
         id: 'preparation',
         label: 'Preparation',
         icon: <Paperclip className="h-3.5 w-3.5" />,
-        count: readiness?.checklist_created ? `${t?.document_completion_percentage ?? 0}%` : undefined,
+        count: readiness?.checklist_created ? `${readiness?.percentage ?? t?.document_completion_percentage ?? 0}%` : undefined,
         tone: readiness?.checklist_created && readiness?.all_mandatory_ready ? 'done' : 'neutral',
       },
       {
@@ -893,9 +1185,10 @@ export function TenderDossierModal({
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              {tender.tender_url && (
+              {/* only an http(s) link is clickable; anything else is shown as text on the Overview tab */}
+              {safeHttpUrl(tender.tender_url) && (
                 <a
-                  href={tender.tender_url}
+                  href={safeHttpUrl(tender.tender_url) as string}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-[#F2B872] border border-white/20 text-xs font-semibold transition-colors shadow-xs"
@@ -1007,17 +1300,24 @@ export function TenderDossierModal({
                       {tender.city || 'Delhi'}, {tender.state || 'Delhi'} • Region: {tender.region_name || 'North'}
                     </p>
                     {tender.tender_url && (
-                      <p className="text-[11px] text-[#4A5568] flex items-center gap-1">
+                      <p className="text-[11px] text-[#4A5568] flex items-center gap-1 min-w-0">
                         Drive Workspace:{' '}
-                        <a
-                          href={tender.tender_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-[#0F5E63] hover:underline inline-flex items-center gap-0.5"
-                        >
-                          <span>Open Folder</span>
-                          <ExternalLink className="w-2.5 h-2.5" />
-                        </a>
+                        {safeHttpUrl(tender.tender_url) ? (
+                          <a
+                            href={safeHttpUrl(tender.tender_url) as string}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-semibold text-[#0F5E63] hover:underline inline-flex items-center gap-0.5"
+                          >
+                            <span>Open Folder</span>
+                            <ExternalLink className="w-2.5 h-2.5" />
+                          </a>
+                        ) : (
+                          // not an http(s) link: shown as text, never as a clickable href
+                          <span className="break-all font-mono text-[#14213D]" title="Not a web link">
+                            {tender.tender_url}
+                          </span>
+                        )}
                       </p>
                     )}
                   </div>
@@ -1124,8 +1424,7 @@ export function TenderDossierModal({
                   </div>
                 )}
 
-                {isMgmtOrAdmin ? (
-                  ['identified', 'awaiting_approval', 'awaiting_internal_approval'].includes((tender.status || '').toLowerCase()) ? (
+                {isMgmtOrAdmin && decisionPending ? (
                     <form onSubmit={handleCommitExecutiveDecision} className="space-y-4">
                       <div>
                         <label className="block text-[11px] font-bold text-[#14213D] uppercase tracking-wider mb-1.5">
@@ -1194,29 +1493,7 @@ export function TenderDossierModal({
                         </Button>
                       </div>
                     </form>
-                  ) : (
-                    <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-[#0F5E63]" />
-                          <span className="text-xs font-bold text-[#14213D]">
-                            Decision Recorded: {(tender.status || '').replace(/_/g, ' ').toUpperCase()}
-                          </span>
-                        </div>
-                        {tender.internal_approval_at && (
-                          <span className="text-[11px] font-mono text-[#4A5568]">
-                            {formatTaskDateTime(tender.internal_approval_at)}
-                          </span>
-                        )}
-                      </div>
-                      {(tender.approval_conditions || tender.remarks) && (
-                        <p className="text-xs text-[#4A5568] bg-white p-2.5 rounded-lg border border-[#DCD8CE]">
-                          <strong>Directives / Remarks:</strong> {tender.approval_conditions || tender.remarks}
-                        </p>
-                      )}
-                    </div>
-                  )
-                ) : (
+                ) : decisionPending ? (
                   <div className="p-3.5 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#4A5568] flex items-center gap-3">
                     <ShieldAlert className="w-5 h-5 text-[#9A3412] shrink-0" />
                     <div>
@@ -1226,6 +1503,50 @@ export function TenderDossierModal({
                       Only Management and Admin roles are authorized to record tender participation decisions during Internal Review.
                     </div>
                   </div>
+                ) : latestDecision ? (
+                  // The decided internal-review round itself (tender_approvals), not the tender's free-text remarks.
+                  <div className="p-3.5 rounded-xl bg-[#FBFAF7] border border-[#ECE9E2] space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        {latestDecisionRejected ? (
+                          <XCircle className="w-4 h-4 text-[#881337]" />
+                        ) : (
+                          <CheckCircle2 className="w-4 h-4 text-[#0F5E63]" />
+                        )}
+                        <span className="text-xs font-bold text-[#14213D]">
+                          Decision Recorded: {latestDecisionRejected ? 'REJECTED' : 'APPROVED'}
+                        </span>
+                        <Badge variant={latestDecisionRejected ? 'danger' : 'success'} size="sm">
+                          Round {latestDecision.approval_round || 1}
+                        </Badge>
+                      </div>
+                      {(latestDecision.decided_at || latestDecision.responded_at) && (
+                        <span className="text-[11px] font-mono text-[#4A5568]">
+                          {formatTaskDateTime(latestDecision.decided_at || latestDecision.responded_at)} IST
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-[#4A5568]">
+                      By{' '}
+                      <span className="font-semibold text-[#14213D]">
+                        {latestDecision.approver_name || tender.internal_approval_by_name || 'Not recorded'}
+                      </span>
+                    </p>
+                    {latestDecisionRejected && latestDecision.rejection_reason && (
+                      <p className="text-xs text-[#700F2D] bg-[#FCE8EC] p-2.5 rounded-lg border border-[#F3C7CF]">
+                        <strong>Rejection reason:</strong> {latestDecision.rejection_reason}
+                      </p>
+                    )}
+                    {(latestDecision.approval_conditions || latestDecision.remarks) && (
+                      <p className="text-xs text-[#4A5568] bg-white p-2.5 rounded-lg border border-[#DCD8CE]">
+                        <strong>Directives / Remarks:</strong> {latestDecision.approval_conditions || latestDecision.remarks}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="p-3.5 rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] text-xs text-[#4A5568]">
+                    No internal-review decision is recorded for this tender.
+                  </p>
                 )}
                 {/* Approval history (PRD §22): every internal-review round with its decision, kept with the decision itself. */}
                 {tender.approvals && tender.approvals.length > 0 && (
@@ -1317,8 +1638,9 @@ export function TenderDossierModal({
                 </div>
               </div>
 
-              {/* Status Specific Helper / Actions */}
-              {['awaiting_approval', 'under_review'].includes(tender.status) ? (
+              {/* Status Specific Helper / Actions. During internal review the sign-off note sits above the moves that
+                  stay open (return to Identified, hold, cancel). */}
+              {inInternalReview && (
                 <div className="p-4 rounded-xl bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] space-y-2">
                   <div className="flex items-center gap-2">
                     <ShieldAlert className="h-5 w-5 text-[#7C2D12] shrink-0" />
@@ -1336,22 +1658,25 @@ export function TenderDossierModal({
                     Go to Decision
                   </Button>
                 </div>
-              ) : getAllowedDossierTransitions(tender.status, tender.category).length === 0 ? (
-                <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-[#14213D] text-xs">
-                  This tender is closed (<strong>{(TENDER_STATUS_LABELS[tender.status] || tender.status)?.toUpperCase()}</strong>). No further stage changes are permitted.
+              )}
+              {lifecycleStageMoves.length === 0 ? (
+                !inInternalReview && (
+                  <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-[#14213D] text-xs">
+                    This tender is closed (<strong>{(TENDER_STATUS_LABELS[tender.status] || tender.status)?.toUpperCase()}</strong>). No further stage changes are permitted.
+                  </div>
+                )
+              ) : lifecycleMoves.length === 0 ? (
+                <div className="p-4 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE] text-[#4A5568] text-xs">
+                  No stage changes are available to your role at this stage.
                 </div>
               ) : (
                 <div className="space-y-4">
                   {['under_preparation', 'UNDER_PREPARATION'].includes(tender.status) && (
-                    <div className="p-3 rounded-xl bg-white border border-[#DCD8CE] flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2">
+                    <div className="p-3 rounded-xl bg-white border border-[#DCD8CE] flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Paperclip className="h-4 w-4 text-[#0F5E63]" />
                         <span className="text-[#4A5568]">Document Compliance Gate:</span>
-                        <span className="font-bold text-[#14213D]">
-                          {docReadiness?.checklist_created
-                            ? `${docReadiness.mandatory_ready} of ${docReadiness.mandatory_total} mandatory Ready (${docReadiness.percentage}%)`
-                            : 'Checklist not initialised'}
-                        </span>
+                        <span className="font-bold text-[#14213D]">{readinessSummary}</span>
                       </div>
                       {docsSubmissionReady ? (
                         <span className="text-[#0B4A4E] font-semibold text-[11px] flex items-center gap-1">
@@ -1363,7 +1688,7 @@ export function TenderDossierModal({
                           onClick={() => setActiveTab('preparation')}
                           className="text-[#9A3412] hover:underline font-semibold text-[11px] flex items-center gap-1 cursor-pointer"
                         >
-                          {docReadiness?.checklist_created ? 'Review Incomplete Documents' : 'Initialise Checklist'} <ArrowRight className="h-3 w-3" />
+                          {needsChecklistInit ? 'Initialise Checklist' : 'Review Incomplete Documents'} <ArrowRight className="h-3 w-3" />
                         </button>
                       )}
                     </div>
@@ -1377,39 +1702,49 @@ export function TenderDossierModal({
 
                   <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3">
                     <span className="text-xs text-[#14213D] font-bold block uppercase tracking-wide">
-                      Next PRD Stages ({getAllowedDossierTransitions(tender.status, tender.category).length})
+                      Next PRD Stages ({lifecycleMoves.length})
                     </span>
                     {awaitingBidOpening && (
-                      <InfoCallout variant="warning" title="Bids not opened yet">
-                        Bids open after the bid closes on {formatDeadline(tender.submission_deadline || tender.bid_closing_date)}. Then you can
-                        move to {stagesAfterClosing.join(', ')}. Until then the tender can only be put on hold or cancelled; record a
+                      <InfoCallout variant="warning" title={tender.status === 'pq_submitted' ? 'PQ not closed yet' : 'Bids not opened yet'}>
+                        {tender.status === 'pq_submitted' ? 'The PQ closes' : 'Bids open after the bid closes'} on{' '}
+                        {formatDeadline(tender.submission_deadline || tender.bid_closing_date)}.
+                        {stagesAfterClosing.length > 0 && ` Then you can move to ${stagesAfterClosing.join(', ')}; a result is dated on or after the closing day.`}
+                        {tender.status === 'submitted' && ' Until then the tender can only be put on hold or cancelled.'} Record a
                         corrigendum if the closing date changed.
                       </InfoCallout>
                     )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {getAllowedDossierTransitions(tender.status, tender.category).map((tr) => {
+                      {lifecycleMoves.map((tr) => {
+                        const choose = () => {
+                          setTransitionError(null);
+                          // Won / Lost are recorded only through the Record outcome form (award value, date, reasons).
+                          // (The cards are only offered when onRecordOutcome is set — see transitionPermitted.)
+                          if (RESULT_TARGETS.includes(tr.status)) {
+                            setSelectedNextStatus('');
+                            onRecordOutcome?.({ ...tender, preset_result: tr.status === 'lost' ? 'lost' : 'won' });
+                            return;
+                          }
+                          setSelectedNextStatus(tr.status);
+                          setTransitionNotes(tr.defaultRemarks || '');
+                        };
                         return (
+                        // A card is a choice: reachable and operable from the keyboard like a button (QA BUG-014).
                         <div
                           key={tr.status}
-                          className={`p-3.5 rounded-xl border transition-all ${
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={selectedNextStatus === tr.status}
+                          className={`p-3.5 rounded-xl border transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/40 ${
                             selectedNextStatus === tr.status
                               ? 'cursor-pointer border-[#0F5E63] bg-[#E3EFEE]/40 ring-1 ring-[#0F5E63]'
                               : 'cursor-pointer border-[#DCD8CE] hover:border-[#0F5E63]/50 bg-white'
                           }`}
-                          onClick={() => {
-                            setTransitionError(null);
-                            // Won / Lost are recorded only through the Record outcome form (award value, date, reasons).
-                            if (RESULT_TARGETS.includes(tr.status)) {
-                              setSelectedNextStatus('');
-                              if (onRecordOutcome) {
-                                onRecordOutcome({ ...tender, preset_result: tr.status === 'lost' ? 'lost' : 'won' });
-                              } else {
-                                setTransitionError('Only Management, Tender Team or Sales can record the tender result.');
-                              }
-                              return;
+                          onClick={choose}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              choose();
                             }
-                            setSelectedNextStatus(tr.status);
-                            setTransitionNotes(tr.defaultRemarks || '');
                           }}
                         >
                           <div className="flex items-center justify-between mb-1">
@@ -1487,7 +1822,7 @@ export function TenderDossierModal({
                       corrigendum records the portal extension and moves the deadline.
                     </p>
                   </div>
-                  {!CLOSED_STAGES.includes((tender.status || '').toLowerCase()) && (
+                  {!CLOSED_STAGES.includes((tender.status || '').toLowerCase()) && can('corrigendum') && (
                     <Button variant="secondary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => {
                       setCorrigendumError(null);
                       // Pre-fill with the current deadline as IST wall clock, so editing keeps the time the user sees.
@@ -1536,26 +1871,42 @@ export function TenderDossierModal({
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Document Compliance Checklist</h4>
                   <p className="text-[11px] text-[#4A5568]">Mandatory submission criteria: each required item must be linked to a responsible member and marked Ready.</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => setIsAddCustomDocOpen(true)}
-                    leftIcon={<Plus className="h-3.5 w-3.5" />}
-                  >
-                    Add Document
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleInitChecklist}
-                    isLoading={actionLoading}
-                    leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
-                  >
-                    Re-initialize Templates
-                  </Button>
+                {/* Until the category checklist exists, initialising it is the primary step; custom documents come on top. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {canEditDocuments && (
+                    <Button
+                      variant={needsChecklistInit && can('initChecklist') ? 'outline' : 'primary'}
+                      size="sm"
+                      onClick={openAddCustomDoc}
+                      leftIcon={<Plus className="h-3.5 w-3.5" />}
+                    >
+                      Add Document
+                    </Button>
+                  )}
+                  {can('initChecklist') && (
+                    <Button
+                      variant={needsChecklistInit ? 'primary' : 'outline'}
+                      size="sm"
+                      onClick={handleInitChecklist}
+                      isLoading={actionLoading}
+                      leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                    >
+                      {docReadiness?.checklist_created ? 'Re-initialize Templates' : 'Initialise Checklist'}
+                    </Button>
+                  )}
                 </div>
               </div>
+
+              {needsChecklistInit && (
+                <InfoCallout variant="warning" title={docReadiness?.checklist_created ? 'Template documents missing' : 'Checklist not initialised'}>
+                  {docReadiness?.checklist_created
+                    ? `${templateDocsNotOnChecklist.length} mandatory template document${templateDocsNotOnChecklist.length === 1 ? ' is' : 's are'} not on the checklist yet (${templateDocsNotOnChecklist.join(', ')}). They count as not Ready until added.`
+                    : `The category template's ${docReadiness?.mandatory_total ?? 0} mandatory documents are required before submission.`}{' '}
+                  {can('initChecklist')
+                    ? `Click ${docReadiness?.checklist_created ? 'Re-initialize Templates' : 'Initialise Checklist'} first; custom documents are added on top of the template and never replace it.`
+                    : 'Ask the tender owner to initialise the checklist.'}
+                </InfoCallout>
+              )}
 
               {/* Central Tender Google Drive Workspace */}
               <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
@@ -1581,58 +1932,86 @@ export function TenderDossierModal({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  {driveFolderUrl && !isEditingDriveFolder ? (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <a
-                        href={driveFolderUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0F5E63] text-white hover:bg-[#0B4A4E] text-xs font-semibold shadow-xs transition-colors"
-                        title={driveFolderUrl}
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        <span>Open Drive Folder ↗</span>
-                      </a>
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        onClick={() => setIsEditingDriveFolder(true)}
-                      >
-                        Edit Link
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap items-center gap-1.5 w-full md:w-auto">
-                      <input
-                        type="url"
-                        placeholder="https://drive.google.com/drive/folders/..."
-                        value={driveFolderUrl}
-                        onChange={(e) => setDriveFolderUrl(e.target.value)}
-                        className="text-xs px-2.5 py-1.5 rounded-lg border border-[#C9C4B8] focus:border-[#0F5E63] focus:ring-1 focus:ring-[#0F5E63]/20 bg-white min-w-0 flex-1 sm:min-w-[240px] outline-none"
-                      />
-                      <Button
-                        variant="primary"
-                        size="xs"
-                        onClick={() => handleSaveDriveFolder()}
-                        isLoading={isSavingDriveFolder}
-                        disabled={!driveFolderUrl.trim()}
-                      >
-                        Save Link
-                      </Button>
-                      {isEditingDriveFolder && (
+                <div className="flex items-center gap-2 min-w-0">
+                  {/* The saved link (not the draft being typed) decides between the link view and the editor. */}
+                  {tender.tender_url && !isEditingDriveFolder ? (
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                      {safeHttpUrl(tender.tender_url) ? (
+                        <a
+                          href={safeHttpUrl(tender.tender_url) as string}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0F5E63] text-white hover:bg-[#0B4A4E] text-xs font-semibold shadow-xs transition-colors"
+                          title={tender.tender_url}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          <span>Open Drive Folder ↗</span>
+                        </a>
+                      ) : (
+                        // Not an http(s) link: shown as text only (never a clickable href) until it is corrected.
+                        <span className="break-all font-mono text-[11px] text-[#881337]" title="Not a web link — edit it to a https:// address">
+                          {tender.tender_url}
+                        </span>
+                      )}
+                      {can('update') && (
                         <Button
-                          variant="ghost"
+                          variant="outline"
                           size="xs"
                           onClick={() => {
                             setDriveFolderUrl(tender.tender_url || '');
-                            setIsEditingDriveFolder(false);
+                            setDriveFolderError(null);
+                            setIsEditingDriveFolder(true);
                           }}
                         >
-                          Cancel
+                          Edit Link
                         </Button>
                       )}
                     </div>
+                  ) : can('update') ? (
+                    <div className="flex flex-col gap-1 w-full md:w-auto">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <input
+                          type="url"
+                          placeholder="https://drive.google.com/drive/folders/..."
+                          value={driveFolderUrl}
+                          onChange={(e) => {
+                            setDriveFolderUrl(e.target.value);
+                            setDriveFolderError(null);
+                          }}
+                          aria-invalid={Boolean(driveFolderError)}
+                          className={`text-xs px-2.5 py-1.5 rounded-lg border bg-white min-w-0 flex-1 sm:min-w-[240px] outline-none focus:ring-1 ${
+                            driveFolderError
+                              ? 'border-[#881337] focus:border-[#881337] focus:ring-[#881337]/15'
+                              : 'border-[#C9C4B8] focus:border-[#0F5E63] focus:ring-[#0F5E63]/20'
+                          }`}
+                        />
+                        <Button
+                          variant="primary"
+                          size="xs"
+                          onClick={() => handleSaveDriveFolder()}
+                          isLoading={isSavingDriveFolder}
+                          disabled={!driveFolderUrl.trim()}
+                        >
+                          Save Link
+                        </Button>
+                        {isEditingDriveFolder && (
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => {
+                              setDriveFolderUrl(tender.tender_url || '');
+                              setDriveFolderError(null);
+                              setIsEditingDriveFolder(false);
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        )}
+                      </div>
+                      {driveFolderError && <p className="text-[11px] font-medium text-[#881337]">{driveFolderError}</p>}
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-[#6B7280]">No Drive folder linked.</span>
                   )}
                 </div>
               </div>
@@ -1641,22 +2020,27 @@ export function TenderDossierModal({
               <div className="space-y-1">
                 <div className="flex justify-between text-[11px] font-semibold">
                   <span>Readiness Progress</span>
-                  <span className="font-mono text-[#0F5E63]">
-                    {docReadiness?.checklist_created
-                      ? `${docReadiness.mandatory_ready} of ${docReadiness.mandatory_total} mandatory Ready (${docReadiness.percentage}%)`
-                      : 'Checklist not initialised (0%)'}
-                  </span>
+                  {/* the server's numbers: template mandatory items ∪ the tender's mandatory rows */}
+                  <span className="font-mono text-[#0F5E63]">{readinessSummary}</span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-[#DCD8CE] overflow-hidden">
                   <div
                     className="h-full bg-[#0F5E63] transition-all duration-300"
-                    style={{ width: `${docReadiness?.checklist_created ? docReadiness.percentage : 0}%` }}
+                    style={{ width: `${Math.min(100, Math.max(0, docReadiness?.percentage ?? 0))}%` }}
                   />
                 </div>
+                {(docReadiness?.missing || []).length > 0 && (
+                  <p className="text-[11px] text-[#4A5568]">
+                    Not Ready: <span className="text-[#14213D]">{(docReadiness?.missing || []).join(', ')}</span>
+                  </p>
+                )}
               </div>
 
-              {/* Status Linkage Banner: Direct Stage Advancement when 100% Ready */}
-              {docsSubmissionReady && ['under_preparation', 'UNDER_PREPARATION'].includes(tender.status) && (
+              {/* Status Linkage Banner: only when the server reports the checklist initialised and every mandatory item Ready */}
+              {docsSubmissionReady &&
+                ['under_preparation', 'UNDER_PREPARATION'].includes(tender.status) &&
+                !tender.on_hold &&
+                can('transition') && (
                 <div className="p-3.5 rounded-xl bg-[#E3EFEE] border border-[#D0E5E3] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-[#0B4A4E] animate-in fade-in duration-200">
                   <div className="flex items-center gap-2.5">
                     <CheckCircle2 className="h-5 w-5 text-[#0F5E63] shrink-0" />
@@ -1670,6 +2054,7 @@ export function TenderDossierModal({
                     variant="success"
                     onClick={() => {
                       setActiveTab('transitions');
+                      setTransitionError(null);
                       const isPq = (tender.category || '').toLowerCase().includes('pq');
                       setSelectedNextStatus(isPq ? 'pq_submitted' : 'submitted');
                       setTransitionNotes(isPq ? 'Pre-qualification dossier submitted on government portal.' : 'Technical and financial bids submitted on GeM portal.');
@@ -1717,7 +2102,8 @@ export function TenderDossierModal({
                               <select
                                 value={doc.owner_id || ''}
                                 onChange={(e) => handleUpdateDocOwner(doc.id, e.target.value)}
-                                className="text-[11px] p-1 rounded border border-[#DCD8CE] bg-white cursor-pointer w-full"
+                                disabled={!canEditDocuments}
+                                className="text-[11px] p-1 rounded border border-[#DCD8CE] bg-white cursor-pointer w-full disabled:cursor-not-allowed disabled:opacity-60"
                               >
                                 <option value="">-- Unassigned (None) --</option>
                                 {users && users.map((u: any) => (
@@ -1727,9 +2113,10 @@ export function TenderDossierModal({
                                 ))}
                               </select>
                               {doc.owner_id && doc.owner_id === currentUser?.id && (
-                                <span className="inline-block px-1.5 py-0.2 rounded text-[9px] font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#0F5E63]/20">
-                                  🎯 Assigned to You
-                                </span>
+                                <Badge variant="info" size="sm" className="gap-1">
+                                  <UserCheck className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                  Assigned to you
+                                </Badge>
                               )}
                             </div>
                           </TableCell>
@@ -1756,12 +2143,9 @@ export function TenderDossierModal({
                                   <span>Link Google Drive / File</span>
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setAttachingDocId(null);
-                                      setAttachedFileName('');
-                                      setAttachedDriveUrl('');
-                                    }}
+                                    onClick={closeAttachPanel}
                                     className="text-[#6B7280] hover:text-[#4A5568] cursor-pointer p-0.5"
+                                    aria-label="Close"
                                   >
                                     <X className="h-3 w-3" />
                                   </button>
@@ -1771,12 +2155,19 @@ export function TenderDossierModal({
                                   <input
                                     type="url"
                                     value={attachedDriveUrl}
-                                    onChange={(e) => setAttachedDriveUrl(e.target.value)}
+                                    onChange={(e) => {
+                                      setAttachedDriveUrl(e.target.value);
+                                      setAttachError(null);
+                                    }}
                                     placeholder="https://drive.google.com/file/d/..."
-                                    className="w-full text-[11px] px-2 py-1 rounded border border-[#C9C4B8] focus:border-[#0F5E63] bg-white outline-none"
+                                    aria-invalid={Boolean(attachError)}
+                                    className={`w-full text-[11px] px-2 py-1 rounded border bg-white outline-none ${
+                                      attachError ? 'border-[#881337] focus:border-[#881337]' : 'border-[#C9C4B8] focus:border-[#0F5E63]'
+                                    }`}
                                     autoFocus
                                   />
                                 </div>
+                                {attachError && <p className="text-[10px] font-medium text-[#881337]">{attachError}</p>}
                                 <div>
                                   <label className="text-[10px] text-[#4A5568] block mb-0.5 font-medium">Document Label / File Name</label>
                                   <input
@@ -1790,11 +2181,7 @@ export function TenderDossierModal({
                                 <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-[#ECE9E2]">
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setAttachingDocId(null);
-                                      setAttachedFileName('');
-                                      setAttachedDriveUrl('');
-                                    }}
+                                    onClick={closeAttachPanel}
                                     className="px-2 py-1 rounded text-[10px] text-[#4A5568] hover:bg-[#ECE9E2] cursor-pointer"
                                   >
                                     Cancel
@@ -1802,34 +2189,47 @@ export function TenderDossierModal({
                                   <button
                                     type="button"
                                     onClick={() => handleAttachFile(doc.id)}
-                                    disabled={!attachedFileName.trim() && !attachedDriveUrl.trim()}
+                                    disabled={actionLoading || (!attachedFileName.trim() && !attachedDriveUrl.trim())}
                                     className="px-2.5 py-1 rounded bg-[#0F5E63] text-white text-[10px] font-bold hover:bg-[#0B4A4E] disabled:opacity-50 cursor-pointer transition-colors shadow-xs"
                                   >
-                                    Save & Mark Ready
+                                    {actionLoading ? 'Saving…' : 'Save & Mark Ready'}
                                   </button>
                                 </div>
                               </div>
                             ) : doc.file_url ? (
                               <div className="flex items-center gap-1.5 max-w-[220px]">
-                                <a
-                                  href={doc.file_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#E3EFEE] hover:bg-[#d0e5e3] text-[#0F5E63] font-mono text-[11px] font-semibold border border-[#0F5E63]/25 truncate group transition-colors shadow-2xs"
-                                  title={`Open in Drive: ${doc.file_url}`}
-                                >
-                                  <ExternalLink className="h-3 w-3 shrink-0 text-[#0F5E63]" />
-                                  <span className="truncate max-w-[110px]">{doc.file_name || 'Drive Document'}</span>
-                                  <span className="text-[10px] text-[#0F5E63]/70 font-normal">↗</span>
-                                </a>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveFile(doc.id)}
-                                  className="text-[#881337] hover:text-[#700F2D] p-0.5 rounded hover:bg-[#FCE8EC] shrink-0 cursor-pointer transition-colors"
-                                  title="Remove attachment"
-                                >
-                                  <X className="h-3 w-3" />
-                                </button>
+                                {safeHttpUrl(doc.file_url) ? (
+                                  <a
+                                    href={safeHttpUrl(doc.file_url) as string}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#E3EFEE] hover:bg-[#D0E5E3] text-[#0F5E63] font-mono text-[11px] font-semibold border border-[#0F5E63]/25 truncate group transition-colors shadow-2xs"
+                                    title={`Open in Drive: ${doc.file_url}`}
+                                  >
+                                    <ExternalLink className="h-3 w-3 shrink-0 text-[#0F5E63]" />
+                                    <span className="truncate max-w-[110px]">{doc.file_name || 'Drive Document'}</span>
+                                    <span className="text-[10px] text-[#0F5E63]/70 font-normal">↗</span>
+                                  </a>
+                                ) : (
+                                  // Not an http(s) link: the label is shown as plain text, never as a clickable href.
+                                  <span
+                                    className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[#14213D] truncate"
+                                    title={`Not a web link: ${doc.file_url}`}
+                                  >
+                                    <Paperclip className="h-3 w-3 shrink-0 text-[#4A5568]" />
+                                    <span className="truncate max-w-[110px]">{doc.file_name || doc.file_url}</span>
+                                  </span>
+                                )}
+                                {canEditDocuments && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveFile(doc.id)}
+                                    className="text-[#881337] hover:text-[#700F2D] p-0.5 rounded hover:bg-[#FCE8EC] shrink-0 cursor-pointer transition-colors"
+                                    title="Remove attachment"
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                )}
                               </div>
                             ) : doc.file_name ? (
                               <div className="flex items-center gap-1.5 font-mono text-[11px]">
@@ -1837,47 +2237,56 @@ export function TenderDossierModal({
                                 <span className="text-[#0F5E63] font-semibold truncate max-w-[120px]" title={doc.file_name}>
                                   {doc.file_name}
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setAttachingDocId(doc.id);
-                                    setAttachedFileName(doc.file_name);
-                                    setAttachedDriveUrl('');
-                                  }}
-                                  className="text-[10px] text-[#0F5E63] hover:underline font-semibold cursor-pointer"
-                                  title="Add Drive URL"
-                                >
-                                  + Link URL
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveFile(doc.id)}
-                                  className="text-[#881337] hover:text-[#700F2D] p-0.5 rounded hover:bg-[#FCE8EC] shrink-0 cursor-pointer"
-                                  title="Remove attachment"
-                                >
-                                  <X className="h-3 w-3" />
-                                </button>
+                                {canEditDocuments && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setAttachingDocId(doc.id);
+                                        setAttachedFileName(doc.file_name);
+                                        setAttachedDriveUrl('');
+                                        setAttachError(null);
+                                      }}
+                                      className="text-[10px] text-[#0F5E63] hover:underline font-semibold cursor-pointer"
+                                      title="Add Drive URL"
+                                    >
+                                      + Link URL
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveFile(doc.id)}
+                                      className="text-[#881337] hover:text-[#700F2D] p-0.5 rounded hover:bg-[#FCE8EC] shrink-0 cursor-pointer"
+                                      title="Remove attachment"
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </button>
+                                  </>
+                                )}
                               </div>
-                            ) : (
+                            ) : canEditDocuments ? (
                               <button
                                 type="button"
                                 onClick={() => {
                                   setAttachingDocId(doc.id);
                                   setAttachedFileName(`${doc.document_type.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
                                   setAttachedDriveUrl('');
+                                  setAttachError(null);
                                 }}
                                 className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-[#0F5E63] hover:bg-[#E3EFEE] border border-dashed border-[#0F5E63]/30 font-medium cursor-pointer transition-colors"
                               >
                                 <ExternalLink className="h-3 w-3" />
                                 <span>Link Drive / File</span>
                               </button>
+                            ) : (
+                              <span className="text-[11px] text-[#6B7280]">—</span>
                             )}
                           </TableCell>
                           <TableCell>
                             <select
                               value={doc.status}
                               onChange={(e) => handleUpdateDocStatus(doc.id, e.target.value)}
-                              className="text-[11px] p-1 rounded border border-[#DCD8CE] bg-white cursor-pointer font-medium"
+                              disabled={!canEditDocuments}
+                              className="text-[11px] p-1 rounded border border-[#DCD8CE] bg-white cursor-pointer font-medium disabled:cursor-not-allowed disabled:opacity-60"
                             >
                               <option value="Not Started">Not Started</option>
                               <option value="In Progress">In Progress</option>
@@ -1893,7 +2302,7 @@ export function TenderDossierModal({
               ) : (
                 <EmptyState
                   title="Checklist not initialized"
-                  description="Click 'Initialize Checklist Templates' to populate standard NIT and PQ verification forms."
+                  description="Click 'Initialise Checklist' to populate the category's standard NIT and PQ documents before adding custom ones."
                 />
               )}
 
@@ -1906,6 +2315,34 @@ export function TenderDossierModal({
                 maxWidth="md"
               >
                 <form onSubmit={handleAddCustomDoc} className="space-y-4 text-xs">
+                  {customDocError && (
+                    <InfoCallout variant="danger" title="Document not added" onClose={() => setCustomDocError(null)}>
+                      {customDocError}
+                    </InfoCallout>
+                  )}
+                  {needsChecklistInit && (
+                    <InfoCallout variant="warning" title="Initialise the checklist first">
+                      The category checklist is not complete yet, so its mandatory template documents still count as missing. A
+                      custom document is added on top of the template and does not replace it.
+                      {can('initChecklist') && (
+                        <span className="mt-2 block">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="xs"
+                            isLoading={actionLoading}
+                            leftIcon={<RefreshCw className="h-3 w-3" />}
+                            onClick={async () => {
+                              setIsAddCustomDocOpen(false);
+                              await handleInitChecklist();
+                            }}
+                          >
+                            {docReadiness?.checklist_created ? 'Re-initialize Templates' : 'Initialise Checklist'}
+                          </Button>
+                        </span>
+                      )}
+                    </InfoCallout>
+                  )}
                   <Input
                     label="Document Name / Type"
                     placeholder="e.g. OEM Factory Audit Certificate, Site Survey Signoff"
@@ -1929,30 +2366,29 @@ export function TenderDossierModal({
 
                   <Input
                     label="Google Drive / File URL (Optional)"
+                    type="url"
                     placeholder="https://drive.google.com/file/d/..."
                     value={newCustomDoc.file_url || ''}
-                    onChange={(e) => setNewCustomDoc({ ...newCustomDoc, file_url: e.target.value })}
+                    onChange={(e) => {
+                      setNewCustomDoc({ ...newCustomDoc, file_url: e.target.value });
+                      setCustomDocUrlError(null);
+                    }}
+                    error={customDocUrlError || undefined}
                     helperText="Providing a link will automatically mark this requirement Ready."
                   />
 
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="mandatory_chk"
-                      checked={newCustomDoc.is_mandatory}
-                      onChange={(e) => setNewCustomDoc({ ...newCustomDoc, is_mandatory: e.target.checked })}
-                      className="rounded border-[#DCD8CE] text-[#0F5E63] cursor-pointer"
-                    />
-                    <label htmlFor="mandatory_chk" className="cursor-pointer font-semibold text-[#14213D]">
-                      Mandatory Document (Required before submission)
-                    </label>
-                  </div>
+                  <Checkbox
+                    id="mandatory_chk"
+                    checked={newCustomDoc.is_mandatory}
+                    onChange={(e) => setNewCustomDoc({ ...newCustomDoc, is_mandatory: e.target.checked })}
+                    label="Mandatory Document (Required before submission)"
+                  />
 
                   <div className="flex justify-end gap-2 pt-2">
                     <Button type="button" variant="ghost" size="sm" onClick={() => setIsAddCustomDocOpen(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" variant="primary" size="sm">
+                    <Button type="submit" variant="primary" size="sm" isLoading={isAddingCustomDoc}>
                       Add to Checklist
                     </Button>
                   </div>
@@ -1971,7 +2407,7 @@ export function TenderDossierModal({
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Tender Products & BOQ Specifications</h4>
                   <p className="text-[11px] text-[#4A5568]">Products linked to this tender with catalogue and GeM compliance checks</p>
                 </div>
-                {!boqLocked && (
+                {!boqLocked && can('lineItems') && (
                   <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={openAddLineItem}>
                     Add Line Item
                   </Button>
@@ -2066,12 +2502,14 @@ export function TenderDossierModal({
                   <h4 className="font-serif font-bold text-sm text-[#14213D]">Financial Instruments (EMD, PBG & Fees)</h4>
                   <p className="text-[11px] text-[#4A5568]">Tracked in real time with the Finance department until refund or contract release.</p>
                 </div>
-                <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => {
-                  setInstrumentError(null);
-                  setIsInstrumentOpen(true);
-                }}>
-                  Request Instrument
-                </Button>
+                {can('instrument') && (
+                  <Button variant="primary" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => {
+                    setInstrumentError(null);
+                    setIsInstrumentOpen(true);
+                  }}>
+                    Request Instrument
+                  </Button>
+                )}
               </div>
 
               {tender.financial_instruments && tender.financial_instruments.length > 0 ? (
@@ -2175,23 +2613,26 @@ export function TenderDossierModal({
                 <p className="text-[11px] text-[#4A5568]">Team discussions, technical clarifications, and executive notes are saved permanently.</p>
               </div>
 
-              <div className="flex space-x-2">
-                <Input
-                  value={commentText}
-                  onChange={(e) => setCommentText(e.target.value)}
-                  placeholder="Type an internal note or mention team members..."
-                  className="flex-1"
-                />
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handlePostComment}
-                  isLoading={isCommentSubmitting}
-                  leftIcon={<Send className="h-3.5 w-3.5" />}
-                >
-                  Post Note
-                </Button>
-              </div>
+              {can('comment') && (
+                <div className="flex space-x-2">
+                  <Input
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    placeholder="Type an internal note or mention team members..."
+                    className="flex-1"
+                  />
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={handlePostComment}
+                    isLoading={isCommentSubmitting}
+                    disabled={!commentText.trim()}
+                    leftIcon={<Send className="h-3.5 w-3.5" />}
+                  >
+                    Post Note
+                  </Button>
+                </div>
+              )}
 
               {tender.comments && tender.comments.length > 0 ? (
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
@@ -2239,19 +2680,26 @@ export function TenderDossierModal({
                     </div>
                     <div>
                       <span className="text-[10px] text-[#4A5568] block uppercase font-bold">Awarded Value</span>
+                      {/* From the result row only (awarded value; else the winner's price on a loss, the won value on a win) —
+                          never the tender's estimate. */}
                       <span className="font-mono font-bold text-[#0F5E63]">
-                        {tender.tender_result?.awarded_value || tender.tender_value
-                          ? `₹ ${(Number(tender.tender_result?.awarded_value || tender.tender_value) / 100000).toFixed(2)} Lakh`
-                          : '—'}
+                        {lakhOrDash(
+                          tender.tender_result?.awarded_value ??
+                            (String(tender.status).toLowerCase() === 'lost'
+                              ? tender.tender_result?.winning_price
+                              : tender.tender_result?.value),
+                        )}
                       </span>
                     </div>
                     <div>
                       <span className="text-[10px] text-[#4A5568] block uppercase font-bold">Our Rank</span>
-                      <span className="font-mono font-bold">{tender.tender_result?.our_rank || 'L1'}</span>
+                      <span className="font-mono font-bold">{tender.tender_result?.our_rank || '—'}</span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-[#4A5568] block uppercase font-bold">Winning Competitor</span>
-                      <span className="font-semibold">{tender.tender_result?.competitor || 'Arihant Trading'}</span>
+                      <span className="text-[10px] text-[#4A5568] block uppercase font-bold">
+                        {String(tender.status).toLowerCase() === 'lost' ? 'Winning Competitor' : 'Competitor'}
+                      </span>
+                      <span className="font-semibold">{tender.tender_result?.competitor || '—'}</span>
                     </div>
                   </div>
 
@@ -2302,18 +2750,21 @@ export function TenderDossierModal({
                   <p className="text-[11px] text-[#4A5568]">
                     When a PQ tender is officially qualified, generate the linked General or MHA tender with cloned documents and lines.
                   </p>
-                  {tender.status === 'pq_qualified' ? (
+                  {tender.status !== 'pq_qualified' ? (
+                    <p className="text-[11px] text-[#4A5568] italic">Available when tender status is PQ_QUALIFIED.</p>
+                  ) : can('linkedTender') ? (
                     <Button
                       variant="primary"
                       size="sm"
-                      onClick={handleCreateLinkedTender}
-                      isLoading={actionLoading}
+                      onClick={openLinkedTenderDialog}
                       leftIcon={<ArrowRight className="h-3.5 w-3.5" />}
                     >
                       Create Linked General Tender
                     </Button>
                   ) : (
-                    <p className="text-[11px] text-[#4A5568] italic">Available when tender status is PQ_QUALIFIED.</p>
+                    <p className="text-[11px] text-[#4A5568] italic">
+                      Management, Regional Managers, the Tender Team or Admin create the linked General tender.
+                    </p>
                   )}
                 </Card>
 
@@ -2322,18 +2773,41 @@ export function TenderDossierModal({
                   <p className="text-[11px] text-[#4A5568]">
                     Automatically populates Deliveries & Sales Pipeline with awarded items, customer site, and warranty terms.
                   </p>
-                  {['won', 'WON'].includes(tender.status) ? (
-                    <Button
-                      variant="success"
-                      size="sm"
-                      onClick={handleCreateSalesOrder}
-                      isLoading={actionLoading}
-                      leftIcon={<ShoppingBag className="h-3.5 w-3.5" />}
-                    >
-                      Create Sales Order
-                    </Button>
-                  ) : (
+                  {!['won', 'WON'].includes(tender.status) ? (
                     <p className="text-[11px] text-[#4A5568] italic">Available when the tender is Won.</p>
+                  ) : hasSalesOrder ? (
+                    // Already raised (logged on the timeline): a second order for the same PO / LoA is refused with 409.
+                    <p className="text-[11px] text-[#0B4A4E] font-semibold flex items-center gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Sales Order created — see Deliveries below.
+                    </p>
+                  ) : can('salesOrder') ? (
+                    <div className="space-y-1.5">
+                      <Button
+                        variant="success"
+                        size="sm"
+                        onClick={startSalesOrder}
+                        isLoading={isCreatingSalesOrder}
+                        leftIcon={<ShoppingBag className="h-3.5 w-3.5" />}
+                      >
+                        Create Sales Order
+                      </Button>
+                      <p className="text-[11px] text-[#4A5568]">
+                        {awardOrderRef ? (
+                          <>
+                            PO / LoA reference: <span className="font-mono text-[#14213D]">{awardOrderRef}</span>
+                          </>
+                        ) : (
+                          'No PO / LoA reference was recorded with the result; you will be asked for it.'
+                        )}
+                      </p>
+                      {salesOrderError && !isSalesOrderOpen && (
+                        <InfoCallout variant="danger" title="Sales Order not created" onClose={() => setSalesOrderError(null)}>
+                          {salesOrderError}
+                        </InfoCallout>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-[#4A5568] italic">Your role cannot raise Sales Orders.</p>
                   )}
                 </Card>
               </div>
@@ -2362,7 +2836,7 @@ export function TenderDossierModal({
                       <div className="h-2 w-2 rounded-full bg-[#0F5E63] mt-1.5 shrink-0" />
                       <div className="space-y-0.5 flex-1">
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-bold text-[#14213D]">{act.event_type}</span>
+                          <span className="font-bold text-[#14213D]" title={act.event_type}>{activityLabel(act.event_type)}</span>
                           <span className="font-mono text-[#4A5568]">{formatTaskDateTime(act.created_at)}</span>
                         </div>
                         <p className="text-xs text-[#4A5568]">{act.description}</p>
@@ -2583,6 +3057,11 @@ export function TenderDossierModal({
         >
           <form onSubmit={handleSaveReassign} className="space-y-4">
             <div className="space-y-3 text-xs">
+              {reassignError && (
+                <InfoCallout variant="danger" title="Team not updated" onClose={() => setReassignError(null)}>
+                  {reassignError}
+                </InfoCallout>
+              )}
               <div>
                 <Select
                   label="Assigned Salesperson"
@@ -2635,6 +3114,104 @@ export function TenderDossierModal({
           </form>
         </Modal>
       )}
+
+      {/* Sub-modal: PQ → linked General tender (CreateLinkedTenderDto requires number, title and submission deadline) */}
+      <Modal
+        isOpen={isLinkedTenderOpen}
+        onClose={() => {
+          if (!isCreatingLinkedTender) setIsLinkedTenderOpen(false);
+        }}
+        title="Create Linked General Tender"
+        description="The main General bid that follows this PQ. Line items are copied and its document checklist is initialised."
+        maxWidth="md"
+      >
+        <form onSubmit={handleCreateLinkedTender} className="space-y-3 text-xs">
+          {linkedTenderError && (
+            <InfoCallout variant="danger" title="Tender not created" onClose={() => setLinkedTenderError(null)}>
+              {linkedTenderError}
+            </InfoCallout>
+          )}
+          <Input
+            label="Tender Number"
+            value={linkedTenderForm.tender_number}
+            onChange={(e) => setLinkedTenderForm({ ...linkedTenderForm, tender_number: e.target.value })}
+            placeholder="e.g. GEM/2026/B/1234567"
+            className="font-mono"
+            required
+          />
+          <Input
+            label="Tender Title"
+            value={linkedTenderForm.tender_title}
+            onChange={(e) => setLinkedTenderForm({ ...linkedTenderForm, tender_title: e.target.value })}
+            required
+          />
+          <Input
+            label="Submission Deadline (IST)"
+            type="datetime-local"
+            min={istNowLocalInput()}
+            value={linkedTenderForm.submission_deadline}
+            onChange={(e) => setLinkedTenderForm({ ...linkedTenderForm, submission_deadline: e.target.value })}
+            helperText="Bid closing date and time on the portal, in IST."
+            required
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" size="sm" disabled={isCreatingLinkedTender} onClick={() => setIsLinkedTenderOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" isLoading={isCreatingLinkedTender} leftIcon={<ArrowRight className="h-3.5 w-3.5" />}>
+              Create General Tender
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Sub-modal: Sales Order PO / LoA reference (asked only when the recorded result has none) */}
+      <Modal
+        isOpen={isSalesOrderOpen}
+        onClose={() => {
+          if (!isCreatingSalesOrder) setIsSalesOrderOpen(false);
+        }}
+        title="Create Sales Order"
+        description="The buyer's PO / LoA number becomes the delivery's order reference."
+        maxWidth="sm"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!salesOrderRef.trim()) {
+              setSalesOrderError('Enter the PO / LoA reference number issued by the buyer.');
+              return;
+            }
+            handleCreateSalesOrder(salesOrderRef);
+          }}
+          className="space-y-3 text-xs"
+        >
+          {salesOrderError && (
+            <InfoCallout variant="danger" title="Sales Order not created" onClose={() => setSalesOrderError(null)}>
+              {salesOrderError}
+            </InfoCallout>
+          )}
+          <Input
+            label="PO / LoA Reference Number"
+            value={salesOrderRef}
+            onChange={(e) => {
+              setSalesOrderRef(e.target.value);
+              setSalesOrderError(null);
+            }}
+            placeholder="e.g. GEMC-511687712345678"
+            className="font-mono"
+            required
+          />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" size="sm" disabled={isCreatingSalesOrder} onClick={() => setIsSalesOrderOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="success" size="sm" isLoading={isCreatingSalesOrder} leftIcon={<ShoppingBag className="h-3.5 w-3.5" />}>
+              Create Sales Order
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </Modal>
   );
 }

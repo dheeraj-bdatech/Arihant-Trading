@@ -127,7 +127,8 @@ export interface ClaimListTotals {
   total_claimed: number;
   total_approved: number;
   paid_amount?: number;
-  buckets?: Record<ExpenseStageBucket, { count: number; amount: number }>;
+  /** amount: claimed; approved_amount: approved where set, else claimed (what With Accounts / Paid show). */
+  buckets?: Record<ExpenseStageBucket, { count: number; amount: number; approved_amount?: number }>;
 }
 
 export interface Paged<T> {

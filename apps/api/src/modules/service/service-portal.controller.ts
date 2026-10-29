@@ -4,9 +4,12 @@ import { Public } from '../../common/auth/public.decorator.js';
 import { ServicePortalService } from './service-portal.service.js';
 import { PortalServiceRequestDto, PortalTrackQueryDto, PortalCommentDto, PortalFeedbackDto } from './service-portal.dto.js';
 
+/**
+ * The caller's address as Express resolves it under `trust proxy` (common/app-setup.ts): X-Forwarded-For is only
+ * honoured from trusted proxy hops, so a visitor cannot rotate a fake header to get round the per-IP limits.
+ */
 function clientIp(req: Request): string {
-  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return fwd || req.ip || req.socket?.remoteAddress || 'unknown';
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 /**

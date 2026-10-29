@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { Kysely } from 'kysely';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/common/app-setup';
 
@@ -18,6 +19,7 @@ const openDeadlineIST = () => `${new Date(Date.now() + 330 * 60 * 1000 + 30 * 86
 
 describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
   let app: INestApplication;
+  let db: Kysely<any>;
   let mgmtToken: string;
   let adminUserId: string;
   let salesToken: string;
@@ -51,6 +53,19 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
     }
   }
 
+  /**
+   * Bids are opened only after the bid closes: results are blocked before the closing time. Simulate the closing
+   * having passed (yesterday) so the result can be recorded today — same helper as tenders-module4.
+   */
+  async function closeBid(tenderId: string) {
+    const closedAt = new Date(Date.now() - 86400000);
+    await db
+      .updateTable('tenders')
+      .set({ submission_deadline: closedAt, bid_closing_date: closedAt })
+      .where('id', '=', tenderId)
+      .execute();
+  }
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -59,6 +74,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
     app = moduleFixture.createNestApplication();
     configureApp(app); // same global setup as main.ts
     await app.init();
+    db = moduleFixture.get<Kysely<any>>('KYSELY_DB');
 
     // 1. Authenticate users
     const mgmtRes = await request(app.getHttpServer())
@@ -277,7 +293,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'Delhi Police IT Cell',
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-11-15T15:00:00', // No timezone given
+          submission_deadline: openDeadlineIST().slice(0, 19), // No timezone given
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -304,7 +320,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'NSG Manesar',
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-25T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           region_id: testRegionId, // No zone_id provided!
         });
 
@@ -328,7 +344,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
             organisation: 'Assam Rifles',
             category_id: generalCategoryId,
             publication_date: '2026-09-01',
-            submission_deadline: '2026-10-25T15:00:00+05:30',
+            submission_deadline: openDeadlineIST(),
             zone_id: testZoneId,
             region_id: otherReg.id, // Belongs to different zone
           });
@@ -355,7 +371,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'CISF CISF Unit',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-11-01T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
         });
       unassignedTenderId = resUnassigned.body.id;
 
@@ -367,7 +383,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'DRDO HQ',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-11-01T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -470,7 +486,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'General Motors India Defence',
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-11-10T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -485,7 +501,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'Heavy Vehicles Factory Avadi',
           category_id: pqCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-11-10T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -608,7 +624,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
         .post(`/api/tenders/${expiredTenderId}/deadline-change`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          new_deadline: '2026-11-20T15:00:00+05:30',
+          new_deadline: openDeadlineIST(),
           reason: '   ', // Blank reason!
         });
 
@@ -621,7 +637,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
         .post(`/api/tenders/${expiredTenderId}/deadline-change`)
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
-          new_deadline: '2026-11-20T15:00:00+05:30',
+          new_deadline: openDeadlineIST(),
           reason: 'Corrigendum No. 1 issued by Department',
         });
 
@@ -639,7 +655,9 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
       expect(resSub.body.status).toBe('submitted');
     });
 
-    it('Edge Case 11: pure empanelment PQ can be WON directly from PQ_QUALIFIED', async () => {
+    // PRD stages (blueprint §19, commit b2bfac0): PQ Qualified → Tender Submitted → … → Won / Lost. A PQ tender no
+    // longer jumps from PQ Qualified straight to Won; its outcome is recorded once the bid is submitted.
+    it('Edge Case 11: a PQ tender records its outcome after Tender Submitted, not straight from PQ_QUALIFIED', async () => {
       const empanelmentNum = `EMPANEL-${Date.now()}`;
       const resCreate = await request(app.getHttpServer())
         .post('/api/tenders')
@@ -662,16 +680,33 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
       await request(app.getHttpServer()).post(`/api/tenders/${eId}/transitions`).set('Authorization', `Bearer ${mgmtToken}`).send({ target_status: 'pq_submitted', remarks: 'PQ Sub' });
       await request(app.getHttpServer()).post(`/api/tenders/${eId}/transitions`).set('Authorization', `Bearer ${mgmtToken}`).send({ target_status: 'pq_qualified', remarks: 'Qualified' });
 
-      // Record WON directly from PQ_QUALIFIED (pure empanelment)
+      const won = {
+        outcome: 'won',
+        value: 5000000,
+        result_date: istToday(),
+        notes: 'Empanelled successfully for 3 years',
+      };
+
+      // Straight from PQ_QUALIFIED: refused
+      const resEarly = await request(app.getHttpServer())
+        .post(`/api/tenders/${eId}/result`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send(won);
+      expect(resEarly.status).toBe(400);
+      expect(resEarly.body.message).toMatch(/Cannot record outcome from stage "PQ Qualified"/);
+
+      // After Tender Submitted: recorded
+      const resSubmit = await request(app.getHttpServer())
+        .post(`/api/tenders/${eId}/transitions`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ target_status: 'submitted', remarks: 'Commercial envelope submitted' });
+      expect(resSubmit.status).toBe(201);
+      await closeBid(eId);
+
       const resWon = await request(app.getHttpServer())
         .post(`/api/tenders/${eId}/result`)
         .set('Authorization', `Bearer ${mgmtToken}`)
-        .send({
-          outcome: 'won',
-          value: 5000000,
-          result_date: istToday(),
-          notes: 'Empanelled successfully for 3 years',
-        });
+        .send(won);
 
       expect(resWon.status).toBe(201);
       expect(resWon.body.status).toBe('won');
@@ -693,7 +728,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'Western Command Chandimandir',
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-30T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -795,7 +830,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'Ministry of Railways',
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-30T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -945,7 +980,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: 'SPG Special Protection Group',
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-30T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
           assigned_to: salesUserId,
           zone_id: testZoneId,
           region_id: testRegionId,
@@ -983,7 +1018,7 @@ describe('Module 4: Tender Management 25 Edge Cases Test Suite (§10)', () => {
           organisation: blankOrg,
           category_id: generalCategoryId,
           publication_date: '2026-09-01',
-          submission_deadline: '2026-10-30T15:00:00+05:30',
+          submission_deadline: openDeadlineIST(),
         });
 
       const res = await request(app.getHttpServer())

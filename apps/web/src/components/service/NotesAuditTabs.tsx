@@ -2,15 +2,19 @@
 
 import React, { useMemo, useState } from 'react';
 import { ChevronRight, UserPlus, Globe2 } from 'lucide-react';
-import { Button, Badge, Input, formatDateTimeIN } from '@/components/ui';
+import { Button, Badge, Checkbox, Input, formatDateTimeIN } from '@/components/ui';
 import { api } from '@/lib/api';
-import { errMsg, statusLabel } from './serviceHelpers';
+import { errMsg, isPortalTicket, statusLabel, LINK_ROLES } from './serviceHelpers';
 
-export const NotesTab: React.FC<{ ticket: any; onChanged: () => void | Promise<void> }> = ({ ticket, onChanged }) => {
+export const NotesTab: React.FC<{ ticket: any; role: string; onChanged: () => void | Promise<void> }> = ({ ticket, role, onChanged }) => {
   const [text, setText] = useState('');
+  const [toCustomer, setToCustomer] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const comments: any[] = ticket.comments || [];
+  // A reply the customer sees on their tracking page: portal requests only (others have no tracking page), and
+  // only the service desk roles the API lets message the customer. Notes stay internal by default.
+  const canMessageCustomer = LINK_ROLES.includes(role) && (!!ticket.intake_request_id || isPortalTicket(ticket));
 
   const post = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -18,8 +22,9 @@ export const NotesTab: React.FC<{ ticket: any; onChanged: () => void | Promise<v
     setBusy(true);
     setError(null);
     try {
-      await api.post(`/service/tickets/${ticket.id}/comments`, { body: text.trim(), is_internal: true });
+      await api.post(`/service/tickets/${ticket.id}/comments`, { body: text.trim(), is_internal: !(canMessageCustomer && toCustomer) });
       setText('');
+      setToCustomer(false);
       await onChanged();
     } catch (err) {
       setError(errMsg(err));
@@ -63,11 +68,28 @@ export const NotesTab: React.FC<{ ticket: any; onChanged: () => void | Promise<v
           {error}
         </div>
       )}
-      <form onSubmit={post} className="flex gap-2">
-        <Input placeholder="Type an internal note for engineers or coordinators…" value={text} onChange={(e) => setText(e.target.value)} className="flex-1" />
-        <Button type="submit" size="sm" isLoading={busy} className="h-10 shrink-0 sm:h-8">
-          Post note
-        </Button>
+      <form onSubmit={post} className="space-y-2">
+        <div className="flex gap-2">
+          <Input
+            placeholder={canMessageCustomer && toCustomer ? 'Type a reply the customer will see on their tracking page…' : 'Type an internal note for engineers or coordinators…'}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            className="flex-1"
+            aria-label={canMessageCustomer && toCustomer ? 'Reply to customer' : 'Internal note'}
+          />
+          <Button type="submit" size="sm" isLoading={busy} className="h-10 shrink-0 sm:h-8">
+            {canMessageCustomer && toCustomer ? 'Send to customer' : 'Post note'}
+          </Button>
+        </div>
+        {canMessageCustomer && (
+          <Checkbox
+            size="sm"
+            checked={toCustomer}
+            onChange={(e) => setToCustomer(e.target.checked)}
+            label="Visible to customer"
+            description="Shown on the customer's tracking page as a message from the Arihant service desk."
+          />
+        )}
       </form>
     </div>
   );

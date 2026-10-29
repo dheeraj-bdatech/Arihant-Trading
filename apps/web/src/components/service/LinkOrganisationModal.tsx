@@ -13,6 +13,9 @@ interface Props {
   onStale: () => void | Promise<void>;
 }
 
+/** Holding record for customers not yet in the master (the API refuses it as a link target). */
+const UNVERIFIED_ORG_ID = '00000000-0000-4000-8000-0000000000a1';
+
 /** Search the organisation master and link an unverified portal ticket to the real customer. */
 export const LinkOrganisationModal: React.FC<Props> = ({ ticket, onClose, onDone, onStale }) => {
   const [search, setSearch] = useState('');
@@ -39,7 +42,7 @@ export const LinkOrganisationModal: React.FC<Props> = ({ ticket, onClose, onDone
     const t = setTimeout(() => {
       api
         .get('/organisations', { search: search.trim() || undefined, limit: 15 })
-        .then((res) => !cancelled && setResults(res.data || []))
+        .then((res) => !cancelled && setResults((res.data || []).filter((o: any) => o?.id !== UNVERIFIED_ORG_ID)))
         .catch((e) => !cancelled && setError(errMsg(e, 'Could not search organisations.')))
         .finally(() => !cancelled && setLoading(false));
     }, 250);

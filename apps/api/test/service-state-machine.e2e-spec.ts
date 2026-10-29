@@ -570,7 +570,9 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
     });
 
     it('waiting for a part / the customer pauses the clock and resuming slides the deadline', async () => {
-      const t = await advanceTicket(app, (await mk({ priority: 'high' })).id, tok.mgmt, uid.svc, 'in_progress');
+      // critical = 24x7 SLA, so the deadline slides by the full wall-clock pause (a working-hours SLA slides by the
+      // working time the pause consumed: covered in service-sla.unit-spec.ts)
+      const t = await advanceTicket(app, (await mk({ priority: 'critical' })).id, tok.mgmt, uid.svc, 'in_progress');
       const before = await get(t.id);
       expect(before.first_response_at).toBeTruthy(); // set when work began
 

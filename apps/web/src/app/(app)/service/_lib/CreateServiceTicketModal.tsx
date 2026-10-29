@@ -46,13 +46,19 @@ const emptyTicket = () => ({
 });
 
 const listOf = (res: any): any[] => (Array.isArray(res) ? res : res?.data || []);
+/** Holding record for customers not yet in the master: never offered as a pick. */
+const UNVERIFIED_ORG_ID = '00000000-0000-4000-8000-0000000000a1';
+const realOrgs = (list: any[]) => list.filter((o) => o?.id && o.id !== UNVERIFIED_ORG_ID);
+const sameName = (a: unknown, b: unknown) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
 
 export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> = ({ isOpen, onClose, prefill, onCreated }) => {
   const { user } = useAuth();
   const role = user?.role || '';
 
   const [newTicket, setNewTicket] = useState(emptyTicket);
+  // Customer master search results for what is typed (the master is searched server-side, never truncated)
   const [organisations, setOrganisations] = useState<any[]>([]);
+  const [orgSearching, setOrgSearching] = useState(false);
   const [products, setProducts] = useState<any[]>([]);
   const [orgContacts, setOrgContacts] = useState<any[]>([]);
   const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
@@ -67,22 +73,19 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
     setActionError(null);
     setNewTicket({ ...emptyTicket(), organisation_id: prefill?.organisation_id || '', complaint: prefill?.issue || '' });
 
-    api
-      .get('/organisations', { limit: 100 })
-      .then(async (res) => {
-        let orgs = listOf(res);
-        // A prefilled customer outside the first page of the master still has to show by name.
-        const wanted = prefill?.organisation_id;
-        if (wanted && !orgs.some((o) => o.id === wanted)) {
-          const one = await api.get(`/organisations/${wanted}`).catch(() => null);
-          if (one?.id) orgs = [one, ...orgs];
-        }
-        if (!live) return;
-        setOrganisations(orgs);
-        const match = wanted ? orgs.find((o) => o.id === wanted) : null;
-        if (match) setNewTicket((t) => (t.organisation_id === match.id ? { ...t, organisation_name: match.name, city: match.city || t.city } : t));
-      })
-      .catch(() => {});
+    setOrganisations([]);
+    // A prefilled customer is resolved by id so it shows by name.
+    const wanted = prefill?.organisation_id;
+    if (wanted) {
+      api
+        .get(`/organisations/${wanted}`)
+        .then((one: any) => {
+          if (!live || !one?.id) return;
+          setOrganisations((list) => (list.some((o) => o.id === one.id) ? list : [one, ...list]));
+          setNewTicket((t) => (t.organisation_id === one.id ? { ...t, organisation_name: one.name, city: one.city || t.city } : t));
+        })
+        .catch(() => {});
+    }
     api
       .get('/products')
       .then((res: any) => live && setProducts(listOf(res)))
@@ -105,6 +108,35 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
     // Re-run per opening; the prefill is read at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, role]);
+
+  // Search the customer master as the name is typed (debounced), like the link-customer popup.
+  const typedOrg = newTicket.organisation_name.trim();
+  useEffect(() => {
+    if (!isOpen || newTicket.organisation_id || typedOrg.length < 2) {
+      setOrgSearching(false);
+      return;
+    }
+    let live = true;
+    setOrgSearching(true);
+    const t = setTimeout(() => {
+      api
+        .get('/organisations', { search: typedOrg, limit: 15 })
+        .then((res) => {
+          if (!live) return;
+          const found = realOrgs(listOf(res));
+          setOrganisations(found);
+          // typed (or pasted) the exact name of a customer: select it
+          const exact = found.find((o) => sameName(o.name, typedOrg));
+          if (exact) setNewTicket((cur) => (cur.organisation_id || !sameName(cur.organisation_name, exact.name) ? cur : { ...cur, organisation_id: exact.id, city: exact.city || cur.city }));
+        })
+        .catch(() => {})
+        .finally(() => live && setOrgSearching(false));
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [isOpen, typedOrg, newTicket.organisation_id]);
 
   // Contact persons of the selected customer (§31) — none for an unverified customer
   useEffect(() => {
@@ -152,8 +184,10 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
       let claimedName: string | undefined;
       if (!orgId) {
         if (!typedName) throw new Error('Please enter or select a customer organisation.');
-        // Picked by name but not from the list: match it case-insensitively before treating it as new.
-        const match = organisations.find((o) => String(o.name).trim().toLowerCase() === typedName.toLowerCase());
+        // Typed but not picked: look the exact name up in the whole master (case-insensitive) before treating it
+        // as a customer we do not know yet.
+        const found = realOrgs(listOf(await api.get('/organisations', { search: typedName, limit: 15 }).catch(() => null)));
+        const match = [...found, ...organisations].find((o) => sameName(o.name, typedName));
         if (match) orgId = match.id;
         // Not in the master: log it against the unverified-customer record (for every role, never a guessed
         // master entry); it is linked to the real organisation once that is added with its true state / city.
@@ -320,8 +354,8 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
                       className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
                       required
                     />
-                    {!newTicket.organisation_id && newTicket.organisation_name.trim().length > 2 &&
-                      !organisations.some((o) => String(o.name).trim().toLowerCase() === newTicket.organisation_name.trim().toLowerCase()) && (
+                    {!newTicket.organisation_id && !orgSearching && newTicket.organisation_name.trim().length > 2 &&
+                      !organisations.some((o) => sameName(o.name, newTicket.organisation_name)) && (
                         <p className="mt-1 text-[11px] text-[#9A3412]">
                           Not in the customer master — the ticket is logged as an unverified customer; link it to the right organisation once it is added.
                         </p>

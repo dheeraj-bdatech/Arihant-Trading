@@ -9,9 +9,11 @@ import {
   ValidateIf,
   Matches,
   IsBoolean,
+  IsIn,
   Min,
 } from 'class-validator';
 import type { TenderCategory, TenderStatus } from '@arihant/shared';
+import { TENDER_FINANCIAL_INSTRUMENT_STATUSES } from '@arihant/shared';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -1417,7 +1419,9 @@ export class CreateTenderFinancialInstrumentDto {
   @IsOptional()
   expiry_date?: string;
 
-  @IsString()
+  @IsIn(TENDER_FINANCIAL_INSTRUMENT_STATUSES, {
+    message: `Status must be one of: ${TENDER_FINANCIAL_INSTRUMENT_STATUSES.join(', ')}`,
+  })
   @IsOptional()
   status?: string;
 
@@ -1456,7 +1460,9 @@ export class UpdateTenderFinancialInstrumentDto {
   @IsOptional()
   expiry_date?: string;
 
-  @IsString()
+  @IsIn(TENDER_FINANCIAL_INSTRUMENT_STATUSES, {
+    message: `Status must be one of: ${TENDER_FINANCIAL_INSTRUMENT_STATUSES.join(', ')}`,
+  })
   @IsOptional()
   status?: string;
 

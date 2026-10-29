@@ -8,6 +8,8 @@ import { USER_ROLES, type UserRole } from '@arihant/shared';
 const READ_ROLES = {
   tenders: ['management', 'regional_manager', 'sales', 'tender_team', 'admin'],
   tenderReports: ['management', 'regional_manager', 'admin'],
+  /** GET /tenders/finance/emd-tracking — tender EMD & PBG accounting (Accounts reaches the tender module only here). */
+  tenderFinance: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'],
   leads: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin'],
   visits: ['management', 'regional_manager', 'sales', 'demo_team', 'service_team', 'admin'],
   demos: ['management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'admin'],

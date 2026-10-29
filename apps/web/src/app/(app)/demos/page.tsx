@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
 import Link from 'next/link';
@@ -54,6 +54,7 @@ import { canOpen } from '@/lib/route-access';
 import { formatINR } from '@arihant/shared';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
 import { CreateDemoModal } from './_lib/CreateDemoModal';
+import { OrganisationPicker } from './_lib/OrganisationPicker';
 import {
   Button,
   Badge,
@@ -181,6 +182,21 @@ const DEMO_DONE = ['completed', 'cancelled', 'failed', 'closed'];
 // (MODULE_3 §4.1–4.2). Same set as DEMO_PENDING_STATUSES in demos.service.ts, which also counts it.
 const DEMO_PENDING_STATUSES = ['requested', 'under_planning', 'team_assigned', 'equipment_reserved', 'rescheduled'];
 const DEMOS_PAGE_SIZE = 50;
+/**
+ * Every page of a /demos query, for the views whose counts and client-side filters need the whole set (my demos,
+ * field failures, a calendar week). The API serves at most 100 rows a page; 20 pages bound a runaway query.
+ */
+const fetchAllDemos = async (params: Record<string, string>): Promise<any[]> => {
+  const rows: any[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const res = await api.get('/demos', { ...params, page, limit: 100 });
+    rows.push(...(res?.data || []));
+    if (page >= (res?.totalPages || 1)) break;
+  }
+  return rows;
+};
+/** Only a technical failure quarantines the trial's units (demos.service submitOutcome). */
+const isQuarantiningFailure = (demo: any) => demo?.outcome?.result === 'fail' && demo?.outcome?.failure_reason === 'TECHNICAL_FAILURE';
 type BadgeVariant = NonNullable<BadgeProps['variant']>;
 const DEMO_STATUS_BADGE: Record<string, BadgeVariant> = {
   requested: 'warning',
@@ -238,6 +254,8 @@ function DemosPageContent() {
   // Management approves a new request; the demo team then fixes the date with the client (admin can override both)
   const canApprove = hasRole(['management', 'admin']);
   const canConfirmDate = hasRole(['demo_team', 'admin']);
+  // Assigning a specialist is a coordinator call (POST /demos/:id/assign-team); sales only raise the request
+  const canAssignTeam = hasRole(['demo_team', 'management', 'regional_manager', 'admin']);
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
 
@@ -261,6 +279,9 @@ function DemosPageContent() {
 
   // Deep link from visits, tasks and notifications: /demos?open=<demo id> shows that demo's card in a dialog.
   const [linkedDemo, setLinkedDemo] = useState<any | null>(null);
+  // The open dialog's demo id, so a refresh after an action can re-read it (the dialog must never show stale actions)
+  const linkedDemoId = useRef<string | null>(null);
+  linkedDemoId.current = linkedDemo?.id ?? null;
   useOpenParam(async (id) => {
     const demo = await api.get(`/demos/${id}`).catch(() => null);
     if (demo) setLinkedDemo(demo);
@@ -276,32 +297,19 @@ function DemosPageContent() {
   const [isFailureDetailModalOpen, setIsFailureDetailModalOpen] = useState(false);
 
   // Core Data States
-  const [demos, setDemos] = useState<any[]>([]);
   const [equipmentList, setEquipmentList] = useState<any[]>([]);
-  const [organisations, setOrganisations] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
   const [analyticsData, setAnalyticsData] = useState<any | null>(null);
   const [customerHistoryDemos, setCustomerHistoryDemos] = useState<any[]>([]);
+  // Bumped after every reload, so views that fetch for themselves (the calendar week) re-read too
+  const [dataVersion, setDataVersion] = useState(0);
 
-  // Demos assigned to current user
-  const myDemosList = useMemo(() => {
-    if (!user?.id) return [];
-    return demos.filter((d) => d.assigned_to === user.id);
-  }, [demos, user?.id]);
-
-  // Comprehensive Failed Demos & Technical Breakdowns List
-  const failedDemos = useMemo(() => {
-    return demos.filter(
-      (d) =>
-        d.outcome?.result === 'fail' ||
-        d.status === 'failed' ||
-        d.outcome?.failure_reason ||
-        d.service_ticket_id ||
-        d.outcome?.service_ticket_id,
-    );
-  }, [demos]);
+  // Demos assigned to the current user, and every failed trial: filtered by the API (assigned_to / result=fail,
+  // under the caller's RBAC scope) and read in full, so their counts never stop at the first page.
+  const [myDemosList, setMyDemosList] = useState<any[]>([]);
+  const [failedDemos, setFailedDemos] = useState<any[]>([]);
 
   // Filtered Failures for Management Incident Audit
   const displayedFailures = useMemo(() => {
@@ -346,7 +354,9 @@ function DemosPageContent() {
   }, [failedDemos, failReasonFilter, failEscortFilter, failServiceTicketFilter, failSearchQuery]);
 
   const [selectedHistoryOrgId, setSelectedHistoryOrgId] = useState<string>('');
+  const historySeq = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadedOnce, setLoadedOnce] = useState(false);
 
   // Filters for Pipeline tab
   const [filterSearch, setFilterSearch] = useState('');
@@ -380,6 +390,16 @@ function DemosPageContent() {
   );
   const pipelineList = useInfiniteList<any>(fetchPipelinePage);
   const filteredDemos = pipelineList.rows;
+  // The pipeline calendar reads its visible week from the server under the same filters (any date filter narrows it)
+  const loadCalendarWeek = useCallback(
+    async (from: string, to: string) => {
+      const lo = filterParams.date_from && filterParams.date_from > from ? filterParams.date_from : from;
+      const hi = filterParams.date_to && filterParams.date_to < to ? filterParams.date_to : to;
+      if (lo > hi) return [];
+      return fetchAllDemos({ ...filterParams, date_from: lo, date_to: hi });
+    },
+    [filterParams],
+  );
 
   // Coordinator planning queue: the pending requests under the same filters. The queue is a status set, so the
   // status filter does not narrow it (its count, summary.pending_requests, ignores it too).
@@ -395,11 +415,15 @@ function DemosPageContent() {
 
   // Counts for the menus, view counts and KPI cards, from the server under the same filters as the list.
   const [demoSummary, setDemoSummary] = useState<any | null>(null);
+  // Each search keystroke refetches: only the newest answer may land, an older slower one is dropped
+  const countsSeq = useRef(0);
   const loadFilteredCounts = useCallback(async () => {
+    const seq = ++countsSeq.current;
     const [summaryRes, analyticsRes] = await Promise.all([
       api.get('/demos/summary', filterParams).catch(() => null),
       canRead(user?.role, 'demoAnalytics') ? api.get('/demos/analytics', filterParams).catch(() => null) : Promise.resolve(null),
     ]);
+    if (seq !== countsSeq.current) return;
     if (summaryRes) setDemoSummary(summaryRes);
     if (analyticsRes) setAnalyticsData(analyticsRes);
   }, [filterParams, user?.role]);
@@ -517,6 +541,7 @@ function DemosPageContent() {
     serial_no: '',
     current_location: 'Delhi',
     responsible_person: '',
+    responsible_person_name: '',
     availability_status: 'available',
     condition: 'Operational',
     remarks: '',
@@ -543,35 +568,45 @@ function DemosPageContent() {
 
   // Unfiltered data for the other views; `withFiltered` also re-reads the filtered register, queue and counts
   // (after an action). The first load skips them: their own effects load them.
+  // Re-read the demo open in the dialog after an action, so its stage, kit and actions match the server.
+  const refreshLinkedDemo = async () => {
+    const id = linkedDemoId.current;
+    if (!id) return;
+    const fresh = await api.get(`/demos/${id}`).catch(() => null);
+    if (fresh) setLinkedDemo((prev: any) => (prev && prev.id === id ? fresh : prev));
+  };
+
   const fetchDemosData = async (withFiltered = true) => {
     if (withFiltered) {
       void pipelineList.refresh();
       void queueList.refresh();
       void loadFilteredCounts();
+      void refreshLinkedDemo();
+      setDataVersion((v) => v + 1);
     }
     try {
       setIsLoading(true);
       setActionError(null);
 
       const [
-        demosRes,
+        myRes,
+        failedRes,
         equipRes,
-        orgsRes,
         productsRes,
         teamRes,
         serviceRes,
       ] = await Promise.all([
-        api.get('/demos', { limit: 100 }),
+        user?.id ? fetchAllDemos({ assigned_to: user.id }) : Promise.resolve([]),
+        fetchAllDemos({ result: 'fail' }),
         api.get('/demos/equipment'),
-        api.get('/organisations', { limit: 100 }),
         api.get('/masters/products'),
         api.get('/demos/team/availability').catch(() => []),
         api.get('/users', { role: 'service_team' }).catch(() => ({ data: [] })),
       ]);
 
-      setDemos(demosRes.data || []);
+      setMyDemosList(myRes);
+      setFailedDemos(failedRes);
       setEquipmentList(equipRes || []);
-      setOrganisations(orgsRes.data || orgsRes || []);
       setProducts(productsRes || []);
       setTeamMembers(teamRes || []);
       setServiceEngineers(serviceRes.data || serviceRes || []);
@@ -580,12 +615,15 @@ function DemosPageContent() {
       setActionError(err.message || 'Failed to load demo data.');
     } finally {
       setIsLoading(false);
+      setLoadedOnce(true);
     }
   };
 
   useEffect(() => {
     fetchDemosData(false);
-  }, []);
+    // re-read once the signed-in user is known (My demos is filtered by their id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // Fetch Team availability whenever team modal opens or date changes
   const loadTeamAvailability = async (targetDate: string) => {
@@ -623,14 +661,14 @@ function DemosPageContent() {
 
   // Handle customer history load
   const loadCustomerHistory = async (orgId: string) => {
+    const seq = ++historySeq.current;
     setSelectedHistoryOrgId(orgId);
-    if (!orgId) {
-      setCustomerHistoryDemos([]);
-      return;
-    }
+    setCustomerHistoryDemos([]);
+    if (!orgId) return;
     try {
-      const res = await api.get('/demos', { organisation_id: orgId, limit: 50 });
-      setCustomerHistoryDemos(res.data || []);
+      const rows = await fetchAllDemos({ organisation_id: orgId });
+      // switching customers quickly: only the last pick may fill the timeline
+      if (seq === historySeq.current) setCustomerHistoryDemos(rows);
     } catch (err) {
       console.error('Failed to load customer history:', err);
     }
@@ -670,14 +708,15 @@ function DemosPageContent() {
 
   const handleOpenAssignTeam = async (demo: any) => {
     setSelectedDemo(demo);
-    const date = demo.confirmed_date || demo.requested_date;
+    // DATE columns arrive as serialized instants: always work with the IST calendar day (YYYY-MM-DD)
+    const date = demoDay(demo);
     setTeamForm({
       assigned_to: demo.assigned_to || '',
-      confirmed_date: demo.confirmed_date || demo.requested_date || '',
+      confirmed_date: date,
       travel_required: demo.travel_required || false,
       travel_from: demo.travel_from || 'Delhi HQ',
       travel_to: demo.travel_to || demo.location || '',
-      travel_date: demo.travel_date || demo.confirmed_date || demo.requested_date || '',
+      travel_date: calendarDay(demo.travel_date) || date,
       travel_remarks: demo.travel_remarks || '',
       remarks: demo.remarks || '',
     });
@@ -687,12 +726,29 @@ function DemosPageContent() {
 
   const handleAssignTeamSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedDemo) return;
+    if (!selectedDemo || isSubmitting) return;
     setActionError(null);
     setIsSubmitting(true);
 
     try {
-      await api.post(`/demos/${selectedDemo.id}/assign-team`, teamForm);
+      // Assigning a specialist does not confirm the date: only a date the coordinator changed on an approved demo
+      // is sent. Travel details go only with travel.
+      const dateChanged = teamForm.confirmed_date && teamForm.confirmed_date !== demoDay(selectedDemo);
+      const payload: Record<string, unknown> = {
+        assigned_to: teamForm.assigned_to,
+        remarks: teamForm.remarks,
+        travel_required: teamForm.travel_required,
+        ...(dateChanged && selectedDemo.status !== 'requested' ? { confirmed_date: teamForm.confirmed_date } : {}),
+        ...(teamForm.travel_required
+          ? {
+              travel_from: teamForm.travel_from,
+              travel_to: teamForm.travel_to,
+              travel_date: calendarDay(teamForm.travel_date) || undefined,
+              travel_remarks: teamForm.travel_remarks,
+            }
+          : {}),
+      };
+      await api.post(`/demos/${selectedDemo.id}/assign-team`, payload);
       setActionSuccess(`Demo team member assigned to ${selectedDemo.demo_no}.`);
       setIsAssignTeamOpen(false);
       await fetchDemosData();
@@ -763,8 +819,8 @@ function DemosPageContent() {
       return;
     }
 
-    const fromDate = (reserveForm.reserved_from || '').split('T')[0];
-    const toDate = (reserveForm.reserved_to || fromDate).split('T')[0];
+    const fromDate = calendarDay(reserveForm.reserved_from);
+    const toDate = calendarDay(reserveForm.reserved_to) || fromDate;
 
     if (!fromDate || !toDate) {
       setReserveModalError('Reservation start and end dates are required.');
@@ -803,10 +859,13 @@ function DemosPageContent() {
       }
 
       const inMaintenance = chosenUnit.effective_status === 'maintenance' || chosenUnit.availability_status === 'maintenance';
+      // The roster loaded for the chosen dates already says whether the unit is free then. The unit's own
+      // availability_status reads "reserved" while any booking of it runs, so it only counts when that roster has not
+      // loaded — otherwise the picker offers a unit this check then refuses (QA BUG-029).
       const isUnavailable =
         !chosenUnit.is_available_for_dates ||
         chosenUnit.effective_status === 'reserved' ||
-        chosenUnit.availability_status === 'reserved' ||
+        (modalEquipmentUnits.length === 0 && chosenUnit.availability_status === 'reserved') ||
         inMaintenance;
 
       // A unit booked for another demo goes to the server, which compares the two bids' values and lets
@@ -850,6 +909,7 @@ function DemosPageContent() {
 
   // Custodian Approve Reservation
   const handleApproveReservation = async (reservation: any) => {
+    if (isSubmitting) return;
     setActionError(null);
     setIsSubmitting(true);
     try {
@@ -905,8 +965,9 @@ function DemosPageContent() {
       // Accepting a suggestion pre-selects the suggested unit.
       equipment_id: mode === 'allocate' && reservation.status === 'alternative_suggested' ? reservation.alternative_equipment_id || '' : '',
       reason: '',
-      reserved_from: reservation.reserved_from || demo.confirmed_date || demo.requested_date,
-      reserved_to: reservation.reserved_to || demo.confirmed_date || demo.requested_date,
+      // DATE columns arrive as serialized instants: the inputs and the API take the IST calendar day
+      reserved_from: calendarDay(reservation.reserved_from) || demoDay(demo),
+      reserved_to: calendarDay(reservation.reserved_to) || calendarDay(reservation.reserved_from) || demoDay(demo),
       remarks: '',
     });
     setIsAllocateOpen(true);
@@ -914,7 +975,10 @@ function DemosPageContent() {
 
   // §14: coordinator picks a new request up — Requested → Under Planning.
   const handleStartPlanning = async (demo: any) => {
+    // a double click must not send a second approval (the API would answer it with an error)
+    if (isSubmitting) return;
     setActionError(null);
+    setIsSubmitting(true);
     try {
       await api.post(`/demos/${demo.id}/start-planning`, {});
       setActionSuccess(`Demo request ${demo.demo_no} approved. ${demo.requested_by_name || 'The salesperson'} has been notified and it is now under planning.`);
@@ -923,6 +987,8 @@ function DemosPageContent() {
       await fetchDemosData();
     } catch (err: any) {
       setActionError(err.message || 'Could not approve the request.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -943,7 +1009,11 @@ function DemosPageContent() {
         await fetchDemosData();
         return;
       }
-      await api.post(`/demos/reservations/${selectedReservation.id}/allocate`, allocateForm);
+      await api.post(`/demos/reservations/${selectedReservation.id}/allocate`, {
+        ...allocateForm,
+        reserved_from: calendarDay(allocateForm.reserved_from) || undefined,
+        reserved_to: calendarDay(allocateForm.reserved_to) || undefined,
+      });
       setActionSuccess('Alternative depot equipment unit successfully allocated.');
       setIsAllocateOpen(false);
       await fetchDemosData();
@@ -991,7 +1061,7 @@ function DemosPageContent() {
 
     try {
       await api.post(`/demos/${selectedDemo.id}/reschedule`, rescheduleForm);
-      setActionSuccess(`Demo ${selectedDemo.demo_no} rescheduled to ${rescheduleForm.new_date}.`);
+      setActionSuccess(`Demo ${selectedDemo.demo_no} rescheduled to ${dmy(rescheduleForm.new_date)}.`);
       setIsRescheduleOpen(false);
       await fetchDemosData();
     } catch (err: any) {
@@ -1069,7 +1139,9 @@ function DemosPageContent() {
       if (outcomeForm.result === 'fail' && !outcomeForm.technical_performance.trim() && !outcomeForm.remarks.trim()) {
         throw new Error('Describe what went wrong in the trial (technical performance or remarks) when the demo was unsuccessful.');
       }
-      await api.post(`/demos/${selectedDemo.id}/outcome`, outcomeForm);
+      // A failure reason belongs to a failed trial only (the form keeps a default for when "fail" is picked)
+      const { failure_reason, ...rest } = outcomeForm;
+      await api.post(`/demos/${selectedDemo.id}/outcome`, rest.result === 'fail' ? outcomeForm : rest);
       setActionSuccess(`Demo ${selectedDemo.demo_no} marked completed and outcome logged.`);
       setIsOutcomeOpen(false);
       await fetchDemosData();
@@ -1097,8 +1169,9 @@ function DemosPageContent() {
     setIsSubmitting(true);
 
     try {
+      const { id: _id, responsible_person_name: _name, ...formFields } = equipmentForm;
       const equipPayload: any = {
-        ...equipmentForm,
+        ...formFields,
         product_id: equipmentForm.product_id || undefined,
         responsible_person: equipmentForm.responsible_person || undefined,
         condition: equipmentForm.condition || undefined,
@@ -1155,8 +1228,10 @@ function DemosPageContent() {
     try {
       const d = new Date(dateVal);
       if (isNaN(d.getTime())) return dateVal;
-      if (typeof dateVal === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateVal)) {
-        const [year, month, day] = dateVal.split('-').map(Number);
+      // A calendar day (DATE columns arrive as serialized instants): format its IST day, never the browser's
+      const dayVal = includeTime ? '' : calendarDay(dateVal);
+      if (dayVal) {
+        const [year, month, day] = dayVal.split('-').map(Number);
         const parsed = new Date(year, month - 1, day);
         return parsed.toLocaleDateString('en-GB', {
           day: '2-digit',
@@ -1265,7 +1340,7 @@ function DemosPageContent() {
               <Button type="button" size="sm" variant="ghost" className="text-[#9A3412]" onClick={() => openCancelDemo(demo)}>
                 Decline
               </Button>
-              <Button type="button" size="sm" variant="primary" leftIcon={<CheckCircle2 className="h-4 w-4" />} onClick={() => handleStartPlanning(demo)}>
+              <Button type="button" size="sm" variant="primary" isLoading={isSubmitting} leftIcon={<CheckCircle2 className="h-4 w-4" />} onClick={() => handleStartPlanning(demo)}>
                 Approve request
               </Button>
             </div>
@@ -1433,7 +1508,7 @@ function DemosPageContent() {
                     {res.status === 'approved' && <Badge variant="success" className="shrink-0">APPROVED</Badge>}
                     {res.status === 'requested' && <Badge variant="warning" className="shrink-0">AWAITING CUSTODIAN</Badge>}
                     {res.status === 'rejected' && <Badge variant="danger" className="shrink-0">REJECTED</Badge>}
-                    {res.status === 'allocated_alternative' && <Badge variant="info" className="shrink-0">REALLOCATED</Badge>}
+                    {res.status === 'alternative_suggested' && <Badge variant="info" className="shrink-0">ALTERNATIVE SUGGESTED</Badge>}
                     {res.status === 'cancelled' && <Badge variant="outline" className="shrink-0">CANCELLED</Badge>}
                   </div>
                   <p className="text-[11px] text-[#4A5568]">
@@ -1444,9 +1519,10 @@ function DemosPageContent() {
                       Approved by: {res.approved_by_name}
                     </p>
                   )}
-                  {res.rejection_reason && (
-                    <p className="text-[11px] text-[#700F2D]">
-                      Rejection: {res.rejection_reason}
+                  {/* the API keeps the custodian's reason (rejection, suggestion or reallocation) in alternative_reason */}
+                  {res.alternative_reason && (
+                    <p className={`text-[11px] ${res.status === 'rejected' ? 'text-[#700F2D]' : 'text-[#0B4A4E]'}`}>
+                      {res.status === 'rejected' ? 'Rejection' : 'Reason'}: {res.alternative_reason}
                     </p>
                   )}
                   {res.alt_model && (
@@ -1687,7 +1763,8 @@ function DemosPageContent() {
                     onSelect: () => handleOpenReserve(demo),
                   },
                   { key: 'confirm', label: 'Confirm Date', icon: <CheckCircle2 />, hidden: !(open && canConfirmDate && demo.status !== 'requested'), onSelect: () => openConfirmDate(demo) },
-                  { key: 'resched', label: 'Reschedule', icon: <Clock />, hidden: !(open && isCoordinator), onSelect: () => openRescheduleDemo(demo) },
+                  // §14: a request still waiting for management approval is not rescheduled (the API refuses it)
+                  { key: 'resched', label: 'Reschedule', icon: <Clock />, hidden: !(open && isCoordinator && demo.status !== 'requested'), onSelect: () => openRescheduleDemo(demo) },
                   {
                     key: 'outcome',
                     label: isDemoDayAhead(demo) ? `Record Outcome (from ${dmy(demoDay(demo))})` : 'Record Outcome',
@@ -1734,15 +1811,17 @@ function DemosPageContent() {
   
         {/* phones: 40px buttons that fill the row (Confirm Date, the primary, ends up full width) */}
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => handleOpenAssignTeam(demo)}
-            className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-[#0B4A4E] hover:bg-[#E3EFEE]"
-          >
-            <Users className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
-            {demo.assigned_to ? 'Change Team' : 'Assign Team'}
-          </Button>
+          {canAssignTeam && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleOpenAssignTeam(demo)}
+              className="h-10 flex-auto sm:h-8 sm:flex-none text-xs border-[#DCD8CE] text-[#0B4A4E] hover:bg-[#E3EFEE]"
+            >
+              <Users className="h-3.5 w-3.5 mr-1 text-[#0F5E63]" />
+              {demo.assigned_to ? 'Change Team' : 'Assign Team'}
+            </Button>
+          )}
   
           <Button
             variant="outline"
@@ -1756,7 +1835,7 @@ function DemosPageContent() {
   
           {demo.status === 'requested' ? (
             canApprove && (
-              <Button variant="primary" size="sm" onClick={() => handleStartPlanning(demo)} className="h-10 flex-auto sm:h-8 sm:flex-none text-xs">
+              <Button variant="primary" size="sm" isLoading={isSubmitting} onClick={() => handleStartPlanning(demo)} className="h-10 flex-auto sm:h-8 sm:flex-none text-xs">
                 <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
                 Approve request
               </Button>
@@ -1793,7 +1872,7 @@ function DemosPageContent() {
                     {res.status === 'approved' && <Badge variant="success" className="shrink-0">APPROVED</Badge>}
                     {res.status === 'requested' && <Badge variant="warning" className="shrink-0">PENDING APPROVAL</Badge>}
                     {res.status === 'rejected' && <Badge variant="danger" className="shrink-0">REJECTED</Badge>}
-                    {res.status === 'allocated_alternative' && <Badge variant="info" className="shrink-0">REALLOCATED</Badge>}
+                    {res.status === 'alternative_suggested' && <Badge variant="info" className="shrink-0">ALTERNATIVE SUGGESTED</Badge>}
                     {res.status === 'cancelled' && <Badge variant="outline" className="shrink-0">CANCELLED</Badge>}
                   </div>
                   <p className="text-[11px] text-[#4A5568] mt-0.5">
@@ -1802,8 +1881,10 @@ function DemosPageContent() {
                   {res.approved_by_name && (
                     <p className="text-[11px] text-[#0B4A4E]">Approved by: {res.approved_by_name}</p>
                   )}
-                  {res.rejection_reason && (
-                    <p className="text-[11px] text-[#700F2D]">Reason: {res.rejection_reason}</p>
+                  {res.alternative_reason && (
+                    <p className={`text-[11px] ${res.status === 'rejected' ? 'text-[#700F2D]' : 'text-[#0B4A4E]'}`}>
+                      {res.status === 'rejected' ? 'Rejection' : 'Reason'}: {res.alternative_reason}
+                    </p>
                   )}
                   {res.alt_model && (
                     <p className="text-[11px] text-[#0B4A4E]">
@@ -1902,7 +1983,7 @@ function DemosPageContent() {
     }
     const quick: RecordItem['quick'] = [];
     if (open) {
-      if (isCoordinator) quick.push({ label: 'Reschedule', icon: <Clock />, onClick: () => openRescheduleDemo(demo) });
+      if (isCoordinator && demo.status !== 'requested') quick.push({ label: 'Reschedule', icon: <Clock />, onClick: () => openRescheduleDemo(demo) });
       quick.push({ label: !isCoordinator ? 'Request unit' : reservations.length ? 'Manage kit & serials' : 'Reserve unit', icon: <Package />, onClick: () => handleOpenReserve(demo) });
     } else {
       quick.push({ label: 'Audit trail', icon: <History />, onClick: () => handleOpenAudit(demo) });
@@ -1936,7 +2017,7 @@ function DemosPageContent() {
     };
   };
 
-  if (isLoading && demos.length === 0) {
+  if (isLoading && !loadedOnce) {
     return (
       <PageContainer>
         <PageLoader label="Loading field demonstrations" rows={4} />
@@ -2403,6 +2484,8 @@ function DemosPageContent() {
                   calendar={
                     <DemoCalendar
                       demos={filteredDemos}
+                      loadRange={loadCalendarWeek}
+                      reloadKey={dataVersion}
                       onOpen={(d) => setLinkedDemo(d)}
                       statusLabel={demoStatusLabel}
                       statusTone={(st) => toneFor(demoStatusLabel(st))}
@@ -2574,6 +2657,7 @@ function DemosPageContent() {
                       serial_no: '',
                       current_location: 'Delhi',
                       responsible_person: '',
+                      responsible_person_name: '',
                       availability_status: 'available',
                       condition: 'Operational',
                       remarks: '',
@@ -2734,6 +2818,7 @@ function DemosPageContent() {
                                 serial_no: unit.serial_no || '',
                                 current_location: unit.current_location || 'Delhi',
                                 responsible_person: unit.responsible_person || '',
+                                responsible_person_name: unit.responsible_person_name || '',
                                 availability_status: unit.availability_status || 'available',
                                 condition: unit.condition || 'Operational',
                                 remarks: unit.remarks || '',
@@ -3041,14 +3126,11 @@ function DemosPageContent() {
             />
 
             <div className="mt-4 max-w-md">
-              <Select
+              <OrganisationPicker
                 label="Select Organisation / Department"
                 value={selectedHistoryOrgId}
-                onChange={(e) => loadCustomerHistory(e.target.value)}
-                options={[
-                  { label: '— Select a Client Organisation —', value: '' },
-                  ...organisations.map((org) => ({ label: org.name, value: org.id })),
-                ]}
+                placeholder="— Select a Client Organisation —"
+                onChange={(org) => loadCustomerHistory(org?.id || '')}
               />
             </div>
           </Card>
@@ -3202,7 +3284,8 @@ function DemosPageContent() {
                 const steps = [
                   { label: 'Trial failed', done: true },
                   { label: hasServiceTicket ? `Ticket ${ticketNo ?? ''}`.trim() : 'No ticket', done: hasServiceTicket },
-                  { label: 'Unit quarantined', done: true },
+                  // only a technical failure sends the trial's units to maintenance
+                  isQuarantiningFailure(demo) ? { label: 'Unit quarantined', done: true } : { label: 'Unit not quarantined', done: false },
                   { label: demo.service_escort_required ? 'Escort on site' : 'Solo trial', done: Boolean(demo.service_escort_required) },
                 ];
                 return (
@@ -3322,7 +3405,7 @@ function DemosPageContent() {
             </p>
             <p>
               <strong>Target Date:</strong>{' '}
-              {teamForm.confirmed_date || selectedDemo?.requested_date}
+              {dmy(teamForm.confirmed_date || demoDay(selectedDemo))}
             </p>
           </div>
 
@@ -3385,12 +3468,16 @@ function DemosPageContent() {
           >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input
-              label="Confirm Trial Date"
+              label="Trial Date"
               type="date"
+              min={istToday()}
               value={teamForm.confirmed_date}
+              // before management approval the date is not fixed here: the specialist is checked on the requested day
+              disabled={selectedDemo?.status === 'requested'}
+              helperText={selectedDemo?.status === 'requested' ? 'Fixed once management approves the request.' : undefined}
               onChange={(e) => {
                 setTeamForm({ ...teamForm, confirmed_date: e.target.value });
-                loadTeamAvailability(e.target.value);
+                if (e.target.value) loadTeamAvailability(e.target.value);
               }}
             />
 
@@ -3628,8 +3715,11 @@ function DemosPageContent() {
                     : (unit.availability_status === 'reserved');
                   const isAvailable = !isAlreadyOnThisDemo && !isMaintenance && !isReserved;
                   const isProductMatch = selectedDemo?.product_id && unit.product_id === selectedDemo.product_id;
+                  // §16: management may still pick a unit booked for another demo; the API then compares the two
+                  // opportunities' values and offers the override. Everyone else picks a free unit.
+                  const isOverridable = canOverrideConflict && isReserved && !isAlreadyOnThisDemo && !isMaintenance;
 
-                  if (!isAvailable) {
+                  if (!isAvailable && !isOverridable) {
                     return (
                       <div
                         key={unit.id}
@@ -3711,6 +3801,15 @@ function DemosPageContent() {
                             <span className="text-[10px] text-[#4A5568]">
                               Product: {unit.product_name} • Depot: {unit.current_location}
                             </span>
+                            {isOverridable && (
+                              <p className="text-[10px] text-[#9A3412] font-semibold mt-0.5">
+                                Booked for {unit.conflicting_reservation?.demo_no || 'another demo'}
+                                {unit.conflicting_reservation
+                                  ? ` (${dmy(unit.conflicting_reservation.reserved_from)} to ${dmy(unit.conflicting_reservation.reserved_to)})`
+                                  : ''}
+                                {' '}· management can override by opportunity value
+                              </p>
+                            )}
                           </div>
                         </div>
 
@@ -3733,7 +3832,11 @@ function DemosPageContent() {
                               DEPOT MISMATCH
                             </span>
                           )}
-                          <Badge variant="success" size="sm">AVAILABLE</Badge>
+                          {isOverridable ? (
+                            <Badge variant="warning" size="sm">RESERVED FOR DATES</Badge>
+                          ) : (
+                            <Badge variant="success" size="sm">AVAILABLE</Badge>
+                          )}
                         </div>
                       </div>
                     </label>
@@ -3780,21 +3883,25 @@ function DemosPageContent() {
             {(() => {
               const roster = modalEquipmentUnits.length > 0 ? modalEquipmentUnits : equipmentList;
               const chosen = roster.find((u) => u.id === reserveForm.equipment_id);
-              const isChosenAvailable =
+              const isChosenBookable =
                 chosen &&
                 !selectedDemo?.reservations?.some((r: any) => r.equipment_id === chosen.id) &&
                 chosen.effective_status !== 'maintenance' &&
-                chosen.availability_status !== 'maintenance' &&
+                chosen.availability_status !== 'maintenance';
+              const isChosenAvailable =
+                isChosenBookable &&
                 (modalEquipmentUnits.length > 0
                   ? chosen.is_available_for_dates !== false && chosen.effective_status === 'available'
                   : chosen.availability_status === 'available');
+              // management may submit a booked unit: the API answers with the value comparison and the override
+              const canSubmit = isChosenAvailable || (canOverrideConflict && isChosenBookable);
 
               return (
                 <Button
                   variant="primary"
                   type="submit"
                   isLoading={isSubmitting}
-                  disabled={!reserveForm.equipment_id || !isChosenAvailable}
+                  disabled={!reserveForm.equipment_id || !canSubmit}
                 >
                   Lock Reservation
                 </Button>
@@ -3879,13 +3986,14 @@ function DemosPageContent() {
       >
         <form onSubmit={handleRescheduleSubmit} className="space-y-4 text-sm">
           <div className="p-3 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-xs text-[#7C2D12]">
-            Current Date: <strong>{selectedDemo?.confirmed_date || selectedDemo?.requested_date}</strong>.
+            Current Date: <strong className="font-mono">{dmy(demoDay(selectedDemo))}</strong>.
             Rescheduling will update or release reserved equipment and re-verify specialist availability.
           </div>
 
           <Input
             label="New Demonstration Date *"
             type="date"
+            min={istToday()}
             value={rescheduleForm.new_date}
             onChange={(e) => setRescheduleForm({ ...rescheduleForm, new_date: e.target.value })}
             required
@@ -4173,7 +4281,7 @@ function DemosPageContent() {
               {selectedDemoAudit.reschedule_events.map((res: any) => (
                 <div key={res.id} className="p-2.5 rounded bg-[#FBFAF7] border border-[#DCD8CE]">
                   <p className="font-medium text-[#14213D]">
-                    Moved from {res.old_date || 'Initial Date'} &rarr; {res.new_date}
+                    Moved from {res.old_date ? dmy(res.old_date) : 'Initial Date'} &rarr; {dmy(res.new_date)}
                   </p>
                   <p className="text-[#4A5568] mt-0.5 italic">Reason: "{res.reason}"</p>
                   <p className="text-[10px] text-[#4A5568] mt-1">
@@ -4290,10 +4398,18 @@ function DemosPageContent() {
               }
               options={[
                 { label: '— Select Custodian / Officer —', value: '' },
-                ...teamMembers.map((m) => ({
-                  label: `${m.full_name} (${m.role.replace(/_/g, ' ')})`,
-                  value: m.id,
-                })),
+                // custodians approve kit requests (§16): the demo team and the service team
+                ...[...teamMembers, ...serviceEngineers]
+                  .filter((m, i, all) => m?.id && all.findIndex((o) => o.id === m.id) === i)
+                  .map((m) => ({
+                    label: `${m.full_name} (${String(m.role || 'service_team').replace(/_/g, ' ')})`,
+                    value: m.id,
+                  })),
+                // the current custodian stays selectable even when outside both lists
+                ...(equipmentForm.responsible_person &&
+                ![...teamMembers, ...serviceEngineers].some((m) => m?.id === equipmentForm.responsible_person)
+                  ? [{ label: equipmentForm.responsible_person_name || 'Current custodian', value: equipmentForm.responsible_person }]
+                  : []),
               ]}
             />
           </div>
@@ -4616,11 +4732,13 @@ function DemosPageContent() {
                         .join(', ') || 'Assigned Fleet'}
                     </span>
                   </div>
-                  <div className="pt-1">
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-[#FEE2E2] text-[#9A3412] border border-[#FCA5A5]">
-                      ⚠️ Hardware Quarantined in Maintenance
-                    </span>
-                  </div>
+                  {isQuarantiningFailure(selectedFailureDetail) && (
+                    <div className="pt-1">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-[#FBEBDD] text-[#9A3412] border border-[#E9C9B4]">
+                        ⚠️ Hardware Quarantined in Maintenance
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

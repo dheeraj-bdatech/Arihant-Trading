@@ -92,6 +92,31 @@ export function addBusinessHours(from: Date, hours: number, startHour = 9, endHo
   return fromIst(cur);
 }
 
+/**
+ * Working time (Mon–Sat, startHour–endHour IST) between two moments, in milliseconds. Used to slide a
+ * business-hours SLA deadline by only the working time a pause actually consumed.
+ */
+export function businessMsBetween(from: Date, to: Date, startHour = 9, endHour = 18): number {
+  if (!(to.getTime() > from.getTime())) return 0;
+  const shift = IST_OFFSET_MIN * 60000;
+  const a = from.getTime() + shift; // IST wall-clock as UTC fields
+  const b = to.getTime() + shift;
+  let total = 0;
+  const day = new Date(a);
+  day.setUTCHours(0, 0, 0, 0);
+  for (let guard = 0; guard < 4000 && day.getTime() < b; guard++) {
+    if (day.getUTCDay() !== 0) {
+      const s = day.getTime() + startHour * 3600000;
+      const e = day.getTime() + endHour * 3600000;
+      const lo = Math.max(s, a);
+      const hi = Math.min(e, b);
+      if (hi > lo) total += hi - lo;
+    }
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+  return total;
+}
+
 export function normalizeWarranty(w: string | null | undefined): 'in_warranty' | 'out_of_warranty' | 'amc' {
   const s = String(w || '').toLowerCase().replace(/[\s-]+/g, '_');
   if (s === 'amc' || s === 'under_amc') return 'amc';
@@ -105,6 +130,23 @@ const FALLBACK_SLA: Record<string, [number, number, boolean]> = {
   medium: [8, 48, true],
   low: [24, 72, true],
 };
+
+/** The configured working day (IST hours). */
+export async function businessDay(db: Db): Promise<{ startHour: number; endHour: number }> {
+  const startHour = await getServiceSetting<number>(db, 'business_day_start_hour', 9);
+  const endHour = await getServiceSetting<number>(db, 'business_day_end_hour', 18);
+  return { startHour, endHour };
+}
+
+/** Whether the SLA rule for this priority × coverage counts working hours only (same lookup as computeSla). */
+export async function slaIsBusinessHours(db: Db, priority: string, warranty: string | null | undefined): Promise<boolean> {
+  const p = FALLBACK_SLA[priority] ? priority : 'medium';
+  const w = normalizeWarranty(warranty);
+  const rule =
+    (await db.selectFrom('sla_rules').select('business_hours_only').where('priority', '=', p).where('warranty_type', '=', w).executeTakeFirst()) ||
+    (await db.selectFrom('sla_rules').select('business_hours_only').where('priority', '=', p).where('warranty_type', '=', 'in_warranty').executeTakeFirst());
+  return rule?.business_hours_only ?? FALLBACK_SLA[p][2];
+}
 
 /** Response/resolution deadlines from the configurable `sla_rules` table (priority × coverage). */
 export async function computeSla(
@@ -124,8 +166,7 @@ export async function computeSla(
   const resolutionHours = rule?.resolution_hours ?? fbRes;
   const businessHours = rule?.business_hours_only ?? fbBiz;
 
-  const startHour = await getServiceSetting<number>(db, 'business_day_start_hour', 9);
-  const endHour = await getServiceSetting<number>(db, 'business_day_end_hour', 18);
+  const { startHour, endHour } = await businessDay(db);
   const add = (h: number) =>
     businessHours ? addBusinessHours(from, h, startHour, endHour) : new Date(from.getTime() + h * 3600000);
 

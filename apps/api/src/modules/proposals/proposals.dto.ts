@@ -628,6 +628,16 @@ export class ChangeProposalStatusDto {
   @IsDateString({}, { message: 'Next follow-up date must be a valid YYYY-MM-DD string' })
   @IsOptional()
   next_followup?: string;
+
+  /** Mark Sent: who chases the customer (defaults to the current follow-up owner). */
+  @Matches(UUID_PATTERN, { message: 'Follow-up owner ID must be a valid UUID' })
+  @IsOptional()
+  follow_up_owner_id?: string;
+
+  /** Close: one of the configured closure reason codes (defaults to 'Other'). */
+  @IsString()
+  @IsOptional()
+  closure_reason_code?: string;
 }
 
 export class ProposalQueryDto {

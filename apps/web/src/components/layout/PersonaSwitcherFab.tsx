@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { Spinner } from '@/components/ui/Spinner';
 import { useAuth, PRESET_ROLE_USERS, DEMO_PERSONAS_ENABLED } from '@/lib/auth-context';
 import { ROLE_PROFILES, type UserRole } from '@arihant/shared';
@@ -38,8 +39,17 @@ const ROLE_SHORT_LABELS: Record<UserRole, string> = {
   admin: 'ADMIN',
 };
 
-/** Fast role switcher FAB and pop-up modal, active by default in all environments. */
-export const PersonaSwitcherFab: React.FC = () => (DEMO_PERSONAS_ENABLED ? <PersonaSwitcherPanel /> : null);
+/** Public pages customers open (service requests, lead chat links): no staff persona switcher there at all. */
+const CUSTOMER_ROUTES = ['/service-request', '/lead-chat'];
+const isCustomerRoute = (pathname: string | null) =>
+  !!pathname && CUSTOMER_ROUTES.some((r) => pathname === r || pathname.startsWith(`${r}/`));
+
+/** Fast role switcher FAB and pop-up modal, active by default in all staff pages (never on customer pages). */
+export const PersonaSwitcherFab: React.FC = () => {
+  const pathname = usePathname();
+  if (!DEMO_PERSONAS_ENABLED || isCustomerRoute(pathname)) return null;
+  return <PersonaSwitcherPanel />;
+};
 
 const PersonaSwitcherPanel: React.FC = () => {
   const { user, switchRole, logout } = useAuth();

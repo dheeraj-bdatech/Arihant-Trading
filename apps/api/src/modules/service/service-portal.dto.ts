@@ -33,6 +33,8 @@ export class PortalServiceRequestDto {
   @IsString() @IsOptional() @MaxLength(400) website?: string;
   /** epoch ms when the form was opened; used to spot instant bot submissions */
   @IsNumber() @IsOptional() form_started_at?: number;
+  /** ms the form was open, measured on the visitor's own clock (immune to a wrong device clock); preferred */
+  @IsNumber() @IsOptional() form_elapsed_ms?: number;
 }
 
 export class PortalTrackQueryDto {

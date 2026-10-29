@@ -539,6 +539,7 @@ export class ProposalsService {
     else if (sortField === 'required_date' || sortField === 'requiredDate') sortBy = 'proposals.required_date';
     else if (sortField === 'proposalSentDate' || sortField === 'sent_date' || sortField === 'sentDate') sortBy = 'proposals.sent_date';
     else if (sortField === 'nextFollowUp' || sortField === 'next_follow_up_date' || sortField === 'next_followup' || sortField === 'nextFollowup') sortBy = 'proposals.next_follow_up_date';
+    else if (sortField === 'proposal_number' || sortField === 'proposalNumber' || sortField === 'proposal_no') sortBy = 'proposals.proposal_number';
 
     const sortOrder = (query.sortOrder || query.sort_order || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
 
@@ -599,6 +600,8 @@ export class ProposalsService {
         'proposals.quantity',
         'proposals.margin_percent',
         'proposals.validity_date',
+        'proposals.payment_terms',
+        'proposals.delivery_terms',
         'proposals.created_at',
         'proposals.updated_at',
         'organisations.name as organisation_name',
@@ -673,6 +676,15 @@ export class ProposalsService {
           ]),
         ),
       )
+      // Approver (approve / fast-track send stamp both columns; older rows may carry only one).
+      .leftJoin('users as approver_user', (join) =>
+        join.on((eb) =>
+          eb.or([
+            eb('proposals.approved_by_id', '=', eb.ref('approver_user.id')),
+            eb('proposals.approved_by', '=', eb.ref('approver_user.id')),
+          ]),
+        ),
+      )
       .select([
         'organisations.name as organisation_name',
         'organisations.city as organisation_city',
@@ -683,6 +695,7 @@ export class ProposalsService {
         'requested_user.full_name as requested_by_name',
         'responsible_user.full_name as responsible_name',
         'followup_user.full_name as followup_owner_name',
+        'approver_user.full_name as approved_by_name',
       ])
       .where('proposals.id', '=', id)
       .where('proposals.is_deleted', '=', false)
@@ -927,6 +940,39 @@ export class ProposalsService {
   }
 
   /**
+   * A follow-up owner chosen on Mark Sent or while logging a follow-up must be an active user of the proposals module
+   * (RBAC spec §2) who covers this customer: management / admin / tender team work all-India, everyone else the
+   * customer's region (or is already a party to the proposal). The current owner is accepted while still active.
+   */
+  private async assertFollowUpOwner(ownerId: string, proposal: any): Promise<void> {
+    const owner = await this.db
+      .selectFrom('users')
+      .select(['id', 'full_name', 'role', 'region_id', 'is_active'])
+      .where('id', '=', ownerId)
+      .executeTakeFirst();
+    if (!owner || owner.is_active === false) {
+      throw new BadRequestException('The selected follow-up owner was not found or is inactive. Choose an active colleague.');
+    }
+    if (owner.id === (proposal.follow_up_owner_id || proposal.followup_owner_id)) return;
+    const role = String(owner.role || '').toLowerCase();
+    if (!['management', 'regional_manager', 'sales', 'tender_team', 'admin'].includes(role)) {
+      throw new BadRequestException(`${owner.full_name} does not work on proposals and cannot own its follow-ups.`);
+    }
+    const customerRegion = proposal.organisation_region_id ? String(proposal.organisation_region_id) : null;
+    const national = ['management', 'admin', 'tender_team'].includes(role);
+    if (
+      !national &&
+      customerRegion &&
+      String(owner.region_id || '') !== customerRegion &&
+      !this.workflowService.isParty(proposal, { id: owner.id } as AuthUser)
+    ) {
+      throw new BadRequestException(
+        `${owner.full_name} does not cover ${proposal.organisation_name || "this customer"}'s region. Choose someone from that region or management.`,
+      );
+    }
+  }
+
+  /**
    * Create a new proposal with comprehensive validation and domain event enqueuing (E1-E12)
    */
   async create(dto: CreateProposalDto, user: AuthUser): Promise<any> {
@@ -1009,6 +1055,12 @@ export class ProposalsService {
         'Required date cannot be before request date (earlier than request date)',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
+    }
+
+    // A quote cannot expire before it was requested (QA BUG-026).
+    const validityDay = calendarDay(dto.validity_date);
+    if (validityDay && validityDay < requestDate) {
+      throw new BadRequestException('Quote valid-until date cannot be before the request date');
     }
 
     // E4: Lead time urgency check (required_date - request_date <= urgent_days)
@@ -1347,6 +1399,10 @@ export class ProposalsService {
     if (dto.quantity !== undefined) commercial.quantity = dto.quantity;
     if (dto.margin_percent !== undefined) commercial.margin_percent = dto.margin_percent;
     if (dto.validity_date !== undefined) commercial.validity_date = calendarDay(dto.validity_date);
+    // A quote cannot expire before it was requested (QA BUG-026).
+    if (commercial.validity_date && existingRequestDay && (commercial.validity_date as string) < existingRequestDay) {
+      throw new BadRequestException('Quote valid-until date cannot be before the request date');
+    }
     if (dto.payment_terms !== undefined) commercial.payment_terms = this.sanitizeText(dto.payment_terms);
     if (dto.delivery_terms !== undefined) commercial.delivery_terms = this.sanitizeText(dto.delivery_terms);
     const sameNumber = (a: unknown, b: unknown) =>
@@ -1390,7 +1446,9 @@ export class ProposalsService {
     // DEF-080: any content change bumps the minor version (v1.0 → v1.1); a customer revision starts v2.0.
     const responsibleNew = dto.responsible_person_id || dto.responsible_id;
     const ownerNew = dto.follow_up_owner_id || dto.followup_owner_id;
-    const refNew = dto.email_reference || dto.reference ? this.sanitizeText(dto.email_reference || dto.reference) : undefined;
+    // A reference present in the request is applied as sent; '' clears it (null), like remarks.
+    const refSent = dto.email_reference !== undefined || dto.reference !== undefined;
+    const refNew = refSent ? this.sanitizeText(dto.email_reference || dto.reference || '') : undefined;
     const contentChanged =
       commercialChanged ||
       leadChanged ||
@@ -1439,10 +1497,9 @@ export class ProposalsService {
       }
       if (dto.required_date) updateData.required_date = dto.required_date;
       if (dto.remarks !== undefined) updateData.remarks = this.sanitizeText(dto.remarks);
-      if (dto.email_reference || dto.reference) {
-        const ref = this.sanitizeText(dto.email_reference || dto.reference);
-        updateData.email_reference = ref;
-        updateData.reference = ref;
+      if (refSent) {
+        updateData.email_reference = refNew;
+        updateData.reference = refNew;
       }
 
       if (shouldInvalidateApproval) {
@@ -1800,6 +1857,9 @@ export class ProposalsService {
       settings,
     );
 
+    await this.assertFollowUpOwner(dto.follow_up_owner_id, proposal);
+    const oldOwnerId = proposal.follow_up_owner_id || proposal.followup_owner_id || null;
+
     // E26: Determine sent_late flag
     const reqDateStr = calendarDay(proposal.required_date as any);
     const sentDateStr = calendarDay(dto.sent_date);
@@ -1807,6 +1867,22 @@ export class ProposalsService {
 
     await this.db.transaction().execute(async (trx) => {
       const emailRef = dto.email_references.join(', ');
+
+      if (oldOwnerId && oldOwnerId !== dto.follow_up_owner_id) {
+        await this.outboxService.queueEvent(trx, {
+          eventType: AppEvents.PROPOSAL_FOLLOWUP_OWNER_CHANGED,
+          aggregateType: 'Proposal',
+          aggregateId: id,
+          actorId: user.id,
+          payload: {
+            proposalId: id,
+            proposalNo: proposalDisplayNo(proposal),
+            oldOwnerId,
+            newOwnerId: dto.follow_up_owner_id,
+            reason: 'Follow-up owner assigned when sent to the customer',
+          },
+        });
+      }
 
       await trx
         .updateTable('proposals')
@@ -1898,6 +1974,7 @@ export class ProposalsService {
       },
       settings,
     );
+    await this.assertFollowUpOwner(dto.follow_up_owner_id, proposal);
 
     const reqDateStr = calendarDay(proposal.required_date as any);
     const sentDateStr = calendarDay(dto.sent_date);
@@ -2057,8 +2134,10 @@ export class ProposalsService {
       { outcome_date: dto.outcome_date },
       settings,
     );
-    // QA DEF-070: a won quote records the order it was won on — the dispatch is raised against that PO.
-    if (!dto.conversion_reference?.trim() && !dto.converted_to?.trim()) {
+    // QA DEF-070: a won quote records the order it was won on — the dispatch is raised against that PO. The order
+    // number is required on its own: `converted_to` is only the order type ("Purchase Order" …), never the number.
+    const conversionReference = this.sanitizeText(dto.conversion_reference);
+    if (!conversionReference) {
       throw new BadRequestException('Enter the purchase / supply order or GeM contract number this proposal was won on.');
     }
 
@@ -2069,9 +2148,9 @@ export class ProposalsService {
           status: 'CONVERTED',
           outcome: 'CONVERTED',
           outcome_date: dto.outcome_date,
-          conversion_reference: dto.conversion_reference || null,
-          converted_reference: dto.conversion_reference || null,
-          converted_to: dto.converted_to || 'Purchase Order',
+          conversion_reference: conversionReference,
+          converted_reference: conversionReference,
+          converted_to: dto.converted_to?.trim() || 'Purchase Order',
           status_before_terminal: proposal.status,
           next_follow_up_date: null,
           next_followup: null,
@@ -2102,7 +2181,7 @@ export class ProposalsService {
           proposalId: id,
           proposalNo: proposalDisplayNo(proposal),
           outcomeDate: dto.outcome_date,
-          conversionReference: dto.conversion_reference,
+          conversionReference,
           customerId: proposal.customer_id || proposal.organisation_id,
           primaryProductId: proposal.product_id,
           requestedById: proposal.requested_by_id || proposal.requested_by,
@@ -2374,12 +2453,19 @@ export class ProposalsService {
       }
       const maxHorizon = settings?.max_follow_up_horizon_days ?? 90;
       const diffHorizon = isoDaysBetween(today, nextDate);
-      if (diffHorizon > maxHorizon && !dto.postpone_reason) {
+      if (diffHorizon > maxHorizon && !dto.postpone_reason?.trim()) {
         throw new BadRequestException(
           `Scheduling a follow-up beyond ${maxHorizon} days requires a documented justification reason`,
         );
       }
     }
+
+    // The follow-up owner chosen in the dialog takes over the proposal's follow-ups (validated and audited like a
+    // reassignment); `logged_by` stays the user who recorded this interaction.
+    const oldOwnerId = proposal.follow_up_owner_id || proposal.followup_owner_id || null;
+    const newOwnerId = dto.owner_id && dto.owner_id !== oldOwnerId ? dto.owner_id : null;
+    if (newOwnerId) await this.assertFollowUpOwner(newOwnerId, proposal);
+    const followUpOwnerId = newOwnerId || oldOwnerId;
 
     let fuRecord: any;
     await this.db.transaction().execute(async (trx) => {
@@ -2398,7 +2484,7 @@ export class ProposalsService {
           response,
           next_follow_up_date: nextDate || null,
           is_postpone: !!dto.is_postpone,
-          postpone_reason: dto.postpone_reason || null,
+          postpone_reason: this.sanitizeText(dto.postpone_reason),
           logged_by: user.id,
           created_at: new Date(),
         })
@@ -2411,7 +2497,7 @@ export class ProposalsService {
         .values({
           proposal_id: id,
           followup_date: contactDate,
-          owner_id: user.id,
+          owner_id: followUpOwnerId || user.id,
           remarks: summary,
           outcome: response,
           next_followup_date: nextDate || null,
@@ -2437,11 +2523,28 @@ export class ProposalsService {
           last_follow_up_at: new Date(),
           last_followup: contactDate,
           follow_up_count: fuCount,
+          ...(newOwnerId ? { follow_up_owner_id: newOwnerId, followup_owner_id: newOwnerId } : {}),
           last_activity_at: new Date(), // E45: follow-up is meaningful activity
           updated_at: new Date(),
         })
         .where('id', '=', id)
         .execute();
+
+      if (newOwnerId) {
+        await this.outboxService.queueEvent(trx, {
+          eventType: AppEvents.PROPOSAL_FOLLOWUP_OWNER_CHANGED,
+          aggregateType: 'Proposal',
+          aggregateId: id,
+          actorId: user.id,
+          payload: {
+            proposalId: id,
+            proposalNo: proposalDisplayNo(proposal),
+            oldOwnerId,
+            newOwnerId,
+            reason: 'Follow-up owner changed while logging a follow-up',
+          },
+        });
+      }
 
       // Enqueue domain event
       await this.outboxService.queueEvent(trx, {
@@ -2458,7 +2561,7 @@ export class ProposalsService {
           summary,
           response,
           nextFollowUpDate: nextDate,
-          followUpOwnerId: proposal.follow_up_owner_id || proposal.followup_owner_id,
+          followUpOwnerId,
           loggedBy: user.id,
         },
       });
@@ -3343,7 +3446,9 @@ export class ProposalsService {
             sent_date: calendarDay(dto.sent_date) || todayInKolkata(),
             // No invented placeholder: the workflow rejects a send without a real email / dispatch reference.
             email_references: [dto.reference || proposal.reference || proposal.email_reference].filter(Boolean),
-            follow_up_owner_id: proposal.follow_up_owner_id || proposal.followup_owner_id || user.id,
+            // PROPOSAL_PIPELINE §2: the sender names the follow-up owner and next follow-up date; older clients that
+            // send neither keep the current owner and the default cadence.
+            follow_up_owner_id: dto.follow_up_owner_id || proposal.follow_up_owner_id || proposal.followup_owner_id || user.id,
             next_follow_up_date:
               calendarDay(dto.next_followup) || addIsoDays(todayInKolkata(), 3),
           },
@@ -3354,7 +3459,8 @@ export class ProposalsService {
           id,
           {
             outcome_date: calendarDay(dto.sent_date) || todayInKolkata(),
-            conversion_reference: dto.converted_reference,
+            // The order number is mandatory (markConverted); converted_to is only the order type.
+            conversion_reference: dto.converted_reference ?? dto.conversion_reference,
             converted_to: dto.converted_to,
             remarks: dto.remarks,
           },
@@ -3375,7 +3481,7 @@ export class ProposalsService {
         return this.close(
           id,
           {
-            closure_reason_code: 'Other',
+            closure_reason_code: dto.closure_reason_code?.trim() || 'Other',
             // Closure remarks are mandatory (E28): never substitute a placeholder.
             closure_reason_text: dto.remarks || '',
           },
@@ -3462,6 +3568,7 @@ export class ProposalsService {
     if (nextDate && nextDate < todayInKolkata()) {
       throw new BadRequestException('Next follow-up date cannot be in the past');
     }
+    if (ownerId) await this.assertFollowUpOwner(ownerId, proposal);
 
     await this.db
       .updateTable('proposals')

@@ -1162,6 +1162,29 @@ export default function LeadsPage() {
     setCreateLeadError(null);
   };
 
+  // Anything typed or picked in the wizard (the preset source, owner and dates don't count).
+  const leadFormDirty =
+    leadForm.product_ids.length > 0 ||
+    [
+      leadForm.organisation_id,
+      leadForm.organisation_name,
+      leadForm.department,
+      leadForm.city,
+      leadForm.contact_name,
+      leadForm.contact_designation,
+      leadForm.contact_mobile,
+      leadForm.contact_email,
+      leadForm.remarks,
+      leadForm.next_followup_date,
+      leadForm.value_lakh,
+    ].some((v) => String(v ?? '').trim() !== '');
+
+  // Esc, the X, an outside click and Cancel all land here — ask before throwing typed input away (QA BUG-019).
+  const requestCloseCreateLead = () => {
+    if (leadFormDirty && !window.confirm('You have unsaved changes. Close without saving?')) return;
+    handleCloseCreateLead();
+  };
+
   // Status Change Submission
   const handleStatusChange = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2993,7 +3016,7 @@ export default function LeadsPage() {
       {/* ========================================================================= */}
       <Modal
         isOpen={isCreateLeadOpen}
-        onClose={handleCloseCreateLead}
+        onClose={requestCloseCreateLead}
         title="Register New Lead Opportunity"
         description="Capture comprehensive opportunity intelligence, contact person, jurisdiction, and initial interaction."
         maxWidth="4xl"
@@ -3001,7 +3024,7 @@ export default function LeadsPage() {
         {/* noValidate: required fields are checked by validateLeadForm and reported inline, all at once (QA DEF-102) */}
         <form onSubmit={handleCreateLead} noValidate className="text-xs">
           <FormSteps
-            onCancel={handleCloseCreateLead}
+            onCancel={requestCloseCreateLead}
             validateStep={validateLeadStep}
             banner={
               (createLeadError || formError) && (

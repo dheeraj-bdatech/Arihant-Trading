@@ -401,9 +401,20 @@ export class CreateEquipmentDto {
 }
 
 export class UpdateEquipmentDto {
+  @Transform(({ value }) => (value === '' || value === null ? undefined : value))
+  @ValidateIf((o, v) => v !== '' && v !== null && v !== undefined)
+  @Matches(UUID_PATTERN, { message: 'product_id must be a valid UUID' })
+  @IsOptional()
+  product_id?: string;
+
   @IsString()
   @IsOptional()
   model?: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Serial number cannot be empty' })
+  @IsOptional()
+  serial_no?: string;
 
   @IsString()
   @IsOptional()

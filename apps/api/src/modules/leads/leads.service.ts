@@ -114,20 +114,23 @@ export class LeadsService {
       .leftJoin('regions', 'organisations.region_id', 'regions.id')
       .leftJoin('zones', 'organisations.zone_id', 'zones.id');
 
-    // Role territory scoping — a Regional Manager also sees the leads of their direct reports (scope ⊇ team)
+    // Role territory scoping (RBAC spec Layer 4). A Regional Manager sees leads at customers in their zone or region
+    // and the leads they own. Leads tagged to them or owned by a direct report count only at customers with no zone
+    // tag: geography decides wherever it is known (QA BUG-001). Without a zone or region, never all-India.
     if (user.role === 'sales') {
       baseQuery = baseQuery.where('leads.assigned_to', '=', user.id);
     } else if (user.role === 'regional_manager') {
-      if (user.region_id) {
-        baseQuery = baseQuery.where((eb) =>
-          eb.or([
-            eb('organisations.region_id', '=', user.region_id),
-            eb('leads.regional_manager_id', '=', user.id),
-            eb('leads.assigned_to', '=', user.id),
-            eb('assignee.reporting_manager_id', '=', user.id),
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          ...(user.zone_id ? [eb('organisations.zone_id', '=', user.zone_id)] : []),
+          ...(user.region_id ? [eb('organisations.region_id', '=', user.region_id)] : []),
+          eb('leads.assigned_to', '=', user.id),
+          eb.and([
+            eb('organisations.zone_id', 'is', null),
+            eb.or([eb('leads.regional_manager_id', '=', user.id), eb('assignee.reporting_manager_id', '=', user.id)]),
           ]),
-        );
-      }
+        ]),
+      );
     }
 
     if (query.search) {
@@ -356,8 +359,9 @@ export class LeadsService {
   }
 
   /**
-   * Who may open a lead: a salesperson only their own; a Regional Manager their region's leads plus the ones they
-   * supervise, own, or that a direct report owns. Other roles that reach the lead endpoints see every lead.
+   * Who may open a lead: a salesperson only their own; a Regional Manager the leads in their zone or region, the ones
+   * they own, and — at customers with no zone tag — the ones they supervise or a direct report owns (same rule as the
+   * register). Other roles that reach the lead endpoints see every lead.
    */
   private assertLeadVisible(
     lead: {
@@ -374,11 +378,9 @@ export class LeadsService {
     }
 
     if (user.role === 'regional_manager') {
-      if (
-        lead.regional_manager_id !== user.id &&
-        lead.assigned_to !== user.id &&
-        lead.assignee_reporting_manager_id !== user.id
-      ) {
+      const untaggedTeamLead =
+        !lead.zone_id && (lead.regional_manager_id === user.id || lead.assignee_reporting_manager_id === user.id);
+      if (lead.assigned_to !== user.id && !untaggedTeamLead) {
         assertRegionScope(user, lead.region_id, lead.zone_id);
       }
     }

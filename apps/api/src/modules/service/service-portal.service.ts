@@ -301,7 +301,16 @@ export class ServicePortalService {
     await this.requireEnabled();
 
     // --- bot traps: answer like a success so scripts learn nothing, but create nothing
-    const tooFast = typeof dto.form_started_at === 'number' && Date.now() - dto.form_started_at < 2500 && dto.form_started_at > 0;
+    // "Filled in under 2.5 s" — measured on one clock. Prefer the elapsed time the browser measured itself; the
+    // older absolute timestamp compares the visitor's clock with ours, so a negative gap (device clock ahead) is
+    // clock skew, never a bot.
+    const elapsed =
+      typeof dto.form_elapsed_ms === 'number' && Number.isFinite(dto.form_elapsed_ms)
+        ? dto.form_elapsed_ms
+        : typeof dto.form_started_at === 'number' && dto.form_started_at > 0
+          ? Date.now() - dto.form_started_at
+          : null;
+    const tooFast = elapsed !== null && elapsed >= 0 && elapsed < 2500;
     if ((dto.website && String(dto.website).trim() !== '') || tooFast) {
       return { accepted: true, reference: `REQ-${randomBytes(4).toString('hex').toUpperCase()}`, duplicate: false, customer_message: 'Thank you. Your request has been received.' };
     }
@@ -576,7 +585,7 @@ export class ServicePortalService {
 
     const report = await this.db
       .selectFrom('service_reports')
-      .select(['problem_identified', 'action_taken', 'customer_feedback_rating', 'customer_confirmation', 'report_status', 'submitted_at'])
+      .select(['problem_identified', 'action_taken', 'customer_feedback_rating', 'customer_confirmation', 'report_status', 'submitted_at', 'created_at'])
       .where('ticket_id', '=', ticket.id)
       .where('report_status', 'in', ['Submitted', 'Approved'])
       .orderBy('created_at', 'desc')
@@ -585,6 +594,7 @@ export class ServicePortalService {
     const paused = SERVICE_SLA_PAUSE_STATUSES.includes(status);
     const done = SERVICE_DONE_STATUSES.includes(status);
     const closedAgo = ticket.closed_at ? Date.now() - new Date(ticket.closed_at as any).getTime() : 0;
+    const confirmed = this.confirmedSince(await this.lastCustomerConfirmation(ticket.id), report);
 
     return {
       reference: ticket.ticket_no,
@@ -616,8 +626,30 @@ export class ServicePortalService {
       })),
       work_summary: report && ['resolved', 'report_submitted', 'closed'].includes(status) ? { problem: report.problem_identified, action: report.action_taken, submitted_at: report.submitted_at } : null,
       can_comment: status !== 'cancelled' && !(status === 'closed' && closedAgo > 14 * 86400000),
-      can_give_feedback: ['resolved', 'report_submitted'].includes(status) || (status === 'closed' && closedAgo <= 14 * 86400000 && !report?.customer_feedback_rating),
+      // once the customer has confirmed this round of work there is nothing left to ask
+      can_give_feedback:
+        !confirmed && (['resolved', 'report_submitted'].includes(status) || (status === 'closed' && closedAgo <= 14 * 86400000 && !report?.customer_feedback_rating)),
     };
+  }
+
+  /** When the customer last confirmed the fix on the tracking page (marker comment written by `feedback`). */
+  private async lastCustomerConfirmation(ticketId: string): Promise<Date | null> {
+    const row = await this.db
+      .selectFrom('ticket_comments')
+      .select('created_at')
+      .where('ticket_id', '=', ticketId)
+      .where('author_id', 'is', null)
+      .where(sql<boolean>`mentions @> ${JSON.stringify([{ feedback: 'confirm_resolved' }])}::jsonb`)
+      .orderBy('created_at', 'desc')
+      .executeTakeFirst();
+    return row ? new Date(row.created_at as any) : null;
+  }
+
+  /** A confirmation counts for the current round of work: the latest report, not an earlier one. */
+  private confirmedSince(confirmedAt: Date | null, report: { submitted_at?: unknown; created_at?: unknown } | undefined | null): boolean {
+    if (!confirmedAt) return false;
+    const filed = report ? new Date((report.submitted_at || report.created_at) as any).getTime() : NaN;
+    return Number.isNaN(filed) || confirmedAt.getTime() >= filed;
   }
 
   private async slaIsBusinessHours(priority: string, warranty: string): Promise<boolean> {
@@ -672,7 +704,7 @@ export class ServicePortalService {
     const latest = await this.db.selectFrom('service_reports').selectAll().where('ticket_id', '=', ticket.id).orderBy('created_at', 'desc').executeTakeFirst();
 
     if (dto.action === 'confirm_resolved') {
-      if (latest && latest.customer_feedback_rating && status === 'closed') {
+      if ((latest && latest.customer_feedback_rating && status === 'closed') || this.confirmedSince(await this.lastCustomerConfirmation(ticket.id), latest)) {
         throw new BadRequestException('Feedback has already been recorded for this request.');
       }
       if (latest) {
@@ -691,6 +723,17 @@ export class ServicePortalService {
           .where('id', '=', latest.id)
           .execute();
       }
+      // the marker that this round of work is confirmed (also shows the desk what the customer said)
+      await this.db
+        .insertInto('ticket_comments')
+        .values({
+          ticket_id: ticket.id,
+          author_id: null,
+          body: `Customer confirmed the problem is fixed${dto.rating ? ` (rating ${dto.rating}/5)` : ''}${remarks ? `: ${remarks}` : '.'}`,
+          is_internal: false,
+          mentions: JSON.stringify([{ customer: true, name: intake.contact_name, feedback: 'confirm_resolved' }]),
+        })
+        .execute();
       await this.service.emitTicketEvent(AppEvents.SERVICE_CUSTOMER_FEEDBACK, ticket.id, { action: 'confirm_resolved', rating: dto.rating ?? null, contactName: intake.contact_name });
       return { ok: true, message: 'Thank you. Your confirmation has been passed to the service manager, who will close the request.' };
     }

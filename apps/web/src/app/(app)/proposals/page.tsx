@@ -37,9 +37,11 @@ import {
   Trash2,
   CalendarDays,
   SlidersHorizontal,
+  RotateCcw,
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { userWithRole } from '@/lib/role-label';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
 import { canOpen } from '@/lib/route-access';
@@ -77,6 +79,7 @@ import { calendarDay } from '@/lib/calendar-day';
 import {
   PROPOSAL_STATUS_LABELS,
   PROPOSAL_LOST_REASONS,
+  PROPOSAL_CLOSURE_REASONS,
   formatINR,
   type ProposalStatus,
   type ProposalLostReason,
@@ -110,6 +113,27 @@ const numOrNull = (v: string) => {
 };
 const numInput = (v: unknown) => (v === null || v === undefined || v === '' ? '' : String(Number(v)));
 const SENT_LANES = ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED'];
+/** Roles that can own proposal follow-ups (RBAC spec §2), and the all-India ones among them (server mirror). */
+const PROPOSAL_OWNER_ROLES = ['management', 'regional_manager', 'sales', 'tender_team', 'admin'];
+const NATIONAL_OWNER_ROLES = ['management', 'admin', 'tender_team'];
+const currentOwnerOf = (p: any): string => p?.follow_up_owner_id || p?.followup_owner_id || '';
+/** Users who may own this proposal's follow-ups: active proposals users covering the customer's region. */
+const ownerChoicesFor = (p: any, users: any[]) => {
+  const current = currentOwnerOf(p);
+  const region = p?.organisation_region_id;
+  const parties = [p?.requested_by_id, p?.requested_by, p?.created_by_id, p?.created_by, p?.responsible_person_id, p?.responsible_id];
+  const options = users
+    .filter(
+      (u) =>
+        u.id === current ||
+        (u.is_active !== false &&
+          PROPOSAL_OWNER_ROLES.includes(u.role) &&
+          (NATIONAL_OWNER_ROLES.includes(u.role) || !region || u.region_id === region || parties.includes(u.id))),
+    )
+    .map((u) => ({ value: String(u.id), label: userWithRole(u) }));
+  if (current && !options.some((o) => o.value === current)) options.unshift({ value: current, label: p?.followup_owner_name || 'Current owner' });
+  return options;
+};
 
 type CommercialForm = {
   quoted_value: string;
@@ -245,9 +269,20 @@ export default function ProposalsPage() {
   const [organisations, setOrganisations] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  // Proposal settings (follow-up cadence and horizon, reopen window, closure reasons); defaults until loaded.
+  const [proposalSettings, setProposalSettings] = useState<any>(null);
+  const followUpHorizonDays = Number(proposalSettings?.max_follow_up_horizon_days) || 90;
+  const defaultFollowUpDays = Number(proposalSettings?.default_follow_up_days) || 3;
+  const reopenWindowDays = Number(proposalSettings?.reopen_window_days) || 30;
+  const closureReasons: string[] =
+    Array.isArray(proposalSettings?.closure_reason_codes) && proposalSettings.closure_reason_codes.length
+      ? proposalSettings.closure_reason_codes
+      : PROPOSAL_CLOSURE_REASONS;
 
   // Filter & Sort States
   const [search, setSearch] = useState('');
+  // The register and KPI cards query the search text once typing pauses, not on every keystroke.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [selectedSector, setSelectedSector] = useState<string>('all');
   const [selectedFollowupCondition, setSelectedFollowupCondition] = useState<string>('all');
@@ -264,6 +299,13 @@ export default function ProposalsPage() {
   // Modals & Active Proposal state
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedProposal, setSelectedProposal] = useState<any | null>(null);
+  // Detail loads that finish after the reader moved on to another proposal are discarded.
+  const detailRequest = useRef(0);
+  const focusedProposalId = useRef<string | null>(null);
+  const focusProposal = (p: any) => {
+    focusedProposalId.current = p?.id ?? null;
+    setSelectedProposal(p);
+  };
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [detailsTab, setDetailsTab] = useState<'overview' | 'followups' | 'history' | 'linked'>('overview');
   const [followups, setFollowups] = useState<any[]>([]);
@@ -282,9 +324,12 @@ export default function ProposalsPage() {
     lead_id: '',
     ...EMPTY_COMMERCIAL,
   });
+  // The form as opened, so Save sends only what the user changed (never blanks for fields it did not touch).
+  const editInitial = useRef<typeof editForm | null>(null);
   // Open leads of the customer, for the "Source lead" pickers (DEF-081)
   const [leadOptions, setLeadOptions] = useState<any[]>([]);
   const [leadOptionsFor, setLeadOptionsFor] = useState<string>('');
+  const leadRequest = useRef(0);
   const [pageError, setPageError] = useState<string | null>(null);
 
   // Action dialogs
@@ -298,12 +343,20 @@ export default function ProposalsPage() {
     converted_reference: '',
     reference: '',
     remarks: '',
+    next_followup: '',
+    follow_up_owner_id: '',
+    closure_reason_code: '',
   });
 
   // Moving a reviewed / approved / sent quote back to preparation needs a reason the preparer can act on.
   const currentLane = proposalLaneOf(selectedProposal?.status);
   const isRequestChanges = targetStatus === 'UNDER_PREPARATION' && currentLane === 'READY_FOR_REVIEW';
   const isBackToPreparation = targetStatus === 'UNDER_PREPARATION' && currentLane !== 'PROPOSAL_REQUESTED';
+  const isInternalRevision = targetStatus === 'UNDER_PREPARATION' && currentLane === 'APPROVED';
+  const isCustomerRevision = targetStatus === 'UNDER_PREPARATION' && SENT_LANES.includes(currentLane);
+  // Reopening a concluded proposal (POST /:id/reopen — the server restores the stage it was in before).
+  const isReopen = targetStatus === 'REQUESTED';
+  const needsReason = isBackToPreparation || targetStatus === 'CLOSED' || isReopen;
 
   const [isFollowupDialogOpen, setIsFollowupDialogOpen] = useState(false);
   const [followupForm, setFollowupForm] = useState({
@@ -312,7 +365,12 @@ export default function ProposalsPage() {
     remarks: '',
     outcome: '',
     next_followup_date: '',
+    postpone_reason: '',
   });
+  // A next follow-up beyond the horizon (90 days by default) needs a documented reason (server E37).
+  const needsPostponeReason = Boolean(
+    followupForm.next_followup_date && followupForm.next_followup_date > addIsoDays(istToday(), followUpHorizonDays),
+  );
 
   // Form Submission
   const [newProposal, setNewProposal] = useState({
@@ -375,15 +433,17 @@ export default function ProposalsPage() {
   // Fetch Reference Masters (Organisations, Products, Users)
   const fetchMasters = async () => {
     try {
-      const [orgsRes, prodsRes, usersRes] = await Promise.all([
+      const [orgsRes, prodsRes, usersRes, settingsRes] = await Promise.all([
         api.get('/organisations', { limit: 100 }).catch(() => ({ data: [] })),
         api.get('/products').catch(() => []),
         api.get('/users', { limit: 100 }).catch(() => ({ data: [] })),
+        api.get('/proposals/settings').catch(() => null),
       ]);
 
       setOrganisations(orgsRes.data || []);
       setProducts(Array.isArray(prodsRes) ? prodsRes : prodsRes.data || []);
       setUsers(usersRes.data || []);
+      setProposalSettings(settingsRes);
     } catch (err) {
       console.error('Failed to load masters:', err);
     }
@@ -392,7 +452,7 @@ export default function ProposalsPage() {
   // Active filters as API query params — shared by the register and the KPI cards so both count the same rows.
   const filterParams = useMemo(() => {
     const params: Record<string, string> = {};
-    if (search.trim()) params.search = search.trim();
+    if (debouncedSearch) params.search = debouncedSearch;
     if (selectedStatus && selectedStatus !== 'all') params.status = selectedStatus;
     if (selectedSector && selectedSector !== 'all') params.sector = selectedSector;
     const followupFlag = FOLLOWUP_FILTER_FLAGS[selectedFollowupCondition];
@@ -404,7 +464,7 @@ export default function ProposalsPage() {
     if (toDate) params[`to_${dateParam}`] = toDate;
     return params;
   }, [
-    search,
+    debouncedSearch,
     selectedStatus,
     selectedSector,
     selectedFollowupCondition,
@@ -448,7 +508,13 @@ export default function ProposalsPage() {
     fetchMasters();
   }, []);
 
-  // KPI cards follow the active filters; debounced so typing in search doesn't fire per keystroke.
+  // Search text reaches the register and the KPI cards 300 ms after typing stops (one request, not one per keystroke).
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // KPI cards follow the active filters; debounced so a burst of filter changes fires once.
   useEffect(() => {
     const timer = setTimeout(fetchStats, 300);
     return () => clearTimeout(timer);
@@ -459,8 +525,7 @@ export default function ProposalsPage() {
     const socket = getSocket();
     if (!socket) return;
 
-    const handleRealtimeProposalEvent = (payload: any) => {
-      console.log('⚡ Realtime proposal event received:', payload);
+    const handleRealtimeProposalEvent = () => {
       fetchProposals();
       fetchStats();
     };
@@ -486,13 +551,16 @@ export default function ProposalsPage() {
 
   // Deep link from notifications: /proposals?open=<proposal id>
   useOpenParam(async (id) => {
+    const req = ++detailRequest.current;
     try {
       const proposal = await api.get(`/proposals/${id}`);
+      if (req !== detailRequest.current) return;
+      focusedProposalId.current = proposal?.id ?? null;
       applyProposal(proposal);
       setDetailsTab('overview');
       setIsDetailsOpen(true);
     } catch (err: any) {
-      setPageError(err?.message || 'That proposal could not be opened');
+      if (req === detailRequest.current) setPageError(err?.message || 'That proposal could not be opened');
     }
   });
 
@@ -507,59 +575,78 @@ export default function ProposalsPage() {
     if (Array.isArray(full.history)) setActivities(full.history);
   };
 
-  // Fetch proposal details, follow-ups, and history
+  // Fetch proposal details, follow-ups, and history. An answer for a proposal the reader has since left is dropped.
   const openProposalDetails = async (proposal: any) => {
-    setSelectedProposal(proposal);
+    const req = ++detailRequest.current;
+    focusProposal(proposal);
     setFollowups([]);
     setActivities([]);
     setIsDetailsOpen(true);
     setDetailsTab('overview');
 
+    const current = () => req === detailRequest.current && focusedProposalId.current === proposal.id;
     try {
-      applyProposal(await api.get(`/proposals/${proposal.id}`));
+      const full = await api.get(`/proposals/${proposal.id}`);
+      if (current()) applyProposal(full);
     } catch (err: any) {
-      setPageError(err?.message || 'Failed to load proposal details');
+      if (current()) setPageError(err?.message || 'Failed to load proposal details');
     }
   };
 
   const loadLeadOptions = useCallback(async (customerId: string): Promise<any[]> => {
+    // Only the latest customer's answer fills the picker (a slower earlier lookup must not overwrite it).
+    const req = ++leadRequest.current;
     setLeadOptionsFor(customerId);
-    if (!customerId) {
-      setLeadOptions([]);
-      return [];
-    }
+    setLeadOptions([]);
+    if (!customerId) return [];
     try {
       const rows = await api.get('/proposals/lookups/leads', { customer_id: customerId });
       const list = Array.isArray(rows) ? rows : [];
-      setLeadOptions(list);
+      if (req === leadRequest.current) setLeadOptions(list);
       return list;
     } catch {
-      setLeadOptions([]);
       return [];
     }
   }, []);
 
-  // Open Edit Proposal Dialog
-  const openEditProposal = (proposal: any) => {
-    setSelectedProposal(proposal);
-    setEditForm({
-      required_date: proposal.required_date ? proposalDay(proposal.required_date) : '',
-      reference: proposal.reference || '',
-      remarks: proposal.remarks || '',
-      responsible_id: proposal.responsible_id || proposal.responsible_person_id || '',
-      followup_owner_id: proposal.followup_owner_id || proposal.follow_up_owner_id || '',
+  // Open Edit Proposal Dialog — always from the full record: register rows do not carry every field, and a form
+  // filled from a partial row would save blanks over the stored values (payment / delivery terms).
+  const openEditProposal = async (proposal: any) => {
+    let full = proposal;
+    if (!Array.isArray(proposal?.followups)) {
+      const req = ++detailRequest.current;
+      focusedProposalId.current = proposal.id;
+      try {
+        full = await api.get(`/proposals/${proposal.id}`);
+      } catch (err: any) {
+        if (req === detailRequest.current) setPageError(err?.message || 'That proposal could not be opened for editing');
+        return;
+      }
+      if (req !== detailRequest.current || focusedProposalId.current !== proposal.id) return;
+      applyProposal(full);
+    } else {
+      focusProposal(full);
+    }
+    const form = {
+      required_date: full.required_date ? proposalDay(full.required_date) : '',
+      reference: full.reference || '',
+      remarks: full.remarks || '',
+      responsible_id: full.responsible_id || full.responsible_person_id || '',
+      followup_owner_id: full.followup_owner_id || full.follow_up_owner_id || '',
       required_date_change_reason: '',
-      lead_id: proposal.lead_id || '',
-      quoted_value: numInput(proposal.quoted_value),
-      quantity: numInput(proposal.quantity),
-      margin_percent: numInput(proposal.margin_percent),
-      validity_date: proposal.validity_date ? proposalDay(proposal.validity_date) : '',
-      payment_terms: proposal.payment_terms || '',
-      delivery_terms: proposal.delivery_terms || '',
-    });
+      lead_id: full.lead_id || '',
+      quoted_value: numInput(full.quoted_value),
+      quantity: numInput(full.quantity),
+      margin_percent: numInput(full.margin_percent),
+      validity_date: full.validity_date ? proposalDay(full.validity_date) : '',
+      payment_terms: full.payment_terms || '',
+      delivery_terms: full.delivery_terms || '',
+    };
+    editInitial.current = form;
+    setEditForm(form);
     setEditError(null);
     setIsEditOpen(true);
-    loadLeadOptions(proposal.customer_id || proposal.organisation_id || '');
+    loadLeadOptions(full.customer_id || full.organisation_id || '');
   };
 
   // Submit Edit Proposal
@@ -574,16 +661,23 @@ export default function ProposalsPage() {
     }
     try {
       setIsSubmitting(true);
+      const initial = editInitial.current;
       const payload: any = {
         required_date: editForm.required_date,
-        reference: editForm.reference || undefined,
-        remarks: editForm.remarks || undefined,
         responsible_id: editForm.responsible_id || undefined,
         followup_owner_id: editForm.followup_owner_id || undefined,
         required_date_change_reason: editForm.required_date_change_reason.trim() || undefined,
         lead_id: editForm.lead_id || null,
-        ...commercialPayload(editForm),
       };
+      // Text the user changed is sent as typed — '' clears the reference / remarks on the server.
+      if (!initial || editForm.reference !== initial.reference) payload.reference = editForm.reference.trim();
+      if (!initial || editForm.remarks !== initial.remarks) payload.remarks = editForm.remarks.trim();
+      // Commercial terms: only the fields that changed, so an untouched term is never overwritten.
+      const terms = commercialPayload(editForm);
+      const termsBefore = initial ? commercialPayload(initial) : null;
+      (Object.keys(terms) as (keyof typeof terms)[]).forEach((k) => {
+        if (!termsBefore || terms[k] !== termsBefore[k]) payload[k] = terms[k];
+      });
       const updated = await api.patch(`/proposals/${selectedProposal.id}`, payload);
       applyProposal(updated);
       setIsEditOpen(false);
@@ -618,6 +712,7 @@ export default function ProposalsPage() {
   // Reset Filters
   const handleClearFilters = () => {
     setSearch('');
+    setDebouncedSearch('');
     setSelectedStatus('all');
     setSelectedSector('all');
     setSelectedFollowupCondition('all');
@@ -670,6 +765,10 @@ export default function ProposalsPage() {
       setFormError('Required completion date cannot be before request date');
       return;
     }
+    if (newProposal.validity_date && newProposal.validity_date < newProposal.request_date) {
+      setFormError('Quote valid-until date cannot be before the request date');
+      return;
+    }
     if (newProposal.next_followup && isNaN(Date.parse(newProposal.next_followup))) {
       setFormError('Initial follow-up date must be a valid date');
       return;
@@ -717,6 +816,7 @@ export default function ProposalsPage() {
       setSelectedStatus('all');
       setSelectedFollowupCondition('all');
       setSearch('');
+      setDebouncedSearch('');
 
       await fetchProposals();
       await fetchStats();
@@ -741,19 +841,26 @@ export default function ProposalsPage() {
     }
   };
 
-  // Trigger Status Transition Dialog
-  const initiateStatusChange = (nextStatus: string) => {
+  // Trigger Status Transition Dialog. The proposal is passed explicitly: a card / board action sets the selection in
+  // the same tick, so reading `selectedProposal` here would prefill from the previously opened proposal.
+  const initiateStatusChange = (nextStatus: string, proposal: any = selectedProposal) => {
+    const today = istToday();
+    // Mark Sent schedules the first follow-up: keep the date on record if it is still ahead, else the default cadence.
+    const nextOnRecord = proposalDay(proposal?.next_follow_up_date || proposal?.next_followup);
     setTargetStatus(nextStatus);
     setStatusError(null);
     setStatusForm({
-      sent_date: istToday(),
+      sent_date: today,
       lost_reason: '' as ProposalLostReason | '',
       lost_remarks: '',
       converted_to: '',
       converted_reference: '',
       // Mark Sent needs the email / dispatch reference the quote went out under; start from the one on record.
-      reference: selectedProposal?.email_reference || selectedProposal?.reference || '',
+      reference: proposal?.email_reference || proposal?.reference || '',
       remarks: '',
+      next_followup: nextOnRecord && nextOnRecord >= today ? nextOnRecord : addIsoDays(today, defaultFollowUpDays),
+      follow_up_owner_id: currentOwnerOf(proposal) || proposal?.responsible_person_id || proposal?.responsible_id || user?.id || '',
+      closure_reason_code: '',
     });
     setIsStatusDialogOpen(true);
   };
@@ -776,8 +883,14 @@ export default function ProposalsPage() {
       setStatusError(
         isRequestChanges
           ? 'Explain the changes you need — the comment is sent to the preparer.'
-          : 'Give the reason for sending this proposal back to preparation.',
+          : isCustomerRevision
+            ? 'Describe the revision the customer asked for.'
+            : 'Give the reason for sending this proposal back to preparation.',
       );
+      return;
+    }
+    if (isReopen && !statusForm.remarks.trim()) {
+      setStatusError('Give the reason for reopening this proposal.');
       return;
     }
 
@@ -786,8 +899,12 @@ export default function ProposalsPage() {
       setStatusError('Choose the lost reason and explain what happened (competitor, price gap, customer decision).');
       return;
     }
-    if (targetStatus === 'CLOSED' && !statusForm.remarks.trim()) {
-      setStatusError('Give the reason for closing this proposal.');
+    if (targetStatus === 'CLOSED' && (!statusForm.closure_reason_code || !statusForm.remarks.trim())) {
+      setStatusError('Choose the closure reason and explain why this proposal is being closed.');
+      return;
+    }
+    if (targetStatus === 'CONVERTED' && !statusForm.converted_reference.trim()) {
+      setStatusError('Enter the PO / supply order / GeM contract number this proposal was won on.');
       return;
     }
 
@@ -807,25 +924,51 @@ export default function ProposalsPage() {
         setStatusError(`Sent date cannot be earlier than the proposal request date (${requestDay})`);
         return;
       }
+      if (!statusForm.reference.trim()) {
+        setStatusError('Enter the email or dispatch reference the quote was sent under.');
+        return;
+      }
+      if (!statusForm.follow_up_owner_id) {
+        setStatusError('Choose who follows up with the customer.');
+        return;
+      }
+      if (!statusForm.next_followup) {
+        setStatusError('Set the next follow-up date.');
+        return;
+      }
+      if (statusForm.next_followup < statusForm.sent_date) {
+        setStatusError(`Next follow-up date cannot be earlier than the sent date (${statusForm.sent_date})`);
+        return;
+      }
     }
 
     try {
       setIsSubmitting(true);
-      const payload: any = { status: targetStatus };
+      let updated: any;
+      if (isReopen) {
+        // /status refuses REQUESTED; reopening has its own endpoint (management / admin, within the reopen window).
+        updated = await api.post(`/proposals/${selectedProposal.id}/reopen`, { reopen_reason: statusForm.remarks.trim() });
+      } else {
+        const payload: any = { status: targetStatus };
 
-      if (targetStatus === 'SENT_TO_CUSTOMER') {
-        payload.sent_date = statusForm.sent_date;
-        payload.reference = statusForm.reference.trim();
-      } else if (targetStatus === 'LOST') {
-        payload.lost_reason = statusForm.lost_reason;
-        payload.lost_remarks = statusForm.lost_remarks;
-      } else if (targetStatus === 'CONVERTED') {
-        payload.converted_to = statusForm.converted_to || 'Purchase Order';
-        payload.converted_reference = statusForm.converted_reference.trim();
+        if (targetStatus === 'SENT_TO_CUSTOMER') {
+          payload.sent_date = statusForm.sent_date;
+          payload.reference = statusForm.reference.trim();
+          payload.next_followup = statusForm.next_followup;
+          payload.follow_up_owner_id = statusForm.follow_up_owner_id;
+        } else if (targetStatus === 'LOST') {
+          payload.lost_reason = statusForm.lost_reason;
+          payload.lost_remarks = statusForm.lost_remarks;
+        } else if (targetStatus === 'CONVERTED') {
+          payload.converted_to = statusForm.converted_to || 'Purchase Order';
+          payload.converted_reference = statusForm.converted_reference.trim();
+        } else if (targetStatus === 'CLOSED') {
+          payload.closure_reason_code = statusForm.closure_reason_code;
+        }
+        if (statusForm.remarks.trim()) payload.remarks = statusForm.remarks.trim();
+
+        updated = await api.patch(`/proposals/${selectedProposal.id}/status`, payload);
       }
-      if (statusForm.remarks) payload.remarks = statusForm.remarks;
-
-      const updated = await api.patch(`/proposals/${selectedProposal.id}/status`, payload);
       applyProposal(updated);
       setIsStatusDialogOpen(false);
 
@@ -844,26 +987,29 @@ export default function ProposalsPage() {
     e.preventDefault();
     if (!selectedProposal) return;
     setFollowupError(null);
+    if (!followupForm.owner_id) {
+      setFollowupError('Choose the follow-up owner.');
+      return;
+    }
+    if (needsPostponeReason && !followupForm.postpone_reason.trim()) {
+      setFollowupError(`A follow-up more than ${followUpHorizonDays} days out needs a reason.`);
+      return;
+    }
 
     try {
       setIsSubmitting(true);
       const res = await api.post(`/proposals/${selectedProposal.id}/follow-ups`, {
         followup_date: followupForm.followup_date,
-        owner_id: followupForm.owner_id || user?.id,
+        // The chosen owner takes over the proposal's follow-ups (the server validates and audits the change).
+        owner_id: followupForm.owner_id,
         remarks: followupForm.remarks,
         outcome: followupForm.outcome || undefined,
         next_followup_date: followupForm.next_followup_date || undefined,
+        postpone_reason: needsPostponeReason ? followupForm.postpone_reason.trim() : undefined,
       });
 
       applyProposal(res?.proposal || res);
       setIsFollowupDialogOpen(false);
-      setFollowupForm({
-        followup_date: istToday(),
-        owner_id: user?.id || '',
-        remarks: '',
-        outcome: '',
-        next_followup_date: '',
-      });
 
       await fetchProposals();
       await fetchStats();
@@ -968,21 +1114,22 @@ export default function ProposalsPage() {
   );
 
   // Register rows → RecordItems (cards / stage board). Actions mirror the detail modal's workflow buttons.
-  const openFollowupFor = (p: any) => {
-    setSelectedProposal(p);
+  const openFollowupFor = (p: any, keepNextDate = true) => {
+    focusProposal(p);
     setFollowupForm({
       followup_date: istToday(),
-      owner_id: p.followup_owner_id || user?.id || '',
+      owner_id: currentOwnerOf(p) || user?.id || '',
       remarks: '',
       outcome: '',
-      next_followup_date: p.next_followup ? proposalDay(p.next_followup) : '',
+      next_followup_date: keepNextDate && p.next_followup ? proposalDay(p.next_followup) : '',
+      postpone_reason: '',
     });
     setFollowupError(null);
     setIsFollowupDialogOpen(true);
   };
   const statusActionFor = (p: any, nextStatus: string) => () => {
-    setSelectedProposal(p);
-    initiateStatusChange(nextStatus);
+    focusProposal(p);
+    initiateStatusChange(nextStatus, p);
   };
   // Actions follow the server's allowed_transitions / can_edit for this user (DEF-008): a colleague's proposal is
   // view-only for sales, terminal proposals are read-only for everyone.
@@ -1566,7 +1713,9 @@ export default function ProposalsPage() {
                         onChange={(e) => {
                           const orgId = e.target.value;
                           setNewProposal({ ...newProposal, organisation_id: orgId, lead_id: '' });
+                          // The override answered the old customer + product; a new combination is checked afresh.
                           setDuplicateWarning(null);
+                          setDuplicateOverrideReason('');
                           // A customer with exactly one open lead: link it by default (the picker can still change it).
                           loadLeadOptions(orgId).then((rows) => {
                             if (rows.length === 1) setNewProposal((cur) => (cur.organisation_id === orgId && !cur.lead_id ? { ...cur, lead_id: rows[0].id } : cur));
@@ -1637,6 +1786,7 @@ export default function ProposalsPage() {
                           onChange={(e) => {
                             setNewProposal({ ...newProposal, product_id: e.target.value });
                             setDuplicateWarning(null);
+                            setDuplicateOverrideReason('');
                           }}
                           className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
                         >
@@ -1652,7 +1802,11 @@ export default function ProposalsPage() {
                       <Input label="Proposal Version" value="v1.0" readOnly disabled helperText="Set automatically" />
                     </div>
 
-                    <CommercialFields value={newProposal} onChange={(patch) => setNewProposal({ ...newProposal, ...patch })} />
+                    <CommercialFields
+                      value={newProposal}
+                      onChange={(patch) => setNewProposal({ ...newProposal, ...patch })}
+                      minValidityDate={newProposal.request_date}
+                    />
 
                     <Textarea
                       label="Internal Remarks / Tender Specifications"
@@ -1689,7 +1843,7 @@ export default function ProposalsPage() {
                         <option value="">Select responsible proposal owner...</option>
                         {users.map((u) => (
                           <option key={u.id} value={u.id}>
-                            {u.full_name} ({u.role})
+                            {userWithRole(u)}
                           </option>
                         ))}
                       </select>
@@ -1731,7 +1885,7 @@ export default function ProposalsPage() {
                         <option value="">Same as Responsible Person</option>
                         {users.map((u) => (
                           <option key={u.id} value={u.id}>
-                            {u.full_name} ({u.role})
+                            {userWithRole(u)}
                           </option>
                         ))}
                       </select>
@@ -1844,56 +1998,64 @@ export default function ProposalsPage() {
                 )}
 
                 {proposalLaneOf(selectedProposal.status) === 'READY_FOR_REVIEW' && (() => {
-                  const isManagementOrAdmin = ['management', 'admin'].includes(user?.role || '');
-                  const isCreator = Boolean(
-                    user && (
-                      selectedProposal.created_by_id === user.id ||
-                      selectedProposal.created_by === user.id ||
-                      selectedProposal.requested_by_id === user.id ||
-                      selectedProposal.requested_by === user.id ||
-                      selectedProposal.responsible_person_id === user.id ||
-                      selectedProposal.responsible_id === user.id
-                    )
+                  // The server decides who reviews (allowed_transitions): Management / Admin for major proposals, the
+                  // Regional Manager of the customer's region below the threshold; the author never approves.
+                  const canApprove = canMove(selectedProposal, 'APPROVED');
+                  const canRequestChanges = canMove(selectedProposal, 'UNDER_PREPARATION');
+                  const regionalBand = selectedProposal.approval_band === 'regional';
+                  const isBandApprover = user?.role === 'admin' || user?.role === (regionalBand ? 'regional_manager' : 'management');
+                  const isAuthor = Boolean(
+                    user &&
+                      [
+                        selectedProposal.created_by_id,
+                        selectedProposal.created_by,
+                        selectedProposal.requested_by_id,
+                        selectedProposal.requested_by,
+                        selectedProposal.responsible_person_id,
+                        selectedProposal.responsible_id,
+                      ].includes(user.id),
                   );
+                  const selfApprovalBlocked = !canApprove && isBandApprover && isAuthor;
 
-                  if (!isManagementOrAdmin) {
+                  if (!canApprove && !canRequestChanges && !selfApprovalBlocked) {
                     return (
                       <span className="text-[11px] text-[#4A5568] bg-[#FBFAF7] px-2.5 py-1 rounded border border-[#DCD8CE] italic">
-                        Awaiting management approval (only Management / Admin approve quotes)
+                        {regionalBand
+                          ? "Awaiting the Regional Manager's approval (below the threshold, the customer's region approves)"
+                          : 'Awaiting Management approval (major proposals are approved by Management / Admin)'}
                       </span>
                     );
                   }
-
-                  if (isCreator) {
-                    return (
-                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[10px] font-medium" title="Dual-control policy: You created/authored this proposal and cannot approve your own quotation.">
-                        <AlertTriangle className="h-3 w-3 text-[#9A3412] shrink-0" />
-                        <span>Self-Approval Prohibited (Created by you)</span>
-                      </div>
-                    );
-                  }
-
-                  if (!canMove(selectedProposal, 'APPROVED') && !canMove(selectedProposal, 'UNDER_PREPARATION')) return null;
                   return (
-                    <div className="flex w-full items-center gap-2 sm:w-auto">
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        className={`${FLOW_BTN} text-[#700F2D] border-[#F3C7CF] hover:bg-[#FCE8EC]`}
-                        onClick={() => initiateStatusChange('UNDER_PREPARATION')}
-                      >
-                        <X className="h-3.5 w-3.5 mr-1" />
-                        <span>Request Changes</span>
-                      </Button>
-                      <Button
-                        variant="success"
-                        size="xs"
-                        className={FLOW_BTN}
-                        onClick={() => initiateStatusChange('APPROVED')}
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                        <span>Approve Proposal</span>
-                      </Button>
+                    <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                      {selfApprovalBlocked && (
+                        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#FFF8EB] border border-[#E9C9B4] text-[#7C2D12] text-[10px] font-medium" title="Dual-control policy: You created/authored this proposal and cannot approve your own quotation.">
+                          <AlertTriangle className="h-3 w-3 text-[#9A3412] shrink-0" />
+                          <span>Self-Approval Prohibited (Created by you)</span>
+                        </div>
+                      )}
+                      {canRequestChanges && (
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          className={`${FLOW_BTN} text-[#700F2D] border-[#F3C7CF] hover:bg-[#FCE8EC]`}
+                          onClick={() => initiateStatusChange('UNDER_PREPARATION')}
+                        >
+                          <X className="h-3.5 w-3.5 mr-1" />
+                          <span>Request Changes</span>
+                        </Button>
+                      )}
+                      {canApprove && (
+                        <Button
+                          variant="success"
+                          size="xs"
+                          className={FLOW_BTN}
+                          onClick={() => initiateStatusChange('APPROVED')}
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                          <span>Approve Proposal</span>
+                        </Button>
+                      )}
                     </div>
                   );
                 })()}
@@ -1910,29 +2072,42 @@ export default function ProposalsPage() {
                   </Button>
                 )}
 
+                {/* Internal revision before sending: withdraws the approval, back to preparation */}
+                {proposalLaneOf(selectedProposal.status) === 'APPROVED' && canMove(selectedProposal, 'UNDER_PREPARATION') && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className={FLOW_BTN}
+                    onClick={() => initiateStatusChange('UNDER_PREPARATION')}
+                  >
+                    <Edit2 className="h-3.5 w-3.5 mr-1" />
+                    <span>Revise Before Sending</span>
+                  </Button>
+                )}
+
                 {SENT_LANES.includes(proposalLaneOf(selectedProposal.status)) && canEditProposal(selectedProposal) && (
                   <>
                     <Button
                       variant="primary"
                       size="xs"
                       className={`${FLOW_BTN} basis-full sm:basis-auto`}
-                      onClick={() => {
-                        setFollowupForm({
-                          followup_date: istToday(),
-                          owner_id: selectedProposal.followup_owner_id || user?.id || '',
-                          remarks: '',
-                          outcome: '',
-                          next_followup_date: selectedProposal.next_followup
-                            ? proposalDay(selectedProposal.next_followup)
-                            : '',
-                        });
-                        setFollowupError(null);
-                        setIsFollowupDialogOpen(true);
-                      }}
+                      onClick={() => openFollowupFor(selectedProposal)}
                     >
                       <Plus className="h-3.5 w-3.5 mr-1" />
                       <span>Add Follow-up</span>
                     </Button>
+                    {/* Customer asked for a revised quote: next major version, follow-ups paused until re-sent */}
+                    {canMove(selectedProposal, 'UNDER_PREPARATION') && (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        className={FLOW_BTN}
+                        onClick={() => initiateStatusChange('UNDER_PREPARATION')}
+                      >
+                        <Edit2 className="h-3.5 w-3.5 mr-1" />
+                        <span>Customer Revision</span>
+                      </Button>
+                    )}
                     {canMove(selectedProposal, 'CONVERTED') && (
                       <Button
                         variant="success"
@@ -1958,6 +2133,19 @@ export default function ProposalsPage() {
                   </>
                 )}
 
+                {/* Cancel / close an open proposal (closure reason + remarks) */}
+                {!selectedProposal.is_terminal && canMove(selectedProposal, 'CLOSED') && (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className={`${FLOW_BTN} text-[#881337] hover:bg-[#FCE8EC] hover:text-[#700F2D]`}
+                    onClick={() => initiateStatusChange('CLOSED')}
+                  >
+                    <X className="h-3.5 w-3.5 mr-1" />
+                    <span>Close Proposal</span>
+                  </Button>
+                )}
+
                 {/* DEF-070: a converted quote becomes a dispatch — opens the pre-filled delivery form */}
                 {proposalLaneOf(selectedProposal.status) === 'CONVERTED' && canOpen(user?.role, '/deliveries') && (
                   <Link href={`/deliveries?proposal=${selectedProposal.id}`} className="grow basis-[8rem] sm:grow-0 sm:basis-auto">
@@ -1967,6 +2155,19 @@ export default function ProposalsPage() {
                     </Button>
                   </Link>
                 )}
+
+                {/* Reopen a concluded proposal: management / admin within the reopen window (server-computed) */}
+                {selectedProposal.is_terminal && canMove(selectedProposal, 'REQUESTED') && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className={FLOW_BTN}
+                    onClick={() => initiateStatusChange('REQUESTED')}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                    <span>Reopen</span>
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -1974,7 +2175,11 @@ export default function ProposalsPage() {
             {selectedProposal.is_terminal ? (
               <InfoCallout variant="neutral" title="Read-only">
                 {selectedProposal.proposal_number} is {statusText(selectedProposal.status)}. Concluded proposals cannot be edited
-                {['management', 'admin'].includes(user?.role || '') ? ' — reopen it (within the reopen window) to make changes.' : '; management can reopen it if needed.'}
+                {canMove(selectedProposal, 'REQUESTED')
+                  ? ` — use Reopen (within the ${reopenWindowDays}-day reopen window) to make changes.`
+                  : ['management', 'admin'].includes(user?.role || '')
+                    ? `. The ${reopenWindowDays}-day reopen window has passed; register a new proposal instead.`
+                    : `; management can reopen it within ${reopenWindowDays} days if needed.`}
               </InfoCallout>
             ) : selectedProposal.can_edit === false ? (
               <InfoCallout variant="info" title="View only">
@@ -2280,17 +2485,7 @@ export default function ProposalsPage() {
                       variant="primary"
                       size="xs"
                       className="h-10 w-full text-xs sm:h-7 sm:w-auto sm:text-[11px]"
-                      onClick={() => {
-                        setFollowupForm({
-                          followup_date: istToday(),
-                          owner_id: selectedProposal.followup_owner_id || user?.id || '',
-                          remarks: '',
-                          outcome: '',
-                          next_followup_date: '',
-                        });
-                        setFollowupError(null);
-                        setIsFollowupDialogOpen(true);
-                      }}
+                      onClick={() => openFollowupFor(selectedProposal, false)}
                     >
                       <Plus className="h-3.5 w-3.5 mr-1" />
                       <span>Log New Follow-up</span>
@@ -2399,14 +2594,30 @@ export default function ProposalsPage() {
         title={
           isRequestChanges
             ? 'Request Changes'
-            : isBackToPreparation
-              ? 'Send Back to Preparation'
-              : `Advance Status: ${PROPOSAL_STATUS_LABELS[targetStatus] || targetStatus}`
+            : isInternalRevision
+              ? 'Revise Before Sending'
+              : isCustomerRevision
+                ? 'Customer Revision'
+                : isBackToPreparation
+                  ? 'Send Back to Preparation'
+                  : isReopen
+                    ? 'Reopen Proposal'
+                    : targetStatus === 'CLOSED'
+                      ? 'Close Proposal'
+                      : `Advance Status: ${PROPOSAL_STATUS_LABELS[targetStatus] || targetStatus}`
         }
         description={
           isRequestChanges
             ? 'Return the quote to the preparer with the changes you need.'
-            : 'Verify milestone transition requirements.'
+            : isInternalRevision
+              ? 'Withdraws the approval: the quote goes back to preparation and must be reviewed again before it is sent.'
+              : isCustomerRevision
+                ? `Starts version v${(Number(selectedProposal?.current_version) || 1) + 1}.0 and pauses follow-ups until the revised quote is sent.`
+                : isReopen
+                  ? 'Returns the proposal to the stage it was in before it was concluded. The reason is kept in the activity history.'
+                  : targetStatus === 'CLOSED'
+                    ? `Cancels the proposal and makes it read-only. Management can reopen it within ${reopenWindowDays} days.`
+                    : 'Verify milestone transition requirements.'
         }
         maxWidth="md"
       >
@@ -2451,6 +2662,38 @@ export default function ProposalsPage() {
               helperText="How the quote reached the customer — kept on the proposal for follow-ups."
               value={statusForm.reference}
               onChange={(e) => setStatusForm({ ...statusForm, reference: e.target.value })}
+            />
+          )}
+          {targetStatus === 'SENT_TO_CUSTOMER' && (
+            // PROPOSAL_PIPELINE §2: dispatch records who chases the customer and when.
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Select
+                label="Follow-up Owner"
+                required
+                value={statusForm.follow_up_owner_id}
+                onChange={(e) => setStatusForm({ ...statusForm, follow_up_owner_id: e.target.value })}
+                options={ownerChoicesFor(selectedProposal, users)}
+                placeholder="Select owner..."
+              />
+              <Input
+                type="date"
+                label="Next Follow-up Date"
+                required
+                min={statusForm.sent_date || undefined}
+                helperText="When to contact the customer first."
+                value={statusForm.next_followup}
+                onChange={(e) => setStatusForm({ ...statusForm, next_followup: e.target.value })}
+              />
+            </div>
+          )}
+          {targetStatus === 'CLOSED' && (
+            <Select
+              label="Closure Reason"
+              required
+              value={statusForm.closure_reason_code}
+              onChange={(e) => setStatusForm({ ...statusForm, closure_reason_code: e.target.value })}
+              options={closureReasons.map((r) => ({ value: r, label: r }))}
+              placeholder="Select reason..."
             />
           )}
 
@@ -2507,9 +2750,27 @@ export default function ProposalsPage() {
           )}
 
           <Textarea
-            label={isRequestChanges ? 'Changes Requested' : isBackToPreparation || targetStatus === 'CLOSED' ? 'Reason' : 'Transition Remarks'}
-            required={isBackToPreparation}
-            placeholder={isBackToPreparation ? 'What needs to change, and why…' : 'Add optional notes for this status update...'}
+            label={
+              isRequestChanges
+                ? 'Changes Requested'
+                : isCustomerRevision
+                  ? 'Revision Requested by the Customer'
+                  : targetStatus === 'CLOSED'
+                    ? 'Closure Remarks'
+                    : needsReason
+                      ? 'Reason'
+                      : 'Transition Remarks'
+            }
+            required={needsReason}
+            placeholder={
+              isBackToPreparation
+                ? 'What needs to change, and why…'
+                : targetStatus === 'CLOSED'
+                  ? 'Why the proposal is being closed…'
+                  : isReopen
+                    ? 'Why this proposal needs to be reopened…'
+                    : 'Add optional notes for this status update...'
+            }
             value={statusForm.remarks}
             onChange={(e) => setStatusForm({ ...statusForm, remarks: e.target.value })}
           />
@@ -2519,7 +2780,7 @@ export default function ProposalsPage() {
               Cancel
             </Button>
             <Button variant="primary" size="sm" className={DIALOG_BTN} type="submit" isLoading={isSubmitting}>
-              Confirm Transition
+              {isReopen ? 'Reopen Proposal' : targetStatus === 'CLOSED' ? 'Close Proposal' : 'Confirm Transition'}
             </Button>
           </div>
         </form>
@@ -2539,7 +2800,7 @@ export default function ProposalsPage() {
               {followupError}
             </InfoCallout>
           )}
-          <FormSection title="Interaction" icon={<Calendar />} description="When the customer was contacted, and by whom.">
+          <FormSection title="Interaction" icon={<Calendar />} description="When the customer was contacted, and who owns the follow-ups from here.">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Input
                 type="date"
@@ -2549,24 +2810,19 @@ export default function ProposalsPage() {
                 value={followupForm.followup_date}
                 onChange={(e) => setFollowupForm({ ...followupForm, followup_date: e.target.value })}
               />
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-[#14213D]">
-                  Follow-up Owner <span className="text-[#881337]">*</span>
-                </label>
-                <select
-                  required
-                  value={followupForm.owner_id}
-                  onChange={(e) => setFollowupForm({ ...followupForm, owner_id: e.target.value })}
-                  className="w-full text-xs py-2 px-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-[#14213D] focus:border-[#0F5E63] focus:outline-none"
-                >
-                  <option value="">Select owner...</option>
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.full_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <Select
+                label="Follow-up Owner"
+                required
+                value={followupForm.owner_id}
+                onChange={(e) => setFollowupForm({ ...followupForm, owner_id: e.target.value })}
+                options={ownerChoicesFor(selectedProposal, users)}
+                placeholder="Select owner..."
+                helperText={
+                  followupForm.owner_id && followupForm.owner_id !== currentOwnerOf(selectedProposal)
+                    ? 'Saving hands this proposal’s follow-ups to the selected person.'
+                    : undefined
+                }
+              />
             </div>
           </FormSection>
 
@@ -2599,6 +2855,16 @@ export default function ProposalsPage() {
                   onChange={(e) => setFollowupForm({ ...followupForm, next_followup_date: e.target.value })}
                 />
               </div>
+
+              {needsPostponeReason && (
+                <Input
+                  label={`Reason for a follow-up beyond ${followUpHorizonDays} days`}
+                  required
+                  placeholder="e.g. Customer's budget is released next financial year"
+                  value={followupForm.postpone_reason}
+                  onChange={(e) => setFollowupForm({ ...followupForm, postpone_reason: e.target.value })}
+                />
+              )}
             </div>
           </FormSection>
 
@@ -2672,6 +2938,7 @@ export default function ProposalsPage() {
                 value={editForm}
                 onChange={(patch) => setEditForm({ ...editForm, ...patch })}
                 quoteRequired={!['PROPOSAL_REQUESTED', 'UNDER_PREPARATION'].includes(proposalLaneOf(selectedProposal.status))}
+                minValidityDate={proposalDay(selectedProposal.request_date) || undefined}
               />
             </FormSection>
 
@@ -2696,7 +2963,7 @@ export default function ProposalsPage() {
                     >
                       {users.map((u) => (
                         <option key={u.id} value={u.id}>
-                          {u.full_name} ({u.role})
+                          {userWithRole(u)}
                         </option>
                       ))}
                     </select>
@@ -2711,7 +2978,7 @@ export default function ProposalsPage() {
                     >
                       {users.map((u) => (
                         <option key={u.id} value={u.id}>
-                          {u.full_name} ({u.role})
+                          {userWithRole(u)}
                         </option>
                       ))}
                     </select>
@@ -2802,10 +3069,13 @@ function CommercialFields({
   value,
   onChange,
   quoteRequired = false,
+  minValidityDate,
 }: {
   value: CommercialForm;
   onChange: (patch: Partial<CommercialForm>) => void;
   quoteRequired?: boolean;
+  /** A quote cannot expire before it was requested (QA BUG-026). */
+  minValidityDate?: string;
 }) {
   return (
     <div className="space-y-3">
@@ -2846,6 +3116,7 @@ function CommercialFields({
         <Input
           type="date"
           label="Quote Valid Until"
+          min={minValidityDate}
           value={value.validity_date}
           onChange={(e) => onChange({ validity_date: e.target.value })}
         />

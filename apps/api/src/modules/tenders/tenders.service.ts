@@ -73,6 +73,9 @@ import {
 import { teamIds } from '../dashboard/dashboard-metrics.js';
 import { containsPattern } from '../../common/utils/like-pattern.js';
 
+/** A GeM bid / RA number (GEM/2026/B/8123456): GeM issues each one once, nationally. */
+const GEM_BID_NO_RE = /^GEM\/\d{4}\/[A-Z]\/\d+$/i;
+
 /**
  * QA DEF-037 / DEF-038: a regional manager's bids are their zone's bids plus bids owned by their field team (reps'
  * bids that carry no zone tag). Same rule as dashboard-metrics `territoryTenders`, so the tenders screens, the RM
@@ -240,7 +243,10 @@ export class TendersService {
     const normalized = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
     const withTz = normalized.length <= 10 ? `${normalized}T15:00:00+05:30` : (normalized.length <= 16 ? `${normalized}:00+05:30` : `${normalized}+05:30`);
     const d = new Date(withTz);
-    return isNaN(d.getTime()) ? new Date(trimmed) : d;
+    if (!isNaN(d.getTime())) return d;
+    // Last resort: the engine's own parser; unreadable text is null (callers report it), never an Invalid Date.
+    const fallback = new Date(trimmed);
+    return isNaN(fallback.getTime()) ? null : fallback;
   }
 
   /**
@@ -1151,18 +1157,22 @@ export class TendersService {
 
     if (!orgName) orgName = 'Arihant Customer';
 
-    // 2. Validate deduplication: Unique on (lower(trim(tender_number)), lower(trim(organisation))) WHERE is_deleted = false
+    // 2. Validate deduplication: Unique on (lower(trim(tender_number)), lower(trim(organisation))) WHERE is_deleted = false.
+    // A GeM bid number (GEM/2026/B/8123456) is issued once nationally, so it is unique across buyers too (QA BUG-005).
+    const isGemBidNo = GEM_BID_NO_RE.test(tenderNumber);
     const duplicate = await this.db
       .selectFrom('tenders')
-      .select('id')
+      .select(['id', 'internal_ref', 'organisation'])
       .where(sql`lower(trim(coalesce(tender_number, tender_no)))`, '=', tenderNumber.toLowerCase())
-      .where(sql`lower(trim(coalesce(organisation, '')))`, '=', orgName.toLowerCase())
+      .$if(!isGemBidNo, (qb) => qb.where(sql`lower(trim(coalesce(organisation, '')))`, '=', orgName.toLowerCase()))
       .where('is_deleted', '=', false)
       .executeTakeFirst();
 
     if (duplicate) {
       throw new ConflictException(
-        `Tender "${tenderNumber}" for organisation "${orgName}" is already registered.`,
+        isGemBidNo
+          ? `GeM bid number "${tenderNumber}" is already registered${duplicate.internal_ref ? ` as ${duplicate.internal_ref}` : ''}${duplicate.organisation ? ` (buyer: ${duplicate.organisation})` : ''}.`
+          : `Tender "${tenderNumber}" for organisation "${orgName}" is already registered.`,
       );
     }
 
@@ -1876,8 +1886,13 @@ export class TendersService {
         updated_at: new Date(),
       };
 
-      if (to === 'TENDER_SUBMITTED' && (dto as any).submission_date) {
+      if ((to === 'TENDER_SUBMITTED' || to === 'PQ_SUBMITTED') && (dto as any).submission_date) {
         updateData.submission_date = (dto as any).submission_date;
+      }
+      // Go decision: the dossier's Decision panel shows who signed off and when.
+      if (from === 'AWAITING_INTERNAL_APPROVAL' && to === 'UNDER_PREPARATION') {
+        updateData.internal_approval_by = user.id;
+        updateData.internal_approval_at = new Date();
       }
 
       await trx
@@ -2174,7 +2189,10 @@ export class TendersService {
     }
 
     const restoredStatus = existing.status_before_hold || existing.status || 'identified';
-    const note = 'RESUME: Tender resumed from on hold';
+    const resumeRemarks = (dto.remarks || dto.reason || '').trim();
+    const note = resumeRemarks
+      ? `RESUME: Tender resumed from on hold — ${resumeRemarks}`
+      : 'RESUME: Tender resumed from on hold';
 
     await this.db.transaction().execute(async (trx) => {
       await trx
@@ -2206,7 +2224,7 @@ export class TendersService {
         .values({
           tender_id: id,
           event_type: 'RESUMED',
-          description: `Tender resumed to ${this.workflowService.getStatusLabel(restoredStatus)}`,
+          description: `Tender resumed to ${this.workflowService.getStatusLabel(restoredStatus)}${resumeRemarks ? ` — ${resumeRemarks}` : ''}`,
           performed_by: user.id,
         })
         .execute();
@@ -2538,11 +2556,29 @@ export class TendersService {
       { isRecordResultAction: true },
     );
 
+    // The result sheet confirms the tender category (PQ / General-MHA / Other); a correction there updates the bid.
+    // category and its master row (category_id / tender_category_id) move together, so the register, filters and
+    // reports agree on the corrected category.
+    const resultCategory = String((dto as any).category || '').toLowerCase().trim();
+    const categoryCorrection = (['pq', 'general_mha', 'other'] as const).find(
+      (c) => c === resultCategory && c !== String(existing.category || '').toLowerCase(),
+    );
+    const correctedCategoryId = categoryCorrection
+      ? ((await this.db
+          .selectFrom('tender_categories')
+          .select('id')
+          .where(sql`lower(code)`, '=', categoryCorrection)
+          .executeTakeFirst())?.id ?? null)
+      : null;
+
     // Save snapshot in tender_results and update tenders row
     await this.db.transaction().execute(async (trx) => {
       await trx
         .updateTable('tenders')
         .set({
+          ...(categoryCorrection
+            ? { category: categoryCorrection, category_id: correctedCategoryId, tender_category_id: correctedCategoryId }
+            : {}),
           status: outcome as any,
           result_date: resultDayStr,
           tender_value: tenderVal || null,
@@ -2592,7 +2628,7 @@ export class TendersService {
           zone_id: existing.zone_id,
           region_id: (dto as any).region_id || existing.region_id,
           assigned_to: (dto as any).responsible_person_id || existing.assigned_to,
-          category_id: existing.category_id,
+          category_id: categoryCorrection ? correctedCategoryId : existing.category_id,
           product_id: (dto as any).product_id || existing.product_id,
           recorded_by: user.id,
           recorded_at: new Date(),
@@ -2716,6 +2752,7 @@ export class TendersService {
         other_reason_text: otherText,
         competitor: dto.competitor,
         notes: dto.notes || dto.remarks,
+        category: dto.category || dto.tender_category,
         product_id: dto.product_id,
         region_id: dto.region_id,
         responsible_person_id: dto.responsible_person_id,
@@ -4150,10 +4187,51 @@ export class TendersService {
       const regionName = String(raw['Region'] || raw.region || '').trim();
       const rawDeadline = raw['Submission Deadline'] || raw.submission_deadline || raw.closing_date;
       const rawPubDate = raw['Publication Date'] || raw.publication_date || raw.publish_date;
+      const title = String(raw['Tender Title'] || raw.tender_title || raw.title || '').trim();
+      const city = String(raw['City'] || raw.city || raw.location || '').trim();
+      const rawCategory = String(raw['Category'] || raw.category || raw.tender_category || '').trim();
+      const rawValue = raw['Estimated Value'] ?? raw.estimated_value ?? raw.value;
+      const rawPreBid = raw['Pre-Bid Date'] || raw.pre_bid_meeting_date || raw.pre_bid_date;
 
       if (!tenderNum) errors.push('Tender Number is required');
       if (!org) errors.push('Organisation is required');
       if (!rawDeadline) errors.push('Submission Deadline is required');
+
+      // Category: tenders.category is the PQ / General-MHA / Other enum. The sheet may give the code, its label or a
+      // master category that stands for one ("General Tender" / "MHA Tender" → General / MHA); anything else is
+      // rejected here rather than failing the insert. The master row stored alongside is the one whose code is that
+      // enum value, so category and category_id always agree.
+      let categoryCode: string | null = null;
+      let categoryId: string | null = null;
+      if (rawCategory) {
+        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const key = norm(rawCategory);
+        const alias: Record<string, string> = {
+          pq: 'pq', prequalification: 'pq',
+          generalmha: 'general_mha', general: 'general_mha', mha: 'general_mha', generaltender: 'general_mha', mhatender: 'general_mha',
+          other: 'other', others: 'other',
+        };
+        const master = categories.find((c) => norm(c.code) === key || norm(c.name) === key);
+        categoryCode = (master ? alias[norm(master.code)] : undefined) || alias[key] || null;
+        categoryId = categoryCode ? categories.find((c) => c.code.toLowerCase() === categoryCode)?.id ?? null : null;
+        if (!categoryCode) errors.push(`Unknown Category: "${rawCategory}" (use PQ, General / MHA or Other)`);
+      }
+
+      // Estimated value in rupees; "93 Lakh" / "1.2 Cr" are converted.
+      let estimatedValue: number | null = null;
+      if (rawValue !== undefined && rawValue !== null && String(rawValue).trim() !== '') {
+        const text = String(rawValue).toLowerCase();
+        const amount = typeof rawValue === 'number' ? rawValue : Number(text.replace(/[^0-9.]/g, ''));
+        const unit = /\b(cr|crore)/.test(text) ? 1e7 : /\b(l|lac|lakh|lakhs)\b/.test(text) ? 1e5 : 1;
+        if (!Number.isFinite(amount) || amount <= 0) errors.push(`Invalid Estimated Value: "${rawValue}"`);
+        else estimatedValue = Math.round(amount * unit);
+      }
+
+      let preBidDate: Date | null = null;
+      if (rawPreBid) {
+        preBidDate = this.parseDateTimeIST(rawPreBid);
+        if (!preBidDate) errors.push('Invalid Pre-Bid Date');
+      }
 
       // Duplicate check inside file
       const batchKey = `${tenderNum.toLowerCase()}_${org.toLowerCase()}`;
@@ -4207,6 +4285,19 @@ export class TendersService {
         errors.push(`Tender already exists in database (Skipped)`);
       }
 
+      // A GeM bid number already held by another buyer is the same bid, not a new one (QA BUG-005).
+      if (!existingInDb && GEM_BID_NO_RE.test(tenderNum)) {
+        const sameBid = await this.db
+          .selectFrom('tenders')
+          .select(['internal_ref', 'organisation'])
+          .where(sql`lower(trim(coalesce(tender_number, tender_no)))`, '=', tenderNum.toLowerCase())
+          .where('is_deleted', '=', false)
+          .executeTakeFirst();
+        if (sameBid) {
+          errors.push(`GeM bid number already registered${sameBid.internal_ref ? ` as ${sameBid.internal_ref}` : ''} for "${sameBid.organisation ?? 'another buyer'}"`);
+        }
+      }
+
       rowReports.push({
         row: rowIndex,
         tender_number: tenderNum,
@@ -4226,6 +4317,12 @@ export class TendersService {
           region_id: matchedRegion?.id || null,
           submission_deadline: deadlineDate?.toISOString(),
           publication_date: rawPubDate ? this.istDay(rawPubDate) : null,
+          tender_title: title || null,
+          city: city || null,
+          category_code: categoryCode,
+          category_id: categoryId,
+          estimated_value: estimatedValue,
+          pre_bid_meeting_date: preBidDate?.toISOString() || null,
           is_existing: Boolean(existingInDb),
           existing_id: existingInDb?.id,
           extra_fields: { is_historical: true }, // Allow past deadlines in import mode
@@ -4243,49 +4340,62 @@ export class TendersService {
       };
     }
 
-    // Commit valid rows
+    // Commit valid rows in one transaction: a database error part-way never leaves half a sheet imported.
     let insertedCount = 0;
     let updatedCount = 0;
 
-    for (const item of validTendersToInsert) {
-      if (item.is_existing && duplicateMode === 'update') {
-        await this.db
-          .updateTable('tenders')
-          .set({
-            submission_deadline: item.submission_deadline,
-            bid_closing_date: item.submission_deadline,
-            zone_id: item.zone_id,
-            region_id: item.region_id,
-            state: item.state,
-            last_activity_at: new Date(),
-          })
-          .where('id', '=', item.existing_id)
-          .execute();
-        updatedCount++;
-      } else if (!item.is_existing) {
-        await this.db
-          .insertInto('tenders')
-          .values({
-            // Allocated from the highest reference in use, so imports never collide with existing refs.
-            internal_ref: await this.nextInternalRef(),
-            tender_no: item.tender_no,
-            tender_number: item.tender_number,
-            organisation: item.organisation,
-            state: item.state,
-            zone_id: item.zone_id,
-            region_id: item.region_id,
-            submission_deadline: item.submission_deadline,
-            bid_closing_date: item.submission_deadline,
-            publication_date: item.publication_date,
-            status: 'identified',
-            owner: user.id,
-            created_by: user.id,
-            extra_fields: JSON.stringify(item.extra_fields) as any,
-          })
-          .execute();
-        insertedCount++;
+    await this.db.transaction().execute(async (trx) => {
+      for (const item of validTendersToInsert) {
+        if (item.is_existing && duplicateMode === 'update') {
+          await trx
+            .updateTable('tenders')
+            .set({
+              submission_deadline: item.submission_deadline,
+              bid_closing_date: item.submission_deadline,
+              zone_id: item.zone_id,
+              region_id: item.region_id,
+              state: item.state,
+              // Optional sheet columns only overwrite when the sheet carries them.
+              ...(item.tender_title ? { tender_title: item.tender_title } : {}),
+              ...(item.city ? { city: item.city } : {}),
+              ...(item.category_code ? { category: item.category_code, category_id: item.category_id, tender_category_id: item.category_id } : {}),
+              ...(item.estimated_value !== null ? { estimated_value: item.estimated_value } : {}),
+              ...(item.pre_bid_meeting_date ? { pre_bid_meeting_date: item.pre_bid_meeting_date } : {}),
+              last_activity_at: new Date(),
+            })
+            .where('id', '=', item.existing_id)
+            .execute();
+          updatedCount++;
+        } else if (!item.is_existing) {
+          await trx
+            .insertInto('tenders')
+            .values({
+              // Allocated from the highest reference in use, so imports never collide with existing refs.
+              internal_ref: await this.nextInternalRef(trx),
+              tender_no: item.tender_no,
+              tender_number: item.tender_number,
+              organisation: item.organisation,
+              state: item.state,
+              zone_id: item.zone_id,
+              region_id: item.region_id,
+              submission_deadline: item.submission_deadline,
+              bid_closing_date: item.submission_deadline,
+              publication_date: item.publication_date,
+              tender_title: item.tender_title || item.tender_number,
+              city: item.city,
+              ...(item.category_code ? { category: item.category_code, category_id: item.category_id, tender_category_id: item.category_id } : {}),
+              estimated_value: item.estimated_value,
+              pre_bid_meeting_date: item.pre_bid_meeting_date,
+              status: 'identified',
+              owner: user.id,
+              created_by: user.id,
+              extra_fields: JSON.stringify(item.extra_fields) as any,
+            })
+            .execute();
+          insertedCount++;
+        }
       }
-    }
+    });
 
     return {
       committed: true,
@@ -4503,8 +4613,10 @@ export class TendersService {
 
   /**
    * Submission readiness = mandatory documents Ready / mandatory documents required.
-   * - Required set = the tender's mandatory checklist rows; if the tender has none (checklist never created), the
-   *   mandatory items of its category template — so "no documents" is 0% ready, never 100%.
+   * - Required set = the tender's mandatory checklist rows plus every mandatory item of its category template that
+   *   has no checklist row yet — so "no documents" is 0% ready, never 100%, and one custom document added before the
+   *   checklist is initialised can never stand in for the whole template. A template item the checklist already
+   *   carries follows the checklist row (it may have been marked optional there).
    * - Only status "Ready" counts. Repeated rows of the same document type count once (ready when one is Ready).
    * - Zero required documents (no checklist and no template) is NOT ready.
    */
@@ -4525,25 +4637,20 @@ export class TendersService {
     const checklistCreated = mandatoryDocs.length > 0;
 
     const required = new Map<string, boolean>();
-    let source: 'checklist' | 'template' = 'checklist';
-    if (checklistCreated) {
-      for (const d of mandatoryDocs) {
-        const key = d.document_type.trim();
-        required.set(key, Boolean(required.get(key)) || isReady(d.status));
-      }
-    } else {
-      source = 'template';
-      const template = await this.getChecklistTemplate(
-        tender.category_code || tender.category,
-        tender.category_name,
-      );
-      for (const t of template.items.filter((i) => i.is_mandatory)) {
-        const key = t.document_type.trim();
-        required.set(
-          key,
-          documents.some((d) => d.document_type.trim() === key && isReady(d.status)),
-        );
-      }
+    const source: 'checklist' | 'template' = checklistCreated ? 'checklist' : 'template';
+    for (const d of mandatoryDocs) {
+      const key = d.document_type.trim();
+      required.set(key, Boolean(required.get(key)) || isReady(d.status));
+    }
+    const onChecklist = new Set(documents.map((d) => d.document_type.trim()));
+    const template = await this.getChecklistTemplate(
+      tender.category_code || tender.category,
+      tender.category_name,
+    );
+    for (const t of template.items.filter((i) => i.is_mandatory)) {
+      const key = t.document_type.trim();
+      if (onChecklist.has(key)) continue;
+      required.set(key, false);
     }
 
     const total = required.size;
@@ -4951,15 +5058,20 @@ export class TendersService {
         'tender_financial_instruments.bank',
         'tender_financial_instruments.issue_date',
         'tender_financial_instruments.expiry_date',
+        'tender_financial_instruments.remarks',
         'tender_financial_instruments.created_at',
+        'tender_financial_instruments.updated_at',
         'tenders.tender_number',
         'tenders.tender_no',
         'tenders.status as tender_status',
         'tenders.submission_deadline',
+        'tenders.result_date',
         'organisations.name as organisation_name',
       ])
       .where('tender_financial_instruments.instrument_type', 'in', ['EMD', 'PBG'])
       .where((eb) => eb.or([eb('tenders.is_deleted', '=', false), eb('tenders.is_deleted', 'is', null)]))
+      // A regional manager tracks the EMDs of the bids their tender list shows; finance / tender team are All-India.
+      .$if(user.role === 'regional_manager', (qb) => qb.where(rmTenderScope(user)))
       .orderBy('tender_financial_instruments.created_at', 'desc')
       .execute();
 
@@ -4974,7 +5086,10 @@ export class TendersService {
     const refundDueItems = instruments
       .filter((i) => i.instrument_type === 'EMD' && i.status === 'Refund Due')
       .map((i) => {
-        const daysPending = Math.floor((Date.now() - new Date(i.created_at).getTime()) / (1000 * 3600 * 24));
+        // An EMD falls due for refund when the result is declared (a lost bid moves it to Refund Due); one with no
+        // recorded result counts from when it was logged. Editing the instrument later never restarts the clock.
+        const dueSince = calendarDay(i.result_date as any) || istDateOf(i.created_at);
+        const daysPending = Math.max(0, isoDaysBetween(dueSince, todayInKolkata()));
         return {
           ...i,
           days_pending: daysPending,
@@ -5306,6 +5421,8 @@ export class TendersService {
         delivery_no: deliveryNo,
         organisation_id: tender.organisation_id,
         tender_id: tenderId,
+        // The awarded product travels with the order (QA BUG-027: it showed the generic placeholder instead).
+        product_id: tender.product_id || null,
         order_reference: dto.order_number,
         delivery_date: dto.order_date || todayInKolkata(),
         delivery_location: dto.delivery_location || tender.city || 'Client Site',
@@ -5540,6 +5657,17 @@ export class TendersService {
           date: t.technical_opening_date,
           event_date: t.technical_opening_date,
           event_type: 'technical_opening',
+          status: t.status,
+        });
+      }
+      if (t.commercial_opening_date) {
+        events.push({
+          id: `${t.id}-commopen`,
+          tender_id: t.id,
+          title: `Comm. Opening: ${no} (${org})`,
+          date: t.commercial_opening_date,
+          event_date: t.commercial_opening_date,
+          event_type: 'commercial_opening',
           status: t.status,
         });
       }

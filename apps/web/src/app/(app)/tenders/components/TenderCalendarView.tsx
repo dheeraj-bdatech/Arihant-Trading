@@ -7,6 +7,8 @@ import {
   Badge,
   Select,
   EmptyState,
+  InfoCallout,
+  Spinner,
 } from '@/components/ui';
 import {
   Calendar as CalendarIcon,
@@ -50,16 +52,19 @@ export function TenderCalendarView({
   const [shownMonth, setShownMonth] = useState(istCurrentMonth);
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedType, setSelectedType] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'agenda'>('grid');
 
   const loadEvents = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const res = await api.get('/tenders/calendar');
       setEvents(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load tender calendar events:', err);
+      setLoadError(err?.message || 'Could not load the tender calendar.');
     } finally {
       setLoading(false);
     }
@@ -107,6 +112,24 @@ export function TenderCalendarView({
     return map;
   }, [filteredEvents]);
 
+  // Agenda: only the displayed month, bucketed by the same IST day as the grid, in time order.
+  const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}-`;
+  const agendaEvents = useMemo(() => {
+    const eventTime = (ev: any) => new Date(ev.date || ev.event_date).getTime();
+    return filteredEvents
+      .filter((ev) => {
+        const raw = ev.date || ev.event_date;
+        if (!raw) return false;
+        const day = eventIstDay(raw);
+        return Boolean(day && day.startsWith(monthPrefix));
+      })
+      .sort((a, b) => eventTime(a) - eventTime(b));
+  }, [filteredEvents, monthPrefix]);
+
+  // Hide the grid/agenda until events load, and when loading failed with nothing to show: an empty grid would read as
+  // "nothing scheduled this month".
+  const showSchedule = events.length > 0 || (!loading && !loadError);
+
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December',
@@ -129,15 +152,21 @@ export function TenderCalendarView({
       case 'query_deadline':
         return {
           bg: 'bg-[#FFF8EB] text-[#7C2D12] border border-[#E9C9B4]',
-          dot: 'bg-[#9A3412]',
+          dot: 'bg-[#A15C07]',
           label: 'Query Due',
         };
       case 'technical_opening':
-      case 'commercial_opening':
         return {
           bg: 'bg-[#14213D]/10 text-[#14213D] border border-[#14213D]/20',
           dot: 'bg-[#14213D]',
-          label: type === 'technical_opening' ? 'Tech Open' : 'Comm Open',
+          label: 'Tech Open',
+        };
+      case 'commercial_opening':
+        // Hollow navy dot so price-bid openings read apart from technical openings.
+        return {
+          bg: 'bg-[#EEF1F5] text-[#1F2E52] border border-[#1F2E52]/30',
+          dot: 'bg-white border-2 border-[#1F2E52]',
+          label: 'Comm Open',
         };
       default:
         return {
@@ -244,17 +273,51 @@ export function TenderCalendarView({
           <span className="text-[#4A5568]">Pre-Bid Conference</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-[#9A3412]" />
+          <span className="w-2.5 h-2.5 rounded-full bg-[#A15C07]" />
           <span className="text-[#4A5568]">Query Deadline</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-full bg-[#14213D]" />
-          <span className="text-[#4A5568]">Bid Opening</span>
+          <span className="text-[#4A5568]">Technical Opening</span>
         </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-[#1F2E52]" />
+          <span className="text-[#4A5568]">Commercial Opening</span>
+        </div>
+        {loading && events.length > 0 && (
+          <span className="ml-auto flex items-center gap-1.5 text-[#4A5568]">
+            <Spinner size="xs" />
+            Refreshing…
+          </span>
+        )}
       </div>
 
+      {loadError && (
+        <InfoCallout variant="danger" title="Could not load the tender calendar">
+          <p>
+            {loadError} The calendar below may be missing events — an empty day here does not mean nothing is scheduled.
+          </p>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={loadEvents}
+            isLoading={loading}
+            leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+          >
+            Retry
+          </Button>
+        </InfoCallout>
+      )}
+
+      {loading && events.length === 0 && !loadError && (
+        <Card className="p-12 flex items-center justify-center gap-2 text-sm text-[#4A5568] bg-white border-[#DCD8CE]">
+          <Spinner size="xs" />
+          Loading tender schedule…
+        </Card>
+      )}
+
       {/* View: Month Grid */}
-      {viewMode === 'grid' && (
+      {viewMode === 'grid' && showSchedule && (
         <Card className="p-0 overflow-hidden bg-white border-[#DCD8CE]">
           {/* Days of Week Header */}
           <div className="grid grid-cols-7 border-b border-[#DCD8CE] bg-[#FBFAF7] text-center text-xs font-bold text-[#4A5568] py-2.5">
@@ -335,26 +398,27 @@ export function TenderCalendarView({
       )}
 
       {/* View: Agenda / Chronological List */}
-      {viewMode === 'agenda' && (
+      {viewMode === 'agenda' && showSchedule && (
         <div className="space-y-3">
-          {filteredEvents.length === 0 ? (
+          {agendaEvents.length === 0 ? (
             <Card className="p-8 text-center text-xs text-[#4A5568]">
-              No scheduled events found for this filter.
+              No scheduled events in {monthNames[month]} {year}
+              {selectedType === 'all' ? '' : ' for this filter'}.
             </Card>
           ) : (
-            filteredEvents
-              .sort(
-                (a, b) =>
-                  new Date(a.date || a.event_date).getTime() -
-                  new Date(b.date || b.event_date).getTime(),
-              )
+            agendaEvents
               .map((ev, idx) => {
                 const badgeInfo = getEventBadge(ev.event_type);
                 const evDay = eventIstDay(ev.date || ev.event_date) || '';
-                const evTime = toIstLocalInput(ev.date || ev.event_date).slice(11, 16);
+                const evRaw = ev.date || ev.event_date;
+                // A bare YYYY-MM-DD has no time of day (parsing it would show a fake 05:30 IST).
+                const evTime =
+                  typeof evRaw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(evRaw)
+                    ? ''
+                    : toIstLocalInput(evRaw).slice(11, 16);
                 return (
                   <Card
-                    key={idx}
+                    key={ev.id || idx}
                     className="p-3.5 flex items-center justify-between hover:border-[#0F5E63] transition-colors"
                   >
                     <div className="flex items-center gap-3">

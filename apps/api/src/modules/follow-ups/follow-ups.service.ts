@@ -30,14 +30,18 @@ export class FollowUpsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  /** Loads a follow-up the user may act on: sales only their own, RMs their region or team, others any. */
+  /** Loads a follow-up the user may act on: sales only their own, RMs their territory (as the list), others any. */
   private async getActionable(id: string, user: AuthUser) {
     const existing = await this.db
       .selectFrom('follow_ups')
       .leftJoin('organisations', 'follow_ups.organisation_id', 'organisations.id')
       .leftJoin('users as assignee', 'follow_ups.assigned_to', 'assignee.id')
       .selectAll('follow_ups')
-      .select(['organisations.region_id as org_region_id', 'assignee.reporting_manager_id as assignee_manager_id'])
+      .select([
+        'organisations.region_id as org_region_id',
+        'organisations.zone_id as org_zone_id',
+        'assignee.reporting_manager_id as assignee_manager_id',
+      ])
       .where('follow_ups.id', '=', id)
       .executeTakeFirst();
 
@@ -47,13 +51,12 @@ export class FollowUpsService {
     if (user.role === 'sales' && existing.assigned_to !== user.id) {
       throw new ForbiddenException('You can update only your own follow-ups.');
     }
-    if (
-      user.role === 'regional_manager' &&
-      user.region_id &&
-      existing.org_region_id !== user.region_id &&
-      existing.assigned_to !== user.id &&
-      existing.assignee_manager_id !== user.id
-    ) {
+    const inTerritory =
+      (!!user.zone_id && existing.org_zone_id === user.zone_id) ||
+      (!!user.region_id && existing.org_region_id === user.region_id) ||
+      existing.assigned_to === user.id ||
+      (!existing.org_zone_id && existing.assignee_manager_id === user.id);
+    if (user.role === 'regional_manager' && !inTerritory) {
       throw new ForbiddenException('This follow-up is outside your region.');
     }
     return existing;
@@ -88,12 +91,15 @@ export class FollowUpsService {
 
     if (user.role === 'sales') {
       baseQuery = baseQuery.where('follow_ups.assigned_to', '=', user.id);
-    } else if (user.role === 'regional_manager' && user.region_id) {
+    } else if (user.role === 'regional_manager') {
+      // Same territory as the lead register (QA BUG-001): zone or region, their own, and a direct report's only at
+      // customers with no zone tag.
       baseQuery = baseQuery.where((eb) =>
         eb.or([
-          eb('organisations.region_id', '=', user.region_id),
+          ...(user.zone_id ? [eb('organisations.zone_id', '=', user.zone_id)] : []),
+          ...(user.region_id ? [eb('organisations.region_id', '=', user.region_id)] : []),
           eb('follow_ups.assigned_to', '=', user.id),
-          eb('assignee.reporting_manager_id', '=', user.id),
+          eb.and([eb('organisations.zone_id', 'is', null), eb('assignee.reporting_manager_id', '=', user.id)]),
         ]),
       );
     }
@@ -191,12 +197,15 @@ export class FollowUpsService {
 
     if (user.role === 'sales') {
       query = query.where('follow_ups.assigned_to', '=', user.id);
-    } else if (user.role === 'regional_manager' && user.region_id) {
+    } else if (user.role === 'regional_manager') {
+      // Same territory as the lead register (QA BUG-001): zone or region, their own, and a direct report's only at
+      // customers with no zone tag.
       query = query.where((eb) =>
         eb.or([
-          eb('organisations.region_id', '=', user.region_id),
+          ...(user.zone_id ? [eb('organisations.zone_id', '=', user.zone_id)] : []),
+          ...(user.region_id ? [eb('organisations.region_id', '=', user.region_id)] : []),
           eb('follow_ups.assigned_to', '=', user.id),
-          eb('assignee.reporting_manager_id', '=', user.id),
+          eb.and([eb('organisations.zone_id', 'is', null), eb('assignee.reporting_manager_id', '=', user.id)]),
         ]),
       );
     }

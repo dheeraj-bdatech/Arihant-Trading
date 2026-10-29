@@ -14,7 +14,15 @@ import { calendarDay } from '@/lib/calendar-day';
 type Tone = 'danger' | 'warning' | 'success' | 'info' | 'neutral';
 
 export interface DemoCalendarProps {
+  /** Demos already loaded by the page; the week shown is read from them unless `loadRange` is given. */
   demos: any[];
+  /**
+   * Reads the demos of the visible week from the server (YYYY-MM-DD bounds, inclusive), so a week is complete even
+   * when the page has only loaded the register's first pages.
+   */
+  loadRange?: (from: string, to: string) => Promise<any[]>;
+  /** Changes after the page reloads its data (an action), so the visible week is read again. */
+  reloadKey?: number;
   onOpen: (demo: any) => void;
   statusLabel: (status?: string) => string;
   statusTone: (status?: string) => Tone;
@@ -53,7 +61,7 @@ const rank = (status?: string) => {
   return i === -1 ? STATUS_ORDER.length : i;
 };
 
-export const DemoCalendar: React.FC<DemoCalendarProps> = ({ demos, onOpen, statusLabel, statusTone }) => {
+export const DemoCalendar: React.FC<DemoCalendarProps> = ({ demos, loadRange, reloadKey, onOpen, statusLabel, statusTone }) => {
   const today = istToday();
   const [weekStart, setWeekStart] = useState(() => mondayOf(today));
   // Seven columns only when the calendar itself is wide enough to read them (the page may sit beside the
@@ -70,7 +78,23 @@ export const DemoCalendar: React.FC<DemoCalendarProps> = ({ demos, onOpen, statu
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addIsoDays(weekStart, i)), [weekStart]);
   const weekEnd = days[6];
 
-  const live = useMemo(() => demos.filter((d) => d.status !== 'cancelled' && demoDay(d)), [demos]);
+  const [weekRows, setWeekRows] = useState<any[] | null>(null);
+  useEffect(() => {
+    if (!loadRange) return;
+    let alive = true;
+    loadRange(weekStart, addIsoDays(weekStart, 6))
+      .then((rows) => alive && setWeekRows(rows))
+      .catch(() => alive && setWeekRows([]));
+    return () => {
+      alive = false;
+    };
+  }, [loadRange, weekStart, reloadKey]);
+
+  const known = useMemo(() => demos.filter((d) => d.status !== 'cancelled' && demoDay(d)), [demos]);
+  const live = useMemo(
+    () => (loadRange ? (weekRows || []).filter((d) => d.status !== 'cancelled' && demoDay(d)) : known),
+    [loadRange, weekRows, known],
+  );
   const byDay = useMemo(() => {
     const map: Record<string, any[]> = {};
     for (const day of days) map[day] = [];
@@ -97,11 +121,11 @@ export const DemoCalendar: React.FC<DemoCalendarProps> = ({ demos, onOpen, statu
 
   const nextDemoDay = useMemo(
     () =>
-      live
+      known
         .map(demoDay)
         .filter((day) => day > weekEnd && day >= today)
         .sort()[0],
-    [live, weekEnd, today],
+    [known, weekEnd, today],
   );
 
   const { y: y1 } = parts(weekStart);

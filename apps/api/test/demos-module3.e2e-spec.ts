@@ -480,6 +480,11 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
         });
       demoId = res.body.id;
 
+      // §14: only an approved request (past Requested) can be rescheduled
+      await request(app.getHttpServer())
+        .post(`/api/demos/${demoId}/start-planning`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+
       await request(app.getHttpServer())
         .post(`/api/demos/${demoId}/assign-team`)
         .set('Authorization', `Bearer ${demoTeamToken}`)

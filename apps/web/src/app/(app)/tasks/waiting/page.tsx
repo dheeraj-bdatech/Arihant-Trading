@@ -1,6 +1,8 @@
-import { redirect } from 'next/navigation';
+'use client';
+
+import { PathRedirect } from '../../performance/_lib/PathRedirect';
 
 /** Waiting on me was retired; old links and bookmarks land on the task board. */
 export default function Page() {
-  redirect('/tasks');
+  return <PathRedirect to="/tasks" />;
 }

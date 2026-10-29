@@ -177,9 +177,11 @@ describe('Audit trail additions (E2E)', () => {
       const rules = (await api().get('/api/service/settings/sla-rules').set(auth(mgmtToken))).body;
       const rule = rules.find((r: any) => r.response_hours + 1 <= r.resolution_hours);
       expect(rule).toBeDefined();
+      // This run's row only: an earlier run left rows for the same rule (its change and the restore below).
+      const since = new Date();
       const res = await api().patch(`/api/service/settings/sla-rules/${rule.id}`).set(auth(mgmtToken)).send({ response_hours: rule.response_hours + 1 });
       expect(res.status).toBe(200);
-      const row = await auditRow((q) => q.where('action', '=', 'sla_rule_updated').where('entity_id', '=', rule.id));
+      const row = await auditRow((q) => q.where('action', '=', 'sla_rule_updated').where('entity_id', '=', rule.id).where('created_at', '>=', since));
       expect(row).toBeDefined();
       expect(row.previous_value).toMatchObject({ response_hours: rule.response_hours });
       expect(row.new_value).toMatchObject({ response_hours: rule.response_hours + 1 });

@@ -11,8 +11,6 @@ import { AppearanceMenu } from '@/components/layout/AppearanceMenu';
 export default function ServiceRequestLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-shell relative min-h-screen overflow-x-hidden">
-      {/* Staff persona switcher (root layout) is not meant for customers. */}
-      <style dangerouslySetInnerHTML={{ __html: 'body > div.fixed.bottom-5.right-5 { display: none !important; }' }} />
       <div className="relative z-10 flex min-h-screen flex-col">
         <header className="border-b border-[#DCD8CE] bg-white/90 backdrop-blur">
           <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3 px-4 py-3">

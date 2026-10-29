@@ -1,11 +1,35 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Button, Badge, Input, Textarea, Modal, InfoCallout, Spinner } from '@/components/ui';
+import { Card, Button, Badge, Input, Select, Textarea, Modal, InfoCallout, Spinner } from '@/components/ui';
 import { CheckCircle2, XCircle, ShieldAlert, ArrowRight, RefreshCw, HelpCircle, UserX, UserCheck } from 'lucide-react';
 import { formatTaskDate, formatTaskDateTime } from '@arihant/shared';
 import { api } from '@/lib/api';
-import { istToday } from '@/lib/ist-date';
+import { istToday, istDateOf } from '@/lib/ist-date';
+
+/** Row of GET /tenders/delegations (the user is the delegator or the delegatee). */
+interface DelegationRow {
+  id: string;
+  delegator_id: string;
+  delegatee_id: string;
+  start_date: string;
+  end_date: string;
+  reason?: string | null;
+  is_active: boolean;
+  delegator_name?: string | null;
+  delegatee_name?: string | null;
+}
+
+/** A DATE column (bare YYYY-MM-DD, or a midnight instant from the driver) as its IST calendar day. */
+const delegationDay = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : istDateOf(d);
+};
+
+/** Roles that hold Go/No-Go approval (RBAC spec): the only sensible cover for an approver. */
+const DELEGATE_ROLES = ['management', 'admin'] as const;
 
 interface ApprovalsInboxViewProps {
   currentUser: any;
@@ -74,8 +98,11 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
 
   // Delegation dialog
   const [isDelegationOpen, setIsDelegationOpen] = useState(false);
-  const [delegatesList, setDelegatesList] = useState<any[]>([]);
+  const [delegatesList, setDelegatesList] = useState<DelegationRow[]>([]);
   const [delegationError, setDelegationError] = useState<string | null>(null);
+  const [delegateOptions, setDelegateOptions] = useState<{ value: string; label: string }[]>([]);
+  const [delegateOptionsLoading, setDelegateOptionsLoading] = useState(false);
+  const [delegateOptionsError, setDelegateOptionsError] = useState<string | null>(null);
   const [delegationForm, setDelegationForm] = useState({
     delegatee_id: '',
     start_date: istToday(),
@@ -113,6 +140,59 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
     loadApprovals();
     loadDelegates();
   }, [loadApprovals, loadDelegates]);
+
+  /** Active Management / Admin users other than me, for the delegate picker. */
+  const loadDelegateOptions = useCallback(async () => {
+    try {
+      setDelegateOptionsLoading(true);
+      setDelegateOptionsError(null);
+      const lists = await Promise.all(
+        DELEGATE_ROLES.map((role) => api.get<any>('/users', { role, is_active: 'true', limit: 100 })),
+      );
+      const seen = new Set<string>();
+      const options: { value: string; label: string }[] = [];
+      lists.forEach((res, idx) => {
+        const rows: any[] = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+        const roleLabel = DELEGATE_ROLES[idx] === 'admin' ? 'Admin' : 'Management';
+        for (const u of rows) {
+          if (!u?.id || u.id === currentUser?.id || u.is_active === false || seen.has(u.id)) continue;
+          seen.add(u.id);
+          options.push({ value: u.id, label: `${u.full_name || u.email || 'User'} — ${roleLabel}` });
+        }
+      });
+      options.sort((a, b) => a.label.localeCompare(b.label));
+      setDelegateOptions(options);
+    } catch (err: any) {
+      setDelegateOptions([]);
+      setDelegateOptionsError(errorText(err, 'Could not load Management / Admin users.'));
+    } finally {
+      setDelegateOptionsLoading(false);
+    }
+  }, [currentUser?.id]);
+
+  const openDelegation = () => {
+    setDelegationError(null);
+    setDelegationForm({ delegatee_id: '', start_date: istToday(), end_date: '', reason: '' });
+    setIsDelegationOpen(true);
+    loadDelegateOptions();
+  };
+
+  // Delegations that matter today (IST): mine going out (active now or scheduled), and ones naming me as cover.
+  const todayIst = istToday();
+  const myId = currentUser?.id;
+  const delegationWindow = (d: DelegationRow) => {
+    const start = delegationDay(d.start_date);
+    const end = delegationDay(d.end_date);
+    if (!d.is_active || !start || !end || end < todayIst) return null;
+    return start <= todayIst ? ('active' as const) : ('scheduled' as const);
+  };
+  const outgoingDelegations = delegatesList
+    .filter((d) => myId && d.delegator_id === myId)
+    .map((d) => ({ row: d, state: delegationWindow(d) }))
+    .filter((d): d is { row: DelegationRow; state: 'active' | 'scheduled' } => d.state !== null);
+  const incomingDelegations = delegatesList.filter(
+    (d) => myId && d.delegatee_id === myId && d.delegator_id !== myId && delegationWindow(d) === 'active',
+  );
 
   const openDecision = (item: InboxItem, type: DecisionType) => {
     setSelected(item);
@@ -243,10 +323,7 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
             <Button
               variant="outline"
               size="sm"
-              onClick={() => {
-                setDelegationError(null);
-                setIsDelegationOpen(true);
-              }}
+              onClick={openDelegation}
               leftIcon={<UserX className="w-4 h-4" />}
             >
               Out-of-Office Delegate
@@ -267,23 +344,44 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
         </InfoCallout>
       )}
 
-      {delegatesList.length > 0 && (
-        <div className="p-4 rounded-[14px] bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 text-xs">
-            <UserCheck className="w-5 h-5 text-[#0F5E63] shrink-0" />
-            <div>
-              <span className="font-semibold text-[#14213D]">Active delegation:</span>{' '}
-              {delegatesList[0]?.delegator_name || 'Approver'} →{' '}
-              <span className="font-medium text-[#0F5E63]">
-                {delegatesList[0]?.delegatee_name || delegatesList[0]?.delegatee_id}
-              </span>{' '}
-              until <span className="font-mono">{delegatesList[0]?.end_date ? formatTaskDate(delegatesList[0].end_date) : '—'}</span>
+      {outgoingDelegations.length > 0 && (
+        <div className="p-4 rounded-[14px] bg-[#FBFAF7] border border-[#DCD8CE] space-y-2">
+          {outgoingDelegations.map(({ row, state }) => (
+            <div key={row.id} className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 text-xs">
+                <UserCheck className="w-5 h-5 text-[#0F5E63] shrink-0" />
+                <div>
+                  <span className="font-semibold text-[#14213D]">
+                    {state === 'active' ? 'Your active delegation:' : 'Your scheduled delegation:'}
+                  </span>{' '}
+                  <span className="font-medium text-[#0F5E63]">{row.delegatee_name || 'Delegate'}</span> covers for you{' '}
+                  {state === 'scheduled' && (
+                    <>
+                      from <span className="font-mono">{formatTaskDate(delegationDay(row.start_date))}</span>{' '}
+                    </>
+                  )}
+                  until <span className="font-mono">{formatTaskDate(delegationDay(row.end_date))}</span>
+                  {row.reason ? <span className="text-[#4A5568]"> — {row.reason}</span> : null}
+                </div>
+              </div>
+              <Badge variant={state === 'active' ? 'success' : 'outline'} size="sm">
+                {state === 'active' ? 'Active' : 'Scheduled'}
+              </Badge>
             </div>
-          </div>
-          <Badge variant="outline" size="sm">
-            Active Rule
-          </Badge>
+          ))}
         </div>
+      )}
+
+      {incomingDelegations.length > 0 && (
+        <InfoCallout variant="info" title="You are covering approvals">
+          {incomingDelegations.map((row) => (
+            <p key={row.id}>
+              {row.delegator_name || 'An approver'} named you as out-of-office cover until{' '}
+              <span className="font-mono">{formatTaskDate(delegationDay(row.end_date))}</span>
+              {row.reason ? ` — ${row.reason}` : ''}.
+            </p>
+          ))}
+        </InfoCallout>
       )}
 
       {loading && items.length === 0 ? (
@@ -506,7 +604,7 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
         isOpen={isDelegationOpen}
         onClose={() => setIsDelegationOpen(false)}
         title="Out-of-office approval delegation"
-        description="Delegate your tender approval authority while you are on leave or travelling."
+        description="Record which Management or Admin colleague covers your tender approvals while you are on leave or travelling."
         maxWidth="md"
       >
         <form onSubmit={handleSaveDelegation} className="space-y-4 text-xs">
@@ -515,12 +613,37 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
               {delegationError}
             </InfoCallout>
           )}
-          <Input
-            label="Delegate (user ID) *"
-            placeholder="Colleague's user ID"
+          {delegateOptionsError && (
+            <InfoCallout variant="danger" title="Could not load colleagues">
+              <p>{delegateOptionsError}</p>
+              <Button
+                variant="outline"
+                size="xs"
+                type="button"
+                onClick={loadDelegateOptions}
+                isLoading={delegateOptionsLoading}
+                leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+              >
+                Retry
+              </Button>
+            </InfoCallout>
+          )}
+          <Select
+            label="Delegate"
+            required
             value={delegationForm.delegatee_id}
             onChange={(e) => setDelegationForm({ ...delegationForm, delegatee_id: e.target.value })}
-            required
+            options={delegateOptions}
+            disabled={delegateOptionsLoading}
+            placeholder={
+              delegateOptionsLoading
+                ? 'Loading Management / Admin users…'
+                : delegateOptions.length === 0 && !delegateOptionsError
+                  ? 'No other active Management / Admin users'
+                  : 'Choose a Management or Admin colleague'
+            }
+            searchPlaceholder="Search by name…"
+            helperText="Recorded for out-of-office cover only — it does not grant approval rights; Go/No-Go stays with Management and Admin."
           />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Input

@@ -8,6 +8,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { availableFirst, fleetHint, kitForProduct, kitValue, unitHint } from './fleet';
+import { OrganisationPicker } from './OrganisationPicker';
 import type { SelectOption } from '@/components/ui';
 import { AlertCircle, AlertTriangle, Building, CalendarDays, FileText, Package, Plane } from 'lucide-react';
 import { addIsoDays, istToday } from '@/lib/ist-date';
@@ -54,7 +55,10 @@ const emptyDemo = () => ({
 export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClose, prefill, onCreated }) => {
   const { user } = useAuth();
   const [newDemo, setNewDemo] = useState(emptyDemo);
-  const [organisations, setOrganisations] = useState<any[]>([]);
+  // The prefilled customer's record, so the server-searched picker can show it before any search
+  const [prefillOrg, setPrefillOrg] = useState<any | null>(null);
+  // Free-text kit when "Other / Custom" is picked in the kit dropdown
+  const [customKit, setCustomKit] = useState('');
   const [products, setProducts] = useState<any[]>([]);
   const [equipmentList, setEquipmentList] = useState<any[]>([]);
   const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
@@ -67,6 +71,8 @@ export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClos
     if (!isOpen) return;
     let alive = true;
     setError(null);
+    setCustomKit('');
+    setPrefillOrg(null);
     setNewDemo({
       ...emptyDemo(),
       organisation_id: prefill?.organisation_id || '',
@@ -74,23 +80,20 @@ export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClos
       purpose: prefill?.purpose || '',
     });
     Promise.all([
-      api.get('/organisations', { limit: 100 }).catch(() => ({ data: [] })),
       api.get('/masters/products').catch(() => []),
       api.get('/demos/equipment').catch(() => []),
       api.get('/users', { role: 'service_team' }).catch(() => ({ data: [] })),
-      // A prefilled customer may be outside the first page of organisations — fetch it so the picker can show it.
+      // The prefilled customer is fetched by id: the picker searches the master, it does not preload it.
       prefill?.organisation_id ? api.get(`/organisations/${prefill.organisation_id}`).catch(() => null) : Promise.resolve(null),
-    ]).then(([orgsRes, productsRes, equipRes, serviceRes, prefOrg]: any[]) => {
+    ]).then(([productsRes, equipRes, serviceRes, prefOrg]: any[]) => {
       if (!alive) return;
-      const orgs: any[] = orgsRes?.data || orgsRes || [];
-      const extra = prefOrg?.id && !orgs.some((o) => o.id === prefOrg.id) ? [prefOrg] : [];
-      const allOrgs = [...extra, ...orgs];
-      setOrganisations(allOrgs);
       setProducts(productsRes || []);
       setEquipmentList(equipRes || []);
       setServiceEngineers(serviceRes?.data || serviceRes || []);
-      const org = prefill?.organisation_id ? allOrgs.find((o) => o.id === prefill.organisation_id) : null;
-      if (org) setNewDemo((d) => (d.location ? d : { ...d, location: `${org.city || 'Depot Site'}` }));
+      if (prefOrg?.id) {
+        setPrefillOrg(prefOrg);
+        setNewDemo((d) => (d.location ? d : { ...d, location: `${prefOrg.city || 'Depot Site'}` }));
+      }
     });
     return () => {
       alive = false;
@@ -188,8 +191,13 @@ export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClos
       if ((calendarDay(newDemo.requested_date) || '') < istToday()) {
         throw new Error('The requested trial date is in the past. Choose today or a later date.');
       }
+      const isCustomKit = newDemo.equipment_required === 'custom';
+      if (isCustomKit && !customKit.trim()) {
+        throw new Error('Describe the custom demo kit or equipment needed, or pick a registered unit.');
+      }
       const payload: any = {
         ...newDemo,
+        equipment_required: isCustomKit ? customKit.trim() : newDemo.equipment_required || undefined,
         product_id: newDemo.product_id || undefined,
         assigned_to: newDemo.assigned_to || undefined,
         visit_id: newDemo.visit_id || undefined,
@@ -197,7 +205,7 @@ export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClos
         service_engineer_id: newDemo.service_escort_required && newDemo.service_engineer_id ? newDemo.service_engineer_id : undefined,
         travel_from: newDemo.travel_required ? newDemo.travel_from : undefined,
         travel_to: newDemo.travel_required ? newDemo.travel_to : undefined,
-        travel_date: newDemo.travel_required ? newDemo.travel_date : undefined,
+        travel_date: newDemo.travel_required ? calendarDay(newDemo.travel_date) || undefined : undefined,
         travel_remarks: newDemo.travel_required ? newDemo.travel_remarks : undefined,
         tender_id: newDemo.tender_id || undefined,
         deal_value: newDemo.deal_value ? Number(newDemo.deal_value) : undefined,
@@ -211,6 +219,11 @@ export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClos
       });
 
       const created = await api.post('/demos', payload);
+      // The same request sent again within a minute comes back as the existing record, not a new one (QA BUG-023).
+      if (created?.duplicate) {
+        setError(`This request was already sent a moment ago as ${created.demo_no || 'an existing demo'} — no second request was created. Find it in the demo list.`);
+        return;
+      }
       onCreated?.(created);
       onClose();
     } catch (err: any) {
@@ -247,23 +260,19 @@ export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClos
             description: 'Who is the demo for? Link a tender or deal value so higher-value demos get priority on shared units.',
             content: (
       <div className="space-y-3">
-      <Select
+      <OrganisationPicker
         label="Client Organisation *"
         value={newDemo.organisation_id}
-        onChange={(e) => {
-          const orgId = e.target.value;
-          const org = organisations.find((o) => o.id === orgId);
-          setNewDemo({
-            ...newDemo,
-            organisation_id: orgId,
-            location: org ? `${org.city || 'Depot Site'}` : newDemo.location,
+        initial={prefillOrg}
+        placeholder="— Select Client Organisation —"
+        onChange={(org) =>
+          setNewDemo((prev) => ({
+            ...prev,
+            organisation_id: org?.id || '',
+            location: org ? `${org.city || 'Depot Site'}` : prev.location,
             tender_id: '',
-          });
-        }}
-        options={[
-          { label: '— Select Client Organisation —', value: '' },
-          ...organisations.map((o) => ({ label: o.name, value: o.id })),
-        ]}
+          }))
+        }
         required
       />
 
@@ -396,6 +405,16 @@ export const CreateDemoModal: React.FC<CreateDemoModalProps> = ({ isOpen, onClos
               }}
               options={newDemoEquipmentOptions}
             />
+
+            {newDemo.equipment_required === 'custom' && (
+              <Input
+                label="Custom kit / equipment needed *"
+                placeholder="e.g. Dual-view X-ray 100100 with conveyor extension and test bag set"
+                value={customKit}
+                onChange={(e) => setCustomKit(e.target.value)}
+                required
+              />
+            )}
 
             {/* Specific Demo Kit / Serial / Accessories Detail Card */}
             {selectedNewDemoEquipUnit && (
