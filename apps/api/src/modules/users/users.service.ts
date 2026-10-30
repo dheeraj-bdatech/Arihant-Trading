@@ -11,7 +11,7 @@ import crypto from 'crypto';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
-import type { Database, PaginatedResult } from '@arihant/shared';
+import type { Database, PaginatedResult, UserRole } from '@arihant/shared';
 import type { CreateUserDto, UpdateUserDto, BulkInviteUsersDto } from './users.dto.js';
 
 /** Columns safe to return to clients — never password_hash. */
@@ -35,6 +35,9 @@ const PUBLIC_USER_COLUMNS = [
 function generateTemporaryPassword(): string {
   return crypto.randomBytes(9).toString('base64url');
 }
+
+/** Roles that work a territory: an invited account needs a region (zone follows from it). */
+const BULK_FIELD_ROLES: UserRole[] = ['sales', 'demo_team', 'service_team', 'regional_manager'];
 
 @Injectable()
 export class UsersService {
@@ -163,6 +166,7 @@ export class UsersService {
     }
 
     if (dto.reporting_manager_id) await this.assertActiveUser(dto.reporting_manager_id, 'Reporting manager');
+    if (dto.department_id) await this.assertDepartment(dto.department_id);
     const zoneId = await this.resolveZone(dto.region_id, dto.zone_id);
 
     // No shared default password: an admin-supplied password is used as-is, otherwise a one-time random
@@ -181,6 +185,7 @@ export class UsersService {
         region_id: dto.region_id || null,
         zone_id: zoneId,
         reporting_manager_id: dto.reporting_manager_id || null,
+        department_id: dto.department_id || null,
         password_hash: passwordHash,
         is_active: true,
       })
@@ -227,6 +232,8 @@ export class UsersService {
         .executeTakeFirst();
       if ((admins?.n ?? 0) === 0) throw new BadRequestException('This is the last active System Administrator account');
     }
+
+    if (dto.department_id) await this.assertDepartment(dto.department_id);
 
     if (dto.reporting_manager_id) {
       if (dto.reporting_manager_id === id) throw new BadRequestException('A user cannot report to themselves');
@@ -279,6 +286,11 @@ export class UsersService {
     return updated;
   }
 
+  /**
+   * Many accounts at once (Admin → Invite people). Each row follows the "Add user" rules; rows for an email that
+   * already has an account are skipped, invalid rows are reported, and each new account gets a one-time password
+   * returned once (no e-mail is sent: no mail service is configured).
+   */
   async bulkInvite(dto: BulkInviteUsersDto, actorId?: string) {
     const results = {
       created: 0,
@@ -304,6 +316,16 @@ export class UsersService {
 
       if (exists) {
         results.skipped++;
+        continue;
+      }
+
+      // the same account rules as the single "Add user" form
+      if (BULK_FIELD_ROLES.includes(item.role) && !item.region_name?.trim()) {
+        results.errors.push({ email, reason: 'Field roles need a region (region_name)' });
+        continue;
+      }
+      if (item.role !== 'management' && item.role !== 'admin' && !item.manager_email?.trim()) {
+        results.errors.push({ email, reason: 'Needs a reporting manager (manager_email)' });
         continue;
       }
 
@@ -389,6 +411,11 @@ export class UsersService {
   }
 
   /** Keeps users.zone_id consistent with the chosen region (the region row owns its zone). */
+  private async assertDepartment(id: string) {
+    const row = await this.db.selectFrom('departments').select('id').where('id', '=', id).executeTakeFirst();
+    if (!row) throw new BadRequestException('Department does not exist');
+  }
+
   private async resolveZone(regionId?: string | null, zoneId?: string | null): Promise<string | null> {
     if (!regionId) return zoneId || null;
     const region = await this.db

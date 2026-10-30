@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Award, Calendar, Compass, MapPin, Presentation, Target, Users } from 'lucide-react';
+import { Award, Calendar, Compass, Download, MapPin, Presentation, Target, Users } from 'lucide-react';
 import type { PerformanceFigures, SalesPerformanceDto } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -101,12 +101,36 @@ const GROUPS: { name: string; cols: Col[] }[] = [
       { label: 'Gen/MHA', title: 'General / MHA tenders identified in the period', get: (f) => f.tender.general_mha },
       { label: 'Submitted', title: 'Bids submitted in the period', get: (f) => f.tender.submitted },
       { label: 'Won', title: 'Won, result in the period', get: (f) => f.tender.won },
-      { label: 'Lost', title: 'Lost / disqualified, result in the period', get: (f) => f.tender.lost },
+      { label: 'Lost', title: 'Lost, result in the period', get: (f) => f.tender.lost },
       { label: 'Win %', title: 'Won ÷ (won + lost)', get: (f) => pct(f.tender.win_rate) },
     ],
   },
 ];
 const GROUP_EDGE = 'border-l border-[#ECE9E2]';
+
+/** One CSV line per row: every indicator as plain numbers (all failure reasons, not only the top one). */
+const CSV_HEAD = [
+  'Name', 'Role', 'Region', 'Zone',
+  'Contacts', 'New leads', 'Re-approached', 'Active leads', 'Follow-ups done', 'Follow-ups pending', 'Leads converted', 'Lead conversion %',
+  'Visits planned', 'Visits completed', 'Visits cancelled', 'Interactions',
+  'Demos planned', 'Demos completed', 'Demos successful', 'Demo failure reasons',
+  'Proposals sent', 'Proposal follow-ups', 'Proposals converted',
+  'PQ tenders', 'General/MHA tenders', 'Bids submitted', 'Tenders won', 'Tenders lost', 'Tender win %',
+];
+const csvLine = (name: string, role: string, region: string, zone: string, f: PerformanceFigures) =>
+  [
+    name, role, region, zone,
+    f.lead.contacts, f.lead.new, f.lead.reapproached, f.lead.active, f.lead.followups_done, f.lead.followups_pending, f.lead.converted, f.lead.conversion_rate ?? '',
+    f.visit.planned, f.visit.completed, f.visit.cancelled, f.visit.interactions,
+    f.demo.planned, f.demo.completed, f.demo.successful, Object.entries(f.demo.failure_reasons).map(([k, v]) => `${reasonLabel(k)}: ${v}`).join('; '),
+    f.proposal.sent, f.proposal.followups, f.proposal.converted,
+    f.tender.pq, f.tender.general_mha, f.tender.submitted, f.tender.won, f.tender.lost, f.tender.win_rate ?? '',
+  ]
+    .map((v) => {
+      const t = String(v);
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    })
+    .join(',');
 
 export default function SalesPerformancePage() {
   const { hasRole } = useAuth();
@@ -123,7 +147,12 @@ export default function SalesPerformancePage() {
   const allowed = hasRole(['sales', 'regional_manager', 'management', 'admin']);
 
   useEffect(() => {
-    if (!allowed || !from || !to || from > to) return;
+    if (!allowed) return;
+    if (!from || !to || from > to) {
+      // no request for a broken range; one this change cancelled would otherwise leave the page "loading" for good
+      setIsLoading(false);
+      return;
+    }
     let cancelled = false;
     setIsLoading(true);
     setError(null);
@@ -154,20 +183,43 @@ export default function SalesPerformancePage() {
   const totals = data?.totals;
   const rows = data?.rows ?? [];
   const byRegion = data?.group_by === 'region';
+  // the inputs no longer describe a period: the figures on screen are still the last valid one's, so say so
+  const stale = !!data && (!from || !to || from > to);
   const totalReasons = totals ? topReasons(totals.demo.failure_reasons) : [];
+
+  const exportCsv = () => {
+    if (!data || !totals) return;
+    const lines = [
+      CSV_HEAD.join(','),
+      ...rows.map((r) =>
+        csvLine(`${r.label}${r.inactive ? ' (inactive)' : ''}`, byRegion ? '' : (r.role || '').replace(/_/g, ' '), r.region_name || '', r.zone_name || '', r),
+      ),
+      csvLine('Total (distinct records)', '', '', '', totals),
+    ];
+    // byte-order mark: Excel then reads the file as UTF-8 (names in Hindi or with accents stay intact)
+    const url = URL.createObjectURL(new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: `performance-${data.group_by}-${data.period.from}-to-${data.period.to}.csv` });
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <PageContainer>
       <PageHeader
         title="Salesperson & Regional Performance"
         actions={
-          hasRole(['regional_manager', 'management', 'admin']) ? (
-            <Link href="/regional">
-              <Button variant="secondary" size="sm" leftIcon={<Compass className="h-4 w-4 text-[#0F5E63]" />}>
-                Territory Command
-              </Button>
-            </Link>
-          ) : undefined
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" leftIcon={<Download className="h-4 w-4 text-[#0F5E63]" />} onClick={exportCsv} disabled={!totals || isLoading || stale}>
+              Export CSV
+            </Button>
+            {hasRole(['regional_manager', 'management', 'admin']) && (
+              <Link href="/regional">
+                <Button variant="secondary" size="sm" leftIcon={<Compass className="h-4 w-4 text-[#0F5E63]" />}>
+                  Territory Command
+                </Button>
+              </Link>
+            )}
+          </div>
         }
       />
 
@@ -220,6 +272,12 @@ export default function SalesPerformancePage() {
           )}
         </div>
         {from > to && <p className="text-xs text-[#881337]">“From” must be on or before “To”.</p>}
+        {(!from || !to) && <p className="text-xs text-[#881337]">Pick both dates to see the figures for a period.</p>}
+        {stale && data && (
+          <p className="text-xs text-[#4A5568]">
+            Still showing {data.period.from} → {data.period.to} until the dates are fixed.
+          </p>
+        )}
       </FilterBar>
 
       {error && (
@@ -231,7 +289,7 @@ export default function SalesPerformancePage() {
       {isLoading && !data ? (
         <PageLoader label="Loading performance" rows={4} />
       ) : totals ? (
-        <>
+        <div className={`space-y-6 transition-opacity ${stale ? 'opacity-50' : ''}`} aria-live="polite">
           <StatGrid cols={4} className="gap-3">
             <StatCard
               title="Lead conversion"
@@ -300,7 +358,10 @@ export default function SalesPerformancePage() {
                 {rows.map((r) => (
                   <TableRow key={r.key}>
                     <TableCell className="sticky left-0 z-[1] bg-white whitespace-nowrap">
-                      <div className="font-semibold text-[#14213D]">{r.label}</div>
+                      <div className="font-semibold text-[#14213D]">
+                        {r.label}
+                        {r.inactive && <span className="ml-1.5 rounded-full bg-[#ECE9E2] px-1.5 py-0.5 text-[10px] font-semibold text-[#4A5568]">Inactive</span>}
+                      </div>
                       <div className="text-[10px] text-[#4A5568]">
                         {byRegion ? r.zone_name || '—' : [r.role?.replace(/_/g, ' '), r.region_name || '—'].filter(Boolean).join(' · ')}
                       </div>
@@ -314,6 +375,8 @@ export default function SalesPerformancePage() {
                     )}
                   </TableRow>
                 ))}
+                {/* a single row (a rep's own view) is its own total */}
+                {rows.length > 1 && (
                 <TableRow className="bg-[#FBFAF7] hover:bg-[#FBFAF7] border-t-2 border-[#DCD8CE]">
                   <TableCell className="sticky left-0 z-[1] bg-[#FBFAF7] font-bold text-[#14213D]">
                     Total
@@ -327,6 +390,7 @@ export default function SalesPerformancePage() {
                     )),
                   )}
                 </TableRow>
+                )}
               </TableBody>
             </Table>
           )}
@@ -354,9 +418,10 @@ export default function SalesPerformancePage() {
           <p className="text-[11px] text-[#6B7280]">
             Period {data?.period.from} → {data?.period.to} (IST). Contacts and active leads are current snapshots. Proposals count
             under the responsible person; tenders under everyone involved (salesperson, owner, assignee, creator), so the total counts
-            each tender once. Rates show “—” when there is nothing to divide by.
+            each tender once. A deactivated rep is listed only when they have figures in the period. Rates show “—” when there is
+            nothing to divide by.
           </p>
-        </>
+        </div>
       ) : null}
     </PageContainer>
   );

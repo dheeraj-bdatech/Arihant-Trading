@@ -594,6 +594,13 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               moduleKey: 'regional',
             },
             {
+              // Module 9 (moved into the PERFORMANCE group like every other role's entry)
+              label: 'Salesperson & Regional Performance',
+              href: '/regional/performance',
+              icon: TrendingUp,
+              moduleKey: 'regional',
+            },
+            {
               label: 'GeM Defence Tenders',
               href: '/tenders',
               icon: FileText,

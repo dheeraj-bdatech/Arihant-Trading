@@ -5,14 +5,21 @@ import {
   IsOptional,
   IsEnum,
   IsBoolean,
-  IsUUID,
   IsArray,
   ValidateNested,
   MaxLength,
   MinLength,
   Matches,
   ValidateIf,
+  ArrayMinSize,
+  ArrayMaxSize,
 } from 'class-validator';
+
+/**
+ * Any 8-4-4-4-12 hex id. Seeded records use readable ids (11111111-…, 66666666-…) that are not RFC-variant UUIDs,
+ * which IsUUID rejects, so a seeded manager or region could never be picked; the service checks the record exists.
+ */
+const ID_FORMAT = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 import { Transform, Type } from 'class-transformer';
 import type { UserRole } from '@arihant/shared';
 import { USER_ROLES } from '@arihant/shared';
@@ -50,22 +57,22 @@ export class CreateUserDto {
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid department' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid department' })
   department_id?: string | null;
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid region' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid region' })
   region_id?: string | null;
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid zone' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid zone' })
   zone_id?: string | null;
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid reporting manager' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid reporting manager' })
   reporting_manager_id?: string | null;
 
   @IsOptional()
@@ -108,22 +115,22 @@ export class UpdateUserDto {
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid department' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid department' })
   department_id?: string | null;
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid region' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid region' })
   region_id?: string | null;
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid zone' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid zone' })
   zone_id?: string | null;
 
   @Transform(emptyToNull)
   @IsOptional()
-  @IsUUID('all', { message: 'Choose a valid reporting manager' })
+  @Matches(ID_FORMAT, { message: 'Choose a valid reporting manager' })
   reporting_manager_id?: string | null;
 
   @IsOptional()
@@ -156,6 +163,8 @@ export class BulkInviteUserItemDto {
 
 export class BulkInviteUsersDto {
   @IsArray()
+  @ArrayMinSize(1, { message: 'Add at least one person to invite' })
+  @ArrayMaxSize(200, { message: 'Invite at most 200 people at a time' })
   @ValidateNested({ each: true })
   @Type(() => BulkInviteUserItemDto)
   users!: BulkInviteUserItemDto[];

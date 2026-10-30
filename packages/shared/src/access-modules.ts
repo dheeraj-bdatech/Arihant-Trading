@@ -34,9 +34,10 @@ export const ACCESS_MODULES: AccessModule[] = [
     paths: ['/tasks'],
     api: ['/tasks', '/task-blockers', '/task-calendar', '/task-templates', '/task-escalations', '/task-attachments', '/task-categories', '/task-settings'],
   },
-  // performance and regional pages read shared dashboard data: switched off in the app, not per API route
+  // the task-performance pages read shared task data: switched off in the app, not per API route
   { key: 'performance', label: 'Performance', paths: ['/performance'], api: [] },
-  { key: 'regional', label: 'Regional command & performance', paths: ['/regional'], api: [] },
+  // Territory Command and Module 9 (salesperson & regional performance) each have their own dashboard route
+  { key: 'regional', label: 'Regional command & performance', paths: ['/regional'], api: ['/dashboard/regional-performance', '/dashboard/sales-performance'] },
   { key: 'reports', label: 'Reports', paths: ['/reports'], api: ['/reports'] },
   { key: 'audit', label: 'Audit trail', paths: ['/audit'], api: ['/audit'] },
   // reads of users / masters feed every page; changing them is administration

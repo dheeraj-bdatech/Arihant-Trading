@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
 import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 import { ACCESS_MODULES, type AuthUser } from '@arihant/shared';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
@@ -32,7 +32,7 @@ export class AccessController {
     };
   }
 
-  @Put(':role/:module')
+  @Patch(':role/:module')
   @Roles('admin', 'management')
   async set(@Param('role') role: string, @Param('module') module: string, @Body() dto: SetModuleAccessDto, @CurrentUser() user: AuthUser) {
     return this.access.setBlocked(role, module, dto.blocked, dto.reason, user.id);

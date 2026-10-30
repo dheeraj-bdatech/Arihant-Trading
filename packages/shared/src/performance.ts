@@ -84,6 +84,8 @@ export interface SalesPerformanceRow extends PerformanceFigures {
   role: string | null;
   region_name: string | null;
   zone_name: string | null;
+  /** A deactivated rep, listed only because they have figures in the period (group_by=rep). */
+  inactive: boolean;
 }
 
 export interface SalesPerformanceDto {

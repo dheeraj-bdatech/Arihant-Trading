@@ -36,6 +36,8 @@ import {
   Plus,
   UserX,
   UserCheck,
+  Trash2,
+  Power,
 } from 'lucide-react';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -57,20 +59,25 @@ import {
   InfoCallout,
   EmptyState, StatGrid, StatCard, RowMenu,
 } from '@/components/ui';
-import { ROLE_PROFILES, USER_ROLES, type UserRole, type RolePermissionProfile } from '@arihant/shared';
+import { ROLE_PROFILES, USER_ROLES, isLockedModule, type UserRole, type RolePermissionProfile } from '@arihant/shared';
+import { roleCanReach } from '@/lib/route-access';
 import {
+  BulkInviteModal,
   ConfirmModal,
+  DepartmentFormModal,
+  ModuleSwitchOffModal,
   ProductFormModal,
   TemporaryPasswordModal,
   TerritoryFormModal,
   UserFormModal,
+  type AdminDepartment,
   type AdminProduct,
   type AdminRegion,
   type AdminUser,
   type AdminZone,
 } from './_components/AdminForms';
 
-const ADMIN_TABS = ['permissions', 'users', 'products', 'zones', 'audit'] as const;
+const ADMIN_TABS = ['permissions', 'users', 'departments', 'products', 'zones', 'audit'] as const;
 const AUDIT_PAGE = 50;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/;
@@ -182,6 +189,14 @@ export default function AdminPage() {
     editing: null,
   });
   const [notice, setNotice] = useState<string | null>(null);
+  // module switches per role (Admin → Role Permissions): GET /admin/access
+  const [access, setAccess] = useState<{ modules: { key: string; label: string; paths: string[] }[]; blocks: any[] } | null>(null);
+  const [switchOff, setSwitchOff] = useState<{ role: UserRole; module: string; label: string } | null>(null);
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [departmentsList, setDepartmentsList] = useState<AdminDepartment[]>([]);
+  const [deptForm, setDeptForm] = useState<{ open: boolean; editing: AdminDepartment | null }>({ open: false, editing: null });
+  const [confirmDelete, setConfirmDelete] = useState<{ kind: 'department' | 'zone' | 'region'; id: string; name: string } | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedDept, setSelectedDept] = useState<string>('all');
 
@@ -207,13 +222,17 @@ export default function AdminPage() {
         bad.push(label);
         return null;
       });
-    const [usersRes, productsRes, zonesRes, regionsRes, auditRes] = await Promise.all([
+    const [usersRes, productsRes, zonesRes, regionsRes, auditRes, departmentsRes, accessRes] = await Promise.all([
       load('Users', api.get('/users', { limit: 100 })),
       load('Equipment masters', api.get('/masters/products')),
       load('Zones', api.get('/masters/zones')),
       load('Regions', api.get('/masters/regions')),
       load('Audit log', api.get('/audit', { limit: AUDIT_PAGE, page: 1 })),
+      load('Departments', api.get('/masters/departments')),
+      load('Module access', api.get('/admin/access')),
     ]);
+    setDepartmentsList(asRows(departmentsRes));
+    setAccess(accessRes);
     setUsersList(asRows(usersRes));
     setProductsList(asRows(productsRes));
     setZonesList(asRows(zonesRes));
@@ -258,6 +277,32 @@ export default function AdminPage() {
   const reloadUsers = async () => {
     const res = await api.get('/users', { limit: 100 }).catch(() => null);
     if (res) setUsersList(asRows(res));
+  };
+
+  const reloadDepartments = async () => {
+    const res = await api.get('/masters/departments').catch(() => null);
+    if (res) setDepartmentsList(asRows(res));
+  };
+
+  const reloadAccess = async () => {
+    const res = await api.get('/admin/access').catch(() => null);
+    if (res) setAccess(res);
+  };
+
+  /** Module switch for the selected role: off asks for a reason first; on takes effect straight away. */
+  const switchModule = async (role: UserRole, module: string, label: string, on: boolean) => {
+    if (!on) return setSwitchOff({ role, module, label });
+    setActionError(null);
+    setSwitching(`${role}:${module}`);
+    try {
+      await api.patch(`/admin/access/${role}/${module}`, { blocked: false });
+      await reloadAccess();
+      setNotice(`${label} switched back on for ${ROLE_PROFILES[role].title}.`);
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not switch the module back on');
+    } finally {
+      setSwitching(null);
+    }
   };
 
   useEffect(() => {
@@ -440,7 +485,8 @@ export default function AdminPage() {
             className="shrink-0"
             options={[
               { key: 'permissions', label: 'Role Permissions', icon: <Key /> },
-              { key: 'users', label: 'Users & Departments', icon: <Users />, count: usersList.length },
+              { key: 'users', label: 'Users & Invitations', icon: <Users />, count: usersList.length },
+              { key: 'departments', label: 'Departments', icon: <Building2 />, count: departmentsList.length },
               { key: 'products', label: 'Equipment & MHA QRs', icon: <Box />, count: productsList.length },
               { key: 'zones', label: 'Zones & Regions', icon: <MapPin />, count: zonesList.length },
               { key: 'audit', label: 'Security Audit Logs', icon: <History />, count: auditTotal },
@@ -461,15 +507,15 @@ export default function AdminPage() {
               </div>
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
                 <FilterMenu
-                  label="Department"
-                  icon={<Building2 />}
+                  label="Role"
+                  icon={<Shield />}
                   align="right"
                   className="flex-1 lg:flex-none [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
                   options={[
-                    { key: 'all', label: 'All departments', count: usersList.length, active: selectedDept === 'all', onSelect: () => setSelectedDept('all') },
+                    { key: 'all', label: 'All roles', count: usersList.length, active: selectedDept === 'all', onSelect: () => setSelectedDept('all') },
                     ...USER_ROLES.map((r) => ({
                       key: r,
-                      label: DEPARTMENT_NAMES[r],
+                      label: ROLE_PROFILES[r].title,
                       count: usersList.filter((u) => u.role === r).length,
                       active: selectedDept === r,
                       onSelect: () => setSelectedDept(r),
@@ -477,9 +523,14 @@ export default function AdminPage() {
                   ]}
                 />
                 {canManage && (
-                  <Button size="sm" leftIcon={<UserPlus className="h-3.5 w-3.5" />} onClick={() => setUserForm({ open: true, editing: null })} className="shrink-0">
-                    Add user
-                  </Button>
+                  <>
+                    <Button size="sm" variant="secondary" leftIcon={<Users className="h-3.5 w-3.5" />} onClick={() => setInviteOpen(true)} className="shrink-0">
+                      Invite people
+                    </Button>
+                    <Button size="sm" leftIcon={<UserPlus className="h-3.5 w-3.5" />} onClick={() => setUserForm({ open: true, editing: null })} className="shrink-0">
+                      Add user
+                    </Button>
+                  </>
                 )}
                 {(search || selectedDept !== 'all') && (
                   <Button
@@ -531,7 +582,8 @@ export default function AdminPage() {
                   <Badge variant="cyber" size="sm">Active Baseline</Badge>
                 </div>
                 <p className="text-xs text-[#4A5568] mt-0.5 max-w-3xl">
-                  <strong>Enterprise Security:</strong> Baseline policies and role scopes are enforced across all operational departments and territorial regions.
+                  <strong>Enterprise Security:</strong> Each role gets its modules from the RBAC policy. Switch a module off for a role (or back on)
+                  under Module access; it takes effect at once. Business rules such as approvals and sign-offs stay fixed in code.
                 </p>
               </div>
             </div>
@@ -658,18 +710,83 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {/* Right 2 Cols: Configurable Capabilities Matrix */}
+            {/* Right 2 Cols: module switches, then the read-only capabilities */}
             <div className="lg:col-span-2 space-y-4">
+              <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
+                <div className="p-4 sm:p-5 border-b border-[#DCD8CE] bg-[#FBFAF7]">
+                  <h3 className="text-sm font-bold text-[#14213D] flex items-start gap-2 sm:items-center">
+                    <Power className="w-4 h-4 text-[#0F5E63] mt-0.5 shrink-0 sm:mt-0" />
+                    <span>Module access: {activeRoleProfile.title}</span>
+                  </h3>
+                  <p className="text-xs text-[#4A5568] mt-0.5">
+                    Switch a module off for everyone in this role, or back on. The API refuses it at once; the app hides it the next time they open or
+                    return to it. A module the role was never given cannot be switched on here.
+                  </p>
+                </div>
+                <div className="divide-y divide-[#ECE9E2]">
+                  {!access && <div className="p-4 text-xs text-[#4A5568]">Module access could not be loaded.</div>}
+                  {(access?.modules || []).map((m) => {
+                    const reach = roleCanReach(selectedRoleForConfig, m.paths[0]);
+                    const locked = isLockedModule(selectedRoleForConfig, m.key);
+                    const block = access?.blocks.find((b) => b.role === selectedRoleForConfig && b.module === m.key);
+                    const on = reach && !block;
+                    const busy = switching === `${selectedRoleForConfig}:${m.key}`;
+                    return (
+                      <div key={m.key} className={`flex items-start justify-between gap-4 p-4 ${reach ? '' : 'bg-[#FBFAF7]/60'}`}>
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="text-xs font-bold text-[#14213D]">{m.label}</span>
+                            <span className="font-mono text-[10px] text-[#4A5568]">{m.paths[0]}</span>
+                            {!reach ? (
+                              <Badge variant="outline" size="sm">Not part of this role</Badge>
+                            ) : locked ? (
+                              <Badge variant="info" size="sm">Always on</Badge>
+                            ) : block ? (
+                              <Badge variant="danger" size="sm">Switched off</Badge>
+                            ) : (
+                              <Badge variant="success" size="sm">On</Badge>
+                            )}
+                          </div>
+                          {block && (
+                            <p className="text-xs text-[#4A5568]">
+                              Off since {fmtStamp(block.blocked_at)}
+                              {block.blocked_by_name ? ` by ${block.blocked_by_name}` : ''}: {block.reason}
+                            </p>
+                          )}
+                          {locked && <p className="text-xs text-[#4A5568]">The administrator always keeps the administration panel, so nobody is locked out.</p>}
+                        </div>
+                        {reach && (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={on}
+                            disabled={!canManage || locked || busy}
+                            aria-label={`${m.label} for ${activeRoleProfile.title}: ${on ? 'on' : 'off'}`}
+                            onClick={() => switchModule(selectedRoleForConfig, m.key, m.label, !on)}
+                            className={`relative inline-flex h-6 w-11 shrink-0 rounded-full max-sm:before:absolute max-sm:before:-inset-2.5 border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30 ${on ? 'bg-[#0F5E63]' : 'bg-[#C9C4B8]'} ${!canManage || locked ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${on ? 'translate-x-5' : 'translate-x-0'}`}
+                            />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
                 <div className="p-4 sm:p-5 border-b border-[#DCD8CE] bg-[#FBFAF7] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-bold text-[#14213D] flex items-start gap-2 sm:items-center">
                       <Sliders className="w-4 h-4 text-[#0F5E63] mt-0.5 shrink-0 sm:mt-0" />
-                      <span>Configurable Capabilities Matrix: {activeRoleProfile.title}</span>
+                      <span>Capabilities (business rules): {activeRoleProfile.title}</span>
                     </h3>
                     <p className="text-xs text-[#4A5568] mt-0.5">
-                      The capabilities this role has today, as enforced by the server&apos;s RBAC guards. Read-only: changing a role&apos;s
-                      access is a policy change made in code and the RBAC specification, not from this screen.
+                      What this role may approve, sign off or administer, as the server&apos;s RBAC guards enforce it. Read-only: these
+                      are business rules fixed in code and the RBAC specification; switch whole modules on or off under Module access.
                     </p>
                   </div>
                   <Badge variant="outline" size="sm" className="shrink-0 gap-1">
@@ -820,8 +937,8 @@ export default function AdminPage() {
                       {u.phone && <div className="text-[11px] text-[#4A5568] font-mono font-normal">{u.phone}</div>}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
-                      <div className="font-medium text-[#14213D]">{DEPARTMENT_NAMES[u.role as UserRole] || 'General'}</div>
-                      <div className="text-[11px] uppercase text-[#4A5568]">{show(u.role).replace(/_/g, ' ')}</div>
+                      <div className="font-medium text-[#14213D]">{ROLE_PROFILES[u.role as UserRole]?.title || show(u.role).replace(/_/g, ' ')}</div>
+                      <div className="text-[11px] text-[#4A5568]">{departmentsList.find((d) => d.id === u.department_id)?.name || 'No department'}</div>
                     </TableCell>
                     <TableCell>
                       <div className="max-w-[220px] truncate text-[#14213D]">
@@ -845,7 +962,7 @@ export default function AdminPage() {
                         <RowMenu
                           label={`Actions for ${u.full_name}`}
                           items={[
-                            { key: 'edit', label: 'Edit role, manager & territory', icon: <Pencil />, onSelect: () => setUserForm({ open: true, editing: u }) },
+                            { key: 'edit', label: 'Edit role, department, manager & territory', icon: <Pencil />, onSelect: () => setUserForm({ open: true, editing: u }) },
                             u.is_active
                               ? {
                                   key: 'deactivate',
@@ -866,6 +983,68 @@ export default function AdminPage() {
                 ))}
               </TableBody>
             </Table>
+          </Card>
+        </div>
+      )}
+
+      {/* ── DEPARTMENTS ── */}
+      {activeTab === 'departments' && (
+        <div className="space-y-4">
+          {canManage && (
+            <div className="flex justify-end">
+              <Button size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setDeptForm({ open: true, editing: null })}>
+                Add department
+              </Button>
+            </div>
+          )}
+          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
+            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
+              <h2 className="font-serif text-sm font-bold text-[#14213D]">Departments</h2>
+              <span className="font-mono text-xs text-[#4A5568]">{departmentsList.length}</span>
+            </div>
+            {departmentsList.length === 0 ? (
+              <EmptyState icon={Building2} title="No departments yet" description="Departments group people; task blockers and escalations route to each department head." />
+            ) : (
+              <Table className="[&_td]:px-3 [&_th]:px-3">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Department</TableHead>
+                    <TableHead>Head</TableHead>
+                    <TableHead className="text-center">Active people</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {departmentsList.map((d) => (
+                    <TableRow key={d.id}>
+                      <TableCell className="font-bold text-[#14213D]">
+                        <div className="max-w-[240px] truncate">{d.name}</div>
+                        <div className="font-mono text-[11px] font-normal text-[#4A5568]">{d.code}</div>
+                      </TableCell>
+                      <TableCell className="text-[#14213D]">{d.head_name || <span className="text-[#6B7280]">No head</span>}</TableCell>
+                      <TableCell className="text-center font-mono">{d.member_count ?? 0}</TableCell>
+                      <TableCell className="text-[#4A5568]">
+                        <div className="max-w-[320px] truncate" title={d.description || ''}>{d.description || '—'}</div>
+                      </TableCell>
+                      <TableCell className="text-right whitespace-nowrap">
+                        {canManage ? (
+                          <RowMenu
+                            label={`Actions for ${d.name}`}
+                            items={[
+                              { key: 'edit', label: 'Edit name, head & description', icon: <Pencil />, onSelect: () => setDeptForm({ open: true, editing: d }) },
+                              { key: 'delete', label: 'Delete…', icon: <Trash2 />, danger: true, onSelect: () => setConfirmDelete({ kind: 'department', id: d.id, name: d.name }) },
+                            ]}
+                          />
+                        ) : (
+                          <span className="text-[11px] text-[#4A5568]">View only</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
           </Card>
         </div>
       )}
@@ -950,15 +1129,23 @@ export default function AdminPage() {
                     <li key={r.id} className="flex items-center justify-between gap-2 px-3 py-1.5 text-xs text-[#14213D]">
                       <span className="truncate">{r.name}</span>
                       {canManage && (
-                        <Button size="xs" variant="ghost" aria-label={`Edit region ${r.name}`} onClick={() => setTerritoryForm({ open: true, kind: 'region', editing: r })}>
-                          <Pencil className="h-3 w-3" />
-                        </Button>
+                        <span className="flex shrink-0 items-center">
+                          <Button size="xs" variant="ghost" aria-label={`Edit region ${r.name}`} onClick={() => setTerritoryForm({ open: true, kind: 'region', editing: r })}>
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button size="xs" variant="ghost" aria-label={`Delete region ${r.name}`} onClick={() => setConfirmDelete({ kind: 'region', id: r.id, name: r.name })}>
+                            <Trash2 className="h-3 w-3 text-[#881337]" />
+                          </Button>
+                        </span>
                       )}
                     </li>
                   ))}
                 </ul>
                 {canManage && (
                   <div className="flex flex-wrap justify-end gap-2">
+                    <Button size="xs" variant="ghost" leftIcon={<Trash2 className="h-3 w-3" />} onClick={() => setConfirmDelete({ kind: 'zone', id: z.id, name: z.name })}>
+                      Delete zone
+                    </Button>
                     <Button size="xs" variant="ghost" leftIcon={<Pencil className="h-3 w-3" />} onClick={() => setTerritoryForm({ open: true, kind: 'zone', editing: z })}>
                       Edit zone
                     </Button>
@@ -1038,6 +1225,7 @@ export default function AdminPage() {
         users={usersList as AdminUser[]}
         zones={zonesList as AdminZone[]}
         regions={regionsList}
+        departments={departmentsList}
         currentUserId={user?.id}
         onSaved={async (saved, temporaryPassword) => {
           const wasEdit = !!userForm.editing;
@@ -1090,6 +1278,50 @@ export default function AdminPage() {
           setTerritoryForm((f) => ({ ...f, open: false, editing: null }));
           await Promise.all([reloadMasters(), reloadUsers()]);
           setNotice(`${kind === 'zone' ? 'Zone' : 'Region'} saved.`);
+        }}
+      />
+      <DepartmentFormModal
+        isOpen={deptForm.open}
+        onClose={() => setDeptForm({ open: false, editing: null })}
+        editing={deptForm.editing}
+        users={usersList as AdminUser[]}
+        onSaved={async () => {
+          const wasEdit = !!deptForm.editing;
+          setDeptForm({ open: false, editing: null });
+          await reloadDepartments();
+          setNotice(`Department ${wasEdit ? 'updated' : 'added'}.`);
+        }}
+      />
+      <BulkInviteModal
+        isOpen={inviteOpen}
+        onClose={() => setInviteOpen(false)}
+        users={usersList as AdminUser[]}
+        regions={regionsList}
+        onInvited={reloadUsers}
+      />
+      <ModuleSwitchOffModal
+        target={switchOff}
+        onClose={() => setSwitchOff(null)}
+        onDone={async () => {
+          const t = switchOff;
+          setSwitchOff(null);
+          await reloadAccess();
+          if (t) setNotice(`${t.label} switched off for ${ROLE_PROFILES[t.role].title}.`);
+        }}
+      />
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        danger
+        title={`Delete ${confirmDelete?.kind} ${confirmDelete?.name}?`}
+        confirmLabel={`Delete ${confirmDelete?.kind}`}
+        message={<p>This cannot be undone. While people or records still belong to it, the system refuses and says so.</p>}
+        onConfirm={async () => {
+          if (!confirmDelete) return;
+          const path = { department: '/masters/departments', zone: '/masters/zones', region: '/masters/regions' }[confirmDelete.kind];
+          await api.delete(`${path}/${confirmDelete.id}`);
+          await Promise.all([reloadDepartments(), reloadMasters()]);
+          setNotice(`${confirmDelete.name} deleted.`);
         }}
       />
 

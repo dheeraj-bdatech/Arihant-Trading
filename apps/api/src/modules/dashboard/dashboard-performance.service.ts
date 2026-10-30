@@ -99,29 +99,31 @@ export class DashboardPerformanceService {
     const zoneName = new Map(zones.map((z) => [z.id, z.name]));
     let rows: Omit<SalesPerformanceRow, keyof PerformanceFigures>[];
     if (groupBy === 'rep') {
+      // deactivated reps are listed too (dropped below unless they have figures in the period): someone who left
+      // mid-month still did that month's work, and the totals must match the by-region view
       const people = isSelf
         ? sql`u.id = ${user.id}`
-        : sql`u.is_active and u.role::text = any(${EVALUATED_ROLES}::text[])
+        : sql`u.role::text = any(${EVALUATED_ROLES}::text[])
               and ${isRm ? sql`(u.id = ${user.id} or u.reporting_manager_id = ${user.id} or (${zoneId}::uuid is not null and u.zone_id = ${zoneId}::uuid))` : zoneId ? sql`u.zone_id = ${zoneId}` : sql`true`}
               and ${regionId ? sql`u.region_id = ${regionId}` : sql`true`}`;
       const res = await sql<Row>`
-        select u.id, u.full_name, u.role::text as role, r.name as region_name, z.name as zone_name
+        select u.id, u.full_name, u.role::text as role, u.is_active, r.name as region_name, z.name as zone_name
         from users u left join regions r on r.id = u.region_id left join zones z on z.id = coalesce(u.zone_id, r.zone_id)
         where ${people} order by u.full_name asc`.execute(this.db);
-      rows = res.rows.map((r) => ({ key: r.id, label: r.full_name, role: r.role, region_name: r.region_name ?? null, zone_name: r.zone_name ?? null }));
+      rows = res.rows.map((r) => ({ key: r.id, label: r.full_name, role: r.role, region_name: r.region_name ?? null, zone_name: r.zone_name ?? null, inactive: !r.is_active }));
     } else {
       rows = regions
         .filter((r) => !regionId || r.id === regionId)
-        .map((r) => ({ key: r.id, label: r.name, role: null, region_name: r.name, zone_name: (r.zone_id && zoneName.get(r.zone_id)) || null }));
-      if (isAll && !zoneId && !regionId) rows.push({ key: NO_REGION, label: 'No region', role: null, region_name: null, zone_name: null });
+        .map((r) => ({ key: r.id, label: r.name, role: null, region_name: r.name, zone_name: (r.zone_id && zoneName.get(r.zone_id)) || null, inactive: false }));
+      if (isAll && !zoneId && !regionId) rows.push({ key: NO_REGION, label: 'No region', role: null, region_name: null, zone_name: null, inactive: false });
     }
     const keys = rows.map((r) => r.key);
 
     const figures = keys.length ? await this.figures(groupBy, keys, from, to) : new Map<string, PerformanceFigures>();
     const blank = this.blank();
     const out: SalesPerformanceRow[] = rows.map((r) => ({ ...r, ...(figures.get(r.key) ?? this.blank()) }));
-    // the "No region" row only earns its place when something landed there
-    const shown = out.filter((r) => r.key !== NO_REGION || this.hasData(r));
+    // the "No region" row and a deactivated rep only earn their place when something landed there
+    const shown = out.filter((r) => (r.key === NO_REGION ? this.hasData(r) : !r.inactive || this.hasData(r, true)));
 
     return {
       group_by: groupBy,
@@ -146,7 +148,12 @@ export class DashboardPerformanceService {
     const monthStart = `${today.slice(0, 7)}-01`;
     const nextMonth = addIsoDays(monthStart, 32).slice(0, 7);
     const monthEnd = addIsoDays(`${nextMonth}-01`, -1);
-    const valid = (d?: string) => !!d && ISO_DATE.test(d) && !Number.isNaN(new Date(`${d}T00:00:00Z`).getTime());
+    // a real calendar day: 2026-02-30 parses (it rolls over to March) but is not one, and would fail in SQL
+    const valid = (d?: string) => {
+      if (!d || !ISO_DATE.test(d)) return false;
+      const t = new Date(`${d}T00:00:00Z`);
+      return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === d; // month 13 is invalid; 30 Feb rolls over
+    };
     if ((fromQ && !valid(fromQ)) || (toQ && !valid(toQ))) throw new BadRequestException('from / to must be YYYY-MM-DD dates');
     const from = fromQ || (toQ ? `${toQ.slice(0, 7)}-01` : monthStart);
     const to = toQ || (fromQ ? (fromQ > monthEnd ? fromQ : monthEnd) : monthEnd);
@@ -164,9 +171,11 @@ export class DashboardPerformanceService {
     };
   }
 
-  private hasData(f: PerformanceFigures) {
+  /** Any figure at all; `inPeriodOnly` ignores the snapshots (contacts, active leads, pending follow-ups) a departed rep keeps on paper. */
+  private hasData(f: PerformanceFigures, inPeriodOnly = false) {
+    const lead = inPeriodOnly ? [f.lead.new, f.lead.reapproached, f.lead.followups_done, f.lead.converted] : Object.values(f.lead);
     const vals = [
-      ...Object.values(f.lead), ...Object.values(f.visit), f.demo.planned, f.demo.completed,
+      ...lead, ...Object.values(f.visit), f.demo.planned, f.demo.completed,
       ...Object.values(f.proposal), f.tender.pq, f.tender.general_mha, f.tender.submitted, f.tender.won, f.tender.lost,
     ];
     return vals.some((v) => typeof v === 'number' && v > 0);
