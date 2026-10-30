@@ -46,6 +46,7 @@ import { TenderSettingsModal } from './components/TenderSettingsModal';
 import { BulkImportWizardModal } from './components/BulkImportWizardModal';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { type UrlParams, dropUrlParams, urlPicker } from '@/lib/url-filters';
 import { canRead } from '@/lib/module-access';
 import { getSocket } from '@/lib/socket';
 import { useInfiniteList } from '@/lib/use-infinite-list';
@@ -121,6 +122,21 @@ type TenderView = 'pipeline' | 'approvals_inbox' | 'calendar' | 'finance_emd' | 
 
 /** Tenders fetched per request while the register scrolls. */
 const TENDERS_PAGE_SIZE = 25;
+
+// Dashboard deep links (/tenders?deadline=urgent_48h&status=…&category=pq): the register's first filters, read from
+// the URL before the first fetch. Unknown values (and every filter, for a role without the register) are ignored;
+// the effect in the page then drops these keys from the address bar.
+const TENDER_URL_KEYS = ['deadline', 'status', 'category'];
+const tenderUrlFilters = (params: UrlParams, hasRegister: boolean) => {
+  const q = new URLSearchParams(hasRegister ? params.toString() : '');
+  const pick = urlPicker(q);
+  return {
+    deadline: pick('deadline', (v) => ['upcoming_7d', 'urgent_48h', 'due_today', 'overdue'].includes(v)),
+    // one Stage option, or a set of raw statuses (comma list)
+    status: pick('status', (v) => v.split(',').every((s) => STAGES.some((st) => st.key === s))),
+    category: pick('category', (v) => ['pq', 'general_mha', 'other'].includes(v)),
+  };
+};
 
 /** §21/§27 zone-wise and region-wise tender pipeline (rows from /tenders/reports/by-zone | by-region). */
 function PipelineBreakdownTable({
@@ -272,11 +288,15 @@ export default function TendersPage() {
   const [regionsMaster, setRegionsMaster] = useState<any[]>([]);
 
   // Filter Bar state
+  const [urlFilters] = useState(() => tenderUrlFilters(searchParams, !isFinanceOnly));
+  useEffect(() => {
+    dropUrlParams(TENDER_URL_KEYS);
+  }, []);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState(urlFilters.status);
+  const [categoryFilter, setCategoryFilter] = useState(urlFilters.category);
   const [zoneFilter, setZoneFilter] = useState('');
-  const [deadlineFilter, setDeadlineFilter] = useState('');
+  const [deadlineFilter, setDeadlineFilter] = useState(urlFilters.deadline);
   const [assignedFilter, setAssignedFilter] = useState<string>('');
   const [sortBy, setSortBy] = useState('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -1753,7 +1773,12 @@ export default function TendersPage() {
                   label="Stage"
                   icon={<Layers />}
                   className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
-                  options={[{ key: '', label: 'All stages' }, ...STAGES].map((s) => ({
+                  options={[
+                    { key: '', label: 'All stages' },
+                    ...STAGES,
+                    // a status set from a dashboard link shows as one custom choice
+                    ...(statusFilter.includes(',') ? [{ key: statusFilter, label: `Custom · ${statusFilter.split(',').length} stages` }] : []),
+                  ].map((s) => ({
                     key: s.key || 'all',
                     label: s.label,
                     count: s.key ? stageCounts[s.key] : undefined,
@@ -1769,13 +1794,14 @@ export default function TendersPage() {
                   icon={<Clock />}
                   options={[
                     { key: '', label: 'All deadlines', count: undefined },
+                    { key: 'due_today', label: 'Due today', count: dashboardStats.due_today || 0 },
                     { key: 'urgent_48h', label: 'Closing ≤ 48h', count: dashboardStats.urgent_deadlines || 0 },
                     { key: 'upcoming_7d', label: 'Due ≤ 7 days', count: dashboardStats.upcoming_deadlines || 0 },
                     { key: 'overdue', label: 'Overdue submissions', count: dashboardStats.overdue_tenders || 0 },
                   ].map((o) => ({
                     ...o,
                     key: o.key || 'all',
-                    urgent: o.key === 'urgent_48h' || o.key === 'overdue',
+                    urgent: o.key === 'due_today' || o.key === 'urgent_48h' || o.key === 'overdue',
                     active: deadlineFilter === o.key,
                     onSelect: () => {
                       setDeadlineFilter(o.key);

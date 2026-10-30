@@ -39,11 +39,13 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
     uid[key] = r.body.user.id;
   }
 
+  let serialSeq = 0;
   async function mk(body: Record<string, any> = {}, who = 'mgmt', org = orgN) {
     const r = await api()
       .post('/api/service/tickets')
       .set(auth(who))
-      .send({ organisation_id: org, complaint: 'ZZTEST breakdown on conveyor drive unit', ...body });
+      // a real ticket knows its machine by the time a report is filed (§33); unique, so no accidental repeat complaints
+      .send({ organisation_id: org, complaint: 'ZZTEST breakdown on conveyor drive unit', equipment_serial: `ZZSM-${Date.now()}-${++serialSeq}`, ...body });
     if (r.status !== 201) throw new Error(`mk failed ${r.status}: ${JSON.stringify(r.body)}`);
     return r.body;
   }

@@ -41,6 +41,7 @@ import {
   type CreateTicketCommentDto,
   type ReviewServiceReportDto,
   type LinkOrganisationDto,
+  type UpdateTicketDetailsDto,
   type AssignEngineerDto,
   UUID_REGEX,
 } from './service.dto.js';
@@ -120,7 +121,12 @@ export type TicketListFilters = {
   overdue?: string | boolean;
   /** Open, clock running, SLA resolution deadline passed (the "SLA Breached" KPI). */
   sla_breached?: string | boolean;
+  /** Open tickets with an engineer on them (§34 "Assigned tickets"). */
+  assigned?: string | boolean;
+  /** Open tickets nobody has been assigned to yet. */
   unassigned?: string | boolean;
+  /** Open tickets that do not say which machine: no equipment and no serial number (a report cannot be filed yet). */
+  no_machine?: string | boolean;
   /** Open repeat complaints (closed / cancelled ones are history, not the open queue's problem). */
   repeat?: string | boolean;
   /** Still-live tickets logged against the unverified-customer holding record (closed/cancelled excluded). */
@@ -129,7 +135,7 @@ export type TicketListFilters = {
   portal?: string | boolean;
 };
 /** The single-select "Flags" filters: a flag count ignores these so its own flag does not zero the others. */
-const FLAG_FILTERS = ['overdue', 'sla_breached', 'unassigned', 'repeat', 'unverified', 'portal'] as const;
+const FLAG_FILTERS = ['overdue', 'sla_breached', 'assigned', 'unassigned', 'no_machine', 'repeat', 'unverified', 'portal'] as const;
 
 export interface CoreCreateInput {
   organisationId: string;
@@ -460,7 +466,20 @@ export class ServiceService {
       b = b.where('service_tickets.assigned_to', '=', query.assigned_to);
     }
     if (query.complaint_source) b = b.where('service_tickets.complaint_source', '=', query.complaint_source);
-    if (truthy(query.unassigned)) b = b.where('service_tickets.assigned_to', 'is', null);
+    // open work only, as the Open-queue bars count it: a closed or cancelled ticket is never waiting for an engineer
+    if (truthy(query.assigned)) {
+      b = b.where('service_tickets.assigned_to', 'is not', null).where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any);
+    }
+    if (truthy(query.unassigned)) {
+      b = b.where('service_tickets.assigned_to', 'is', null).where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any);
+    }
+    if (truthy(query.no_machine)) {
+      b = b
+        .where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any)
+        .where('service_tickets.product_id', 'is', null)
+        .where('service_tickets.equipment_id', 'is', null)
+        .where(sql<boolean>`coalesce(trim(service_tickets.equipment_serial), '') = '' and coalesce(trim(service_tickets.serial_number), '') = ''`);
+    }
     if (truthy(query.repeat)) {
       b = b.where('service_tickets.is_repeat_complaint', '=', true).where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any);
     }
@@ -1470,6 +1489,93 @@ export class ServiceService {
   }
 
   /** Re-point a portal ticket from the "unverified customer" holding record to the real organisation. */
+  /** §33 keeps service history per machine: a ticket knows its machine once it has the equipment or a serial number. */
+  private machineIdentified(t: any): boolean {
+    return !!(t.product_id || t.equipment_id || String(t.equipment_serial || t.serial_number || '').trim());
+  }
+
+  /**
+   * §31: complete an open ticket's equipment, serial number, contact person or location — a complaint often arrives
+   * without them (portal, phone). A changed machine re-runs the repeat-complaint check. Field engineers edit their own
+   * tickets; the chief service engineer and managers any they can see.
+   */
+  async updateTicketDetails(id: string, dto: UpdateTicketDetailsDto, user: AuthUser) {
+    const existing: any = await this.findOneTicket(id, user);
+    const status = normalizeServiceStatus(existing.status);
+    if (status === 'closed' || status === 'cancelled') {
+      throw new BadRequestException('A closed or cancelled ticket is part of the service history; its details cannot be changed');
+    }
+    if (user.role === 'service_team') {
+      const mine =
+        existing.assigned_to === user.id ||
+        (Array.isArray(existing.additional_engineer_ids) && (existing.additional_engineer_ids as string[]).includes(user.id));
+      if (!mine && !(await this.canSupervise(id, user))) {
+        throw new ForbiddenException('Only the assigned engineer or the chief service engineer can change this ticket’s details');
+      }
+    }
+
+    const changes: Record<string, any> = {};
+    if (dto.product_id !== undefined && dto.product_id !== existing.product_id) {
+      const product = await this.db.selectFrom('products').select('id').where('id', '=', dto.product_id).executeTakeFirst();
+      if (!product) throw new BadRequestException('Equipment (product) not found');
+      changes.product_id = dto.product_id;
+    }
+    if (dto.equipment_serial !== undefined) {
+      const serial = cleanText(dto.equipment_serial, 80);
+      if (serial.length < 2) throw new BadRequestException('Enter the serial number as printed on the machine (at least 2 characters)');
+      if (serial !== (existing.equipment_serial || '')) changes.equipment_serial = serial;
+    }
+    if (dto.contact_id !== undefined && dto.contact_id !== existing.contact_id) {
+      const c = await this.db.selectFrom('contacts').select(['id', 'organisation_id']).where('id', '=', dto.contact_id).executeTakeFirst();
+      if (!c || c.organisation_id !== existing.organisation_id) throw new BadRequestException('Contact does not belong to this customer');
+      changes.contact_id = dto.contact_id;
+    }
+    if (dto.location !== undefined) {
+      const location = cleanText(dto.location, 255);
+      if (location.length < 2) throw new BadRequestException('Enter the location (at least 2 characters)');
+      if (location !== (existing.location || '')) changes.location = location;
+    }
+    if (Object.keys(changes).length === 0) throw new BadRequestException('Nothing to change: send the equipment, serial number, contact or location');
+
+    const LABEL: Record<string, string> = { product_id: 'equipment', equipment_serial: 'serial number', contact_id: 'contact person', location: 'location' };
+    const updated = await this.db.transaction().execute(async (trx) => {
+      if ('product_id' in changes || 'equipment_serial' in changes) {
+        const repeat = await detectRepeatComplaint(trx as any, {
+          organisationId: existing.organisation_id,
+          serial: changes.equipment_serial ?? existing.equipment_serial,
+          productId: changes.product_id ?? existing.product_id,
+          excludeId: id,
+          before: existing.created_at,
+        });
+        changes.is_repeat_complaint = repeat.isRepeat;
+        changes.parent_ticket_id = repeat.parentTicketId;
+      }
+      const row = await trx
+        .updateTable('service_tickets')
+        .set({ ...changes, version: (existing.version || 1) + 1, updated_by: user.id, updated_at: new Date() } as any)
+        .where('id', '=', id)
+        .where('version', '=', existing.version ?? 1)
+        .returningAll()
+        .executeTakeFirst();
+      if (!row) throw new ConflictException('This ticket was updated by another user — please reload');
+      await trx
+        .insertInto('ticket_status_history')
+        .values({
+          ticket_id: id,
+          from_status: existing.status,
+          to_status: existing.status,
+          reason: `Details completed: ${Object.keys(changes).filter((k) => LABEL[k]).map((k) => LABEL[k]).join(', ')}`,
+          changed_by: user.id,
+          sla_impact: 'none',
+        })
+        .execute();
+      return row;
+    });
+    const before = Object.fromEntries(Object.keys(changes).map((k) => [k, existing[k] ?? null]));
+    this.audit(user.id, 'service_ticket', id, 'details_updated', before, changes);
+    return updated;
+  }
+
   async linkOrganisation(id: string, dto: LinkOrganisationDto, user: AuthUser) {
     const existing: any = await this.findOneTicket(id, user);
     if (!existing.claimed_organisation_name) {
@@ -1573,6 +1679,18 @@ export class ServiceService {
       );
     }
 
+    // §33: the service history is kept per machine — a report must say which machine it was for. The engineer can read
+    // the serial on site and send it with the report when the ticket was logged without one.
+    const reportSerial = cleanText(dto.equipment_serial || '', 80);
+    const ticketSerial = String(ticket.equipment_serial || ticket.serial_number || '').trim();
+    if (reportSerial && ticketSerial && reportSerial.toLowerCase() !== ticketSerial.toLowerCase()) {
+      throw new BadRequestException(`This ticket is for machine S/N ${ticketSerial}. If that is wrong, correct the ticket details first.`);
+    }
+    if (!this.machineIdentified(ticket) && reportSerial.length < 2) {
+      throw new BadRequestException('Record which machine was serviced: enter its serial number (or add the equipment to the ticket) before filing the report');
+    }
+    const serialToSave = reportSerial && !ticketSerial ? reportSerial : null;
+
     const problem = cleanText(dto.problem_identified, 2000);
     const action = cleanText(dto.action_taken, 4000);
     if (problem.length < 5) throw new BadRequestException('Problem identified must be at least 5 characters');
@@ -1665,6 +1783,20 @@ export class ServiceService {
         await move('revisit_required', `Further work required: ${cleanText(dto.further_work_description || '', 300)}`, nextVisit);
       } else {
         await move('report_submitted', 'Service report submitted for sign-off');
+      }
+      if (serialToSave) {
+        const repeat = await detectRepeatComplaint(trx as any, {
+          organisationId: ticket.organisation_id,
+          serial: serialToSave,
+          productId: ticket.product_id,
+          excludeId: ticketId,
+          before: ticket.created_at,
+        });
+        await trx
+          .updateTable('service_tickets')
+          .set({ equipment_serial: serialToSave, is_repeat_complaint: repeat.isRepeat, parent_ticket_id: ticket.parent_ticket_id || repeat.parentTicketId, updated_at: now } as any)
+          .where('id', '=', ticketId)
+          .execute();
       }
 
       await trx
@@ -2178,9 +2310,11 @@ export class ServiceService {
     const count = sql<number>`count(service_tickets.id)::int`;
     const countOf = (f: TicketListFilters) => q(f).select(count.as('c')).executeTakeFirst();
 
-    const [byStatus, assigned, overdue, critical, repeat, closure, slaBreached, portalNew, unverified, engineers, closureByPriority] = await Promise.all([
+    const [byStatus, assigned, unassigned, noMachine, overdue, critical, repeat, closure, slaBreached, portalNew, unverified, engineers, closureByPriority] = await Promise.all([
       q(noStage).select(['service_tickets.status', count.as('c')]).groupBy('service_tickets.status').execute(),
-      q(noStage).select(count.as('c')).where('service_tickets.assigned_to', 'is not', null).where('service_tickets.status', 'not in', open).executeTakeFirst(),
+      countOf({ ...noFlags, assigned: true }),
+      countOf({ ...noFlags, unassigned: true }),
+      countOf({ ...noFlags, no_machine: true }),
       countOf({ ...noFlags, overdue: true }),
       q(noStage).select(count.as('c')).where('service_tickets.priority', '=', 'critical').where('service_tickets.status', 'not in', open).executeTakeFirst(),
       countOf({ ...noFlags, repeat: true }),
@@ -2267,6 +2401,8 @@ export class ServiceService {
       newTickets: stageCounts.open,
       pendingTickets: stageCounts[PENDING_STAGE],
       assignedTickets: assigned?.c || 0,
+      unassignedTickets: unassigned?.c || 0,
+      noMachineTickets: noMachine?.c || 0,
       overdueTickets: overdue?.c || 0,
       awaitingParts: stageCounts.awaiting_part,
       completedTickets: stageCounts.completed,
@@ -2297,6 +2433,15 @@ export class ServiceService {
       .leftJoin('users as assignee', 'service_tickets.assigned_to', 'assignee.id')
       .selectAll('service_tickets')
       .select(['products.name as product_name', 'assignee.full_name as assignee_name'])
+      // §33: the latest filed (submitted or approved) service report on each ticket — what was found, done and replaced —
+      // so the history is the record; a draft is not part of it yet
+      .select(sql<any>`(select json_build_object('problem_identified', r.problem_identified, 'action_taken', r.action_taken,
+            'parts_replaced', r.parts_replaced, 'further_work_required', r.further_work_required,
+            'further_work_description', r.further_work_description, 'next_visit_date', r.next_visit_date,
+            'report_status', r.report_status, 'submitted_at', r.submitted_at)
+          from service_reports r
+          where r.ticket_id = service_tickets.id and lower(r.report_status) in ('submitted', 'approved')
+          order by r.created_at desc limit 1)`.as('latest_report'))
       .where((eb) => eb.or([eb('service_tickets.organisation_id', '=', customerId), eb('service_tickets.customer_id', '=', customerId)]))
       .where('service_tickets.deleted_at', 'is', null);
     const scope = this.scopeWhere(user);
@@ -2326,6 +2471,13 @@ export class ServiceService {
       .leftJoin('users as assignee', 'service_tickets.assigned_to', 'assignee.id')
       .selectAll('service_tickets')
       .select(['organisations.name as organisation_name', 'products.name as product_name', 'assignee.full_name as assignee_name'])
+      .select(sql<any>`(select json_build_object('problem_identified', r.problem_identified, 'action_taken', r.action_taken,
+            'parts_replaced', r.parts_replaced, 'further_work_required', r.further_work_required,
+            'further_work_description', r.further_work_description, 'next_visit_date', r.next_visit_date,
+            'report_status', r.report_status, 'submitted_at', r.submitted_at)
+          from service_reports r
+          where r.ticket_id = service_tickets.id and lower(r.report_status) in ('submitted', 'approved')
+          order by r.created_at desc limit 1)`.as('latest_report'))
       .where((eb) =>
         eb.or([
           eb('service_tickets.equipment_serial', '=', key),

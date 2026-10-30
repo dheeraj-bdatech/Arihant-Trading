@@ -12,5 +12,7 @@ import { TasksModule } from '../tasks/tasks.module.js';
   imports: [ServiceModule, ExpenseManagementModule, TasksModule],
   controllers: [ReportsController],
   providers: [PipelineReportService, ServiceReportService, ExpenseReportService, ProductivityReportService],
+  // the Management Command dashboard reads "people needing attention" and on-time completion from Report 4
+  exports: [ProductivityReportService],
 })
 export class ReportsModule {}

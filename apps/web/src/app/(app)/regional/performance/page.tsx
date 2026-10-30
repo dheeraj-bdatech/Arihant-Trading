@@ -143,11 +143,22 @@ export default function SalesPerformancePage() {
   const [data, setData] = useState<SalesPerformanceDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // a link from the command dashboard opens the same period and grouping (?from=&to=&group_by=region)
+  const [urlRead, setUrlRead] = useState(false);
 
   const allowed = hasRole(['sales', 'regional_manager', 'management', 'admin']);
 
   useEffect(() => {
-    if (!allowed) return;
+    const q = new URLSearchParams(window.location.search);
+    const day = /^\d{4}-\d{2}-\d{2}$/;
+    if (day.test(q.get('from') || '')) setFrom(q.get('from')!);
+    if (day.test(q.get('to') || '')) setTo(q.get('to')!);
+    if (q.get('group_by') === 'region') setGroupBy('region');
+    setUrlRead(true);
+  }, []);
+
+  useEffect(() => {
+    if (!allowed || !urlRead) return;
     if (!from || !to || from > to) {
       // no request for a broken range; one this change cancelled would otherwise leave the page "loading" for good
       setIsLoading(false);
@@ -164,7 +175,7 @@ export default function SalesPerformancePage() {
     return () => {
       cancelled = true;
     };
-  }, [allowed, from, to, groupBy, zoneId, regionId]);
+  }, [allowed, urlRead, from, to, groupBy, zoneId, regionId]);
 
   const filters = data?.filters;
   const regionOptions = useMemo(

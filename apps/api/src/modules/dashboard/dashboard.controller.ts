@@ -1,12 +1,14 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch, Query, UseGuards } from '@nestjs/common';
 import { DashboardService } from './dashboard.service.js';
 import { DashboardWorkspaceService } from './dashboard-workspace.service.js';
 import { DashboardPerformanceService } from './dashboard-performance.service.js';
+import { DashboardCommandService } from './dashboard-command.service.js';
+import { DashboardLayoutService } from './dashboard-layout.service.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import type { AuthUser, DashboardMetricsDto, DashboardWorkspaceDto, SalesPerformanceDto } from '@arihant/shared';
+import type { AuthUser, CommandDashboardDto, CommandLayout, DashboardMetricsDto, DashboardWorkspaceDto, SalesPerformanceDto } from '@arihant/shared';
 
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard)
@@ -15,6 +17,8 @@ export class DashboardController {
     private readonly dashboardService: DashboardService,
     private readonly workspaceService: DashboardWorkspaceService,
     private readonly performanceService: DashboardPerformanceService,
+    private readonly commandService: DashboardCommandService,
+    private readonly layoutService: DashboardLayoutService,
   ) {}
 
   @Get('metrics')
@@ -61,5 +65,31 @@ export class DashboardController {
     @Query('region_id') regionId?: string,
   ): Promise<SalesPerformanceDto> {
     return this.performanceService.getSalesPerformance(user, { from, to, group_by: groupBy, zone_id: zoneId, region_id: regionId });
+  }
+
+  /**
+   * Module 10 — Management Command dashboard: the exceptions across every module, all India, in the caller's own
+   * layout. Each figure uses the rule of the module screen it links to.
+   */
+  @Get('command')
+  @UseGuards(RolesGuard)
+  @Roles('management', 'admin')
+  async getCommand(@CurrentUser() user: AuthUser): Promise<CommandDashboardDto> {
+    return this.commandService.getCommand(user, await this.layoutService.get(user.id));
+  }
+
+  /** The caller's saved layout of the command dashboard (sections, figures, order, period). */
+  @Patch('command/layout')
+  @UseGuards(RolesGuard)
+  @Roles('management', 'admin')
+  async saveCommandLayout(@CurrentUser() user: AuthUser, @Body() body: unknown): Promise<CommandLayout> {
+    return this.layoutService.save(user.id, body);
+  }
+
+  @Delete('command/layout')
+  @UseGuards(RolesGuard)
+  @Roles('management', 'admin')
+  async resetCommandLayout(@CurrentUser() user: AuthUser): Promise<CommandLayout> {
+    return this.layoutService.reset(user.id);
   }
 }

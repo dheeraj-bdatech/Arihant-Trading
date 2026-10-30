@@ -559,6 +559,12 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               badgeVariant: 'cyber',
             },
             {
+              label: 'Management Command',
+              href: '/command',
+              icon: Activity,
+              moduleKey: 'dashboard',
+            },
+            {
               label: 'Users & Security Audit',
               href: '/admin',
               icon: Settings,
@@ -883,6 +889,7 @@ function withTaskItems(groups: NavGroup[], s: TaskSummary | null): NavGroup[] {
 /** Every entry is named after the page it opens, so the sidebar and the address bar always agree. */
 const ROUTE_LABELS: Record<string, string> = {
   '/dashboard': 'Dashboard',
+  '/command': 'Management command',
   '/leads': 'Leads',
   '/tenders': 'Tenders',
   '/proposals': 'Proposals',

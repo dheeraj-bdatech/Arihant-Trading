@@ -8,16 +8,17 @@ import {
   LEAD_ACTIVE,
   LEAD_VALUE,
   TENDER_AWAITING_APPROVAL,
-  TENDER_CHASING,
   TENDER_DEADLINE,
   TENDER_DONE,
   TENDER_ROW,
   VISIT_OPEN,
   teamScope,
+  tenderClosingWithin,
   tenderScopeFor,
   territoryLeads,
   territoryVisits,
 } from './dashboard-metrics.js';
+import { TICKET_CLOSURE_SECONDS } from '../service/service.core.js';
 
 /**
  * GET /dashboard/workspace — each role's own home screen (Blueprint §5 role matrix, §34 service KPIs,
@@ -117,8 +118,7 @@ export class DashboardWorkspaceService {
     const list = await this.rows(sql`
       select t.id, t.tender_no, t.status, t.emd_fee, coalesce(o.name, t.department) as buyer, ${DEADLINE} as deadline
       from tenders t left join organisations o on o.id = t.organisation_id
-      where ${TENDER_LIVE} and ${TENDER_CHASING} and ${scope}
-        and ${DEADLINE} between now() and now() + make_interval(days => ${days})
+      where ${TENDER_LIVE} and ${tenderClosingWithin(days * 24)} and ${scope}
       order by ${DEADLINE} asc limit ${limit}`);
     return list.map((r) => ({
       id: r.id,
@@ -634,8 +634,10 @@ export class DashboardWorkspaceService {
       this.one(sql`
         select count(*) filter (where s.assigned_to is null and ${TICKET_OPEN})::int as unassigned,
                count(*) filter (where coalesce(s.is_repeat_complaint, false) and ${TICKET_OPEN})::int as repeat,
-               (select avg(extract(epoch from (x.resolved_at - x.created_at)) / 3600) from service_tickets x
-                 where x.deleted_at is null and x.resolved_at is not null and x.resolved_at >= now() - interval '90 days')::float as avg_hours,
+               -- §34 closure time, as on the Service page: closed tickets, from when the complaint was received
+               (select avg(${TICKET_CLOSURE_SECONDS}) / 3600 from service_tickets
+                 where service_tickets.deleted_at is null and service_tickets.status = 'closed'
+                   and service_tickets.closed_at >= now() - interval '90 days')::float as avg_hours,
                count(*) filter (where s.resolved_at >= now() - interval '30 days' and ${mine})::int as resolved30
         from service_tickets s where s.deleted_at is null`),
       this.rows(sql`

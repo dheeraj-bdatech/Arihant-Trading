@@ -1842,6 +1842,13 @@ export interface RoleModuleBlocksTable {
   blocked_at: Generated<Date>;
 }
 
+export interface DashboardLayoutsTable {
+  user_id: string;
+  board: string;
+  layout: unknown;
+  updated_at: Generated<Date>;
+}
+
 export interface RolePermissionsTable {
   id: Generated<string>;
   role: UserRole;
@@ -1915,6 +1922,7 @@ export interface Database {
   departments: DepartmentsTable;
   role_permissions: RolePermissionsTable;
   role_module_blocks: RoleModuleBlocksTable;
+  dashboard_layouts: DashboardLayoutsTable;
   organisations: OrganisationsTable;
   contacts: ContactsTable;
   leads: LeadsTable;

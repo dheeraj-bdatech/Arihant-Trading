@@ -22,6 +22,7 @@ import {
   ReviewServiceReportDto,
   CloseTicketDto,
   LinkOrganisationDto,
+  UpdateTicketDetailsDto,
   AssignEngineerDto,
 } from './service.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
@@ -112,6 +113,13 @@ export class ServiceController {
   @Roles('management', 'regional_manager', 'service_team', 'admin')
   async closeTicket(@Param('id') id: string, @Body() dto: CloseTicketDto, @CurrentUser() user: AuthUser) {
     return this.serviceService.closeTicket(id, user, dto);
+  }
+
+  /** §31: complete the equipment, serial number, contact or location of an open ticket (logged without them). */
+  @Patch('tickets/:id/details')
+  @Roles('management', 'regional_manager', 'service_team', 'admin')
+  async updateDetails(@Param('id') id: string, @Body() dto: UpdateTicketDetailsDto, @CurrentUser() user: AuthUser) {
+    return this.serviceService.updateTicketDetails(id, dto, user);
   }
 
   /** Triage: link a portal ticket from the "unverified customer" holding record to the real organisation. */

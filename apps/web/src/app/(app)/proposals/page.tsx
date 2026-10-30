@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { dropUrlParams } from '@/lib/url-filters';
 import { userWithRole } from '@/lib/role-label';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
@@ -295,6 +296,8 @@ export default function ProposalsPage() {
   const [toDate, setToDate] = useState<string>('');
   const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
   const [activeHudCard, setActiveHudCard] = useState<string | null>(null);
+  // ?followup= deep link is read once mounted (below); the register and KPI cards wait for it
+  const [urlFiltersRead, setUrlFiltersRead] = useState(false);
 
   // Modals & Active Proposal state
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -489,16 +492,20 @@ export default function ProposalsPage() {
 
   // Proposals register with complete multi-column filters and sorting, one page per request,
   // appended as the register scrolls. `fetchProposals` re-reads the pages already loaded, in place.
+  // Until the deep-link filters are read the first page is held (never answered, so the loader stays up); the
+  // filtered request replaces it. Not `enabled: false`, which would flash the empty register for a frame.
   const fetchProposalsPage = useCallback(
     (page: number) =>
-      api.get('/proposals', {
-        ...filterParams,
-        page,
-        limit: PROPOSALS_PAGE_SIZE,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-      }),
-    [filterParams, sortBy, sortOrder],
+      urlFiltersRead
+        ? api.get('/proposals', {
+            ...filterParams,
+            page,
+            limit: PROPOSALS_PAGE_SIZE,
+            sort_by: sortBy,
+            sort_order: sortOrder,
+          })
+        : new Promise<never>(() => {}),
+    [filterParams, sortBy, sortOrder, urlFiltersRead],
   );
   const proposalsList = useInfiniteList<any>(fetchProposalsPage);
   const { rows: proposals, total, loading: isLoading, refresh: fetchProposals } = proposalsList;
@@ -516,9 +523,10 @@ export default function ProposalsPage() {
 
   // KPI cards follow the active filters; debounced so a burst of filter changes fires once.
   useEffect(() => {
+    if (!urlFiltersRead) return;
     const timer = setTimeout(fetchStats, 300);
     return () => clearTimeout(timer);
-  }, [fetchStats]);
+  }, [fetchStats, urlFiltersRead]);
 
   // Real-time Event-Driven Architecture (EDA) live synchronization via Socket.IO
   useEffect(() => {
@@ -566,6 +574,17 @@ export default function ProposalsPage() {
 
   // Deep link from dashboard cards: /proposals?status=<status code>
   useOpenParam((status) => pickStatus(status), true, 'status');
+
+  // Deep link from the Management Command dashboard: /proposals?followup=<bucket> (the Follow-ups menu keys, or
+  // `stale` for "Inactive 7d+"). Read after mount, not during render: on a client-side navigation the address bar
+  // changes only once this page has rendered. Unknown values are ignored; the key leaves the address bar.
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('followup');
+    const bucket = raw === 'stale' ? 'old_inactivity' : raw;
+    if (bucket && Object.keys(FOLLOWUP_FILTER_FLAGS).includes(bucket)) setSelectedFollowupCondition(bucket);
+    dropUrlParams(['followup']);
+    setUrlFiltersRead(true);
+  }, []);
 
   /** The full record (findOne) carries its follow-ups and status history, so the tab counts are right at once. */
   const applyProposal = (full: any) => {

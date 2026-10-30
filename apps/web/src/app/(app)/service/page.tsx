@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { dropUrlParams } from '@/lib/url-filters';
 import { useOpenParam } from '@/lib/use-open-param';
 import { canOpen } from '@/lib/route-access';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
@@ -87,6 +88,7 @@ import { StatusActionModal, type Engineer } from '@/components/service/StatusAct
 import { CloseTicketModal } from '@/components/service/CloseTicketModal';
 import { LinkOrganisationModal } from '@/components/service/LinkOrganisationModal';
 import { ReportFormModal } from '@/components/service/ReportFormModal';
+import { TicketDetailsModal } from '@/components/service/TicketDetailsModal';
 import { ReassignEngineerModal } from './_lib/ReassignEngineerModal';
 import { CreateServiceTicketModal } from './_lib/CreateServiceTicketModal';
 import { VisitsTab } from '@/components/service/VisitsTab';
@@ -178,9 +180,10 @@ const ticketStatusBadge = (status?: string | null): BadgeVariant => {
 const priorityBadge = (p?: string | null): BadgeVariant => (p === 'critical' || p === 'high' ? 'danger' : p === 'medium' ? 'warning' : 'default');
 const upperLabel = (s?: string | null) => String(s || '—').replace(/_/g, ' ');
 
-type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link' | 'reassign'; ticket: any; target?: ServiceStatus };
+type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link' | 'reassign' | 'details'; ticket: any; target?: ServiceStatus };
 /** "Flags" dropdown: single-select; each key is a server-side list filter of the same name. */
-type FlagKey = 'all' | 'portal' | 'unassigned' | 'sla_breached' | 'repeat' | 'unverified';
+const FLAG_KEYS = ['all', 'portal', 'assigned', 'unassigned', 'no_machine', 'sla_breached', 'overdue', 'repeat', 'unverified'] as const;
+type FlagKey = (typeof FLAG_KEYS)[number];
 
 export default function ServicePage() {
   const { user } = useAuth();
@@ -201,6 +204,8 @@ export default function ServicePage() {
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [activeFlag, setActiveFlag] = useState<FlagKey>('all');
+  // ?stage= / ?flag= deep links are read once mounted (below); the first fetch waits for them
+  const [urlFiltersRead, setUrlFiltersRead] = useState(false);
 
   // Reference data
   const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
@@ -262,8 +267,8 @@ export default function ServicePage() {
   }, [activeTab, priorityFilter, sourceFilter, activeFlag, debouncedSearch]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (urlFiltersRead) fetchData();
+  }, [fetchData, urlFiltersRead]);
 
   // Load auxiliary reference data (the new-ticket popup loads its own)
   useEffect(() => {
@@ -313,6 +318,12 @@ export default function ServicePage() {
     if (el && el.getBoundingClientRect().top > window.innerHeight - 120) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   /** Flag tiles / "Flags" menu: single-select, click the active one again to clear. Other filters stay. */
+  /** Same rule as PATCH /service/tickets/:id/details: managers, the chief service engineer, or the ticket's own engineer. */
+  const canEditDetails = (t: any) =>
+    ['management', 'admin', 'regional_manager'].includes(role) ||
+    (role === 'service_team' &&
+      (t.assigned_to === userId || (Array.isArray(t.additional_engineer_ids) && t.additional_engineer_ids.includes(userId)) || !!t.can_supervise));
+
   const pickFlag = (key: FlagKey) => {
     if (activeFlag !== key) revealList();
     setActiveFlag((cur) => (cur === key ? 'all' : key));
@@ -487,6 +498,18 @@ export default function ServicePage() {
   };
   // Deep link from demos, tasks and notifications: /service?open=<ticket id>
   useOpenParam((id) => handleOpenDetail({ id }));
+  // Deep link from the Management Command dashboard: /service?stage=<stage>&flag=<flag> sets the opening filters.
+  // Read after mount, not during render: on a client-side navigation the address bar changes only once this page
+  // has rendered. Unknown values are ignored; the consumed keys leave the address bar.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const stage = q.get('stage');
+    const flag = q.get('flag');
+    if (stage && STAGES.some((s) => s.id === stage)) setActiveTab(stage);
+    if (flag && (FLAG_KEYS as readonly string[]).includes(flag)) setActiveFlag(flag as FlagKey);
+    dropUrlParams(['stage', 'flag']);
+    setUrlFiltersRead(true);
+  }, []);
   const closeDetail = () => {
     setIsDetailModalOpen(false);
     selectedIdRef.current = null;
@@ -525,9 +548,10 @@ export default function ServicePage() {
   const laneOf = (item: RecordItem) => laneByKey.get(item.key) ?? 'open';
   /** Same rule as the dossier: open, clock running, resolution deadline passed. */
   const slaBreached = (t: any) => !isFinished(t.status) && !isSlaPaused(t) && !!t.sla_resolution_due_at && new Date(t.sla_resolution_due_at).getTime() < Date.now();
-  // exact server count when the list's filters are the tile's (no other flag); else over the loaded rows
+  // exact server count when the list's filters are the tile's (no other flag, or overdue, which holds every
+  // breached ticket); else over the loaded rows
   const breachedCount: number =
-    stats && (activeFlag === 'all' || activeFlag === 'sla_breached') ? stats.slaBreached : displayedTickets.filter(slaBreached).length;
+    stats && (activeFlag === 'all' || activeFlag === 'sla_breached' || activeFlag === 'overdue') ? stats.slaBreached : displayedTickets.filter(slaBreached).length;
   const fmtDay = (v: unknown) => (v ? formatDateIN(v as string) : '—');
 
   const recordItems: RecordItem[] = displayedTickets.map((t) => {
@@ -687,7 +711,8 @@ export default function ServicePage() {
         }
       />
 
-      {/* KPI Metrics HUD (§34) — five tiles, each filters the queue (click again to clear). */}
+      {/* KPI Metrics HUD (§34) — five tiles, each filters the queue (click again to clear). Assigned, repeat complaints,
+          closure time and engineer workload are the cards below. */}
       <StatGrid cols={5} className="gap-3">
         <StatCard
           label="New Tickets"
@@ -712,19 +737,19 @@ export default function ServicePage() {
           className={activeRing(activeTab === 'pending')}
         />
         <StatCard
-          label="SLA Breached"
-          value={stats?.slaBreached ?? 0}
-          subtext={`${stats?.overdueTickets ?? 0} overdue incl. missed visit dates`}
+          label="Overdue Tickets"
+          value={stats?.overdueTickets ?? 0}
+          subtext={`${stats?.slaBreached ?? 0} past SLA · ${Math.max(0, (stats?.overdueTickets ?? 0) - (stats?.slaBreached ?? 0))} missed visit date`}
           icon={<AlertTriangle className="h-5 w-5 text-[#9A3412]" />}
           variant="amber"
           role="button"
           tabIndex={0}
-          onClick={() => pickFlag('sla_breached')}
-          onKeyDown={(e) => e.key === 'Enter' && pickFlag('sla_breached')}
-          className={activeRing(activeFlag === 'sla_breached')}
+          onClick={() => pickFlag('overdue')}
+          onKeyDown={(e) => e.key === 'Enter' && pickFlag('overdue')}
+          className={activeRing(activeFlag === 'overdue')}
         />
         <StatCard
-          label="Awaiting Parts / Spares"
+          label="Awaiting Parts"
           value={stats?.awaitingParts ?? tickets.filter((t) => normalizeServiceStatus(t.status) === 'awaiting_part').length}
           subtext="Depot spares logistics pending"
           icon={<Package className="h-5 w-5 text-[#9A3412]" />}
@@ -746,7 +771,7 @@ export default function ServicePage() {
           onClick={() => toggleStage('completed')}
           onKeyDown={(e) => e.key === 'Enter' && toggleStage('completed')}
           // phones (2-column grid): the fifth tile spans the row instead of sitting alone at half width
-          className={`col-span-2 md:col-span-1 ${activeRing(activeTab === 'completed')}`}
+          className={`col-span-2 sm:col-span-1 ${activeRing(activeTab === 'completed')}`}
         />
       </StatGrid>
 
@@ -760,8 +785,8 @@ export default function ServicePage() {
               labelWidth="50%"
               emptyText="No open tickets."
               items={[
-                { key: 'assigned', label: 'Assigned to an engineer', value: stats.assignedTickets ?? 0 },
-                { key: 'unassigned', label: 'Not yet assigned', value: Math.max(0, (stats.pendingTickets ?? 0) - (stats.assignedTickets ?? 0)), active: activeFlag === 'unassigned', onSelect: () => pickFlag('unassigned') },
+                { key: 'assigned', label: 'Assigned to an engineer', value: stats.assignedTickets ?? 0, active: activeFlag === 'assigned', onSelect: () => pickFlag('assigned') },
+                { key: 'unassigned', label: 'Not yet assigned', value: stats.unassignedTickets ?? 0, active: activeFlag === 'unassigned', onSelect: () => pickFlag('unassigned') },
                 { key: 'repeat', label: 'Repeat complaints', value: stats.repeatComplaints ?? 0, detail: 'Same machine reported again', active: activeFlag === 'repeat', onSelect: () => pickFlag('repeat') },
               ]}
             />
@@ -865,13 +890,16 @@ export default function ServicePage() {
               options={[
                 { key: 'all', label: 'No flag filter', icon: undefined, count: undefined },
                 { key: 'portal', label: 'Portal requests to triage', icon: <Globe2 />, count: stats?.portalNew ?? undefined },
-                { key: 'unassigned', label: 'Unassigned', icon: <User />, count: undefined },
+                { key: 'assigned', label: 'Assigned to an engineer', icon: <User />, count: stats?.assignedTickets ?? undefined },
+                { key: 'unassigned', label: 'Not yet assigned', icon: <User />, count: stats?.unassignedTickets ?? undefined },
+                { key: 'no_machine', label: 'Machine not identified', icon: <Package />, count: stats?.noMachineTickets ?? undefined },
                 { key: 'sla_breached', label: 'SLA breached', icon: <AlertTriangle />, count: stats?.slaBreached ?? undefined },
+                { key: 'overdue', label: 'Overdue (past SLA or missed visit)', icon: <Calendar />, count: stats?.overdueTickets ?? undefined },
                 { key: 'repeat', label: 'Repeat complaints', icon: <Repeat />, count: stats?.repeatComplaints ?? undefined },
                 { key: 'unverified', label: 'Unverified customer', icon: <ShieldQuestion />, count: stats?.unverifiedCustomers ?? undefined },
               ].map((f) => ({
                 ...f,
-                urgent: f.key === 'sla_breached',
+                urgent: f.key === 'sla_breached' || f.key === 'overdue',
                 active: activeFlag === f.key,
                 onSelect: () => setActiveFlag(f.key as FlagKey),
               }))}
@@ -950,6 +978,9 @@ export default function ServicePage() {
       )}
       {actionCtx?.kind === 'reassign' && (
         <ReassignEngineerModal ticket={actionCtx.ticket} engineers={engineers} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
+      )}
+      {actionCtx?.kind === 'details' && (
+        <TicketDetailsModal ticket={actionCtx.ticket} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
       )}
       {actionCtx?.kind === 'link' && (
         <LinkOrganisationModal ticket={actionCtx.ticket} onClose={() => setActionCtx(null)} onDone={refreshAll} onStale={refreshActionTicket} />
@@ -1043,6 +1074,34 @@ export default function ServicePage() {
                   <p className="text-xs text-[#14213D] font-medium mt-1 break-words">{st.complaint || st.complaint_description}</p>
                 </div>
 
+                {(() => {
+                  // §31: what an open ticket still lacks — the machine, who to meet and where; engineer and visit
+                  // date have their own actions (Assign, Schedule visit) once the ticket is dispatched
+                  if (isFinished(st.status) || unverified) return null;
+                  const missing = [
+                    !st.product_id && !st.equipment_id && 'equipment',
+                    !String(st.equipment_serial || st.serial_number || '').trim() && 'serial number',
+                    !st.contact_id && 'contact person',
+                    !String(st.location || '').trim() && 'location',
+                  ].filter(Boolean) as string[];
+                  if (!missing.length) return null;
+                  const noMachine = !st.product_id && !st.equipment_id && !String(st.equipment_serial || st.serial_number || '').trim();
+                  return (
+                    <InfoCallout variant={noMachine ? 'warning' : 'neutral'} title={`Details missing: ${missing.join(', ')}`}>
+                      <p className="text-xs">
+                        {noMachine
+                          ? 'The engineer needs to know which machine to service, and the service history is kept against it. A service report cannot be filed until the machine is known (the engineer can also enter its serial number in the report).'
+                          : 'Add them so the engineer knows who to meet and where.'}
+                      </p>
+                      {canEditDetails(st) && (
+                        <Button size="xs" variant="secondary" className="mt-2" onClick={() => setActionCtx({ kind: 'details', ticket: st })}>
+                          Complete details
+                        </Button>
+                      )}
+                    </InfoCallout>
+                  );
+                })()}
+
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 text-xs pt-2 border-t border-[#ECE9E2]">
                   <div className="min-w-0">
                     <span className="text-[#4A5568] block text-[10px]">Equipment</span>
@@ -1065,6 +1124,13 @@ export default function ServicePage() {
                     <span className="font-semibold text-[#14213D] break-words">{st.status_reason || '—'}</span>
                   </div>
                 </div>
+                {!isFinished(st.status) && !unverified && canEditDetails(st) && (
+                  <div className="flex justify-end">
+                    <Button size="xs" variant="ghost" onClick={() => setActionCtx({ kind: 'details', ticket: st })}>
+                      Edit details
+                    </Button>
+                  </div>
+                )}
               </div>
 
               <SlaPanel ticket={st} />

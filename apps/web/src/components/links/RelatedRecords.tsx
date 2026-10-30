@@ -28,6 +28,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { canRead, type ReadableModule } from '@/lib/module-access';
 import { canOpen } from '@/lib/route-access';
+import { parsePartsReplaced } from '@/components/service/serviceHelpers';
 import { NewTaskButton } from '@/app/(app)/tasks/_lib/NewTaskModal';
 import type { TaskFormPrefill } from '@/app/(app)/tasks/_lib/TaskForm';
 
@@ -49,7 +50,7 @@ export type RelatedSection =
   | 'tasks'
   | 'expenses';
 
-type Row = { id: string; title: string; meta?: string; status?: string | null; href?: string | null };
+type Row = { id: string; title: string; meta?: string; status?: string | null; href?: string | null; /** A short line of what happened (service work done). */ detail?: string };
 type Loaded = { rows: Row[]; total: number; viewAll?: string | null };
 type SectionState = { status: 'loading' } | { status: 'error' } | ({ status: 'ready' } & Loaded);
 
@@ -294,11 +295,30 @@ const SECTIONS: Record<RelatedSection, SectionDef> = {
   },
 };
 
+/** §33 service history: what the latest report on the ticket found, did and replaced — else the complaint. */
+function serviceWorkLine(t: any): string | undefined {
+  const r = t.latest_report;
+  if (!r) return t.complaint ? `Complaint: ${t.complaint}` : undefined;
+  const { items, text } = parsePartsReplaced(r.parts_replaced);
+  const parts = items?.length ? items.map((p) => (p.quantity > 1 ? `${p.part_name} ×${p.quantity}` : p.part_name)).join(', ') : text;
+  return (
+    [
+      r.problem_identified && `Found: ${r.problem_identified}`,
+      r.action_taken && `Done: ${r.action_taken}`,
+      parts && `Parts: ${parts}`,
+      r.further_work_required && `Further work${r.next_visit_date ? ` · next visit ${day(r.next_visit_date)}` : ''}`,
+    ]
+      .filter(Boolean)
+      .join(' · ') || undefined
+  );
+}
+
 function ticketRow(t: any): Row {
   return {
     id: t.id,
     title: join(t.ticket_no || t.ticket_number, t.product_name),
     meta: join(day(t.received_date || t.created_at), t.assignee_name, t.equipment_serial ? `S/N ${t.equipment_serial}` : null),
+    detail: serviceWorkLine(t),
     status: t.status,
     href: `/service?open=${t.id}`,
   };
@@ -430,6 +450,7 @@ function SectionCard({ def, state, canFollow }: { def: SectionDef; state: Sectio
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-[#14213D] truncate">{r.title}</div>
                   {r.meta && <div className="text-[11px] text-[#4A5568] truncate">{r.meta}</div>}
+                  {r.detail && <div className="mt-0.5 text-[11px] leading-snug text-[#14213D] line-clamp-2">{r.detail}</div>}
                 </div>
                 {r.status && (
                   <Badge size="sm" variant="outline" className="shrink-0 capitalize">

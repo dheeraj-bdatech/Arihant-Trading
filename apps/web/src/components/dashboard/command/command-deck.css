@@ -262,3 +262,39 @@ html[data-app-theme='clay'] .dx-panel__head { padding-top: 20px; }
 .dx-panel__head { align-items: flex-start; }
 .dx-panel__title { align-items: flex-start; }
 .dx-panel__h { white-space: normal; line-height: 1.25; padding-top: 5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+/* ------------------------------------------------- management command (Module 10) -- */
+/* one figure per row: the number, what it is, one line on what is counted; tone marks an exception */
+.dx-cmd-list { border-top: 1px solid var(--th-line2); }
+.dx-cmd-list > li + li { border-top: 1px solid var(--th-line2); }
+.dx-cmd__head { display: flex; align-items: center; gap: 14px; padding: 12px 18px; transition: background 160ms ease; }
+a.dx-cmd__head:hover { background: var(--th-row-hover); }
+.dx-cmd__val {
+  min-width: 64px; flex-shrink: 0; border-radius: var(--th-r-sm); padding: 8px 10px; text-align: center;
+  font: 700 18px/1.1 var(--font-mono), monospace; letter-spacing: -0.02em; background: var(--ts); color: var(--tt);
+}
+.dx-cmd[data-tone='ink'] .dx-cmd__val, .dx-cmd[data-tone='green'] .dx-cmd__val { background: var(--th-soft); color: var(--th-ink); }
+.dx-cmd__label { display: block; font-size: 13px; font-weight: 600; color: var(--th-ink); }
+.dx-cmd__help { display: block; margin-top: 2px; font-size: 11.5px; line-height: 1.35; color: var(--th-mute); }
+.dx-cmd__go { color: var(--th-faint); transition: transform 200ms var(--dx-ease), color 160ms ease; }
+a.dx-cmd__head:hover .dx-cmd__go { color: var(--t); transform: translateX(3px); }
+.dx-cmd__split { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 18px 12px 96px; }
+.dx-cmd__split > li > a, .dx-cmd__split > li > span {
+  display: inline-flex; max-width: 100%; align-items: center; gap: 6px; border-radius: 9999px; padding: 3px 10px;
+  font-size: 11.5px; color: var(--th-ink); background: var(--th-soft); border: 1px solid var(--th-line2);
+}
+.dx-cmd__split > li > a:hover { border-color: var(--t); }
+.dx-cmd__split b { font: 700 11.5px/1.2 var(--font-mono), monospace; color: var(--tt); }
+.dx-cmd__split > li[data-tone='ink'] b, .dx-cmd__split > li[data-tone='green'] b { color: var(--th-ink); }
+.dx-cmd__items { padding-left: 78px; }
+.dx-cmd__items .dx-items { border-top: 0; }
+.dx-cmd__items .dx-items__row { padding-block: 7px; }
+/* a region's or person's figures are the point of the row: wrap them rather than cut them off */
+.dx-cmd__items .dx-items__m .truncate, .dx-cmd__items .dx-items__d { white-space: normal; overflow: visible; }
+.dx-cmd__chip { border-radius: 9999px; padding: 2px 8px; font-size: 10.5px; font-weight: 600; background: var(--th-soft); color: var(--th-mute); white-space: nowrap; }
+@media (max-width: 640px) {
+  .dx-cmd__head { padding: 12px 14px; gap: 12px; }
+  .dx-cmd__val { min-width: 54px; font-size: 16px; }
+  .dx-cmd__split { padding: 0 14px 12px; }
+  .dx-cmd__items { padding-left: 0; }
+}

@@ -103,6 +103,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-1`,
           complaint: '',
         });
 
@@ -129,6 +130,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-2`,
           complaint: 'Belt tension calibration drifted',
         });
 
@@ -144,6 +146,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .send({
           ticket_no: customNo,
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-3`,
           complaint: 'Display screen pixel dead on operator console',
         });
 
@@ -157,6 +160,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-4`,
           complaint: 'Weekly routine calibration check requested',
         });
 
@@ -170,6 +174,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-5`,
           assigned_to: '66666666-6666-6666-6666-666666666661',
           complaint: 'High voltage cathode inspection needed',
         });
@@ -184,6 +189,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-6`,
           assigned_to: serviceUserId,
           planned_visit_date: istDay(1),
           complaint: 'Motor bearing noise at conveyor head',
@@ -199,6 +205,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-7`,
           assigned_to: serviceUserId,
           complaint: 'Awaiting engineer scheduling for firmware flash',
         });
@@ -213,6 +220,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-8`,
           complaint: 'Incoming breakdown report awaiting manager assignment',
         });
 
@@ -305,6 +313,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-9`,
           complaint: 'Detailed lifecycle state machine testing ticket',
         });
       lifecycleTicketId = res.body.id;
@@ -463,6 +472,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-10`,
           complaint: 'Testing service report submission and history',
         });
       reportTicketId = res.body.id;
@@ -524,6 +534,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-11`,
           complaint: 'Secondary display flickers intermittently',
         });
       await advanceTicket(app, revisitTicket.body.id, mgmtToken, serviceUserId, 'in_progress');
@@ -558,6 +569,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-12`,
           complaint: 'Testing timeline interaction entry creation',
         });
       await advanceTicket(app, timelineTicket.body.id, mgmtToken, serviceUserId, 'in_progress');
@@ -629,6 +641,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-13`,
           complaint: 'Ticket for testing closure immutability rules',
         });
       closedTicketId = res.body.id;
@@ -772,6 +785,7 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
         .set('Authorization', `Bearer ${mgmtToken}`)
         .send({
           organisation_id: testOrgId,
+          equipment_serial: `ZZEC-${Date.now()}-14`,
           complaint: 'Testing RBAC and territorial boundaries',
         });
       rbacTicketId = res.body.id;

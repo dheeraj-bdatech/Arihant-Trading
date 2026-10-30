@@ -197,6 +197,30 @@ export class LinkOrganisationDto {
   remarks?: string;
 }
 
+/**
+ * Complete a ticket's §31 details after intake (a portal or phone complaint often arrives without the machine): the
+ * equipment, its serial number, the contact person and the location. Only the fields sent are changed.
+ */
+export class UpdateTicketDetailsDto {
+  @Matches(UUID_REGEX, { message: 'product_id must be a valid UUID' })
+  @IsOptional()
+  product_id?: string;
+
+  @IsString()
+  @MaxLength(80)
+  @IsOptional()
+  equipment_serial?: string;
+
+  @Matches(UUID_REGEX, { message: 'contact_id must be a valid UUID' })
+  @IsOptional()
+  contact_id?: string;
+
+  @IsString()
+  @MaxLength(255)
+  @IsOptional()
+  location?: string;
+}
+
 export class UpdateTicketStatusDto {
   @IsString()
   @IsNotEmpty()
@@ -243,6 +267,12 @@ export class SubmitServiceReportDto {
   @Matches(UUID_REGEX, { message: 'Visit ID must be a valid UUID' })
   @IsOptional()
   visit_id?: string;
+
+  /** The serviced machine's serial, read on site — saved to a ticket logged without one. */
+  @IsString()
+  @MaxLength(80)
+  @IsOptional()
+  equipment_serial?: string;
 
   @IsString()
   @IsNotEmpty({ message: 'Problem identified is required' })

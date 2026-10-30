@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { availableFirst, fleetHint, kitForProduct, kitValue, unitHint } from '@/app/(app)/demos/_lib/fleet';
 import type { SelectOption } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
@@ -56,6 +57,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { type UrlParams, dropUrlParams, isUrlDay, urlPicker } from '@/lib/url-filters';
 import { uploadSignedFile } from '@/lib/signed-upload';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
@@ -169,6 +171,19 @@ const INTERACTION_TYPE_OPTIONS = [
 /** Leads fetched per request while the register scrolls. */
 const LEADS_PAGE_SIZE = 25;
 
+// Dashboard deep links (/leads?followup=overdue&created_from=…): the register's first filters, read from the URL
+// before the first fetch. Unknown values are ignored; the effect in the page then drops these keys from the address bar.
+const LEAD_URL_KEYS = ['followup', 'created_from', 'created_to', 'lead_type'];
+const leadUrlFilters = (q: UrlParams) => {
+  const pick = urlPicker(q);
+  return {
+    followup: pick('followup', (v) => ['due_today', 'overdue', 'upcoming', 'no_followup'].includes(v)),
+    created_from: pick('created_from', isUrlDay),
+    created_to: pick('created_to', isUrlDay),
+    lead_type: pick('lead_type', (v) => v === 'fresh' || v === 're_approached'),
+  };
+};
+
 export default function LeadsPage() {
   const { user, hasRole, switchRole } = useAuth();
   const canReassign = hasRole(['management', 'regional_manager', 'admin']);
@@ -201,22 +216,27 @@ export default function LeadsPage() {
   const [organisationsList, setOrganisationsList] = useState<any[]>([]);
 
   // 1. Leads State (the register itself is useInfiniteList below, paged as the reader scrolls)
+  const searchParams = useSearchParams();
+  const [urlFilters] = useState(() => leadUrlFilters(searchParams));
+  useEffect(() => {
+    dropUrlParams(LEAD_URL_KEYS);
+  }, []);
   const [leadFilters, setLeadFilters] = useState({
     search: '',
     lead_status: '',
-    lead_type: '',
+    lead_type: urlFilters.lead_type,
     sector: '',
     lead_source: '',
-    followup: '',
-    created_from: '',
-    created_to: '',
+    followup: urlFilters.followup,
+    created_from: urlFilters.created_from,
+    created_to: urlFilters.created_to,
     sort_by: 'created_at',
     sort_dir: 'desc' as 'asc' | 'desc',
   });
   // Type / Source / Sector live in the "More" inline panel under the filter row.
   const [moreLeadFiltersOpen, setMoreLeadFiltersOpen] = useState(false);
-  // Created-date From / To live in the "Dates" inline panel under the filter row.
-  const [leadDatesOpen, setLeadDatesOpen] = useState(false);
+  // Created-date From / To live in the "Dates" inline panel under the filter row (open when a link set them).
+  const [leadDatesOpen, setLeadDatesOpen] = useState(Boolean(urlFilters.created_from || urlFilters.created_to));
   // A From after To is not sent (the API rejects it); the panel shows the error instead.
   const leadDateRangeInvalid = Boolean(leadFilters.created_from && leadFilters.created_to && leadFilters.created_from > leadFilters.created_to);
 

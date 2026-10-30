@@ -3,6 +3,7 @@
 /** Blocker Review Queue (§12.5): pending blockers routed to me with age, SLA indicator, flags and quick decisions. */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { Ban, CheckCircle2, ExternalLink, Eye, Flag, Search, ShieldCheck } from 'lucide-react';
 import { Badge, Button, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader } from '@/components/ui';
 import { api } from '@/lib/api';
@@ -15,7 +16,9 @@ import { blockerActionTask as toActionTask, waitingAge as age, type PendingBlock
 export default function BlockerQueuePage() {
   const { summary } = useTaskSummary();
   const { push, Toaster } = useToaster();
-  const [scope, setScope] = useState<'mine' | 'all'>('mine');
+  // ?scope=all (the command dashboard's "Blockers to decide") opens every pending blocker; the API allows it to admin-like roles only
+  const searchParams = useSearchParams();
+  const [scope, setScope] = useState<'mine' | 'all'>(() => (searchParams.get('scope') === 'all' ? 'all' : 'mine'));
   const [search, setSearch] = useState('');
   const [rows, setRows] = useState<PendingBlocker[] | null>(null);
   const [error, setError] = useState<string | null>(null);

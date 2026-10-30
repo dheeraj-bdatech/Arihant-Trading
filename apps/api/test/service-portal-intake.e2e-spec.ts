@@ -728,7 +728,7 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
       const t = await mkTicket();
       await advanceTicket(app, t.id, tok.mgmt, uid.svc, 'in_progress');
       expect((await track(t.ref, t.token)).body.work_summary).toBeNull();
-      await api().post(`/api/service/tickets/${t.id}/report`).set(auth('svc')).send(validReport({ action_taken: 'Replaced the drive board and recalibrated the belt sensor' }));
+      await api().post(`/api/service/tickets/${t.id}/report`).set(auth('svc')).send(validReport({ action_taken: 'Replaced the drive board and recalibrated the belt sensor', equipment_serial: `ZZPI-${uniq()}` }));
       const r = await track(t.ref, t.token);
       expect(r.body.status).toBe('report_submitted');
       expect(r.body.work_summary.action).toContain('Replaced the drive board');
@@ -780,7 +780,7 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
     it('closed long ago or cancelled: no more messages', async () => {
       const closed = await mkTicket();
       await advanceTicket(app, closed.id, tok.mgmt, uid.svc, 'in_progress');
-      await api().post(`/api/service/tickets/${closed.id}/report`).set(auth('svc')).send(validReport());
+      await api().post(`/api/service/tickets/${closed.id}/report`).set(auth('svc')).send(validReport({ equipment_serial: `ZZPI-${uniq()}` }));
       await api().post(`/api/service/tickets/${closed.id}/close`).set(auth('mgmt')).send({});
       expect((await say(closed, 'ZZTEST thank you for the quick fix')).status).toBe(201); // fresh closure: allowed
       await sql1(`update service_tickets set closed_at = now() - interval '20 days' where id='${closed.id}'`);
@@ -813,7 +813,7 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
     async function reported(over: Record<string, any> = {}) {
       const t = await mkTicket(over);
       await advanceTicket(app, t.id, tok.mgmt, uid.svc, 'in_progress');
-      const rep = await api().post(`/api/service/tickets/${t.id}/report`).set(auth('svc')).send(validReport());
+      const rep = await api().post(`/api/service/tickets/${t.id}/report`).set(auth('svc')).send(validReport({ equipment_serial: `ZZPI-${uniq()}` }));
       expect(rep.status).toBe(201);
       return { ...t, reportId: rep.body.id as string };
     }
@@ -850,7 +850,7 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
       const rep = await api()
         .post(`/api/service/tickets/${t.id}/report`)
         .set(auth('svc'))
-        .send(validReport({ customer_confirmation: false, customer_confirmation_type: 'Not Obtained', customer_name_signed: undefined, confirmation_not_obtained_reason: 'Officer was off site' }));
+        .send(validReport({ customer_confirmation: false, customer_confirmation_type: 'Not Obtained', customer_name_signed: undefined, confirmation_not_obtained_reason: 'Officer was off site', equipment_serial: `ZZPI-${uniq()}` }));
       expect(rep.status).toBe(201);
       await fb(t, { action: 'confirm_resolved', rating: 4 });
       const row = (await sql1(`select customer_confirmation, customer_confirmation_type, customer_name_signed from service_reports where id='${rep.body.id}'`))[0];

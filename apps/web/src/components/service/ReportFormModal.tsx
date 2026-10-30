@@ -46,6 +46,8 @@ const blank = (ticket: any) => ({
   nextVisit: '',
   reportUrl: '',
   attachments: [] as Attachment[],
+  /** Read on site when the ticket was logged without it. */
+  serial: '',
 });
 
 interface Props {
@@ -74,6 +76,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
   }, [ticket?.id]);
 
   if (!ticket) return null;
+  const hasSerial = !!String(ticket.equipment_serial || ticket.serial_number || '').trim();
   const status = String(ticket.status);
   const wrongStatus = !['in_progress', 'resolved'].includes(status);
   const set = (p: Partial<typeof f>) => setF((s) => ({ ...s, ...p }));
@@ -120,6 +123,8 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
       const r = Number(f.rating);
       if (!Number.isInteger(r) || r < 1 || r > 5) e.rating = 'Rating must be a whole number from 1 to 5.';
     }
+    // §33: the history is kept per machine — the API refuses a report that does not say which machine it was for
+    if (!hasSerial && !ticket?.product_id && f.serial.trim().length < 2) e.serial = 'Enter the serial number on the machine you serviced.';
     const urlError = validateHttpUrl(f.reportUrl, 'The signed report document URL');
     if (urlError) e.reportUrl = urlError;
     // §33 (API rule): a paper sign-off carries the signed service report itself
@@ -164,6 +169,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
         next_visit_date: f.furtherWork ? f.nextVisit : undefined,
         report_url: f.reportUrl.trim() || undefined,
         attachments: f.attachments.length ? f.attachments : undefined,
+        equipment_serial: !hasSerial && f.serial.trim() ? f.serial.trim() : undefined,
       });
       await onDone();
       onClose();
@@ -230,6 +236,17 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
                     )}
                   </div>
 
+                  {!hasSerial && (
+                    <Input
+                      label="Machine serial number"
+                      required={!ticket.product_id}
+                      value={f.serial}
+                      error={errors.serial}
+                      onChange={(e) => set({ serial: e.target.value })}
+                      placeholder="As printed on the machine's rating plate"
+                      helperText="The ticket was logged without it. It is saved to the ticket so this machine's service history is complete."
+                    />
+                  )}
                   <Textarea label="Problem identified" required rows={2} value={f.problem} error={errors.problem} onChange={(e) => set({ problem: e.target.value })} placeholder="e.g. Diode array board shorted after a power surge." />
                   <Input label="Root cause (optional)" value={f.rootCause} onChange={(e) => set({ rootCause: e.target.value })} />
                   <Textarea label="Action taken / rectification steps" required rows={3} value={f.action} error={errors.action} onChange={(e) => set({ action: e.target.value })} placeholder="e.g. Replaced PCB #DA-200, cleaned collimator, recalibrated generator." />

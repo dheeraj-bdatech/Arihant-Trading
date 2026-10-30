@@ -521,8 +521,8 @@ export class ProposalsService {
   /**
    * List proposals with server-side search, filtering, territorial scoping, and sorting
    */
-  async findAll(query: ProposalQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
-    const { page, limit, offset } = getPaginationParams(query);
+  async findAll(query: ProposalQueryDto, user: AuthUser, opts: { maxLimit?: number } = {}): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams(query, opts.maxLimit);
     const settings = await this.getSettings();
     const baseQuery = this.buildProposalQuery(query, user, settings);
 
@@ -2956,62 +2956,52 @@ export class ProposalsService {
    * Outcome Report and Win-Rate analysis (Section 6e, E47, E48)
    */
   async getOutcomeReport(filter: any, user: AuthUser): Promise<any> {
-    const list = await this.findAll({ ...filter, limit: 1000 }, user);
-    const proposals = list.data;
+    // Counted in the database over the register's own query (same scope and filters), so every proposal counts —
+    // reading rows through findAll capped the report at one page of 100.
+    const settings = await this.getSettings();
+    const base = () => this.buildProposalQuery(filter, user, settings);
+    const status = sql`UPPER(proposals.status)`;
+    const sent = sql`proposals.sent_date IS NOT NULL`;
+    const [t, reasons] = await Promise.all([
+      base()
+        .select([
+          sql<number>`(count(proposals.id) FILTER (WHERE ${status} = 'CONVERTED'))::int`.as('converted'),
+          sql<number>`(count(proposals.id) FILTER (WHERE ${status} = 'LOST'))::int`.as('lost'),
+          sql<number>`(count(proposals.id) FILTER (WHERE ${status} = 'CLOSED'))::int`.as('closed'),
+          sql<number>`(count(proposals.id) FILTER (WHERE ${sent}))::int`.as('sent'),
+          sql<number>`(count(proposals.id) FILTER (WHERE ${sent} AND proposals.sent_late = true))::int`.as('sent_late'),
+          // request → sent and sent → outcome, in calendar days, never negative
+          sql<number>`coalesce(sum(greatest(proposals.sent_date - proposals.request_date, 0)) FILTER (WHERE ${sent} AND proposals.request_date IS NOT NULL), 0)::int`.as('turnaround_days'),
+          sql<number>`(count(proposals.id) FILTER (WHERE ${sent} AND proposals.request_date IS NOT NULL))::int`.as('turnaround_items'),
+          sql<number>`coalesce(sum(greatest(proposals.outcome_date - proposals.sent_date, 0)) FILTER (WHERE ${sent} AND proposals.outcome_date IS NOT NULL), 0)::int`.as('outcome_days'),
+          sql<number>`(count(proposals.id) FILTER (WHERE ${sent} AND proposals.outcome_date IS NOT NULL))::int`.as('outcome_items'),
+        ])
+        .executeTakeFirst(),
+      base()
+        .where(sql<boolean>`${status} = 'LOST'`)
+        .select([
+          sql<string>`coalesce(nullif(proposals.lost_reason_code, ''), nullif(proposals.lost_reason, ''), 'Other')`.as('reason'),
+          sql<number>`count(proposals.id)::int`.as('n'),
+        ])
+        .groupBy(sql`1`)
+        .execute(),
+    ]);
 
-    let convertedCount = 0;
-    let lostCount = 0;
-    let closedCount = 0;
-    let sentLateCount = 0;
-    let totalSentCount = 0;
-
-    let totalTurnaroundDays = 0;
-    let turnaroundItems = 0;
-    let totalSentToOutcomeDays = 0;
-    let sentToOutcomeItems = 0;
-
-    const lostReasonsMap: Record<string, number> = {};
-
-    for (const p of proposals) {
-      const status = (p.status || '').toUpperCase();
-      if (status === 'CONVERTED') convertedCount++;
-      else if (status === 'LOST') {
-        lostCount++;
-        const reason = p.lost_reason_code || p.lost_reason || 'Other';
-        lostReasonsMap[reason] = (lostReasonsMap[reason] || 0) + 1;
-      } else if (status === 'CLOSED') {
-        closedCount++;
-      }
-
-      if (p.sent_date) {
-        totalSentCount++;
-        if (p.sent_late) sentLateCount++;
-
-        if (p.request_date) {
-          const turn = Math.max(0, isoDaysBetween(calendarDay(p.request_date as any)!, calendarDay(p.sent_date as any)!));
-          totalTurnaroundDays += turn;
-          turnaroundItems++;
-        }
-
-        if (p.outcome_date) {
-          const outTime = Math.max(0, isoDaysBetween(calendarDay(p.sent_date as any)!, calendarDay(p.outcome_date as any)!));
-          totalSentToOutcomeDays += outTime;
-          sentToOutcomeItems++;
-        }
-      }
-    }
+    const convertedCount = t?.converted || 0;
+    const lostCount = t?.lost || 0;
+    const closedCount = t?.closed || 0;
+    const totalSentCount = t?.sent || 0;
+    const lostReasonsMap: Record<string, number> = Object.fromEntries(reasons.map((r) => [r.reason, r.n]));
 
     // Win rate = Converted / (Converted + Lost) (E47)
     const denominator = convertedCount + lostCount;
     const winRateFormatted =
       denominator === 0 ? '—' : `${((convertedCount / denominator) * 100).toFixed(1)}%`;
 
-    const avgTurnaroundDays =
-      turnaroundItems === 0 ? 0 : Math.round(totalTurnaroundDays / turnaroundItems);
-    const avgSentToOutcomeDays =
-      sentToOutcomeItems === 0 ? 0 : Math.round(totalSentToOutcomeDays / sentToOutcomeItems);
+    const avgTurnaroundDays = t?.turnaround_items ? Math.round(t.turnaround_days / t.turnaround_items) : 0;
+    const avgSentToOutcomeDays = t?.outcome_items ? Math.round(t.outcome_days / t.outcome_items) : 0;
     const sentLatePercentage =
-      totalSentCount === 0 ? '0%' : `${((sentLateCount / totalSentCount) * 100).toFixed(1)}%`;
+      totalSentCount === 0 ? '0%' : `${(((t?.sent_late || 0) / totalSentCount) * 100).toFixed(1)}%`;
 
     return {
       converted_count: convertedCount,
@@ -3034,7 +3024,8 @@ export class ProposalsService {
    */
   async exportData(query: ProposalQueryDto, user: AuthUser): Promise<string> {
     const maxLimit = 5000;
-    const res = await this.findAll({ ...query, limit: maxLimit, page: 1 }, user);
+    // a client page is capped at 100 rows; the export lifts the cap so it really holds up to maxLimit rows
+    const res = await this.findAll({ ...query, limit: maxLimit, page: 1 }, user, { maxLimit });
     const proposals = res.data;
 
     // Formula injection sanitizer (E65)

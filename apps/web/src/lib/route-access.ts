@@ -6,6 +6,7 @@ import { REPORT_ROLES, accessModuleForPage, type UserRole } from '@arihant/share
  * Cross-module links use canOpen() so nobody is sent to a page that will only show "access denied".
  */
 export const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] }[] = [
+  { path: '/command', name: 'Management Command', roles: ['management', 'admin'] },
   { path: '/regional/performance', name: 'Salesperson & Regional Performance', roles: ['sales', 'regional_manager', 'management', 'admin'] },
   { path: '/regional', name: 'Regional Territory Command', roles: ['regional_manager', 'management', 'admin'] },
   // Accounts opens /tenders for EMD & PBG accounting only (the page shows it the Finance view alone).

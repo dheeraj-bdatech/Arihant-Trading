@@ -38,16 +38,23 @@ export const LEAD_VALUE = sql`greatest(coalesce(l.value_lakh, 0), 0)`;
 /* ---------------------------------------------------------------- tenders -- */
 /** Decided or abandoned bids: no deadline left to chase, not counted as live. */
 export const TENDER_DONE = ['won', 'lost', 'cancelled', 'rejected_internally'];
-/** A deadline is only something to chase until the bid is in: done tenders plus bids already submitted. */
-export const TENDER_NOT_CHASING = [...TENDER_DONE, 'submitted', 'technical_eval', 'commercial_eval'];
+/**
+ * Pre-submission stages: the only ones whose submission deadline can still be missed. The Tenders register's Deadline
+ * filter and its Upcoming / Urgent KPIs (TendersService.tenderDeadlineMatch) use the same stages and column, so every
+ * "closing soon" figure on a dashboard opens the same bids in the register.
+ */
+export const TENDER_PRE_SUBMISSION = ['identified', 'awaiting_approval', 'under_preparation', 'pq_qualified'];
+/** The bid's deadline for display and ordering; older rows may only carry bid_closing_date. */
 export const TENDER_DEADLINE = sql`coalesce(t.submission_deadline, t.bid_closing_date)`;
+/** The deadline the register counts down to. */
+export const TENDER_SUBMISSION_DEADLINE = sql`t.submission_deadline`;
 export const TENDER_ROW = sql`coalesce(t.is_deleted, false) = false`;
-export const TENDER_CHASING = sql`t.status <> all(${TENDER_NOT_CHASING}::text[])`;
+export const TENDER_CHASING = sql`t.status::text = any(${TENDER_PRE_SUBMISSION}::text[])`;
 /** Same rule as the Tenders Approvals Inbox (TendersService.pendingApprovalsQuery): awaiting approval and not on hold. */
 export const TENDER_AWAITING_APPROVAL = sql`t.status = 'awaiting_approval' and coalesce(t.on_hold, false) = false`;
 /** Bid closes within the next `hours` (instant comparison — a deadline is a timestamp, not a calendar day). */
 export const tenderClosingWithin = (hours: number) =>
-  sql`${TENDER_CHASING} and ${TENDER_DEADLINE} between now() and now() + make_interval(hours => ${hours})`;
+  sql`${TENDER_CHASING} and ${TENDER_SUBMISSION_DEADLINE} between now() and now() + make_interval(hours => ${hours})`;
 /** Tender statuses at or past submission (the bid went in). */
 export const TENDER_SUBMITTED = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'];
 /** The bid's owner: salesperson, else owner, else tender owner, else assignee. */

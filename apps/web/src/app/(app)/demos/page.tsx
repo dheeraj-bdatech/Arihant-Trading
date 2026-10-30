@@ -46,6 +46,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { type UrlParams, dropUrlParams, isUrlDay, urlPicker } from '@/lib/url-filters';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
 import { DemoCalendar } from './_lib/DemoCalendar';
@@ -182,6 +183,23 @@ const DEMO_DONE = ['completed', 'cancelled', 'failed', 'closed'];
 // (MODULE_3 §4.1–4.2). Same set as DEMO_PENDING_STATUSES in demos.service.ts, which also counts it.
 const DEMO_PENDING_STATUSES = ['requested', 'under_planning', 'team_assigned', 'equipment_reserved', 'rescheduled'];
 const DEMOS_PAGE_SIZE = 50;
+// Dashboard deep links (/demos?status=requested,confirmed&from=…&result=fail&failure_reason=…): the register's first
+// filters, read from the URL before the first fetch. Unknown values are ignored; the effect in the page then drops
+// these keys from the address bar. A status set (comma list) is passed to the API as is.
+const DEMO_URL_KEYS = ['status', 'from', 'to', 'result', 'failure_reason'];
+const demoUrlFilters = (q: UrlParams) => {
+  const pick = urlPicker(q);
+  const result = pick('result', (v) => ['success', 'fail', 'partial'].includes(v));
+  // a failure reason only goes with a failed outcome (the Outcome menu pairs them the same way)
+  const failureReason = result === '' || result === 'fail' ? pick('failure_reason', (v) => Object.keys(FAILURE_REASON_METADATA).includes(v)) : '';
+  return {
+    status: pick('status', (v) => v.split(',').every((s) => DEMO_STATUSES.some((d) => d.key === s))),
+    from: pick('from', isUrlDay),
+    to: pick('to', isUrlDay),
+    result: failureReason ? 'fail' : result,
+    failureReason,
+  };
+};
 /**
  * Every page of a /demos query, for the views whose counts and client-side filters need the whole set (my demos,
  * field failures, a calendar week). The API serves at most 100 rows a page; 20 pages bound a runaway query.
@@ -359,15 +377,19 @@ function DemosPageContent() {
   const [loadedOnce, setLoadedOnce] = useState(false);
 
   // Filters for Pipeline tab
+  const [urlFilters] = useState(() => demoUrlFilters(searchParams));
+  useEffect(() => {
+    dropUrlParams(DEMO_URL_KEYS);
+  }, []);
   const [filterSearch, setFilterSearch] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
+  const [filterStatus, setFilterStatus] = useState(urlFilters.status);
   const [filterProduct, setFilterProduct] = useState('');
   const [filterLocation, setFilterLocation] = useState('');
-  const [filterDateFrom, setFilterDateFrom] = useState('');
-  const [filterDateTo, setFilterDateTo] = useState('');
-  const [filterResult, setFilterResult] = useState('');
-  const [filterFailureReason, setFilterFailureReason] = useState('');
-  const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
+  const [filterDateFrom, setFilterDateFrom] = useState(urlFilters.from);
+  const [filterDateTo, setFilterDateTo] = useState(urlFilters.to);
+  const [filterResult, setFilterResult] = useState(urlFilters.result);
+  const [filterFailureReason, setFilterFailureReason] = useState(urlFilters.failureReason);
+  const [isDateFilterOpen, setIsDateFilterOpen] = useState(Boolean(urlFilters.from || urlFilters.to));
 
   // The register's filters, applied by the API to the list, its counts (/demos/summary) and the analytics KPIs.
   const filterParams = useMemo(() => {
@@ -2161,9 +2183,11 @@ function DemosPageContent() {
                     options={[
                       { key: '', label: 'All statuses' },
                       ...DEMO_STATUSES,
+                      // a status set from a dashboard link shows as one custom choice
+                      ...(filterStatus.includes(',') ? [{ key: filterStatus, label: `Custom · ${filterStatus.split(',').length} statuses` }] : []),
                     ].map((o) => ({
                       ...o,
-                      count: o.key ? statusCounts[o.key] || 0 : demoSummary?.status_total,
+                      count: o.key ? o.key.split(',').reduce((n, s) => n + (statusCounts[s] || 0), 0) : demoSummary?.status_total,
                       active: filterStatus === o.key,
                       onSelect: () => setFilterStatus(o.key),
                     }))}

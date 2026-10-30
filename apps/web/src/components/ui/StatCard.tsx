@@ -114,7 +114,9 @@ export const StatGrid: React.FC<StatGridProps> = ({
     2: 'grid grid-cols-1 sm:grid-cols-2 gap-4',
     3: 'grid grid-cols-1 md:grid-cols-3 gap-4',
     4: 'grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-4',
-    5: 'grid grid-cols-2 md:grid-cols-5 gap-2.5 sm:gap-4',
+    // five tiles fit the width the page actually has (the sidebar takes a third of a laptop screen), never < 9.5rem
+    // each: at a fixed md:grid-cols-5 they shrank to ~100px and cut labels mid-word ("PENDI… QUEUE")
+    5: 'grid grid-cols-2 sm:grid-cols-[repeat(auto-fit,minmax(9.5rem,1fr))] gap-2.5 sm:gap-4',
   }[effectiveCols] || 'grid grid-cols-2 md:grid-cols-4 gap-4';
 
   return (

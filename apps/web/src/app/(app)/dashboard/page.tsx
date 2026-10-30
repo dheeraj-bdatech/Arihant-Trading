@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Home screen, one per role (Blueprint §5). Each desk gets its own layout and its own scoped data
- * from GET /dashboard/workspace: management sees the §45 command buckets across India, a regional
+ * Home screen, one per role (Blueprint §5). Management gets the Module 10 command board (GET /dashboard/command);
+ * every other desk gets its own layout and its own scoped data from GET /dashboard/workspace: a regional
  * manager the zone and team, sales their day, tender team the bid deadlines, demo team the fleet,
  * service the §34 queue KPIs, accounts the stage-2 settlement queue, admin the platform console.
  */
@@ -37,6 +37,7 @@ import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { Button, InfoCallout, PageContainer, PageLoader } from '@/components/ui';
 import { DeadlineChip } from '@/components/tender/Countdown';
+import { ManagementCommand } from '@/components/dashboard/command/ManagementCommand';
 import {
   BarList,
   HeroBanner,
@@ -44,7 +45,6 @@ import {
   KpiTile,
   Panel,
   QuickActions,
-  RingGauge,
   Scorecard,
   StatStrip,
   type DeckItem,
@@ -88,63 +88,6 @@ interface DeskView {
   stats: HeroStat[];
   cta: { href: string; label: string };
   body: React.ReactNode;
-}
-
-/* ------------------------------------------------------------ management -- */
-function management(w: W): DeskView {
-  const won = num(w, 'tendersWon');
-  const lost = num(w, 'tendersLost');
-  const open = num(w, 'openTickets');
-  return {
-    stats: [
-      { label: 'Close ≤ 48h', value: num(w, 'tendersClosing48h'), tone: 'red' },
-      { label: 'Urgent tickets', value: num(w, 'urgentTickets'), tone: 'ochre' },
-      { label: 'Blockers', value: num(w, 'criticalBlockers'), tone: 'teal' },
-    ],
-    cta: { href: '/tenders', label: 'Open tender pipeline' },
-    body: (
-      <>
-        {/* §45 executive command buckets */}
-        <Kpis
-          cols="six"
-          items={[
-            { label: 'Tenders closing ≤ 48h', value: num(w, 'tendersClosing48h'), sub: `${num(w, 'tendersClosing7d')} within 7 days · ${num(w, 'tendersLive')} live bids`, chip: num(w, 'tendersAwaitingApproval') ? `${num(w, 'tendersAwaitingApproval')} to approve` : undefined, href: '/tenders', icon: <FileText size={15} />, tone: num(w, 'tendersClosing48h') ? 'red' : 'teal' },
-            { label: 'Demos this week', value: num(w, 'demosThisWeek'), sub: `${num(w, 'demosPending')} requests waiting`, href: '/demos', icon: <Box size={15} />, tone: 'teal' },
-            { label: 'Depot conflicts', value: num(w, 'depotConflicts'), sub: 'Units booked twice', href: '/demos', icon: <AlertTriangle size={15} />, tone: num(w, 'depotConflicts') ? 'red' : 'green' },
-            { label: 'Urgent service tickets', value: num(w, 'urgentTickets'), sub: `${open} open · ${num(w, 'slaBreached')} past SLA`, href: '/service', icon: <Wrench size={15} />, tone: num(w, 'urgentTickets') ? 'ochre' : 'teal' },
-            { label: 'Expenses in approval', value: num(w, 'expenseBatches'), sub: inr(num(w, 'expenseAmount')), href: '/expenses', icon: <Receipt size={15} />, tone: 'ochre' },
-            { label: 'Critical blockers', value: num(w, 'criticalBlockers'), sub: 'Awaiting manager decision', href: '/tasks/blockers', icon: <Key size={15} />, tone: num(w, 'criticalBlockers') ? 'red' : 'green' },
-          ]}
-        />
-        <Grid className="lg:grid-cols-3">
-          <Panel className="lg:col-span-2" title="Zone performance" icon={<Compass size={15} />} tone="teal" href="/regional" hrefLabel="Regional command">
-            <BarList bars={bars(w, 'zones')} format={lakh} secondaryLabel={(n) => plural(n, 'open bid')} />
-          </Panel>
-          <Panel title="Health" icon={<TrendingUp size={15} />} tone="green">
-            <div className="grid grid-cols-2 gap-2 px-4 pb-4 pt-2">
-              <RingGauge label="Tender win rate" sub={`${won} won · ${lost} lost`} value={won} max={won + lost} tone="green" />
-              <RingGauge label="Tickets within SLA" sub={`${num(w, 'slaBreached')} breached`} value={Math.max(0, open - num(w, 'slaBreached'))} max={open} display={open === 0 ? '—' : undefined} tone="teal" />
-            </div>
-            <div className="mx-4 mb-4 flex items-center justify-between rounded-[12px] bg-[color:var(--th-soft)] px-3 py-2.5">
-              <span className="text-xs font-semibold text-[color:var(--th-mute)]">Open lead pipeline</span>
-              <span className="font-mono text-sm font-bold text-[color:var(--th-ink)]">{lakh(num(w, 'pipelineLakh'))}</span>
-            </div>
-          </Panel>
-        </Grid>
-        <Grid className="lg:grid-cols-3">
-          <Panel title="Bids closing this week" icon={<Clock size={15} />} tone="red" href="/tenders" hrefLabel="All bids">
-            <ItemList items={list(w, 'closing')} dateMode="countdown" countdown={countdown} money={(n) => (n ? `EMD ${formatINR(n)}` : 'EMD exempt')} empty="No bid closes in the next 7 days" />
-          </Panel>
-          <Panel title="Urgent service tickets" icon={<Wrench size={15} />} tone="ochre" href="/service" hrefLabel="Service desk">
-            <ItemList items={list(w, 'urgentTickets')} dateMode="countdown" countdown={countdown} empty="No critical or high-priority tickets open" />
-          </Panel>
-          <Panel title="Blockers awaiting decision" icon={<Key size={15} />} tone="ink" href="/tasks/blockers" hrefLabel="Review">
-            <ItemList items={list(w, 'blockers')} dateMode="ago" empty="No blockers waiting for review" />
-          </Panel>
-        </Grid>
-      </>
-    ),
-  };
 }
 
 /* ------------------------------------------------------ regional manager -- */
@@ -538,8 +481,9 @@ function admin(w: W): DeskView {
   };
 }
 
-const DESKS: Record<UserRole, (w: W) => DeskView> = {
-  management,
+/** Management's home is the Module 10 command board (ManagementCommand), not a workspace desk. */
+type DeskRole = Exclude<UserRole, 'management'>;
+const DESKS: Record<DeskRole, (w: W) => DeskView> = {
   regional_manager: regional,
   sales,
   tender_team: tender,
@@ -552,7 +496,19 @@ const DESKS: Record<UserRole, (w: W) => DeskView> = {
 /* ------------------------------------------------------------------ page -- */
 export default function DashboardPage() {
   const { user } = useAuth();
-  const role = (user?.role || 'management') as UserRole;
+  if (!user) {
+    return (
+      <PageContainer>
+        <PageLoader label="Loading your dashboard" rows={4} />
+      </PageContainer>
+    );
+  }
+  if (user.role === 'management') return <ManagementCommand />;
+  return <RoleDesk role={user.role as DeskRole} />;
+}
+
+function RoleDesk({ role }: { role: DeskRole }) {
+  const { user } = useAuth();
   const [data, setData] = useState<W | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -591,7 +547,7 @@ export default function DashboardPage() {
     );
   }
 
-  const view = (DESKS[role] ?? management)(data);
+  const view = (DESKS[role] ?? DESKS.sales)(data);
   const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const preset = PRESET_ROLE_USERS[role];

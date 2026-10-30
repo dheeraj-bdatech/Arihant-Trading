@@ -5,7 +5,7 @@ import { availableFirst, fleetHint, kitForProduct, kitValue, unitHint } from '@/
 import type { SelectOption } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { calendarDay } from '@/lib/calendar-day';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Calendar,
   Plus,
@@ -49,6 +49,7 @@ import {
 import { twMerge } from 'tailwind-merge';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { type UrlParams, dropUrlParams, isUrlDay, urlPicker } from '@/lib/url-filters';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
 import { GuardedLink } from '@/components/links/GuardedLink';
@@ -94,6 +95,18 @@ const isReportOverdue = (v: any) =>
   v?.report_overdue ?? (REPORT_PENDING.includes(v?.status) && (calendarDay(v?.planned_date) || '') < istToday());
 // The visit register is read page by page (the API caps a page at 100).
 const VISITS_PAGE_SIZE = 50;
+// Dashboard deep links (/visits?status=open&from=…&to=…): the list's first filters, read from the URL before the
+// first fetch. Unknown values are ignored; the effect in the page then drops these keys from the address bar.
+const VISIT_URL_KEYS = ['status', 'from', 'to'];
+const VISIT_STATUS_FILTERS = ['planned', 'modified', 'rescheduled', 'open', 'overdue', 'completed', 'not_completed', 'cancelled'];
+const visitUrlFilters = (q: UrlParams) => {
+  const pick = urlPicker(q);
+  return {
+    status: pick('status', (v) => VISIT_STATUS_FILTERS.includes(v)),
+    from: pick('from', isUrlDay),
+    to: pick('to', isUrlDay),
+  };
+};
 const fmtDay = (d: string) => {
   const [y, m, dd] = d.split('-');
   return `${dd}/${m}/${y}`;
@@ -127,15 +140,20 @@ export default function VisitsPage() {
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
   // Filters
+  const searchParams = useSearchParams();
+  const [urlFilters] = useState(() => visitUrlFilters(searchParams));
+  useEffect(() => {
+    dropUrlParams(VISIT_URL_KEYS);
+  }, []);
   const [filterSearch, setFilterSearch] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
+  const [filterStatus, setFilterStatus] = useState(urlFilters.status);
 
   const [filterEmployee, setFilterEmployee] = useState('');
-  const [filterDateFrom, setFilterDateFrom] = useState('');
-  const [filterDateTo, setFilterDateTo] = useState('');
+  const [filterDateFrom, setFilterDateFrom] = useState(urlFilters.from);
+  const [filterDateTo, setFilterDateTo] = useState(urlFilters.to);
   const [filterTravelOnly, setFilterTravelOnly] = useState(false);
   const [filterDemoOnly, setFilterDemoOnly] = useState(false);
-  const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
+  const [isDateFilterOpen, setIsDateFilterOpen] = useState(Boolean(urlFilters.from || urlFilters.to));
   // The search box applies on Enter
   const [appliedSearch, setAppliedSearch] = useState('');
 
