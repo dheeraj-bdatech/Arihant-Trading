@@ -9,6 +9,8 @@ export interface AuthUser {
   zone_id: string | null;
   reporting_manager_id: string | null;
   is_active: boolean;
+  /** Modules an administrator has switched off for this user's role (GET /auth/me only; see ACCESS_MODULES). */
+  blocked_modules?: string[];
 }
 
 export interface LoginResponseDto {

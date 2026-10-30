@@ -13,6 +13,7 @@ import {
   Min,
   Max,
   Matches,
+  MaxLength,
 } from 'class-validator';
 import type {
   ServicePriority,
@@ -123,6 +124,12 @@ export class CreateTicketDto {
   @IsString()
   @IsOptional()
   ticket_number?: string;
+
+  /** The customer's own reference (GeM incident id, letter number …); the ticket still gets its TCK number. */
+  @IsString()
+  @IsOptional()
+  @MaxLength(80, { message: 'Customer reference is too long (max 80 characters)' })
+  customer_reference?: string;
 
   @IsDateString()
   @IsOptional()

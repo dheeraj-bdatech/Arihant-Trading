@@ -16,6 +16,17 @@ export async function getServiceSetting<T = unknown>(db: Db, key: string, fallba
   return v as T;
 }
 
+/* ------------------------------------------------------------- closure time -- */
+
+/**
+ * When the complaint was received: a back-dated received day counts from 09:00 IST that day (as the SLA clock
+ * does), otherwise the moment the ticket was logged. Table referenced as `service_tickets` (no alias).
+ */
+export const TICKET_RECEIVED_AT = sql`(case when service_tickets.received_date is not null and service_tickets.received_date < (service_tickets.created_at at time zone 'Asia/Kolkata')::date then (service_tickets.received_date + time '09:00') at time zone 'Asia/Kolkata' else service_tickets.created_at end)`;
+
+/** §34 closure time in seconds: received → closed, never negative. Only meaningful on closed tickets. */
+export const TICKET_CLOSURE_SECONDS = sql`greatest(extract(epoch from (service_tickets.closed_at - ${TICKET_RECEIVED_AT})), 0)`;
+
 /* ------------------------------------------------------------- ticket numbers -- */
 
 /**
@@ -184,7 +195,7 @@ export async function detectRepeatComplaint(
   db: Db,
   args: { organisationId: string; serial?: string | null; productId?: string | null; excludeId?: string; before?: Date },
 ): Promise<{ isRepeat: boolean; parentTicketId: string | null; priorCount: number; windowDays: number }> {
-  const windowDays = await getServiceSetting<number>(db, 'repeat_complaint_window_days', 30);
+  const windowDays = await getServiceSetting<number>(db, 'repeat_complaint_window_days', 90);
   if (!args.serial && !args.productId) return { isRepeat: false, parentTicketId: null, priorCount: 0, windowDays };
 
   const since = new Date((args.before || new Date()).getTime() - windowDays * 86400000);

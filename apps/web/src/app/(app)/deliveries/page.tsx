@@ -714,24 +714,21 @@ export default function DeliveriesPage() {
                 description: 'Who is receiving this consignment, and is it against a won tender?',
                 content: (
                   <div className="space-y-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                        Client / Organization *
-                      </label>
-                      <select
-                        value={newDelivery.organisation_id}
-                        onChange={(e) => setNewDelivery({ ...newDelivery, organisation_id: e.target.value, tender_id: '' })}
-                        className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
-                        required
-                      >
-                        <option value="">Select Government Organization...</option>
-                        {organisations.map((org) => (
-                          <option key={org.id} value={org.id}>
-                            {org.name} {org.city ? `(${org.city})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    {/* Searchable: the customer list is long, so type to find instead of scrolling a native list. The empty
+                        first option keeps `required` honest — without it the hidden native select falls back to the first
+                        organisation and passes validation while nothing is chosen. */}
+                    <Select
+                      id="dispatch-organisation"
+                      label="Client / Organization"
+                      required
+                      value={newDelivery.organisation_id}
+                      onChange={(e) => setNewDelivery({ ...newDelivery, organisation_id: e.target.value, tender_id: '' })}
+                      searchPlaceholder="Search by organisation or city..."
+                      options={[
+                        { value: '', label: 'Select Government Organization...' },
+                        ...organisations.map((org) => ({ value: String(org.id), label: org.city ? `${org.name} (${org.city})` : org.name })),
+                      ]}
+                    />
 
                     {canRead(user?.role, 'tenders') && newDelivery.organisation_id && (
                       <div>
@@ -795,23 +792,14 @@ export default function DeliveriesPage() {
                 content: (
                   <div className="space-y-4">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-semibold text-[#14213D] mb-1">
-                          Equipment Product
-                        </label>
-                        <select
-                          value={newDelivery.product_id}
-                          onChange={(e) => setNewDelivery({ ...newDelivery, product_id: e.target.value })}
-                          className="w-full text-xs rounded-lg border border-[#C9C4B8] p-2 bg-white focus:outline-none focus:border-[#0F5E63]"
-                        >
-                          <option value="">Select Equipment...</option>
-                          {products.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      <Select
+                        id="dispatch-product"
+                        label="Equipment Product"
+                        value={newDelivery.product_id}
+                        onChange={(e) => setNewDelivery({ ...newDelivery, product_id: e.target.value })}
+                        searchPlaceholder="Search equipment..."
+                        options={[{ value: '', label: 'Select Equipment...' }, ...products.map((p) => ({ value: String(p.id), label: p.name }))]}
+                      />
 
                       <div>
                         <label className="block text-xs font-semibold text-[#14213D] mb-1">

@@ -31,7 +31,7 @@ const emptyTicket = () => ({
   organisation_id: '',
   organisation_name: '',
   city: '',
-  ticket_no: '',
+  customer_reference: '',
   contact_id: '',
   product_id: '',
   serial_no: '',
@@ -40,7 +40,8 @@ const emptyTicket = () => ({
   complaint_source: 'Phone' as ComplaintSource,
   received_date: istToday(),
   priority: 'high' as ServicePriority,
-  warranty_status: 'in_warranty' as WarrantyStatus,
+  // no default: warranty decides whether the visit is billable, so it is always a conscious pick
+  warranty_status: '' as WarrantyStatus | '',
   assigned_to: '',
   planned_visit_date: '',
 });
@@ -179,6 +180,7 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
       if (newTicket.received_date && newTicket.received_date > istToday()) {
         throw new Error('Date received cannot be in the future.');
       }
+      if (!newTicket.warranty_status) throw new Error('Pick the warranty / AMC status — it decides whether the visit is billable.');
       const typedName = newTicket.organisation_name.trim();
       let orgId = newTicket.organisation_id;
       let claimedName: string | undefined;
@@ -197,7 +199,7 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
       const created = await api.post('/service/tickets', {
         organisation_id: orgId || undefined,
         claimed_organisation_name: claimedName,
-        ticket_no: newTicket.ticket_no.trim() || undefined,
+        customer_reference: newTicket.customer_reference.trim() || undefined, // kept beside the TCK number
         equipment_serial: newTicket.serial_no || undefined,
         location: newTicket.location || newTicket.city || undefined,
         contact_id: (orgId && newTicket.contact_id) || undefined,
@@ -255,11 +257,12 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <Input
-                      label="Ticket Ref"
-                      placeholder="Auto: TCK-YYYY-NNNNNN"
-                      helperText="Leave blank for the next TCK number, or enter the customer's own reference"
-                      value={newTicket.ticket_no}
-                      onChange={(e) => setNewTicket({ ...newTicket, ticket_no: e.target.value })}
+                      label="Customer reference (optional)"
+                      placeholder="e.g. GEM-INC-1234"
+                      helperText="The customer's own reference. The ticket still gets its TCK number."
+                      maxLength={80}
+                      value={newTicket.customer_reference}
+                      onChange={(e) => setNewTicket({ ...newTicket, customer_reference: e.target.value })}
                     />
                     <Input
                       label="Date Received"
@@ -427,9 +430,11 @@ export const CreateServiceTicketModal: React.FC<CreateServiceTicketModalProps> =
                     />
                     <Select
                       label="Warranty / AMC Status"
+                      required
                       value={newTicket.warranty_status}
-                      onChange={(e) => setNewTicket({ ...newTicket, warranty_status: e.target.value as WarrantyStatus })}
+                      onChange={(e) => setNewTicket({ ...newTicket, warranty_status: e.target.value as WarrantyStatus | '' })}
                       options={[
+                        { value: '', label: '-- Select warranty status --' },
                         { value: 'in_warranty', label: 'Under OEM Warranty' },
                         { value: 'amc', label: 'Comprehensive AMC Active' },
                         { value: 'out_of_warranty', label: 'Out of Warranty (Billable)' },

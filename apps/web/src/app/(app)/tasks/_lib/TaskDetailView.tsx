@@ -162,6 +162,14 @@ export const TaskDetailView: React.FC<{ taskId: string; variant?: 'page' | 'popu
   const deadlineMoved = task.original_deadline && task.deadline && task.original_deadline !== task.deadline;
   const primary = PRIMARY.filter((p) => allowed.has(p.action));
   const secondary = SECONDARY.filter((p) => allowed.has(p.action));
+  // Blockers are raised by the assignee and decided by their manager (Module 8): explain the rule when it applies.
+  const blockerUnavailableReason = ob
+    ? 'A blocker is already open on this task — it has to be resolved or withdrawn before another can be raised.'
+    : !isAssignee
+      ? `Only the assignee${task.assignee_name ? ` (${task.assignee_name})` : ''} can raise a blocker; their manager then accepts or rejects it.${
+          task.viewer.kinds.includes('manager') ? ' To change the plan yourself, extend the deadline or reassign the task.' : ''
+        }`
+      : 'Blockers can be raised while the task is not started or in progress.';
   const done = (d: TaskDetail, msg: string) => {
     setTask(d);
     setDialog(null);
@@ -401,9 +409,18 @@ export const TaskDetailView: React.FC<{ taskId: string; variant?: 'page' | 'popu
             </Card>
 
             <Card className="space-y-3 p-4">
-              <SectionTitle icon={<Flag className="h-4 w-4" />} count={task.blockers.length}>
-                Blockers
-              </SectionTitle>
+              <div className="flex items-center justify-between gap-2">
+                <SectionTitle icon={<Flag className="h-4 w-4" />} count={task.blockers.length}>
+                  Blockers
+                </SectionTitle>
+                {allowed.has('raise_blocker') && (
+                  <Button size="xs" variant="secondary" leftIcon={<Flag className="h-3.5 w-3.5" />} onClick={() => setDialog('raise_blocker')}>
+                    Raise blocker
+                  </Button>
+                )}
+              </div>
+              {/* When this viewer cannot raise one, say why instead of leaving the section silent. */}
+              {!allowed.has('raise_blocker') && open && <p className="text-[11px] text-[#4A5568]">{blockerUnavailableReason}</p>}
               {task.blockers.length === 0 ? (
                 <p className="text-xs text-[#6B7280]">No blockers raised.</p>
               ) : (

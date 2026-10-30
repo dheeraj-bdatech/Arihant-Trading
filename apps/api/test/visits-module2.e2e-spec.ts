@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
+import { istDateOf } from '@arihant/shared';
 import { istDay } from './helpers/ist-date';
 import { configureApp } from '../src/common/app-setup';
 
@@ -662,6 +663,115 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
 
       const actions = res.body.map((a: any) => a.action);
       expect(actions).toContain('CREATE_VISIT');
+    });
+  });
+
+  // =========================================================================
+  // SCENARIO J: A moved visit never stays on its old day's tour
+  // =========================================================================
+  describe('Scenario J: Rescheduling keeps the tour (trip) in step with the visit', () => {
+    const server = () => request(app.getHttpServer());
+    const auth = () => ({ Authorization: `Bearer ${salesToken}` });
+    const getVisit = (id: string) => server().get(`/api/visits/${id}`).set(auth());
+    const getTrip = (id: string) => server().get(`/api/visits/trips/${id}`).set(auth());
+
+    it('moves a single-stop outstation tour along with its rescheduled visit', async () => {
+      const created = await server()
+        .post('/api/visits')
+        .set(auth())
+        .send({ organisation_id: testOrg1Id, planned_date: istDay(20), travel_required: true, location: 'Lucknow', purpose: 'Outstation site survey' });
+      expect(created.status).toBe(201);
+      const before = await getVisit(created.body.id);
+      const ownTrip = before.body.trip_id;
+      expect(ownTrip).toBeTruthy();
+
+      const res = await server()
+        .post(`/api/visits/${created.body.id}/reschedule`)
+        .set(auth())
+        .send({ new_date: istDay(22), reason: 'Customer moved the meeting.' });
+      expect(res.status).toBe(201);
+      expect(res.body.trip_id).toBe(ownTrip);
+
+      const trip = await getTrip(ownTrip);
+      expect(istDateOf(trip.body.trip_date)).toBe(istDay(22));
+      expect(trip.body.visits.map((v: any) => v.id)).toEqual([created.body.id]);
+    });
+
+    it('takes a rescheduled stop off a multi-stop tour, which keeps its day and its other stop', async () => {
+      const res = await server()
+        .post(`/api/visits/${managerAddedVisitId}/reschedule`)
+        .set(auth())
+        .send({ new_date: istDay(24), reason: 'Procurement cell closed on the tour day.' });
+      expect(res.status).toBe(201);
+      expect(res.body.trip_id).toBeNull();
+
+      const trip = await getTrip(tripId);
+      expect(istDateOf(trip.body.trip_date)).toBe(istDay(2));
+      expect(trip.body.visits.map((v: any) => v.id)).not.toContain(managerAddedVisitId);
+      expect(trip.body.visits.length).toBe(1);
+    });
+
+    it('moves the tour when the visit date is edited instead of rescheduled', async () => {
+      const created = await server()
+        .post('/api/visits')
+        .set(auth())
+        .send({ organisation_id: testOrg2Id, planned_date: istDay(26), travel_required: true, location: 'Jaipur', purpose: 'Outstation follow-up' });
+      const ownTrip = (await getVisit(created.body.id)).body.trip_id;
+      expect(ownTrip).toBeTruthy();
+
+      const res = await server()
+        .patch(`/api/visits/${created.body.id}`)
+        .set(auth())
+        .send({ planned_date: istDay(27), change_reason: 'Travel booking moved by a day.' });
+      expect(res.status).toBe(200);
+      expect(res.body.trip_id).toBe(ownTrip);
+      expect(istDateOf((await getTrip(ownTrip)).body.trip_date)).toBe(istDay(27));
+    });
+
+    it('joins the tour the employee already has planned on the new day', async () => {
+      const dayTrip = await server()
+        .post('/api/visits/trips')
+        .set(auth())
+        .send({ trip_date: istDay(30), base_location: 'Agra', notes: 'Agra cantonment tour' });
+      expect(dayTrip.status).toBe(201);
+
+      const created = await server()
+        .post('/api/visits')
+        .set(auth())
+        .send({ organisation_id: testOrg1Id, planned_date: istDay(28), travel_required: true, location: 'Agra', purpose: 'Perimeter survey' });
+      const oldTrip = (await getVisit(created.body.id)).body.trip_id;
+      expect(oldTrip).toBeTruthy();
+      expect(oldTrip).not.toBe(dayTrip.body.id);
+
+      const res = await server()
+        .post(`/api/visits/${created.body.id}/reschedule`)
+        .set(auth())
+        .send({ new_date: istDay(30), reason: 'Combine with the Agra cantonment tour.' });
+      expect(res.status).toBe(201);
+      expect(res.body.trip_id).toBe(dayTrip.body.id);
+      expect(istDateOf((await getTrip(dayTrip.body.id)).body.trip_date)).toBe(istDay(30));
+    });
+
+    it('never moves a tour that expenses were claimed against — the visit leaves it instead', async () => {
+      const created = await server()
+        .post('/api/visits')
+        .set(auth())
+        .send({ organisation_id: testOrg2Id, planned_date: istDay(32), travel_required: true, location: 'Kanpur', purpose: 'Ordnance factory survey' });
+      const claimedTrip = (await getVisit(created.body.id)).body.trip_id;
+      expect(claimedTrip).toBeTruthy();
+      await app
+        .get(KYSELY_DB)
+        .insertInto('expense_claims')
+        .values({ claim_number: `EXP-E2E-${Date.now()}`, employee_id: salesUserId, title: 'Kanpur tour travel', trip_id: claimedTrip, status: 'submitted' })
+        .execute();
+
+      const res = await server()
+        .post(`/api/visits/${created.body.id}/reschedule`)
+        .set(auth())
+        .send({ new_date: istDay(34), reason: 'Factory audit postponed.' });
+      expect(res.status).toBe(201);
+      expect(res.body.trip_id).toBeNull();
+      expect(istDateOf((await getTrip(claimedTrip)).body.trip_date)).toBe(istDay(32));
     });
   });
 });

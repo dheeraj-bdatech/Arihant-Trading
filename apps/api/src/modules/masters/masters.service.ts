@@ -124,34 +124,92 @@ export class MastersService {
     return row;
   }
 
+  /** Deletes a master row, or refuses with a 409 while other records still point at it (never a bare FK 500). */
+  private async deleteInUse(table: 'zones' | 'regions' | 'departments', id: string, label: string) {
+    try {
+      const gone = await this.db.deleteFrom(table).where('id', '=', id).executeTakeFirst();
+      if (!Number(gone.numDeletedRows)) throw new NotFoundException(`${label} not found`);
+    } catch (err: any) {
+      if (err?.code === '23503') throw new ConflictException(`${label} is still in use — move its people and records elsewhere first`);
+      throw err;
+    }
+  }
+
   // --- Departments CRUD (§5) ---
+  /** Departments with their head and how many active people belong to them. */
   async getDepartments() {
-    return this.db.selectFrom('departments').selectAll().orderBy('name', 'asc').execute();
+    return this.db
+      .selectFrom('departments')
+      .leftJoin('users as head', 'head.id', 'departments.head_user_id')
+      .selectAll('departments')
+      .select('head.full_name as head_name')
+      .select(
+        sql<number>`(select count(*)::int from users u where u.department_id = departments.id and u.is_active)`.as('member_count'),
+      )
+      .orderBy('departments.name', 'asc')
+      .execute();
   }
 
-  async createDepartment(data: { code: string; name: string; description?: string }) {
-    return this.db
+  /** The department head must be an active user (or none). */
+  private async headId(value: unknown): Promise<string | null> {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value !== 'string') throw new BadRequestException('Choose the department head from the user list');
+    const u = await this.db.selectFrom('users').select(['id', 'is_active']).where('id', '=', value).executeTakeFirst();
+    if (!u) throw new BadRequestException('Department head does not exist');
+    if (!u.is_active) throw new BadRequestException('Department head is deactivated');
+    return u.id;
+  }
+
+  async createDepartment(data: { code?: string; name?: string; description?: string; head_user_id?: string | null }, actorId?: string) {
+    const code = this.required(data.code, 'Department code', 30).toLowerCase();
+    if (!/^[a-z0-9_]+$/.test(code)) throw new BadRequestException('Department code may contain letters, digits and _ only');
+    const name = this.required(data.name, 'Department name', 80);
+    const dup = await this.db
+      .selectFrom('departments')
+      .select('id')
+      .where((eb) => eb.or([eb('code', '=', code), eb(sql`lower(name)`, '=', name.toLowerCase())]))
+      .executeTakeFirst();
+    if (dup) throw new ConflictException(`A department with this code or name already exists`);
+    const row = await this.db
       .insertInto('departments')
-      .values({
-        code: data.code.trim().toLowerCase(),
-        name: data.name.trim(),
-        description: data.description || null,
-      })
+      .values({ code, name, description: this.optional(data.description), head_user_id: await this.headId(data.head_user_id) })
       .returningAll()
       .executeTakeFirstOrThrow();
+    this.audit(actorId, 'department', row.id, 'master_department_created', null, { code, name, head_user_id: row.head_user_id });
+    return row;
   }
 
-  async updateDepartment(id: string, data: { name?: string; description?: string }) {
-    return this.db
-      .updateTable('departments')
-      .set(data)
-      .where('id', '=', id)
-      .returningAll()
-      .executeTakeFirstOrThrow();
+  async updateDepartment(id: string, data: { name?: string; description?: string; head_user_id?: string | null }, actorId?: string) {
+    const existing = await this.db.selectFrom('departments').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!existing) throw new NotFoundException('Department not found');
+    const set: Record<string, unknown> = { updated_at: new Date() };
+    if (data.name !== undefined) {
+      const name = this.required(data.name, 'Department name', 80);
+      const dup = await this.db
+        .selectFrom('departments')
+        .select('id')
+        .where(sql<boolean>`lower(name) = ${name.toLowerCase()}`)
+        .where('id', '<>', id)
+        .executeTakeFirst();
+      if (dup) throw new ConflictException(`A department named "${name}" already exists`);
+      set.name = name;
+    }
+    if (data.description !== undefined) set.description = this.optional(data.description);
+    if (data.head_user_id !== undefined) set.head_user_id = await this.headId(data.head_user_id);
+    const row = await this.db.updateTable('departments').set(set).where('id', '=', id).returningAll().executeTakeFirstOrThrow();
+    this.audit(actorId, 'department', id, 'master_department_updated', { name: existing.name, description: existing.description, head_user_id: existing.head_user_id }, { name: row.name, description: row.description, head_user_id: row.head_user_id });
+    return row;
   }
 
-  async deleteDepartment(id: string) {
-    await this.db.deleteFrom('departments').where('id', '=', id).execute();
+  async deleteDepartment(id: string, actorId?: string) {
+    const existing = await this.db.selectFrom('departments').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!existing) throw new NotFoundException('Department not found');
+    const members = await this.db.selectFrom('users').select(sql<number>`count(*)::int`.as('n')).where('department_id', '=', id).executeTakeFirst();
+    if ((members?.n || 0) > 0) {
+      throw new ConflictException(`${members!.n} ${members!.n === 1 ? 'person belongs' : 'people belong'} to ${existing.name} — move them to another department first`);
+    }
+    await this.deleteInUse('departments', id, existing.name);
+    this.audit(actorId, 'department', id, 'master_department_deleted', { code: existing.code, name: existing.name }, null);
     return { success: true };
   }
 
@@ -199,8 +257,11 @@ export class MastersService {
     return row;
   }
 
-  async deleteZone(id: string) {
-    await this.db.deleteFrom('zones').where('id', '=', id).execute();
+  async deleteZone(id: string, actorId?: string) {
+    const existing = await this.db.selectFrom('zones').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!existing) throw new NotFoundException('Zone not found');
+    await this.deleteInUse('zones', id, `Zone ${existing.name}`);
+    this.audit(actorId, 'zone', id, 'master_zone_deleted', { name: existing.name }, null);
     return { success: true };
   }
 
@@ -259,8 +320,11 @@ export class MastersService {
     return row;
   }
 
-  async deleteRegion(id: string) {
-    await this.db.deleteFrom('regions').where('id', '=', id).execute();
+  async deleteRegion(id: string, actorId?: string) {
+    const existing = await this.db.selectFrom('regions').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!existing) throw new NotFoundException('Region not found');
+    await this.deleteInUse('regions', id, `Region ${existing.name}`);
+    this.audit(actorId, 'region', id, 'master_region_deleted', { name: existing.name }, null);
     return { success: true };
   }
 

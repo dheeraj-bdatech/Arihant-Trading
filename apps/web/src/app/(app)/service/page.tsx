@@ -66,7 +66,7 @@ import {
   BarList,
   SectionHeader,
   type BarListItem } from '@/components/ui';
-import { allowedNextServiceStatuses, normalizeServiceStatus, type ServiceStatus } from '@arihant/shared';
+import { allowedNextServiceStatuses, normalizeServiceStatus, serviceResolveBlocker, type ServiceStatus } from '@arihant/shared';
 import {
   errMsg,
   warrantyLabel,
@@ -287,8 +287,9 @@ export default function ServicePage() {
     if (tab === 'escalated') return ['escalated', 'revisit_required', 'reopened'].includes(s);
     if (tab === 'reports') return ['report_submitted', 'resolved'].includes(s);
     if (tab === 'closed') return ['closed', 'cancelled'].includes(s);
-    if (tab === 'completed') return ['resolved', 'report_submitted', 'closed'].includes(s);
-    return s === tab;
+    if (tab === 'completed') return ['report_submitted', 'closed'].includes(s);
+    if (tab === 'pending') return !isFinished(s);
+    return s === tab; // awaiting_part included
   }, []);
   // the API already applied every filter, the stage included
   const displayedTickets = tickets;
@@ -304,22 +305,39 @@ export default function ServicePage() {
     setSearchQuery('');
     setActiveTab('all');
   };
+  // Phones: the list sits below the KPI tiles and the summary cards, so a tile that turns a filter on
+  // brings the filter row (and the list under it) up; otherwise the tap looks like it did nothing.
+  const filterRowRef = useRef<HTMLDivElement>(null);
+  const revealList = () => {
+    const el = filterRowRef.current;
+    if (el && el.getBoundingClientRect().top > window.innerHeight - 120) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   /** Flag tiles / "Flags" menu: single-select, click the active one again to clear. Other filters stay. */
-  const pickFlag = (key: FlagKey) => setActiveFlag((cur) => (cur === key ? 'all' : key));
+  const pickFlag = (key: FlagKey) => {
+    if (activeFlag !== key) revealList();
+    setActiveFlag((cur) => (cur === key ? 'all' : key));
+  };
   /** KPI tile that switches the stage filter (click again to clear). */
-  const toggleStage = (tab: string) => setActiveTab((cur) => (cur === tab ? 'all' : tab));
+  const toggleStage = (tab: string) => {
+    if (activeTab !== tab) revealList();
+    setActiveTab((cur) => (cur === tab ? 'all' : tab));
+  };
 
-  const STAGES: { id: string; label: string }[] = [
+  const STAGES: { id: string; label: string; tile?: true }[] = [
     { id: 'all', label: 'All stages' },
     { id: 'open', label: 'New intake' },
     { id: 'assigned', label: 'Assigned & scheduled' },
     { id: 'in_progress', label: 'In progress' },
     { id: 'awaiting', label: 'Awaiting / on hold' },
-    { id: 'escalated', label: 'Escalated / revisit' },
+    { id: 'escalated', label: 'Escalated, revisit & reopened' },
     { id: 'reports', label: 'Reports filed' },
     { id: 'closed', label: 'Closed / cancelled' },
-    // the "Completed & Signed" tile: resolved + report filed + closed (overlaps the two stages above)
-    { id: 'completed', label: 'Completed & signed' },
+    // KPI tile stages, each overlapping the pipeline stages above (so none is a board lane):
+    // "Pending Queue" = every unfinished ticket; "Awaiting Parts / Spares" = a slice of awaiting;
+    // "Completed & Signed" = signed-off report filed (awaiting close) + closed
+    { id: 'pending', label: 'Pending queue', tile: true },
+    { id: 'awaiting_part', label: 'Awaiting parts', tile: true },
+    { id: 'completed', label: 'Completed & signed', tile: true },
   ];
   const SOURCES: { key: string; label: string }[] = [
     { key: 'all', label: 'All channels' },
@@ -382,18 +400,32 @@ export default function ServicePage() {
       const status = normalizeServiceStatus(t.status);
       const allowed: ServiceStatus[] = (t.allowed_next_statuses as ServiceStatus[]) || allowedNextServiceStatuses(status);
       const isManager = MANAGER_ROLES.includes(role);
+      // the API lets a service engineer take a ticket off its engineer only if it is theirs or held by one they dispatch
+      const mayTakeFrom = role !== 'service_team' || !t.assigned_to || t.assigned_to === userId || engineers.some((e) => e.id === t.assigned_to);
+      // a chief service engineer (team > 1) dispatches; a field engineer only works their own tickets
+      const isChief = role === 'service_team' && engineers.length > 1;
+      // signs off this ticket's work (de-escalate, close on an unapproved report): managers, and the territory chief
+      const supervises = t.can_supervise ?? isManager;
+      // detail rows carry every report, list rows only the newest one
+      const reports: any[] = t.reports || (t.latest_report ? [t.latest_report] : []);
       const out: TicketAction[] = [];
       for (const target of allowed) {
         if (target === 'report_submitted') continue; // set by filing a report
         if (target === 'closed') {
+          // an engineer closes only once the report is approved (a supervisor's close approves it, never his own report)
+          const ownReport = role === 'service_team' && reports[0]?.submitted_by === userId;
+          if ((!supervises || ownReport) && reports[0]?.report_status !== 'Approved') continue;
           out.push({ kind: 'close', label: 'Sign off & close', tone: 'primary' });
           continue;
         }
+        if (target === 'resolved' && serviceResolveBlocker({ reports, reopened_at: t.reopened_at })) continue; // the report resolves it
         if (target === 'reopened' && !['management', 'admin'].includes(role)) continue;
-        if (status === 'escalated' && !isManager) continue; // only managers de-escalate
+        if (status === 'escalated' && !supervises) continue; // managers and the territory chief de-escalate
         // a field engineer can only self-assign an unassigned ticket; a chief service engineer (team > 1) can reassign
-        if (target === 'assigned' && role === 'service_team' && t.assigned_to && engineers.length <= 1) continue;
-        if (target === 'cancelled' && role === 'service_team' && t.assigned_to && t.assigned_to !== userId) continue;
+        if (target === 'assigned' && role === 'service_team' && t.assigned_to && (engineers.length <= 1 || !mayTakeFrom)) continue;
+        if (target === 'received' && !mayTakeFrom) continue;
+        // cancelling is final: own ticket, or as chief the intake queue and the team's tickets (the API's rule)
+        if (target === 'cancelled' && role === 'service_team' && t.assigned_to !== userId && (!isChief || !mayTakeFrom)) continue;
         let label = ACTION_LABEL[target] || statusLabel(target);
         if (status === 'escalated' && target !== 'cancelled') label = `De-escalate: ${statusLabel(target)}`;
         else if (target === 'assigned' && t.assigned_to) label = 'Back to assigned';
@@ -409,12 +441,12 @@ export default function ServicePage() {
         out.push({ kind: 'report', label: 'File service report', tone: 'primary' });
       }
       // §47: hand an open ticket to another engineer without a status change (a field engineer cannot; a chief can)
-      if (t.assigned_to && !isFinished(t.status) && (role !== 'service_team' || engineers.length > 1)) {
+      if (t.assigned_to && !isFinished(t.status) && mayTakeFrom && (role !== 'service_team' || engineers.length > 1)) {
         out.push({ kind: 'reassign', label: 'Reassign engineer', tone: 'secondary' });
       }
       return out.sort((a, b) => actionRank(a) - actionRank(b));
     },
-    [role, userId, engineers.length],
+    [role, userId, engineers],
   );
 
   const runAction = async (t: any, a: TicketAction) => {
@@ -487,7 +519,7 @@ export default function ServicePage() {
   const activeRing = (on: boolean) => `cursor-pointer transition-shadow hover:shadow-md ${on ? 'ring-2 ring-[#0F5E63]' : ''}`;
 
   /* --------------------------- record views mapping --------------------------- */
-  const lanes = STAGES.filter((s) => s.id !== 'all' && s.id !== 'completed').map((s) => ({ key: s.id, label: s.label, tone: toneFor(s.label) }));
+  const lanes = STAGES.filter((s) => s.id !== 'all' && !s.tile).map((s) => ({ key: s.id, label: s.label, tone: toneFor(s.label) }));
   const stageOf = (status: string) => lanes.find((l) => matchesTab(l.key, status))?.key ?? 'open';
   const laneByKey = new Map<string, string>(displayedTickets.map((t) => [String(t.id), stageOf(t.status)]));
   const laneOf = (item: RecordItem) => laneByKey.get(item.key) ?? 'open';
@@ -522,7 +554,7 @@ export default function ServicePage() {
     const customer = unverified ? t.claimed_organisation_name : t.organisation_name || 'Client Agency / Command Station';
     return {
       key: String(t.id),
-      code: t.ticket_no,
+      code: t.customer_reference ? `${t.ticket_no} · Ref ${t.customer_reference}` : t.ticket_no,
       title: t.complaint || 'No complaint text',
       subtitle: [customer, t.location || t.city].filter(Boolean).join(' · '),
       status: { label: statusLabel(t.status), tone: toneFor(statusLabel(t.status)) },
@@ -579,6 +611,7 @@ export default function ServicePage() {
               >
                 <TableCell className="whitespace-nowrap">
                   <span className="font-mono font-bold text-[#0F5E63]">{t.ticket_no || '-'}</span>
+                  {t.customer_reference && <div className="font-mono text-[11px] text-[#4A5568]">Ref {t.customer_reference}</div>}
                   {t.priority && (
                     <div className="mt-1">
                       <Badge variant={priorityBadge(t.priority)} size="sm" className="uppercase font-bold">
@@ -654,7 +687,7 @@ export default function ServicePage() {
         }
       />
 
-      {/* KPI Metrics HUD (§34) — five tiles; clickable ones filter the queue (click again to clear). */}
+      {/* KPI Metrics HUD (§34) — five tiles, each filters the queue (click again to clear). */}
       <StatGrid cols={5} className="gap-3">
         <StatCard
           label="New Tickets"
@@ -672,6 +705,11 @@ export default function ServicePage() {
           value={stats?.pendingTickets ?? tickets.filter((t) => !isFinished(t.status)).length}
           subtext={`${stats?.assignedTickets ?? tickets.filter((t) => t.assigned_to && !isFinished(t.status)).length} assigned to engineers`}
           icon={<Wrench className="h-5 w-5 text-[#0F5E63]" />}
+          role="button"
+          tabIndex={0}
+          onClick={() => toggleStage('pending')}
+          onKeyDown={(e) => e.key === 'Enter' && toggleStage('pending')}
+          className={activeRing(activeTab === 'pending')}
         />
         <StatCard
           label="SLA Breached"
@@ -691,6 +729,11 @@ export default function ServicePage() {
           subtext="Depot spares logistics pending"
           icon={<Package className="h-5 w-5 text-[#9A3412]" />}
           variant="amber"
+          role="button"
+          tabIndex={0}
+          onClick={() => toggleStage('awaiting_part')}
+          onKeyDown={(e) => e.key === 'Enter' && toggleStage('awaiting_part')}
+          className={activeRing(activeTab === 'awaiting_part')}
         />
         <StatCard
           label="Completed & Signed"
@@ -765,7 +808,7 @@ export default function ServicePage() {
       )}
 
       {/* One filter row: search, then compact dropdowns. */}
-      <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
+      <Card ref={filterRowRef} padding="sm" className="relative z-20 scroll-mt-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
@@ -945,6 +988,7 @@ export default function ServicePage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <span className="break-all font-mono text-base font-bold text-[#0F5E63]">{st.ticket_no || st.ticket_number}</span>
+                    {st.customer_reference && <span className="break-all font-mono text-xs text-[#4A5568]">Customer ref {st.customer_reference}</span>}
                     <Badge variant={statusBadgeVariant(st.status)}>{statusLabel(st.status).toUpperCase()}</Badge>
                     {isPortalTicket(st) && (
                       <Badge variant="info" size="sm" className="font-bold">

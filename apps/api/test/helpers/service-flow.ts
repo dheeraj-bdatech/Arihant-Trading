@@ -55,5 +55,7 @@ export const validReport = (over: Record<string, any> = {}) => ({
   customer_confirmation: true,
   customer_confirmation_type: 'Signature',
   customer_name_signed: 'ACP Rajiv Kumar, Station Security Head',
+  // §33: a signed-off report carries the signed service report
+  attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
   ...over,
 });

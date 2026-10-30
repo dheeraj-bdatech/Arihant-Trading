@@ -47,7 +47,7 @@ const MODULE_ROUTE_MAP: Record<string, { id: string; name: string }> = {
   '/expenses': { id: 'M7', name: 'Module 7: Field Expense Management' },
   '/tasks': { id: 'M8', name: 'Module 8: Task & Productivity' },
   '/regional': { id: 'M9', name: 'Module 9: Regional Analytics' },
-  '/reports': { id: 'M9', name: 'Module 9: Sales Performance' },
+  '/reports': { id: 'M10', name: 'Module 10: Management Reports' },
   '/admin': { id: 'ADMIN', name: 'Administration & Master Data' },
 };
 

@@ -643,7 +643,7 @@ html[data-app-theme] tbody tr:hover { background-color: var(--md-state-hover); }
   /* a row of stat cards becomes one swipeable strip (M3 carousel) instead of pages of tiles */
   .grid:has(> .ui-stat:nth-child(3)), .grid:has(> a > .ui-stat):has(> a:nth-child(3)) {
     display: flex; overflow-x: auto; gap: 10px; scroll-snap-type: x proximity; scrollbar-width: none;
-    margin-inline: -16px; padding-inline: 16px; scroll-padding-inline: 16px; padding-bottom: 2px;
+    margin-inline: -16px; padding-inline: 16px; scroll-padding-inline: 16px; padding-block: 2px; /* room for a selected tile's 2px ring */
   }
   .grid:has(> .ui-stat:nth-child(3))::-webkit-scrollbar, .grid:has(> a > .ui-stat)::-webkit-scrollbar { display: none; }
   .grid:has(> .ui-stat:nth-child(3)) > .ui-stat, .grid:has(> a > .ui-stat):has(> a:nth-child(3)) > a { flex: 0 0 min(44vw, 176px); scroll-snap-align: start; }
@@ -706,6 +706,13 @@ html[data-app-theme] .bg-white:is(.rounded-xl, .rounded-2xl, .rounded-\[14px\], 
 html[data-app-theme] :is(.ui-card--interactive:hover, a:hover > .ui-stat, .ui-stat.cursor-pointer:hover):not([role='dialog'] *) {
   box-shadow: var(--glass-shadow-lift);
   border-color: rgba(15, 94, 99, 0.45);
+}
+/* a KPI tile that is the list's active filter (`ring-2`): Tailwind's ring is a box-shadow, which the glass
+   shadow above replaces, so put the ring back on top of it. !important: the glass rule's `.bg-white…:not()`
+   branch outranks any plain tile selector, and a selected tile must always read as selected. */
+html[data-app-theme] .ui-stat.ring-2:not([role='dialog'] *) {
+  border-color: var(--tw-ring-color) !important;
+  box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--glass-shadow-lift) !important;
 }
 
 /* header search + sidebar "Find a module": glass pill with a visible edge */

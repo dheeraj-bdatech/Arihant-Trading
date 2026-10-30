@@ -14,7 +14,8 @@ export class UploadsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  getSignParameters(folder?: string) {
+  async getSignParameters(folder?: string) {
+    await this.cloudinaryService.assertCredentialsAccepted();
     return this.cloudinaryService.generateSignedUploadParameters(folder);
   }
 

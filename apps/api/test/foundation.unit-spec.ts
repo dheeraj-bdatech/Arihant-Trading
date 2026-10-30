@@ -231,4 +231,36 @@ describe('CloudinaryService.generateSignedUploadParameters', () => {
     const p = new CloudinaryService(config({ CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's', CLOUDINARY_UPLOAD_FOLDER: 'arihant-bos' })).generateSignedUploadParameters('../../other-tenant');
     expect(p.folder.startsWith('arihant-bos')).toBe(true);
   });
+  it('signs with the secret as meant, not the whitespace or quotes pasted around it', () => {
+    const p = new CloudinaryService(config({ CLOUDINARY_CLOUD_NAME: ' c ', CLOUDINARY_API_KEY: '"k"', CLOUDINARY_API_SECRET: ' "sec"\n' })).generateSignedUploadParameters('f');
+    expect(p.apiKey).toBe('k');
+    expect(p.cloudName).toBe('c');
+    expect(p.signature).toBe(crypto.createHash('sha1').update(`allowed_formats=${p.allowedFormats}&folder=${p.folder}&timestamp=${p.timestamp}sec`).digest('hex'));
+  });
+});
+
+describe('CloudinaryService credential check', () => {
+  const realFetch = global.fetch;
+  const svc = () => new CloudinaryService(config({ CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 'wrong' }));
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it('refuses to sign with a clear message when Cloudinary rejects the key / secret pair', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: { message: 'api_secret mismatch' } }) }) as any;
+    await expect(svc().assertCredentialsAccepted()).rejects.toThrow(/CLOUDINARY_API_SECRET/);
+  });
+  it('allows signing when Cloudinary accepts the credentials, and caches the answer', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ status: 'ok' }) });
+    global.fetch = fetchMock as any;
+    const s = svc();
+    await expect(s.assertCredentialsAccepted()).resolves.toBeUndefined();
+    await s.assertCredentialsAccepted();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('does not block uploads when Cloudinary cannot be reached', async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error('network down')) as any;
+    await expect(svc().checkCredentials()).resolves.toBe('unknown');
+    await expect(svc().assertCredentialsAccepted()).resolves.toBeUndefined();
+  });
 });

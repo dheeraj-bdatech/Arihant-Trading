@@ -7,3 +7,5 @@ export * from './expense-workflow.js';
 export * from './task-workflow.js';
 export * from './india-geo.js';
 export * from './performance.js';
+export * from './reports.js';
+export * from './access-modules.js';

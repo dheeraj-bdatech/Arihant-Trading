@@ -2009,6 +2009,13 @@ export default function VisitsPage() {
                               )}
                             </div>
                             <div className="text-[11px] text-[#4A5568] flex items-center gap-2 mt-0.5">
+                              {/* Each stop's own day: a stop moved off the tour's day must never read as the tour's date. */}
+                              {formatDateIN(tv.planned_date) !== formatDateIN(t.trip_date) ? (
+                                <span className="font-semibold text-[#9A3412]">Moved to {formatDateIN(tv.planned_date)}</span>
+                              ) : (
+                                <span className="font-mono">{formatDateIN(tv.planned_date)}</span>
+                              )}
+                              <span>•</span>
                               <span>{tv.location}</span>
                               <span>•</span>
                               <span>{tv.start_time ? `${tv.start_time} - ${tv.end_time || ''}` : 'Slot TBD'}</span>

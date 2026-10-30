@@ -264,6 +264,27 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       expect((await get(t.id)).resolved_at).toBeNull();
     });
 
+    it('a report from before a reopen, or one that says further work is needed, cannot back "resolved"', async () => {
+      // closed on an approved report, then reopened: that report is no evidence for the new fault
+      const a = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+      await fileReport(app, a.id, tok.svc);
+      expect((await api().post(`/api/service/tickets/${a.id}/close`).set(auth('mgmt')).send({})).status).toBe(201);
+      expect((await patch(a.id, { status: 'reopened', remarks: 'Fault came back the next morning' })).status).toBe(200);
+      expect((await patch(a.id, { status: 'in_progress' })).status).toBe(200);
+      const stale = await patch(a.id, { status: 'resolved' });
+      expect(stale.status).toBe(400);
+      expect(stale.body.message).toContain('before the ticket was reopened');
+
+      // a further-work report parks the ticket for a revisit; that same report cannot then resolve it
+      const b = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+      await fileReport(app, b.id, tok.svc, { further_work_required: true, further_work_description: 'Replace the sensor on the next visit', next_visit_date: istDay(3) });
+      expect((await get(b.id)).status).toBe('revisit_required');
+      expect((await patch(b.id, { status: 'in_progress' })).status).toBe(200);
+      const pending = await patch(b.id, { status: 'resolved' });
+      expect(pending.status).toBe(400);
+      expect(pending.body.message).toContain('further work is needed');
+    });
+
     it('a report returned for correction blocks resolving until the corrected report is filed', async () => {
       const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
       const rep = await fileReport(app, t.id, tok.svc);
@@ -321,13 +342,18 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
   // 3. Roles on specific transitions: escalate / reopen / cancel
   // ===========================================================================
   describe('3. Role-gated transitions', () => {
-    it('only managers can de-escalate', async () => {
-      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
-      expect((await patch(t.id, { status: 'escalated', remarks: 'Needs OEM firmware specialist' }, 'svc')).status).toBe(200);
-      const engineer = await patch(t.id, { status: 'in_progress' }, 'svc');
+    it('de-escalation: managers, and the chief service engineer of the ticket\'s territory only', async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc2, 'in_progress');
+      expect((await patch(t.id, { status: 'escalated', remarks: 'Needs OEM firmware specialist' }, 'svc2')).status).toBe(200);
+      const engineer = await patch(t.id, { status: 'in_progress' }, 'svc2');
       expect(engineer.status).toBe(403);
       expect(engineer.body.message).toContain('de-escalate');
-      expect((await patch(t.id, { status: 'in_progress' }, 'rmN')).status).toBe(200);
+      expect((await patch(t.id, { status: 'in_progress' }, 'svc')).status).toBe(200); // N-zone chief, N-zone ticket
+      // outside the chief's territory (East), even on his own engineer's ticket: managers only
+      const far = await advanceTicket(app, (await mk({}, 'mgmt', orgE)).id, tok.mgmt, uid.svc2, 'in_progress');
+      expect((await patch(far.id, { status: 'escalated', remarks: 'Needs OEM firmware specialist' }, 'svc2')).status).toBe(200);
+      expect((await patch(far.id, { status: 'in_progress' }, 'svc')).status).toBe(403);
+      expect((await patch(far.id, { status: 'in_progress' }, 'rmE')).status).toBe(200);
     });
 
     async function closedTicket(ageDays = 0) {
@@ -413,16 +439,17 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
     });
 
     it('the engineer needs a manager-approved report to close; management auto-approves on close', async () => {
-      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
-      const rep = await api().post(`/api/service/tickets/${t.id}/report`).set(auth('svc')).send(validReport());
+      // the field engineer (svc2): a chief may sign off his team's work in his territory (section 16)
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc2, 'in_progress');
+      const rep = await api().post(`/api/service/tickets/${t.id}/report`).set(auth('svc2')).send(validReport());
       expect(rep.status).toBe(201);
 
-      const byEngineer = await api().post(`/api/service/tickets/${t.id}/close`).set(auth('svc')).send({});
+      const byEngineer = await api().post(`/api/service/tickets/${t.id}/close`).set(auth('svc2')).send({});
       expect(byEngineer.status).toBe(403);
       expect(byEngineer.body.message).toContain('approved');
 
       expect((await api().post(`/api/service/tickets/${t.id}/reports/${rep.body.id}/review`).set(auth('rmN')).send({ approved: true })).status).toBe(201);
-      expect((await api().post(`/api/service/tickets/${t.id}/close`).set(auth('svc')).send({})).status).toBe(201);
+      expect((await api().post(`/api/service/tickets/${t.id}/close`).set(auth('svc2')).send({})).status).toBe(201);
       const d = await get(t.id);
       expect(d.status).toBe('closed');
       expect(d.closed_at).toBeTruthy();
@@ -710,7 +737,7 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       expect((await post({ ...base, is_chargeable: true }, 'svc')).status).toBe(403);
       expect((await post({ ...base, warranty_override: true }, 'svc')).status).toBe(403);
       expect((await post({ ...base, assigned_to: uid.svc }, 'sales')).status).toBe(403);
-      expect((await post(base, 'sales')).status).toBe(403); // DEF-084: sales cannot log service tickets at all
+      expect((await post(base, 'sales')).status).toBe(201); // sales log their customers' breakdowns (reverses DEF-084)
       expect((await post({ ...base, assigned_to: uid.svc }, 'svc2')).status).toBe(403); // field engineer: self only
       expect((await post({ ...base, assigned_to: uid.svcNE }, 'svc')).status).toBe(403); // chief: own depot team only
       expect((await post({ ...base, assigned_to: uid.svc2 }, 'svc')).status).toBe(201);
@@ -843,11 +870,52 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
   // ===========================================================================
   // 10. Service reports
   // ===========================================================================
+  describe('9b. Audit trail (§47)', () => {
+    it('every status change is audited whichever path made it (check-in/out, report filed or returned); visits and part requests too', async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'visit_scheduled');
+      const visits = `/api/service/tickets/${t.id}/visits`;
+      const v1 = (await get(t.id)).visits[0]; // scheduling the ticket created its visit
+      expect((await api().patch(`${visits}/${v1.id}/check-in`).set(auth('svc')).send({})).status).toBe(200);
+      expect((await api().patch(`${visits}/${v1.id}/check-out`).set(auth('svc')).send({ visit_outcome: 'Part Required', notes: 'Drive belt is worn out' })).status).toBe(200);
+      expect((await api().post(`/api/service/tickets/${t.id}/part-requests`).set(auth('svc')).send({ part_name: 'ZZTEST drive belt' })).status).toBe(201);
+      const v2 = (await api().post(visits).set(auth('svc')).send({})).body;
+      expect((await api().patch(`${visits}/${v2.id}/check-in`).set(auth('svc')).send({})).status).toBe(200);
+      const rep = await fileReport(app, t.id, tok.svc);
+      expect((await api().post(`/api/service/tickets/${t.id}/reports/${rep.id}/review`).set(auth('rmN')).send({ approved: false, return_reason: 'Job sheet photo is blurred' })).status).toBe(201);
+
+      const moves = (await sql1(`select count(*)::int n from ticket_status_history where ticket_id='${t.id}' and from_status is not null`))[0].n;
+      expect(moves).toBe(8); // assigned, scheduled, in progress, awaiting part, in progress, resolved, report submitted, in progress
+      await waitFor(async () => (await sql1(`select count(*)::int n from audit_log where entity_type='service_ticket' and action='status_change' and entity_id='${t.id}'`))[0].n === moves);
+      const children = `select id from service_visits where ticket_id='${t.id}' union select id from part_requests where ticket_id='${t.id}'`;
+      const rows = await waitFor(async () => {
+        const r = await sql1(`select entity_type || ':' || action k from audit_log where entity_id in (${children}) order by 1`);
+        return r.length >= 6 && r;
+      });
+      expect(rows.map((r: any) => r.k)).toEqual(['part_request:create', 'service_visit:check_in', 'service_visit:check_in', 'service_visit:check_out', 'service_visit:create', 'service_visit:create']);
+      await sql1(`delete from audit_log where entity_id in (${children})`);
+    });
+  });
+
   describe('10. Service report validation (§33)', () => {
     const file = (id: string, body: any, who = 'svc') => api().post(`/api/service/tickets/${id}/report`).set(auth(who)).send(body);
     let t: any;
     beforeEach(async () => {
       t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+    });
+
+    it('records how the customer signed off (never assumed), and a signed-off report carries the signed report', async () => {
+      const noType = await file(t.id, validReport({ customer_confirmation_type: undefined }));
+      expect(noType.status).toBe(400);
+      expect(noType.body.message).toContain('customer_confirmation_type');
+      const unsigned = await file(t.id, validReport({ attachments: undefined }));
+      expect(unsigned.status).toBe(400);
+      expect(unsigned.body.message).toContain('signed service report');
+      // a link to the signed report is enough
+      expect((await file(t.id, validReport({ attachments: undefined, report_url: 'https://files.example.com/sr-signed.pdf' }))).status).toBe(201);
+    });
+
+    it.each(['OTP', 'Email Confirmation'])('a %s sign-off needs no signed document (only paper sign-offs do)', async (type) => {
+      expect((await file(t.id, validReport({ customer_confirmation_type: type, attachments: undefined }))).status).toBe(201);
     });
 
     it('is refused before work has started', async () => {
@@ -1004,6 +1072,23 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       eTicket = await mk({}, 'mgmt', orgE);
     });
 
+    it("an engineer cannot lift a colleague's ticket (or bounce it to intake); their chief can", async () => {
+      // svcNE rides along as an additional engineer on svc2's ticket
+      const t = await mk({ additional_engineer_ids: [uid.svcNE] });
+      await advanceTicket(app, t.id, tok.mgmt, uid.svc2, 'assigned');
+      const cur = await get(t.id);
+      const lift = await api().patch(`/api/service/tickets/${t.id}/assign`).set(auth('svcNE')).send({ assigned_to: uid.svcNE, reason: 'I will take this one', version: cur.version });
+      expect(lift.status).toBe(403);
+      expect((await patch(t.id, { status: 'visit_scheduled', assigned_to: uid.svcNE, planned_visit_date: tomorrow(), version: cur.version }, 'svcNE')).status).toBe(403);
+      expect((await patch(t.id, { status: 'received', version: cur.version }, 'svcNE')).status).toBe(403);
+      expect((await get(t.id)).assigned_to).toBe(uid.svc2);
+      // scheduling the visit without touching the engineer is fine
+      expect((await patch(t.id, { status: 'visit_scheduled', planned_visit_date: tomorrow(), version: cur.version }, 'svcNE')).status).toBe(200);
+      // svc2 reports to svc: the chief service engineer may rebalance
+      const chief = await api().patch(`/api/service/tickets/${t.id}/assign`).set(auth('svc')).send({ assigned_to: uid.svc, reason: 'Chief takes this visit himself', version: (await get(t.id)).version });
+      expect(chief.status).toBe(200);
+    });
+
     it('roles outside the service module are refused everywhere', async () => {
       for (const path of ['/api/service/tickets', '/api/service/stats', `/api/service/tickets/${nTicket.id}`, `/api/service/tickets/${nTicket.id}/comments`, `/api/service/customer/${orgN}/history`, '/api/service/equipment/SN-1/history']) {
         const r = await api().get(path).set(auth('accounts'));
@@ -1038,10 +1123,12 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       expect((await api().post(`/api/service/tickets/${eTicket.id}/comments`).set(auth('rmN')).send({ body: 'cross-zone note' })).status).toBe(403);
     });
 
-    it('sales see their territory (and tickets they raised earlier), not other regions; they cannot log tickets', async () => {
+    it('sales see their territory (and tickets they raised), not other regions; they log tickets but never dispatch', async () => {
       expect((await api().get(`/api/service/tickets/${eTicket.id}`).set(auth('sales'))).status).toBe(403);
-      // DEF-084: Sales has no Service Desk intake any more
-      expect((await api().post('/api/service/tickets').set(auth('sales')).send({ organisation_id: orgN, complaint: 'ZZTEST sales intake attempt' })).status).toBe(403);
+      // sales log the breakdowns their customers report (business decision, reverses DEF-084)
+      const logged = await api().post('/api/service/tickets').set(auth('sales')).send({ organisation_id: orgN, complaint: 'ZZTEST sales intake of a breakdown' });
+      expect(logged.status).toBe(201);
+      expect(logged.body.status).toBe('received');
       const territory = await mk({}, 'mgmt', orgN);
       expect((await api().get(`/api/service/tickets/${territory.id}`).set(auth('sales'))).status).toBe(200);
       expect((await api().get(`/api/service/tickets/${territory.id}`).set(auth('salesE'))).status).toBe(403);
@@ -1219,7 +1306,7 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       const t = await mk();
       await patch(t.id, { status: 'assigned', assigned_to: uid.svc });
       await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_ticket_assigned' and user_id='${uid.svc}'`))[0]);
-      await patch(t.id, { status: 'visit_scheduled', planned_visit_date: tomorrow(), assigned_to: uid.svc2 });
+      await patch(t.id, { status: 'visit_scheduled', planned_visit_date: tomorrow(), assigned_to: uid.svc2, remarks: 'Manoj is closer to the site' });
       await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_ticket_assigned' and user_id='${uid.svc2}'`))[0]);
       await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_ticket_reassigned' and user_id='${uid.svc}'`))[0]);
     });
@@ -1230,6 +1317,164 @@ describe('Module 6 — workflow hardening, SLA, scoping & validation (edge cases
       await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_report_submitted' and user_id='${uid.rmN}'`))[0]);
       await api().post(`/api/service/tickets/${t.id}/close`).set(auth('mgmt')).send({});
       await waitFor(async () => (await sql1(`select id from notifications where entity_id='${t.id}' and type='service_closed' and user_id='${uid.demo}'`))[0]);
+    });
+  });
+  // ===========================================================================
+  // 16. Pipeline guards from the October audit (medium / low findings)
+  // ===========================================================================
+  describe('16. Pipeline guards from the audit', () => {
+    it("cancelling is final: a field engineer cancels only their own ticket; the chief may cancel intake", async () => {
+      const intake = await mk();
+      expect((await patch(intake.id, { status: 'cancelled', remarks: 'Not our equipment at all' }, 'svc2')).status).toBe(403);
+      expect((await patch(intake.id, { status: 'cancelled', remarks: 'Duplicate of an open ticket' }, 'svc')).status).toBe(200);
+      const mine = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc2, 'assigned');
+      expect((await patch(mine.id, { status: 'cancelled', remarks: 'Customer withdrew the complaint' }, 'svc2')).status).toBe(200);
+    });
+
+    it('work in progress needs an engineer; changing the engineer needs a reason (§47)', async () => {
+      const t = await mk();
+      expect((await patch(t.id, { status: 'escalated', remarks: 'Customer escalated to the IG office' })).status).toBe(200);
+      const none = await patch(t.id, { status: 'in_progress' });
+      expect(none.status).toBe(400);
+      expect(none.body.message).toContain('needs an engineer');
+      expect((await patch(t.id, { status: 'in_progress', assigned_to: uid.svc })).status).toBe(200);
+
+      const a = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'assigned');
+      const quiet = await patch(a.id, { status: 'visit_scheduled', planned_visit_date: tomorrow(), assigned_to: uid.svc2 });
+      expect(quiet.status).toBe(400);
+      expect(quiet.body.message).toContain('change the engineer');
+      expect((await patch(a.id, { status: 'visit_scheduled', planned_visit_date: tomorrow(), assigned_to: uid.svc2, remarks: 'Manoj is nearer the site' })).status).toBe(200);
+    });
+
+    it('a regional manager dispatches only engineers of their own zone', async () => {
+      const t = await mk();
+      expect((await patch(t.id, { status: 'assigned', assigned_to: uid.svcNE }, 'rmN')).status).toBe(403);
+      expect((await patch(t.id, { status: 'assigned', assigned_to: uid.svc2 }, 'rmN')).status).toBe(200);
+    });
+
+    it("field work is the engineer's: management cannot check in, raise spares or file the report", async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'visit_scheduled');
+      const v = (await get(t.id)).visits[0];
+      expect((await api().patch(`/api/service/tickets/${t.id}/visits/${v.id}/check-in`).set(auth('mgmt')).send({})).status).toBe(403);
+      expect((await api().post(`/api/service/tickets/${t.id}/part-requests`).set(auth('mgmt')).send({ part_name: 'ZZTEST belt' })).status).toBe(403);
+      expect((await api().patch(`/api/service/tickets/${t.id}/visits/${v.id}/check-in`).set(auth('svc')).send({})).status).toBe(200);
+      expect((await api().post(`/api/service/tickets/${t.id}/report`).set(auth('mgmt')).send(validReport())).status).toBe(403);
+    });
+
+    it('one "Visit Scheduled": the status creates the visit, a planned visit schedules the ticket, check-in skips no stage', async () => {
+      const a = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'visit_scheduled');
+      expect((await get(a.id)).visits).toHaveLength(1);
+      // unscheduling clears the planned day; rescheduling moves the pending visit instead of adding one
+      expect((await patch(a.id, { status: 'assigned' })).status).toBe(200);
+      expect((await get(a.id)).planned_visit_date).toBeNull();
+      expect((await patch(a.id, { status: 'visit_scheduled', planned_visit_date: istDay(2) })).status).toBe(200);
+      const days = await sql1(`select (scheduled_start at time zone 'Asia/Kolkata')::date::text d from service_visits where ticket_id='${a.id}'`);
+      expect(days.map((r: any) => r.d)).toEqual([istDay(2)]);
+
+      const b = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'assigned');
+      expect((await api().post(`/api/service/tickets/${b.id}/visits`).set(auth('svc')).send({ scheduled_start: new Date(Date.now() + 86400000).toISOString() })).status).toBe(201);
+      const bd = await get(b.id);
+      expect(bd.status).toBe('visit_scheduled');
+      expect(bd.planned_visit_date).toBeTruthy();
+
+      // a visit logged after the fact leaves the status alone; checking in on it passes through Visit Scheduled
+      const c = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'assigned');
+      const late = await api().post(`/api/service/tickets/${c.id}/visits`).set(auth('svc')).send({ scheduled_start: new Date(Date.now() - 3 * 86400000).toISOString() });
+      expect((await get(c.id)).status).toBe('assigned');
+      expect((await api().patch(`/api/service/tickets/${c.id}/visits/${late.body.id}/check-in`).set(auth('svc')).send({})).status).toBe(200);
+      expect((await get(c.id)).status_history.map((h: any) => h.to_status).slice(0, 3)).toEqual(['in_progress', 'visit_scheduled', 'assigned']);
+    });
+
+    it('only the newest report is reviewed; a further-work report and a reopen leave no resolution standing', async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+      const first = await fileReport(app, t.id, tok.svc, { further_work_required: true, further_work_description: 'Replace the sensor on the revisit', next_visit_date: istDay(0) });
+      const parked = await get(t.id);
+      expect(parked.status).toBe('revisit_required');
+      expect(parked.resolved_at).toBeNull();
+      expect((await patch(t.id, { status: 'in_progress' })).status).toBe(200);
+      const second = await fileReport(app, t.id, tok.svc);
+      const old = await api().post(`/api/service/tickets/${t.id}/reports/${first.id}/review`).set(auth('rmN')).send({ approved: false, return_reason: 'Old report is missing photos' });
+      expect(old.status).toBe(400);
+      expect(old.body.message).toContain('newer service report');
+      expect((await get(t.id)).status).toBe('report_submitted');
+      expect((await api().post(`/api/service/tickets/${t.id}/reports/${second.id}/review`).set(auth('rmN')).send({ approved: true })).status).toBe(201);
+
+      expect((await api().post(`/api/service/tickets/${t.id}/close`).set(auth('mgmt')).send({})).status).toBe(201);
+      expect((await get(t.id)).resolved_at).toBeTruthy();
+      expect((await patch(t.id, { status: 'reopened', remarks: 'Fault came back the next day' })).status).toBe(200);
+      expect((await get(t.id)).resolved_at).toBeNull();
+    });
+
+    it('escalated or parked tickets do not dodge the SLA alarms', async () => {
+      const esc = await mk({ priority: 'high' });
+      expect((await patch(esc.id, { status: 'escalated', remarks: 'Needs the regional manager now' })).status).toBe(200);
+      await sql1(`update service_tickets set sla_response_due_at = now() - interval '10 minutes' where id='${esc.id}'`);
+      const held = await mk({ priority: 'critical' });
+      expect((await patch(held.id, { status: 'on_hold', remarks: 'Waiting on the customer letter' })).status).toBe(200);
+      await sql1(`update service_tickets set created_at = now() - interval '3 hours' where id='${held.id}'`);
+      expect((await api().post('/api/service/maintenance/sweep').set(auth('mgmt'))).status).toBe(201);
+      expect((await sql1(`select sla_response_breach_notified_at x from service_tickets where id='${esc.id}'`))[0].x).toBeTruthy();
+      expect((await get(held.id)).status).toBe('escalated');
+    });
+
+    it('KPIs: a repair under way is not visit-overdue, and "Completed & Signed" needs the filed report', async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+      await sql1(`update service_tickets set planned_visit_date = '${istDay(-2)}' where id='${t.id}'`);
+      expect((await api().get(`/api/service/tickets?overdue=true&search=${t.ticket_no}`).set(auth('mgmt'))).body.total).toBe(0);
+      await sql1(`update service_tickets set status = 'resolved' where id='${t.id}'`); // legacy: resolved, no report
+      expect((await api().get(`/api/service/tickets?stage=completed&search=${t.ticket_no}`).set(auth('mgmt'))).body.total).toBe(0);
+    });
+
+    it("the territory chief reviews his team's reports, never his own, and nothing outside his territory", async () => {
+      const review = (id: string, rep: string, who: string) => api().post(`/api/service/tickets/${id}/reports/${rep}/review`).set(auth(who)).send({ approved: true });
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc2, 'in_progress');
+      const rep = await fileReport(app, t.id, tok.svc2);
+      expect((await review(t.id, rep.id, 'svc2')).status).toBe(403); // a field engineer does not sign off
+      expect((await api().get(`/api/service/tickets/${t.id}`).set(auth('svc'))).body.can_supervise).toBe(true);
+      expect((await review(t.id, rep.id, 'svc')).status).toBe(201);
+      expect((await get(t.id)).reports[0].report_status).toBe('Approved');
+
+      // his own report goes to a manager: neither review nor a close that would approve it
+      const own = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+      const ownRep = await fileReport(app, own.id, tok.svc);
+      expect((await review(own.id, ownRep.id, 'svc')).status).toBe(403);
+      expect((await api().post(`/api/service/tickets/${own.id}/close`).set(auth('svc')).send({})).status).toBe(403);
+
+      // outside his territory (East) — even his own engineer's ticket
+      const far = await advanceTicket(app, (await mk({}, 'mgmt', orgE)).id, tok.mgmt, uid.svc2, 'in_progress');
+      const farRep = await fileReport(app, far.id, tok.svc2);
+      expect((await api().get(`/api/service/tickets/${far.id}`).set(auth('svc'))).body.can_supervise).toBe(false);
+      expect((await review(far.id, farRep.id, 'svc')).status).toBe(403);
+    });
+
+    it("the customer's own reference is kept beside the TCK number and found by search", async () => {
+      const t = await mk({ customer_reference: 'GEM-INC-ZZ-4471' });
+      expect(t.ticket_no).toMatch(/^TCK-/);
+      expect((await get(t.id)).customer_reference).toBe('GEM-INC-ZZ-4471');
+      const found = await api().get('/api/service/tickets?search=gem-inc-zz-4471').set(auth('mgmt'));
+      expect(found.body.data.map((r: any) => r.id)).toContain(t.id);
+      expect(found.body.data.find((r: any) => r.id === t.id).customer_reference).toBe('GEM-INC-ZZ-4471');
+    });
+
+    it('"Repeat complaints" counts open tickets only', async () => {
+      const serial = `ZZREP-${Date.now()}`;
+      await mk({ equipment_serial: serial });
+      const again = await mk({ equipment_serial: serial });
+      expect((await get(again.id)).is_repeat_complaint).toBe(true);
+      const listed = async () => (await api().get(`/api/service/tickets?repeat=true&search=${serial}`).set(auth('mgmt'))).body.total;
+      expect(await listed()).toBe(1);
+      expect((await patch(again.id, { status: 'cancelled', remarks: 'Duplicate of the first complaint' })).status).toBe(200);
+      expect(await listed()).toBe(0);
+    });
+
+    it('settling the last open spares request resumes a ticket that was waiting for it', async () => {
+      const t = await advanceTicket(app, (await mk()).id, tok.mgmt, uid.svc, 'in_progress');
+      const pr = (await api().post(`/api/service/tickets/${t.id}/part-requests`).set(auth('svc')).send({ part_name: 'ZZTEST relay' })).body;
+      const url = `/api/service/tickets/${t.id}/part-requests/${pr.id}/status`;
+      expect((await api().patch(url).set(auth('mgmt')).send({ status: 'Unavailable – Ordered' })).status).toBe(200);
+      expect((await get(t.id)).status).toBe('awaiting_part');
+      expect((await api().patch(url).set(auth('mgmt')).send({ status: 'Cancelled', store_remarks: 'Customer supplied the relay' })).status).toBe(200);
+      expect(['in_progress', 'visit_scheduled']).toContain((await get(t.id)).status);
     });
   });
 });

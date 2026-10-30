@@ -64,12 +64,15 @@ export class ServiceController {
 
   @Get('tickets/:id')
   async findOneTicket(@Param('id') id: string, @CurrentUser() user: AuthUser) {
-    return this.serviceService.findOneTicket(id, user);
+    const ticket = await this.serviceService.findOneTicket(id, user);
+    // whether this user signs off this ticket's work (review the report, de-escalate, close): the UI offers those
+    return { ...ticket, can_supervise: await this.serviceService.canSupervise(id, user) };
   }
 
   @Post('tickets')
-  // QA DEF-084: Sales has no Service Desk (RBAC spec); it keeps read access to tickets on related records only.
-  @Roles('management', 'regional_manager', 'service_team', 'admin', 'demo_team', 'tender_team')
+  // Business decision (Oct 2026, reverses QA DEF-084): sales log breakdowns their customers report too. They cannot
+  // dispatch an engineer (ASSIGN_ROLES) or move the ticket; the service desk takes it from intake.
+  @Roles('management', 'regional_manager', 'sales', 'service_team', 'admin', 'demo_team', 'tender_team')
   async createTicket(@Body() dto: CreateTicketDto, @CurrentUser() user: AuthUser) {
     return this.serviceService.createTicket(dto, user);
   }
@@ -165,7 +168,8 @@ export class ServiceController {
 
   // --- Report Review & Approval Endpoints ---
   @Post('tickets/:id/reports/:reportId/review')
-  @Roles('management', 'regional_manager', 'admin')
+  // service_team: only a chief service engineer, for his territory (checked in the service)
+  @Roles('management', 'regional_manager', 'service_team', 'admin')
   async reviewReport(
     @Param('id') id: string,
     @Param('reportId') reportId: string,

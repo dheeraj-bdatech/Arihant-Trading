@@ -56,6 +56,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { uploadSignedFile } from '@/lib/signed-upload';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
@@ -125,21 +126,8 @@ const MAX_INTERACTION_FILE_BYTES = 10 * 1024 * 1024;
 
 /** Signed direct upload through the shared uploads API (POST /uploads/sign → Cloudinary). */
 async function uploadInteractionFile(file: File): Promise<InteractionAttachment> {
-  const sig = await api.post<{ timestamp: number; signature: string; apiKey: string; cloudName: string; folder: string; allowedFormats: string }>('/uploads/sign', {
-    folder: 'interaction-documents',
-  });
-  const form = new FormData();
-  form.append('file', file);
-  form.append('api_key', sig.apiKey);
-  form.append('timestamp', String(sig.timestamp));
-  form.append('signature', sig.signature);
-  form.append('folder', sig.folder);
-  form.append('allowed_formats', sig.allowedFormats); // signed by the API — must be sent exactly as returned
-  const res = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(sig.cloudName)}/auto/upload`, { method: 'POST', body: form });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data?.secure_url) throw new Error(data?.error?.message || 'Upload failed');
   return {
-    file_url: data.secure_url as string,
+    file_url: await uploadSignedFile(file, 'interaction-documents'),
     file_name: file.name,
     file_size: file.size,
     mime_type: file.type || 'application/octet-stream',
@@ -497,8 +485,8 @@ export default function LeadsPage() {
   const [newSalespersonId, setNewSalespersonId] = useState<string>('');
   const [reassignReason, setReassignReason] = useState<string>('');
 
-  // Add Interaction Form
-  const [interactionForm, setInteractionForm] = useState({
+  // Add Interaction Form — always opened through openTouchpoint(), which starts it blank for one lead / customer
+  const blankTouchpoint = () => ({
     lead_id: '',
     organisation_id: '',
     contact_id: '',
@@ -510,6 +498,10 @@ export default function LeadsPage() {
     next_followup_date: '',
     attachments: [] as InteractionAttachment[],
   });
+  const [interactionForm, setInteractionForm] = useState(blankTouchpoint);
+  /** Contacts of the customer the open touchpoint form is for (never another lead's customer). */
+  const [touchpointContacts, setTouchpointContacts] = useState<any[]>([]);
+  const touchpointOrgRef = useRef<string>('');
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
@@ -1637,18 +1629,7 @@ export default function LeadsPage() {
       });
 
       setIsLogInteractionOpen(false);
-      setInteractionForm({
-        lead_id: '',
-        organisation_id: '',
-        contact_id: '',
-        type: 'call',
-        date: istToday(),
-        notes: '',
-        outcome: '',
-        next_action: '',
-        next_followup_date: '',
-        attachments: [],
-      });
+      setInteractionForm(blankTouchpoint());
 
       if (selectedLead) {
         const updated = await api.get(`/leads/${selectedLead.id}`);
@@ -1895,15 +1876,31 @@ export default function LeadsPage() {
     return { key, label: o.label, tone: toneFor(o.label) };
   });
   const leadStatusLabel = (key: string) => leadLanes.find((l) => l.key === key)?.label || key.replace(/_/g, ' ');
-  const openLogTouch = (lead: any) => {
-    setInteractionForm({
-      ...interactionForm,
-      lead_id: lead.id,
-      organisation_id: lead.organisation_id,
-      contact_id: lead.primary_contact_id || '',
-    });
+  /**
+   * Opens the touchpoint form blank for one lead / customer: nothing typed for another lead (contact, minutes,
+   * outcome, files) carries over, an old error banner is cleared, and the contact list is that customer's own.
+   * A preset contact that is not one of them is dropped instead of being sent (the API would refuse it).
+   */
+  const openTouchpoint = (target: { leadId?: string | null; organisationId: string; contactId?: string | null }) => {
+    const orgId = target.organisationId || '';
+    touchpointOrgRef.current = orgId;
+    setInteractionForm({ ...blankTouchpoint(), lead_id: target.leadId || '', organisation_id: orgId, contact_id: target.contactId || '' });
+    setTouchpointContacts([]);
+    setFormError(null);
+    setAttachmentError(null);
     setIsLogInteractionOpen(true);
+    if (!orgId) return;
+    api
+      .get<any>('/contacts', { organisation_id: orgId })
+      .then((res) => {
+        if (touchpointOrgRef.current !== orgId) return; // another form was opened meanwhile
+        const contacts: any[] = Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : [];
+        setTouchpointContacts(contacts);
+        setInteractionForm((f) => (f.organisation_id === orgId && f.contact_id && !contacts.some((c) => c.id === f.contact_id) ? { ...f, contact_id: '' } : f));
+      })
+      .catch(() => touchpointOrgRef.current === orgId && setTouchpointContacts([]));
   };
+  const openLogTouch = (lead: any) => openTouchpoint({ leadId: lead.id, organisationId: lead.organisation_id, contactId: lead.primary_contact_id });
   const leadLaneById = new Map<string, string>();
   const leadRecordItems: RecordItem[] = leads.map((lead) => {
     const lane = leadLaneKey(lead.lead_status || lead.status);
@@ -4019,15 +4016,7 @@ export default function LeadsPage() {
                   variant="secondary"
                   size="sm"
                   className="h-10 flex-1 sm:h-8 sm:flex-none"
-                  onClick={() => {
-                    setInteractionForm({
-                      ...interactionForm,
-                      lead_id: selectedLead.id,
-                      organisation_id: selectedLead.organisation_id,
-                      contact_id: selectedLead.primary_contact_id || '',
-                    });
-                    setIsLogInteractionOpen(true);
-                  }}
+                  onClick={() => openLogTouch(selectedLead)}
                   leftIcon={<MessageSquare className="h-4 w-4" />}
                 >
                   Log Touchpoint
@@ -5399,13 +5388,7 @@ export default function LeadsPage() {
                     variant="primary"
                     className="h-10 w-full shrink-0 text-xs sm:h-7 sm:w-auto sm:text-[11px]"
                     onClick={() => {
-                      setInteractionForm({
-                        ...interactionForm,
-                        lead_id: customerLeads[0]?.id || '',
-                        organisation_id: selectedCustomer.id,
-                        contact_id: customerContacts[0]?.id || '',
-                      });
-                      setIsLogInteractionOpen(true);
+                      openTouchpoint({ leadId: customerLeads[0]?.id, organisationId: selectedCustomer.id, contactId: customerContacts[0]?.id });
                     }}
                     leftIcon={<Plus className="h-3 w-3" />}
                   >
@@ -5422,13 +5405,7 @@ export default function LeadsPage() {
                       size="xs"
                       variant="secondary"
                       onClick={() => {
-                        setInteractionForm({
-                          ...interactionForm,
-                          lead_id: customerLeads[0]?.id || '',
-                          organisation_id: selectedCustomer.id,
-                          contact_id: customerContacts[0]?.id || '',
-                        });
-                        setIsLogInteractionOpen(true);
+                        openTouchpoint({ leadId: customerLeads[0]?.id, organisationId: selectedCustomer.id, contactId: customerContacts[0]?.id });
                       }}
                       leftIcon={<Plus className="h-3 w-3" />}
                     >
@@ -5567,12 +5544,7 @@ export default function LeadsPage() {
                             variant="secondary"
                             className="h-9 w-full text-xs sm:h-7 sm:w-auto sm:text-[11px]"
                             onClick={() => {
-                              setInteractionForm({
-                                ...interactionForm,
-                                organisation_id: selectedCustomer.id,
-                                contact_id: c.id,
-                              });
-                              setIsLogInteractionOpen(true);
+                              openTouchpoint({ leadId: customerLeads[0]?.id, organisationId: selectedCustomer.id, contactId: c.id });
                             }}
                             leftIcon={<Plus className="h-3 w-3" />}
                           >
@@ -5664,13 +5636,7 @@ export default function LeadsPage() {
                 size="sm"
                 className="h-10 flex-1 sm:h-8 sm:flex-none"
                 onClick={() => {
-                  setInteractionForm({
-                    ...interactionForm,
-                    lead_id: customerLeads[0]?.id || '',
-                    organisation_id: selectedCustomer.id,
-                    contact_id: customerContacts[0]?.id || '',
-                  });
-                  setIsLogInteractionOpen(true);
+                  openTouchpoint({ leadId: customerLeads[0]?.id, organisationId: selectedCustomer.id, contactId: customerContacts[0]?.id });
                 }}
                 leftIcon={<Plus className="h-4 w-4" />}
               >
@@ -5747,14 +5713,14 @@ export default function LeadsPage() {
             />
           </div>
 
-          {customerContacts.length > 0 && (
+          {touchpointContacts.length > 0 && (
             <Select
               label="Contact Person (Optional)"
               value={interactionForm.contact_id}
               onChange={(e) => setInteractionForm({ ...interactionForm, contact_id: e.target.value })}
               options={[
                 { value: '', label: 'General / Primary Contact' },
-                ...customerContacts.map((c) => ({
+                ...touchpointContacts.map((c) => ({
                   value: c.id,
                   label: `${c.name || c.full_name || 'Contact'}${c.designation ? ` (${c.designation})` : ''}`,
                 })),

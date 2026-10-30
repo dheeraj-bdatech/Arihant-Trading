@@ -117,7 +117,8 @@ describe('Module 6: Enterprise Service & After-Sales Advanced Workflows (Visits,
       expect(res.status).toBe(201);
       expect(res.body.id).toBeDefined();
       expect(res.body.ticket_id).toBe(ticketId);
-      expect(res.body.visit_number).toBe(1);
+      // scheduling the ticket (status visit_scheduled) already created visit 1; a further planned visit is visit 2
+      expect(res.body.visit_number).toBe(2);
       visitId = res.body.id;
     });
 
@@ -262,6 +263,7 @@ describe('Module 6: Enterprise Service & After-Sales Advanced Workflows (Visits,
           parts_replaced: 'CP-8821 Impeller Assembly',
           customer_confirmation_type: 'Signature',
           customer_name_signed: 'Col. S. K. Roy (Chief Security Officer)',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
           customer_feedback_rating: 5,
           customer_remarks: 'Fast turnaround and high professionalism',
           further_work_required: false,
@@ -306,6 +308,7 @@ describe('Module 6: Enterprise Service & After-Sales Advanced Workflows (Visits,
           parts_replaced: 'CP-8821 Impeller Assembly',
           customer_confirmation_type: 'Signature',
           customer_name_signed: 'Col. S. K. Roy (Chief Security Officer)',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
           further_work_required: false,
         });
       expect(second.status).toBe(201);

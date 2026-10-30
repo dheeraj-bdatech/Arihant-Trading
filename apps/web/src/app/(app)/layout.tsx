@@ -11,7 +11,7 @@ import { TaskPeek } from './tasks/_lib/TaskPeek';
 import { Shield, ShieldAlert, ArrowLeft, UserCheck } from 'lucide-react';
 import { Button, Spinner } from '@/components/ui';
 import { SidebarProvider } from '@/lib/sidebar-context';
-import { routeRule } from '@/lib/route-access';
+import { blockedModuleFor, routeRule } from '@/lib/route-access';
 import type { UserRole } from '@arihant/shared';
 
 export default function AppLayout({
@@ -55,8 +55,10 @@ export default function AppLayout({
 
   // Route-Level Security Guard Check
   const restrictedRoute = routeRule(pathname);
+  // the administrator may have switched this page's module off for the role (Admin → Role Permissions)
+  const switchedOff = blockedModuleFor(pathname);
   const isUnauthorized =
-    restrictedRoute && !restrictedRoute.roles.includes(user.role);
+    restrictedRoute && (!restrictedRoute.roles.includes(user.role) || !!switchedOff);
 
   return (
     <SidebarProvider>
@@ -82,15 +84,25 @@ export default function AppLayout({
                     Restricted Operational Domain
                   </h2>
                   <p className="text-xs text-[#4A5568] mt-1.5 max-w-md mx-auto leading-relaxed">
-                    Your active role (
-                    <span className="font-semibold text-[#14213D]">
-                      {user.role.toUpperCase().replace('_', ' ')}
-                    </span>
-                    ) does not have clearance to view or operate in{' '}
-                    <span className="font-semibold text-[#0F5E63]">
-                      {restrictedRoute.name}
-                    </span>
-                    .
+                    {switchedOff ? (
+                      <>
+                        <span className="font-semibold text-[#0F5E63]">{switchedOff.label}</span> has been switched off for your role (
+                        <span className="font-semibold text-[#14213D]">{user.role.toUpperCase().replace('_', ' ')}</span>) by the
+                        administrator. Ask an administrator if you need it back.
+                      </>
+                    ) : (
+                      <>
+                        Your active role (
+                        <span className="font-semibold text-[#14213D]">
+                          {user.role.toUpperCase().replace('_', ' ')}
+                        </span>
+                        ) does not have clearance to view or operate in{' '}
+                        <span className="font-semibold text-[#0F5E63]">
+                          {restrictedRoute.name}
+                        </span>
+                        .
+                      </>
+                    )}
                   </p>
                 </div>
 

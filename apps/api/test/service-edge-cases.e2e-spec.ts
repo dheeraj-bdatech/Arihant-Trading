@@ -502,6 +502,8 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           action_taken: 'Cleaned surface and reapplied silver thermal compound',
           customer_confirmation: true,
           customer_name_signed: 'Maj. A. Singh, Security Officer',
+          customer_confirmation_type: 'Signature',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
           further_work_required: false,
         });
 
@@ -534,6 +536,8 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           problem_identified: 'LVDS cable shielding fractured inside hinge',
           action_taken: 'Patched temporary shielding with copper tape',
           customer_name_signed: 'Maj. A. Singh, Security Officer',
+          customer_confirmation_type: 'Signature',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
           further_work_required: true,
           further_work_description: 'Replace the LVDS cable assembly',
           next_visit_date: nextVisit,
@@ -566,6 +570,8 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           action_taken: 'Vacuumed and compressed-air cleaned all filter meshes',
           customer_confirmation: true,
           customer_name_signed: 'Maj. A. Singh, Security Officer',
+          customer_confirmation_type: 'Signature',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
           further_work_required: false,
         });
 
@@ -596,6 +602,8 @@ describe('Module 6: Service & After-Sales Management Edge Cases Test Suite (E1 -
           action_taken: 'Survey meter confirmed 0.05 uSv/hr baseline at 5cm distance',
           customer_confirmation: true,
           customer_name_signed: 'Maj. A. Singh, Security Officer',
+          customer_confirmation_type: 'Signature',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
           further_work_required: false,
         });
 

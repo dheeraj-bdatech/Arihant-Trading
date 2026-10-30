@@ -1151,6 +1151,8 @@ export interface ServiceTicketsTable {
   deleted_at?: Date | string | null;
   intake_request_id?: string | null;
   claimed_organisation_name?: string | null;
+  /** The customer's own reference (GeM incident id, letter number …), kept beside the system TCK number. */
+  customer_reference?: string | null;
   sla_pause_started_at?: Date | string | null;
   sla_breach_notified_at?: Date | string | null;
   sla_response_breach_notified_at?: Date | string | null;
@@ -1831,6 +1833,15 @@ export interface DepartmentsTable {
   updated_at: Generated<Date>;
 }
 
+/** A module an administrator has switched off for a role (a row exists only while it is off). */
+export interface RoleModuleBlocksTable {
+  role: UserRole;
+  module: string;
+  reason: string | null;
+  blocked_by: string | null;
+  blocked_at: Generated<Date>;
+}
+
 export interface RolePermissionsTable {
   id: Generated<string>;
   role: UserRole;
@@ -1903,6 +1914,7 @@ export interface Database {
   app_users: AppUsersTable;
   departments: DepartmentsTable;
   role_permissions: RolePermissionsTable;
+  role_module_blocks: RoleModuleBlocksTable;
   organisations: OrganisationsTable;
   contacts: ContactsTable;
   leads: LeadsTable;

@@ -5,6 +5,7 @@ import { Check, Plus } from 'lucide-react';
 import { Button, Badge, Input, formatDateIN } from '@/components/ui';
 import { api } from '@/lib/api';
 import { safeHttpUrl } from '@/lib/safe-url';
+import { normalizeServiceStatus } from '@arihant/shared';
 import { errMsg, isAssignedEngineer, MANAGER_ROLES, parsePartsReplaced } from './serviceHelpers';
 
 interface Props {
@@ -21,10 +22,11 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, userId, onNewReport,
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ id: string; msg: string } | null>(null);
 
-  const status = String(ticket.status);
+  const status = normalizeServiceStatus(ticket.status); // legacy aliases ('revisit') read as their status
   // the API takes a report only from the assigned (or an additional) engineer, or admin
   const canFile = (role === 'admin' || (role === 'service_team' && isAssignedEngineer(ticket, userId))) && ['in_progress', 'resolved'].includes(status);
-  const canReview = MANAGER_ROLES.includes(role) && ['report_submitted', 'revisit_required'].includes(status);
+  // managers, and the chief service engineer of the ticket's territory (the API's can_supervise)
+  const canReview = (ticket.can_supervise ?? MANAGER_ROLES.includes(role)) && ['report_submitted', 'revisit_required'].includes(status);
   const reports: any[] = ticket.reports || [];
 
   const review = async (id: string, approved: boolean) => {
@@ -129,7 +131,9 @@ export const ReportsTab: React.FC<Props> = ({ ticket, role, userId, onNewReport,
                 )}
               </div>
 
-              {rep.report_status === 'Submitted' && canReview && (
+              {/* only the newest report is reviewed (the API refuses an older one) */}
+              {/* nor by the engineer who filed it (a chief's own report goes to a manager) */}
+              {rep.report_status === 'Submitted' && canReview && rep.id === reports[0]?.id && !(role === 'service_team' && rep.submitted_by === userId) && (
                 <div className="space-y-2 border-t border-[#ECE9E2] pt-2">
                   {error?.id === rep.id && (
                     <div role="alert" className="rounded-lg border border-[#F3C7CF] bg-[#FCE8EC] p-2 text-xs text-[#700F2D]">

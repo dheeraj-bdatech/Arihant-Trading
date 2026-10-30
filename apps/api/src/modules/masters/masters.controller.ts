@@ -40,8 +40,8 @@ export class MastersController {
 
   @Delete('zones/:id')
   @Roles('admin')
-  async deleteZone(@Param('id') id: string) {
-    return this.mastersService.deleteZone(id);
+  async deleteZone(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.mastersService.deleteZone(id, user.id);
   }
 
   @Get('regions')
@@ -63,8 +63,8 @@ export class MastersController {
 
   @Delete('regions/:id')
   @Roles('admin')
-  async deleteRegion(@Param('id') id: string) {
-    return this.mastersService.deleteRegion(id);
+  async deleteRegion(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.mastersService.deleteRegion(id, user.id);
   }
 
   @Get('departments')
@@ -74,20 +74,20 @@ export class MastersController {
 
   @Post('departments')
   @Roles('admin')
-  async createDepartment(@Body() body: { code: string; name: string; description?: string }) {
-    return this.mastersService.createDepartment(body);
+  async createDepartment(@Body() body: { code?: string; name?: string; description?: string; head_user_id?: string | null }, @CurrentUser() user: AuthUser) {
+    return this.mastersService.createDepartment(body, user.id);
   }
 
   @Patch('departments/:id')
   @Roles('admin')
-  async updateDepartment(@Param('id') id: string, @Body() body: { name?: string; description?: string }) {
-    return this.mastersService.updateDepartment(id, body);
+  async updateDepartment(@Param('id') id: string, @Body() body: { name?: string; description?: string; head_user_id?: string | null }, @CurrentUser() user: AuthUser) {
+    return this.mastersService.updateDepartment(id, body, user.id);
   }
 
   @Delete('departments/:id')
   @Roles('admin')
-  async deleteDepartment(@Param('id') id: string) {
-    return this.mastersService.deleteDepartment(id);
+  async deleteDepartment(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.mastersService.deleteDepartment(id, user.id);
   }
 
   @Get('products')

@@ -4,10 +4,13 @@ import React, { useEffect, useState } from 'react';
 import { CalendarClock, ClipboardList, Package, Paperclip, Plus, Trash2, UserCheck } from 'lucide-react';
 import { Modal, Button, Input, Select, Textarea, InfoCallout, FormSteps } from '@/components/ui';
 import { api } from '@/lib/api';
+import { uploadSignedFile } from '@/lib/signed-upload';
 import { validateHttpUrl } from '@/lib/safe-url';
 import { errMsg, isConflict, todayLocal } from './serviceHelpers';
 
 const CONFIRMATION_TYPES = ['Signature', 'OTP', 'Email Confirmation', 'Photo of Signed Job Sheet'];
+/** Paper sign-offs: the signed job sheet must be attached (API rule, §33). OTP / email need none. */
+const PAPER_CONFIRMATIONS = ['Signature', 'Photo of Signed Job Sheet'];
 const MAX_ATTACHMENTS = 10;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -18,20 +21,7 @@ interface Attachment {
 
 /** Signed direct upload through the shared uploads API (POST /uploads/sign → Cloudinary); returns the stored URL. */
 async function uploadReportFile(file: File): Promise<Attachment> {
-  const sig = await api.post<{ timestamp: number; signature: string; apiKey: string; cloudName: string; folder: string; allowedFormats: string }>('/uploads/sign', {
-    folder: 'service-reports',
-  });
-  const form = new FormData();
-  form.append('file', file);
-  form.append('api_key', sig.apiKey);
-  form.append('timestamp', String(sig.timestamp));
-  form.append('signature', sig.signature);
-  form.append('folder', sig.folder);
-  form.append('allowed_formats', sig.allowedFormats); // signed by the API — must be sent exactly as returned
-  const res = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(sig.cloudName)}/auto/upload`, { method: 'POST', body: form });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data?.secure_url) throw new Error(data?.error?.message || 'Upload failed');
-  return { name: file.name, url: data.secure_url as string };
+  return { name: file.name, url: await uploadSignedFile(file, 'service-reports') };
 }
 
 interface PartRow {
@@ -87,6 +77,7 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
   const status = String(ticket.status);
   const wrongStatus = !['in_progress', 'resolved'].includes(status);
   const set = (p: Partial<typeof f>) => setF((s) => ({ ...s, ...p }));
+  const needsSignedSheet = f.obtained && PAPER_CONFIRMATIONS.includes(f.confirmationType);
 
   const addFiles = async (list: FileList | null) => {
     const files = Array.from(list || []);
@@ -131,6 +122,10 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
     }
     const urlError = validateHttpUrl(f.reportUrl, 'The signed report document URL');
     if (urlError) e.reportUrl = urlError;
+    // §33 (API rule): a paper sign-off carries the signed service report itself
+    if (needsSignedSheet && f.attachments.length === 0 && !f.reportUrl.trim()) {
+      e.evidence = 'Attach the signed job sheet (scan or photo) or link it below — required for a signature sign-off.';
+    }
     if (f.furtherWork) {
       if (f.furtherDesc.trim().length < 5) e.furtherDesc = 'Describe the further work needed (at least 5 characters).';
       if (!f.nextVisit) e.nextVisit = 'Pick the next visit date.';
@@ -346,7 +341,9 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
                       </label>
                     </div>
                     {f.attachments.length === 0 ? (
-                      <p className="text-[11px] text-[#4A5568]">No files attached. PDF, Word, Excel or photos · up to 10 MB each, {MAX_ATTACHMENTS} files.</p>
+                      <p className="text-[11px] text-[#4A5568]">
+                        {needsSignedSheet ? 'Attach the signed job sheet (required for a signature sign-off).' : 'No files attached.'} PDF, Word, Excel or photos · up to 10 MB each, {MAX_ATTACHMENTS} files.
+                      </p>
                     ) : (
                       <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#DCD8CE]">
                         {f.attachments.map((a, i) => (
@@ -362,9 +359,10 @@ export const ReportFormModal: React.FC<Props> = ({ ticket, onClose, onDone, onSt
                       </ul>
                     )}
                     {uploadError && <p className="text-xs font-medium text-[#881337]">{uploadError}</p>}
+                    {errors.evidence && <p className="text-xs font-medium text-[#881337]">{errors.evidence}</p>}
                   </div>
 
-                  <Input label="Signed report document URL (optional)" type="url" value={f.reportUrl} error={errors.reportUrl} onChange={(e) => set({ reportUrl: e.target.value })} placeholder="https://…" />
+                  <Input label={needsSignedSheet ? 'Signed report document URL (if not attached above)' : 'Signed report document URL (optional)'} type="url" value={f.reportUrl} error={errors.reportUrl} onChange={(e) => set({ reportUrl: e.target.value })} placeholder="https://…" />
 
                   <div className="space-y-2">
                     <label className="flex min-h-10 cursor-pointer items-center gap-2 text-xs font-semibold text-[#14213D] sm:min-h-0">

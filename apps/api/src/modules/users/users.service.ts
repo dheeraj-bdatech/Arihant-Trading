@@ -335,10 +335,11 @@ export class UsersService {
       }
 
       const temporaryPassword = generateTemporaryPassword();
+      const id = crypto.randomUUID();
       await this.db
         .insertInto('users')
         .values({
-          id: crypto.randomUUID(),
+          id,
           email,
           full_name: item.full_name.trim(),
           role: item.role,
@@ -352,15 +353,15 @@ export class UsersService {
 
       results.created++;
       results.invited.push({ email, temporary_password: temporaryPassword });
+      // one audit row per person (audit_log.entity_id is a uuid: a single 'bulk' row was never written)
+      this.eventEmitter.emit('audit.log', {
+        actorId: actorId || null,
+        entityType: 'user',
+        entityId: id,
+        action: 'bulk_invite',
+        newValue: { email, role: item.role, name: item.full_name.trim() },
+      });
     }
-
-    this.eventEmitter.emit('audit.log', {
-      actorId: actorId || null,
-      entityType: 'user',
-      entityId: 'bulk',
-      action: 'bulk_invite',
-      newValue: { created: results.created, skipped: results.skipped, errors: results.errors.length },
-    });
 
     return results;
   }

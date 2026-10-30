@@ -30,6 +30,8 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 import { UploadsModule } from './modules/uploads/uploads.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
+import { ReportsModule } from './modules/reports/reports.module.js';
+import { AccessModule } from './modules/access/access.module.js';
 
 @Module({
   imports: [
@@ -68,6 +70,8 @@ import { AuditModule } from './modules/audit/audit.module.js';
     DashboardModule,
     UploadsModule,
     AuditModule,
+    ReportsModule,
+    AccessModule,
   ],
 })
 export class AppModule {}

@@ -482,6 +482,8 @@ describe('Arihant BOS — Strict Meeting & Blueprint Verification Suite', () => 
           parts_replaced: 'DC Drive Motor Board 24V (Part #DRV-2401)',
           customer_confirmation: true,
           customer_name_signed: 'SP Rakesh Kumar, Patna Police HQ',
+          customer_confirmation_type: 'Signature',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
         });
       expect([200, 201]).toContain(res.status);
       expect(res.body.action_taken).toBeDefined();

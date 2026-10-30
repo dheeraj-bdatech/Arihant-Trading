@@ -20,6 +20,9 @@ const num = (v: unknown) => {
 };
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** IST calendar day of a timestamptz column. */
+export const istDay = (col: Cond) => sql`(${col} at time zone 'Asia/Kolkata')::date`;
+
 export const FIELD_ROLES = ['sales', 'demo_team', 'service_team'];
 
 /* ------------------------------------------------------------------ leads -- */
@@ -45,6 +48,24 @@ export const TENDER_AWAITING_APPROVAL = sql`t.status = 'awaiting_approval' and c
 /** Bid closes within the next `hours` (instant comparison — a deadline is a timestamp, not a calendar day). */
 export const tenderClosingWithin = (hours: number) =>
   sql`${TENDER_CHASING} and ${TENDER_DEADLINE} between now() and now() + make_interval(hours => ${hours})`;
+/** Tender statuses at or past submission (the bid went in). */
+export const TENDER_SUBMITTED = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'];
+/** The bid's owner: salesperson, else owner, else tender owner, else assignee. */
+export const TENDER_OWNER = sql`coalesce(t.salesperson_id, t.owner, t.tender_owner_id, t.assigned_to)`;
+/** IST day the bid went in: submission date, else participated date, else its deadline, else when it was logged. */
+export const TENDER_SUBMITTED_DAY = sql`coalesce(t.submission_date, t.participated_date, ${istDay(TENDER_DEADLINE)}, ${istDay(sql`t.created_at`)})`;
+/** IST day the bid was decided: result date, else its last update. */
+export const TENDER_RESULT_DAY = sql`coalesce(t.result_date, ${istDay(sql`t.updated_at`)})`;
+
+/* --------------------------------------------------------------- demos / proposals -- */
+/** IST day a demo is held: confirmed date, else requested date, else when it was logged (alias d). */
+export const DEMO_DAY = sql`coalesce(d.confirmed_date, d.requested_date, ${istDay(sql`d.created_at`)})`;
+/** A proposal's owner — the table carries four legacy owner columns (alias p). */
+export const PROPOSAL_OWNER = sql`coalesce(p.responsible_person_id, p.responsible_id, p.requested_by_id, p.requested_by)`;
+/** A proposal's customer organisation (alias p). */
+export const PROPOSAL_ORG = sql`coalesce(p.customer_id, p.organisation_id)`;
+/** IST day a proposal was decided: outcome date, else its last update (alias p). */
+export const PROPOSAL_OUTCOME_DAY = sql`coalesce(p.outcome_date, ${istDay(sql`p.updated_at`)})`;
 
 /* ----------------------------------------------------------------- visits -- */
 /** A visit still to be made: planned, or moved (modified / rescheduled) but not yet done. */

@@ -670,6 +670,7 @@ export const ROLE_PROFILES: Record<UserRole, RolePermissionProfile> = {
       'demos',
       'proposals',
       'deliveries',
+      'service', // logs the breakdowns their customers report (the service desk dispatches them)
       'tasks',
       'expenses',
       'notifications',

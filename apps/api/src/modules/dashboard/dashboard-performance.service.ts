@@ -10,7 +10,19 @@ import type {
   SalesPerformanceDto,
   SalesPerformanceRow,
 } from '@arihant/shared';
-import { LEAD_ACTIVE, TENDER_ROW } from './dashboard-metrics.js';
+import {
+  DEMO_DAY,
+  LEAD_ACTIVE,
+  PROPOSAL_ORG,
+  PROPOSAL_OUTCOME_DAY,
+  PROPOSAL_OWNER,
+  TENDER_OWNER,
+  TENDER_RESULT_DAY,
+  TENDER_ROW,
+  TENDER_SUBMITTED,
+  TENDER_SUBMITTED_DAY,
+  istDay,
+} from './dashboard-metrics.js';
 
 type Row = Record<string, any>;
 type Cond = RawBuilder<unknown>;
@@ -27,13 +39,8 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** People evaluated per salesperson (Blueprint §44: "sales reps and regional managers"). */
 const EVALUATED_ROLES = ['sales', 'regional_manager'];
-/** Tender statuses at or past submission (the bid went in). */
-const TENDER_SUBMITTED = ['pq_submitted', 'pq_qualified', 'submitted', 'technical_eval', 'commercial_eval', 'won', 'lost'];
 const TENDER_WON = ['won'];
 const TENDER_LOST = ['lost'];
-
-/** IST calendar day of a timestamptz column. */
-const istDay = (col: Cond) => sql`(${col} at time zone 'Asia/Kolkata')::date`;
 
 export interface SalesPerformanceQuery {
   from?: string;
@@ -183,10 +190,10 @@ export class DashboardPerformanceService {
     const key = (owner: Cond, region: Cond) =>
       groupBy === 'rep' ? sql`${owner}::text` : sql`coalesce(${region}::text, ow.region_id::text, ${NO_REGION})`;
 
-    const proposalOwner = sql`coalesce(p.responsible_person_id, p.responsible_id, p.requested_by_id, p.requested_by)`;
-    const proposalOrg = sql`coalesce(p.customer_id, p.organisation_id)`;
-    const demoDay = sql`coalesce(d.confirmed_date, d.requested_date, ${istDay(sql`d.created_at`)})`;
-    const tenderOwner = sql`coalesce(t.salesperson_id, t.owner, t.tender_owner_id, t.assigned_to)`;
+    const proposalOwner = PROPOSAL_OWNER;
+    const proposalOrg = PROPOSAL_ORG;
+    const demoDay = DEMO_DAY;
+    const tenderOwner = TENDER_OWNER;
     const tenderPeople = sql`array[t.salesperson_id, t.assigned_to, t.owner, t.tender_owner_id, t.created_by]`;
 
     const [leads, followups, contacts, visits, interactions, demos, reasons, proposals, propFollowups, tenders] = await Promise.all([
@@ -260,7 +267,7 @@ export class DashboardPerformanceService {
       this.agg(
         sql`select ${key(proposalOwner, sql`o.region_id`)} as key, p.id,
                    p.sent_date is not null and ${inP(sql`p.sent_date`)} as sent,
-                   upper(p.status) = 'CONVERTED' and ${inP(sql`coalesce(p.outcome_date, ${istDay(sql`p.updated_at`)})`)} as conv
+                   upper(p.status) = 'CONVERTED' and ${inP(PROPOSAL_OUTCOME_DAY)} as conv
             from proposals p left join organisations o on o.id = ${proposalOrg} left join users ow on ow.id = ${proposalOwner}
             where coalesce(p.is_deleted, false) = false`,
         keys,
@@ -278,8 +285,8 @@ export class DashboardPerformanceService {
         sql`select ${groupBy === 'rep' ? sql`k.uid::text` : key(sql`null::uuid`, sql`t.region_id`)} as key, t.id,
                    ${inP(istDay(sql`t.created_at`))} as created, t.category::text as category,
                    t.status = any(${TENDER_SUBMITTED}::text[])
-                     and ${inP(sql`coalesce(t.submission_date, t.participated_date, ${istDay(sql`coalesce(t.submission_deadline, t.bid_closing_date)`)}, ${istDay(sql`t.created_at`)})`)} as submitted,
-                   ${inP(sql`coalesce(t.result_date, ${istDay(sql`t.updated_at`)})`)} as decided, t.status
+                     and ${inP(TENDER_SUBMITTED_DAY)} as submitted,
+                   ${inP(TENDER_RESULT_DAY)} as decided, t.status
             from tenders t left join users ow on ow.id = ${tenderOwner}
             ${groupBy === 'rep' ? sql`cross join lateral (select distinct x as uid from unnest(${tenderPeople}) x where x is not null) k` : sql``}
             where ${TENDER_ROW}`,

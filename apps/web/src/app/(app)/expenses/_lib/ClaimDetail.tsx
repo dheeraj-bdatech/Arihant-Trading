@@ -50,6 +50,25 @@ import { ClaimFormModal } from './ClaimFormModal';
 type Decision = { status: 'approved' | 'partially_approved' | 'rejected'; amount: string; comment: string };
 type CommentAction = 'manager-reject' | 'accounts-reject' | 'request-clarification';
 
+/**
+ * Line decisions are recorded together with the claim approval (one versioned, audited action). Until then they are
+ * kept per claim version for this browser tab, so closing and reopening the popup does not lose them; a newer version
+ * of the claim (someone else acted) discards them.
+ */
+const draftKey = (claimId: string) => `bos.expense.decisions.${claimId}`;
+function readDraftDecisions(c: ExpenseClaim): Record<string, Decision> {
+  try {
+    const raw = sessionStorage.getItem(draftKey(c.id));
+    if (!raw) return {};
+    const draft = JSON.parse(raw) as { version?: number; decisions?: Record<string, Decision> };
+    if (draft.version !== c.version) return {};
+    const ids = new Set((c.items || []).map((i) => i.id));
+    return Object.fromEntries(Object.entries(draft.decisions || {}).filter(([id]) => ids.has(id)));
+  } catch {
+    return {};
+  }
+}
+
 /** `inModal`: shown in the claim popup — the action bar pins to the dialog bottom, no room kept for page FABs. */
 export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ claimId, inModal = false }) => {
   const router = useRouter();
@@ -83,7 +102,7 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
     try {
       const c = await api.get<ExpenseClaim>(`/expense-claims/${claimId}`);
       setClaim(c);
-      setDecisions({});
+      setDecisions(readDraftDecisions(c));
       setDecisionErrors({});
       setConflict(false);
     } catch (e) {
@@ -96,6 +115,19 @@ export const ClaimDetail: React.FC<{ claimId: string; inModal?: boolean }> = ({ 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Keep unsubmitted line decisions for this claim version (cleared once an action records or discards them).
+  const claimKey = claim ? claim.id : null;
+  const claimVersion = claim?.version;
+  useEffect(() => {
+    if (!claimKey) return;
+    try {
+      if (Object.keys(decisions).length) sessionStorage.setItem(draftKey(claimKey), JSON.stringify({ version: claimVersion, decisions }));
+      else sessionStorage.removeItem(draftKey(claimKey));
+    } catch {
+      // storage unavailable (private mode): decisions still work for this view
+    }
+  }, [claimKey, claimVersion, decisions]);
 
   const actions = claim?.allowed_actions || [];
   const stage: 'manager' | 'accounts' | null = actions.includes('manager_approve')
@@ -615,15 +647,30 @@ const LineRow: React.FC<{
 }> = ({ item, stage, ceiling, decision, errors, onDecision, onPreview }) => {
   const { user } = useAuth();
   const det = item.category_details || {};
+  // Only the parts that were captured (imported / older lines can have empty details — never print "undefined").
+  const has = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== '';
+  const parts = (...p: unknown[]) => p.filter(has).map(String).join(' · ') || null;
+  const route = (from: unknown, to: unknown) => (has(from) || has(to) ? `${has(from) ? from : '—'} → ${has(to) ? to : '—'}` : null);
+  const day = (d: unknown) => (has(d) ? String(d).split('-').reverse().join('-') : null);
+  const words = (v: unknown) => (has(v) ? String(v).replace(/_/g, ' ') : null);
   const detail =
-    item.category_code === 'TRAVEL' ? `${det.from} → ${det.to} · ${String(det.mode || '').replace('_', ' ')}`
-      : item.category_code === 'HOTEL' ? `${det.hotel_name} · ${det.check_in?.split('-').reverse().join('-')} → ${det.check_out?.split('-').reverse().join('-')} · ${det.nights} night(s)`
-        : item.category_code === 'LOCAL_CONVEYANCE' ? `${det.from} → ${det.to}${det.km ? ` · ${det.km} km × ₹${det.rate_per_km}` : ''}`
-          : item.category_code === 'FOOD' ? `${String(det.meal_type || '').replace('_', ' ')} · ${det.persons} person(s)`
+    item.category_code === 'TRAVEL' ? parts(route(det.from, det.to), words(det.mode))
+      : item.category_code === 'HOTEL' ? parts(det.hotel_name, route(day(det.check_in), day(det.check_out)), has(det.nights) ? `${det.nights} night(s)` : null)
+        : item.category_code === 'LOCAL_CONVEYANCE'
+          ? parts(route(det.from, det.to), has(det.km) ? `${det.km} km${has(det.rate_per_km) ? ` × ₹${det.rate_per_km}` : ''}` : null)
+          : item.category_code === 'FOOD' ? parts(words(det.meal_type), has(det.persons) ? `${det.persons} person(s)` : null)
             : null;
   const err = (f: string) => errors[`items.${item.id}.${f}`];
   const lockedOut = stage === 'accounts' && ceiling <= 0;
   const set = (patch: Partial<Decision>) => onDecision({ ...decision, ...patch });
+  // What this line will become, and when that is recorded — the line buttons only choose; the claim action saves.
+  const outcome =
+    decision.status === 'rejected'
+      ? 'Will be rejected'
+      : decision.status === 'partially_approved'
+        ? `Will be reduced to ${formatExpenseAmount(Number(decision.amount) || 0)}`
+        : `Will be approved at ${formatExpenseAmount(ceiling)}`;
+  const recordedWhen = stage === 'accounts' ? 'approve or mark the claim paid' : 'approve the claim';
 
   return (
     <div className="rounded-[14px] border border-[#DCD8CE] p-3 sm:p-4 space-y-3">
@@ -709,12 +756,23 @@ const LineRow: React.FC<{
                     aria-checked={decision.status === s}
                     className="h-9 sm:h-7"
                     variant={decision.status === s ? (s === 'rejected' ? 'danger' : 'primary') : 'secondary'}
+                    leftIcon={decision.status === s ? (s === 'rejected' ? <X className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />) : undefined}
                     onClick={() => set({ status: s, amount: s === 'partially_approved' ? decision.amount : String(ceiling) })}
                   >
                     {s === 'approved' ? `Approve ${formatExpenseAmount(ceiling)}` : s === 'partially_approved' ? 'Reduce' : 'Reject'}
                   </Button>
                 ))}
               </div>
+              <p className="text-xs text-[#4A5568]" aria-live="polite">
+                <span className={`font-semibold ${decision.status === 'rejected' ? 'text-[#881337]' : 'text-[#0F5E63]'}`}>{outcome}</span>
+                {` — recorded when you ${recordedWhen} below.`}
+              </p>
+              {item.receipt_missing && decision.status !== 'rejected' && (
+                <p className="flex items-start gap-1.5 text-xs text-[#9A3412]">
+                  <Paperclip className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  No receipt although this category requires one — you will be asked to confirm that when you {recordedWhen}.
+                </p>
+              )}
               {decision.status === 'partially_approved' && (
                 <Input id={`approved-${item.id}`} label="Approved amount (₹)" inputMode="decimal" className="font-mono" value={decision.amount} onChange={(e) => set({ amount: e.target.value.replace(/[^\d.]/g, '') })} error={err('approved_amount')} />
               )}

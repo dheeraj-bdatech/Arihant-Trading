@@ -46,6 +46,9 @@ const FIELD_ROLES = ['sales', 'demo_team', 'service_team'];
 const DEADLINE = TENDER_DEADLINE;
 const TENDER_LIVE = TENDER_ROW;
 const TICKET_OPEN = sql`s.deleted_at is null and s.status <> all(${TICKET_DONE}::text[])`;
+/** Resolution SLA missed with the clock running: a ticket paused for a part / the customer / on hold is not late. */
+const TICKET_PAUSED = ['awaiting_part', 'awaiting_customer', 'on_hold'];
+const TICKET_SLA_LATE = sql`s.sla_resolution_due_at < now() and s.status <> all(${TICKET_PAUSED}::text[])`;
 const LEAD_OPEN = LEAD_ACTIVE;
 
 /** Deep links open the record itself (each list page reads ?open= / ?highlight= via useOpenParam). */
@@ -169,7 +172,7 @@ export class DashboardWorkspaceService {
           and coalesce(b.reserved_from, '-infinity'::date) <= coalesce(a.reserved_to, 'infinity'::date)`),
       this.one(sql`
         select count(*) filter (where s.priority in ('critical', 'high'))::int as urgent,
-               count(*) filter (where s.sla_resolution_due_at < now())::int as breached,
+               count(*) filter (where ${TICKET_SLA_LATE})::int as breached,
                count(*)::int as open
         from service_tickets s where ${TICKET_OPEN}`),
       this.one(sql`
@@ -623,7 +626,7 @@ export class DashboardWorkspaceService {
     const [counts, pool, queue, unassigned, workload] = await Promise.all([
       this.one(sql`
         select count(*)::int as open,
-               count(*) filter (where s.sla_resolution_due_at < now())::int as overdue,
+               count(*) filter (where ${TICKET_SLA_LATE})::int as overdue,
                count(*) filter (where s.status = 'awaiting_part')::int as parts,
                count(*) filter (where s.priority = 'critical')::int as critical,
                count(*) filter (where s.status = 'visit_scheduled')::int as visits
@@ -648,7 +651,7 @@ export class DashboardWorkspaceService {
       this.rows(sql`
         select u.id, u.full_name,
                count(s.id)::int as open,
-               count(s.id) filter (where s.sla_resolution_due_at < now())::int as overdue
+               count(s.id) filter (where ${TICKET_SLA_LATE})::int as overdue
         from users u left join service_tickets s on s.assigned_to = u.id and ${TICKET_OPEN}
         where u.is_active and u.role = 'service_team' group by u.id, u.full_name order by open desc, u.full_name asc`),
     ]);

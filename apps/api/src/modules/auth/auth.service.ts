@@ -14,6 +14,7 @@ import type { Database, AuthUser, LoginResponseDto } from '@arihant/shared';
 import type { DemoLoginDto, LoginDto } from './auth.dto.js';
 import { getJwtSecret } from '../../common/auth/jwt-secret.js';
 import { NO_RECORD_ID } from '../../common/events/audit.listener.js';
+import { ModuleAccessService } from '../access/module-access.service.js';
 
 /** Where a sign-in came from, as the audit trail records it. */
 export interface SignInContext {
@@ -42,6 +43,7 @@ export class AuthService {
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly access: ModuleAccessService,
   ) {}
 
   /**
@@ -164,6 +166,8 @@ export class AuthService {
       zone_id: user.zone_id,
       reporting_manager_id: user.reporting_manager_id,
       is_active: user.is_active,
+      // modules the administrator switched off for this role: the app hides them (the API refuses them anyway)
+      blocked_modules: await this.access.blockedFor(user.role),
     };
   }
 }

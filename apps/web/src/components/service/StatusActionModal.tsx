@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Modal, Button, Input, Select, Textarea } from '@/components/ui';
 import { api } from '@/lib/api';
-import { SERVICE_REASON_REQUIRED, SERVICE_STATUS_LABELS, type ServiceStatus } from '@arihant/shared';
+import { SERVICE_REASON_REQUIRED, SERVICE_STATUS_LABELS, serviceResolveBlocker, type ServiceStatus } from '@arihant/shared';
 import { dateOnly, errMsg, isConflict, todayLocal, MANAGER_ROLES } from './serviceHelpers';
 
 export interface Engineer {
@@ -57,10 +57,13 @@ export const StatusActionModal: React.FC<Props> = ({ ticket, target, role, userI
 
   const isManager = MANAGER_ROLES.includes(role);
   const needsReason = !!target && SERVICE_REASON_REQUIRED.includes(target);
-  const needsEngineer = target === 'assigned' || target === 'visit_scheduled';
+  // work in progress needs an engineer too: an unassigned ticket picks one on the way (the API refuses none)
+  const needsEngineer = target === 'assigned' || target === 'visit_scheduled' || (target === 'in_progress' && !ticket?.assigned_to);
+  // a ticket held by an engineer this user cannot dispatch keeps that engineer (moving it is a reassignment)
+  const keepsHolder = !!ticket?.assigned_to && !engineers.some((e) => e.id === ticket.assigned_to);
   const needsDate = target === 'visit_scheduled';
-  const latestReport = (ticket?.reports || [])[0];
-  const hasReport = !!latestReport && latestReport.report_status !== 'Returned for Correction';
+  // the API's rule: only this cycle's finished report can back "resolved"
+  const resolveBlocker = target === 'resolved' && ticket ? serviceResolveBlocker(ticket) : null;
   const plannedDay = dateOnly(ticket?.planned_visit_date);
   // Manual start before the scheduled visit day is refused by the API (managers may override).
   const startTooEarly = target === 'in_progress' && !!plannedDay && plannedDay > todayLocal() && String(ticket?.status) === 'visit_scheduled';
@@ -89,20 +92,21 @@ export const StatusActionModal: React.FC<Props> = ({ ticket, target, role, userI
 
   if (!ticket || !target) return null;
   const label = SERVICE_STATUS_LABELS[target];
+  // §47: swapping the engineer on the way is a reassignment, so the API wants its reason
+  const changesEngineer = needsEngineer && !keepsHolder && !!ticket.assigned_to && !!assignee && assignee !== ticket.assigned_to;
 
   const validate = (): string | null => {
     const r = remarks.trim();
     if (needsReason && r.length < 5) return 'Please give a reason of at least 5 characters.';
-    if (needsEngineer && !assignee) return 'Select a service engineer.';
+    if (changesEngineer && r.length < 5) return 'Give a reason for changing the engineer (at least 5 characters).';
+    if (needsEngineer && !keepsHolder && !assignee) return 'Select a service engineer.';
     if (needsDate) {
       if (!date) return 'Pick the planned visit date.';
       if (date < todayLocal() && !(isManager && override)) {
         return 'The visit date cannot be in the past' + (isManager ? ' — tick "Manager override" to allow it.' : '.');
       }
     }
-    if (target === 'resolved' && !hasReport) {
-      return 'File the service report (work done and customer sign-off) — submitting it marks the ticket resolved.';
-    }
+    if (resolveBlocker) return resolveBlocker;
     if (startTooEarly && !(isManager && override)) {
       return `The visit is scheduled for ${plannedDay.split('-').reverse().join('/')}. Work can start on or after that day — reschedule the visit if the engineer is going earlier.`;
     }
@@ -120,7 +124,7 @@ export const StatusActionModal: React.FC<Props> = ({ ticket, target, role, userI
         status: target,
         version: ticket.version,
         remarks: remarks.trim() || undefined,
-        assigned_to: needsEngineer ? assignee : undefined,
+        assigned_to: needsEngineer && !keepsHolder ? assignee : undefined,
         planned_visit_date: needsDate ? date : undefined,
         manager_override: (needsDate || startTooEarly) && isManager && override ? true : undefined,
       });
@@ -155,7 +159,10 @@ export const StatusActionModal: React.FC<Props> = ({ ticket, target, role, userI
         )}
         {HINTS[target] && <p className="rounded-lg bg-[#FBFAF7] border border-[#ECE9E2] p-2.5 text-xs text-[#4A5568]">{HINTS[target]}</p>}
 
-        {needsEngineer && (
+        {needsEngineer && keepsHolder && (
+          <Input label="Service engineer" value={ticket.assignee_name || 'Assigned engineer'} disabled helperText="Stays on the ticket — use Reassign engineer to change it." />
+        )}
+        {needsEngineer && !keepsHolder && (
           <Select
             label={role === 'service_team' && engineers.length <= 1 ? 'Service engineer (you)' : 'Service engineer'}
             required
@@ -210,7 +217,7 @@ export const StatusActionModal: React.FC<Props> = ({ ticket, target, role, userI
         )}
 
         {target === 'resolved' ? (
-          hasReport ? (
+          !resolveBlocker ? (
             <Textarea
               label="Rectification details (optional — a report is on file)"
               rows={3}
@@ -220,18 +227,18 @@ export const StatusActionModal: React.FC<Props> = ({ ticket, target, role, userI
             />
           ) : (
             <p className="rounded-lg border border-[#9A3412]/30 bg-[#FBEBDD] p-2.5 text-xs text-[#7C2D12]">
-              No service report is on file. Use <strong>File service report</strong> on the ticket: it records the work done and the
+              {resolveBlocker} Use <strong>File service report</strong> on the ticket: it records the work done and the
               customer&apos;s sign-off, and resolves the ticket.
             </p>
           )
         ) : (
           <Textarea
-            label={needsReason ? REASON_LABEL[target] || 'Reason' : 'Remarks (optional)'}
-            required={needsReason}
+            label={needsReason ? REASON_LABEL[target] || 'Reason' : changesEngineer ? 'Why is the engineer changing?' : 'Remarks (optional)'}
+            required={needsReason || changesEngineer}
             rows={3}
             value={remarks}
             onChange={(e) => setRemarks(e.target.value)}
-            placeholder={needsReason ? 'A short written reason is mandatory (min. 5 characters)' : 'Optional note for the audit trail'}
+            placeholder={needsReason || changesEngineer ? 'A short written reason is mandatory (min. 5 characters)' : 'Optional note for the audit trail'}
           />
         )}
 
@@ -244,7 +251,7 @@ export const StatusActionModal: React.FC<Props> = ({ ticket, target, role, userI
             type="submit"
             size="sm"
             isLoading={busy}
-            disabled={(target === 'resolved' && !hasReport) || (startTooEarly && !(isManager && override))}
+            disabled={!!resolveBlocker || (startTooEarly && !(isManager && override))}
             className="h-10 flex-1 sm:h-8 sm:flex-initial"
           >
             Confirm: {label}

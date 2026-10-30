@@ -886,12 +886,11 @@ export class VisitsService {
       updatePayload.status = 'modified';
     }
 
-    const updated = await this.db
-      .updateTable('visits')
-      .set(updatePayload)
-      .where('id', '=', id)
-      .returningAll()
-      .executeTakeFirstOrThrow();
+    // A new date moves the visit off the old day's tour too (see tripForMovedVisit).
+    const updated = await this.db.transaction().execute(async (trx) => {
+      if (dateChanged) updatePayload.trip_id = await this.tripForMovedVisit(trx, existing, calendarDay(dto.planned_date!) || dto.planned_date!);
+      return trx.updateTable('visits').set(updatePayload).where('id', '=', id).returningAll().executeTakeFirstOrThrow();
+    });
 
     this.eventEmitter.emit('audit.log', {
       actorId: user.id,
@@ -916,6 +915,43 @@ export class VisitsService {
     });
 
     return updated;
+  }
+
+  /**
+   * The trip (tour program) a visit should sit on once its date moves to `newDate`. A visit must never stay listed
+   * under a tour of its old day: a planned trip holding only this visit moves with it (unless the employee already has
+   * a trip that day, which it then joins); otherwise it leaves the trip and joins the employee's trip planned for the
+   * new day, if any — the same rule create() uses to auto-attach a visit. A trip that expense claims were raised
+   * against already happened on its day, so it never moves (that would re-date claimed / paid travel).
+   */
+  private async tripForMovedVisit(db: Kysely<Database>, visit: { id: string; trip_id: string | null; assigned_to: string }, newDate: string): Promise<string | null> {
+    const sameDayTrip = await db
+      .selectFrom('trips')
+      .select('id')
+      .where('employee_id', '=', visit.assigned_to)
+      .where('trip_date', '=', newDate)
+      .where('status', 'not in', ['cancelled'])
+      .$if(Boolean(visit.trip_id), (q) => q.where('id', '<>', visit.trip_id!))
+      .executeTakeFirst();
+    if (!visit.trip_id) return sameDayTrip?.id ?? null;
+
+    const trip = await db.selectFrom('trips').select(['id', 'trip_date', 'status']).where('id', '=', visit.trip_id).executeTakeFirst();
+    if (!trip) return sameDayTrip?.id ?? null;
+    if (calendarDay(trip.trip_date as any) === newDate) return trip.id;
+    if (sameDayTrip) return sameDayTrip.id;
+
+    const otherStops = await db
+      .selectFrom('visits')
+      .select(sql<number>`count(*)::int`.as('n'))
+      .where('trip_id', '=', trip.id)
+      .where('id', '<>', visit.id)
+      .executeTakeFirst();
+    const claimed = await db.selectFrom('expense_claims').select('id').where('trip_id', '=', trip.id).where('deleted_at', 'is', null).executeTakeFirst();
+    if (!otherStops?.n && trip.status === 'planned' && !claimed) {
+      await db.updateTable('trips').set({ trip_date: newDate, updated_at: new Date() }).where('id', '=', trip.id).execute();
+      return trip.id;
+    }
+    return null;
   }
 
   // -------------------------------------------------------------
@@ -967,29 +1003,35 @@ export class VisitsService {
     }
 
     const existingDateStr = calendarDay(existing.planned_date as any) || '';
+    const newDate = calendarDay(dto.new_date) || dto.new_date;
 
-    const updated = await this.db
-      .updateTable('visits')
-      .set({
-        status: 'rescheduled',
-        rescheduled_from: existingDateStr,
-        planned_date: dto.new_date,
-        start_time: dto.start_time || existing.start_time || null,
-        end_time: dto.end_time || existing.end_time || null,
-        change_reason: dto.reason,
-        version: existing.version + 1,
-      })
-      .where('id', '=', id)
-      .returningAll()
-      .executeTakeFirstOrThrow();
+    // The visit and its tour move together, so no screen keeps showing it on the old day.
+    const updated = await this.db.transaction().execute(async (trx) => {
+      const tripId = await this.tripForMovedVisit(trx, existing, newDate);
+      return trx
+        .updateTable('visits')
+        .set({
+          status: 'rescheduled',
+          rescheduled_from: existingDateStr,
+          planned_date: newDate,
+          trip_id: tripId,
+          start_time: dto.start_time || existing.start_time || null,
+          end_time: dto.end_time || existing.end_time || null,
+          change_reason: dto.reason,
+          version: existing.version + 1,
+        })
+        .where('id', '=', id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
 
     this.eventEmitter.emit('audit.log', {
       actorId: user.id,
       entityType: 'visit',
       entityId: id,
       action: 'RESCHEDULE_VISIT',
-      previousValue: { planned_date: existing.planned_date, status: existing.status },
-      newValue: { planned_date: updated.planned_date, status: updated.status },
+      previousValue: { planned_date: existing.planned_date, status: existing.status, trip_id: existing.trip_id },
+      newValue: { planned_date: updated.planned_date, status: updated.status, trip_id: updated.trip_id },
       reason: dto.reason,
     });
 

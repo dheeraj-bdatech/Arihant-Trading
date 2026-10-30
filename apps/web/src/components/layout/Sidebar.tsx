@@ -35,6 +35,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { useSidebar } from '@/lib/sidebar-context';
+import { blockedModuleFor } from '@/lib/route-access';
 import { ROLE_PROFILES, taskViewsFor, type UserRole, type BosModuleKey } from '@arihant/shared';
 import { useBadgeCounts, type BadgeCounts } from '@/app/(app)/expenses/_lib/expense-lib';
 import { useTaskSummary, type TaskSummary } from '@/app/(app)/tasks/_lib/task-lib';
@@ -127,6 +128,15 @@ function getRoleNavGroups(role: UserRole): NavGroup[] {
               moduleKey: 'deliveries',
               badge: 'Consignments',
               badgeVariant: 'cyber',
+            },
+            {
+              // sales log the breakdowns their customers report; the service desk dispatches them
+              label: 'Customer Breakdowns',
+              href: '/service',
+              icon: Wrench,
+              moduleKey: 'service',
+              badge: 'Log & Track',
+              badgeVariant: 'neutral',
             },
           ],
         },
@@ -979,8 +989,9 @@ export const Sidebar: React.FC = () => {
 
   const role = user?.role || 'management';
   const roleProfile = ROLE_PROFILES[role];
-  const expenseCounts = useBadgeCounts(Boolean(user));
-  const { summary: taskSummary } = useTaskSummary(Boolean(user));
+  // no badge calls into a module the administrator switched off for this role
+  const expenseCounts = useBadgeCounts(Boolean(user) && !blockedModuleFor('/expenses'));
+  const { summary: taskSummary } = useTaskSummary(Boolean(user) && !blockedModuleFor('/tasks'));
   const navCounts = useNavCounts(Boolean(user));
   const navGroups = useMemo(
     () => withRouteLabels(withPerformanceGroup(withTenderItems(withTaskItems(withExpenseItems(getRoleNavGroups(role), role, expenseCounts), taskSummary), navCounts), role, taskSummary)),
@@ -1036,7 +1047,7 @@ export const Sidebar: React.FC = () => {
         .map((g) => ({
           ...g,
           items: g.items.filter(
-            (it) => isModuleAllowed(it.moduleKey) && (!q || it.label.toLowerCase().includes(q)),
+            (it) => isModuleAllowed(it.moduleKey) && !blockedModuleFor(it.href) && (!q || it.label.toLowerCase().includes(q)),
           ),
         }))
         .filter((g) => g.items.length > 0),

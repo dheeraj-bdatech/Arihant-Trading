@@ -5,6 +5,7 @@ import React, { useState } from 'react';
 import { MapPin, LogOut } from 'lucide-react';
 import { Button, Badge, Input, Select, Textarea, formatDateTimeIN } from '@/components/ui';
 import { api } from '@/lib/api';
+import { normalizeServiceStatus } from '@arihant/shared';
 import { errMsg } from './serviceHelpers';
 import { isAssignedEngineer } from './serviceHelpers';
 
@@ -46,7 +47,7 @@ const VisitCard: React.FC<{ visit: any; ticket: any; canWork: boolean; closed: b
 
   const checkedIn = !!v.actual_check_in;
   const checkedOut = !!v.actual_check_out;
-  const statusOk = CHECKIN_STATUSES.includes(String(ticket.status));
+  const statusOk = CHECKIN_STATUSES.includes(normalizeServiceStatus(ticket.status)); // legacy aliases read as their status
 
   const checkIn = async () => {
     setBusy(true);
@@ -174,7 +175,7 @@ export const VisitsTab: React.FC<Props> = ({ ticket, role, userId, onChanged }) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const closed = ['closed', 'cancelled'].includes(String(ticket.status));
+  const closed = ['closed', 'cancelled'].includes(normalizeServiceStatus(ticket.status));
   const canSchedule = ['management', 'regional_manager', 'service_team', 'admin'].includes(role) && !closed;
   const canWork = role === 'admin' || (role === 'service_team' && isAssignedEngineer(ticket, userId));
   const visits: any[] = ticket.visits || [];

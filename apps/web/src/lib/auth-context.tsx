@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { useRouter } from 'next/navigation';
 import { api } from './api';
 import { getSocket, disconnectSocket } from './socket';
+import { setBlockedModules } from './route-access';
 import type { AuthUser, UserRole } from '@arihant/shared';
 
 /**
@@ -106,6 +107,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setToken(storedToken);
       const profile = await api.get<AuthUser>('/auth/me');
+      setBlockedModules(profile.blocked_modules);
       setUser(profile);
       getSocket();
     } catch {
@@ -121,6 +123,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     fetchProfile();
   }, [fetchProfile]);
+
+  // An administrator's module switches (Admin → Role Permissions) reach an open session when its tab comes back into
+  // view; the user object only changes when the switches did, so pages keyed on it do not refetch for nothing.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || !localStorage.getItem('arihant_auth_token')) return;
+      api
+        .get<AuthUser>('/auth/me')
+        .then((me) => {
+          setBlockedModules(me.blocked_modules);
+          const next = (me.blocked_modules || []).join(',');
+          setUser((cur) => (cur && cur.id === me.id && (cur.blocked_modules || []).join(',') === next ? cur : me));
+        })
+        .catch(() => {});
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   // QA BUG-002: Back after Sign Out can restore a page from the browser's back/forward cache with the signed-in user
   // (and the data on screen) still in memory. When a page comes back that way and the stored session is no longer
@@ -152,6 +172,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       setToken(authToken);
       setUser(res.user);
+      // the login payload is the token's claims; the role's switched-off modules come with the profile
+      api
+        .get<AuthUser>('/auth/me')
+        .then((me) => {
+          setBlockedModules(me.blocked_modules);
+          setUser(me);
+        })
+        .catch(() => {});
       getSocket();
       router.replace('/dashboard');
     } catch (err: any) {
@@ -174,6 +202,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // ignore network errors on logout
     });
     localStorage.removeItem('arihant_auth_token');
+    setBlockedModules([]);
     if (typeof document !== 'undefined') {
       document.cookie = 'arihant_auth_token=; path=/; max-age=0; SameSite=Lax';
       document.cookie = 'sb-access-token=; path=/; max-age=0; SameSite=Lax';

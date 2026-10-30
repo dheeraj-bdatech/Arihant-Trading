@@ -23,6 +23,7 @@ import {
   allowedNextServiceStatuses,
   canTransitionService,
   normalizeServiceStatus,
+  serviceResolveBlocker,
   type ServiceStatus,
   type Database,
   type AuthUser,
@@ -54,6 +55,7 @@ import {
   generateTicketNo,
   getServiceSetting,
   normalizeWarranty,
+  TICKET_CLOSURE_SECONDS,
 } from './service.core.js';
 
 type Db = Kysely<Database> | Transaction<Database>;
@@ -64,8 +66,12 @@ const ASSIGN_ROLES = ['management', 'regional_manager', 'admin', 'service_team']
 const COMPLAINT_SOURCES = ['Phone', 'Email', 'WhatsApp', 'Walk-in', 'Customer Portal', 'Sales Rep', 'Demo Team', 'Field Visit', 'Official Letter', 'Auto-PM'];
 const WARRANTY_INPUTS = ['in_warranty', 'out_of_warranty', 'amc', 'Under Warranty', 'Under AMC', 'Out of Warranty', 'Partial Coverage', 'Unknown'];
 const CONFIRMATION_TYPES = ['Signature', 'OTP', 'Email Confirmation', 'Photo of Signed Job Sheet', 'Not Obtained'];
+/** Sign-offs made on paper: the signed service report itself must be attached (§33). OTP / email need none for now. */
+const PAPER_CONFIRMATIONS = ['Signature', 'Photo of Signed Job Sheet'];
 const VISIT_OUTCOMES = ['Completed', 'Partially Completed', 'Customer Not Available', 'Part Required', 'Escalation Needed', 'Revisit Required'];
 const PART_STATUSES = ['Requested', 'Reserved', 'Issued', 'Partially Issued', 'Unavailable – Ordered', 'Cancelled', 'Returned'];
+/** Spares requests still outstanding: the ticket waits for these. */
+const PART_OPEN_STATUSES = ['Requested', 'Reserved', 'Partially Issued', 'Unavailable – Ordered'];
 const PART_TRANSITIONS: Record<string, string[]> = {
   Requested: ['Reserved', 'Unavailable – Ordered', 'Issued', 'Cancelled'],
   Reserved: ['Issued', 'Partially Issued', 'Unavailable – Ordered', 'Cancelled'],
@@ -83,8 +89,10 @@ const UNVERIFIED_ORG_ID = '00000000-0000-4000-8000-0000000000a1';
 
 /**
  * Service Desk pipeline stages (§32): each groups raw statuses, legacy aliases included. `completed` is the
- * "Completed & Signed" KPI (work done, whether or not the manager has closed it yet); it overlaps
- * `reports` and `closed` on purpose.
+ * "Completed & Signed" KPI: the signed-off service report is on file (closed or awaiting the manager's close) —
+ * a bare `resolved` with no report yet does not count. It overlaps `reports` and `closed` on purpose.
+ * `awaiting_part` is the "Awaiting Parts / Spares" KPI, a slice of `awaiting`.
+ * The "Pending Queue" KPI is PENDING_STAGE: every unfinished ticket, i.e. not in SERVICE_DONE_STATUSES.
  */
 const TICKET_STAGES: Record<string, string[]> = {
   open: ['received', 'new', 'created'],
@@ -94,8 +102,10 @@ const TICKET_STAGES: Record<string, string[]> = {
   escalated: ['escalated', 'revisit_required', 'revisit', 'reopened'],
   reports: ['report_submitted', 'resolved'],
   closed: ['closed', 'cancelled'],
-  completed: ['resolved', 'report_submitted', 'closed'],
+  completed: ['report_submitted', 'closed'],
+  awaiting_part: ['awaiting_part'],
 };
+const PENDING_STAGE = 'pending';
 
 export type TicketListFilters = {
   search?: string;
@@ -105,11 +115,13 @@ export type TicketListFilters = {
   priority?: string;
   assigned_to?: string;
   complaint_source?: string;
-  /** Open, clock running, and the visit date or the SLA resolution deadline has passed. */
+  /** Open, clock running, and the SLA resolution deadline has passed or the planned visit day went by without the
+   *  work starting (a repair already in progress is not overdue for its visit; same rule as the visit-overdue sweep). */
   overdue?: string | boolean;
   /** Open, clock running, SLA resolution deadline passed (the "SLA Breached" KPI). */
   sla_breached?: string | boolean;
   unassigned?: string | boolean;
+  /** Open repeat complaints (closed / cancelled ones are history, not the open queue's problem). */
   repeat?: string | boolean;
   /** Still-live tickets logged against the unverified-customer holding record (closed/cancelled excluded). */
   unverified?: string | boolean;
@@ -143,6 +155,8 @@ export interface CoreCreateInput {
   regionId?: string | null;
   receivedDate?: string | null;
   customTicketNo?: string | null;
+  /** The customer's own reference, kept beside the system ticket number. */
+  customerReference?: string | null;
   claimedOrganisationName?: string | null;
   intakeRequestId?: string | null;
   actorId: string | null;
@@ -193,8 +207,8 @@ export class ServiceService {
     }
   }
 
-  /** Territory filter shared by lists, stats and detail. null = unrestricted. */
-  private scopeWhere(user: AuthUser): ((eb: any) => any) | null {
+  /** Territory filter shared by lists, stats, detail and the service report. null = unrestricted. */
+  scopeWhere(user: AuthUser): ((eb: any) => any) | null {
     // tender_team: "National GeM & State Bids" (Blueprint §5), national like the organisation master.
     if (user.role === 'management' || user.role === 'admin' || user.role === 'tender_team') return null;
 
@@ -257,13 +271,7 @@ export class ServiceService {
       .where('role', '=', 'service_team')
       .where('is_active', '=', true);
     if (user.role === 'service_team') {
-      const reports = await db
-        .selectFrom('users')
-        .select(sql<number>`count(id)::int`.as('n'))
-        .where('reporting_manager_id', '=', user.id)
-        .where('is_active', '=', true)
-        .executeTakeFirst();
-      const isChief = (reports?.n || 0) > 0;
+      const isChief = await this.isChiefEngineer(user, db);
       q = q.where((eb) => {
         const parts: any[] = [eb('id', '=', user.id)];
         if (isChief) {
@@ -280,17 +288,76 @@ export class ServiceService {
     return q.orderBy('full_name', 'asc').execute();
   }
 
-  /** Throws unless `engineerId` is one this user may dispatch (managers: any service engineer). */
+  /** A chief service engineer: a service engineer others report to (he dispatches his depot team). */
+  private async isChiefEngineer(user: AuthUser, db: Db = this.db): Promise<boolean> {
+    if (user.role !== 'service_team') return false;
+    const reports = await db
+      .selectFrom('users')
+      .select(sql<number>`count(id)::int`.as('n'))
+      .where('reporting_manager_id', '=', user.id)
+      .where('is_active', '=', true)
+      .executeTakeFirst();
+    return (reports?.n || 0) > 0;
+  }
+
+  /**
+   * Who signs off the work on this ticket — approves or returns its service report, de-escalates it, closes it on a
+   * report not yet approved: managers (within the scope they can see), and a chief service engineer for tickets in
+   * his own territory (his zone, else his region — the same territory rule the desk scopes by).
+   */
+  async canSupervise(ticketId: string, user: AuthUser): Promise<boolean> {
+    if (this.isManager(user)) return true;
+    if (!(await this.isChiefEngineer(user))) return false;
+    const row = await this.db
+      .selectFrom('service_tickets')
+      .innerJoin('organisations', 'service_tickets.organisation_id', 'organisations.id')
+      .select('service_tickets.id')
+      .where('service_tickets.id', '=', ticketId)
+      .where((eb: any) => {
+        const parts = this.territoryParts(eb, user);
+        return parts.length ? eb.or(parts) : sql<boolean>`false`;
+      })
+      .executeTakeFirst();
+    return !!row;
+  }
+
+  /**
+   * Throws unless this user may take the ticket off `holder` (reassign it, or send it back to intake). A service
+   * engineer may only move a ticket that is unassigned, their own, or held by an engineer they dispatch (a chief's
+   * team): an additional engineer cannot lift a colleague's ticket and lock them out of it. Managers: any.
+   */
+  private async assertMayTakeFrom(user: AuthUser, holder: string | null | undefined, db: Db = this.db) {
+    if (user.role !== 'service_team' || !holder || holder === user.id) return;
+    const team = await this.assignableEngineers(user, db);
+    if (!team.some((e) => e.id === holder)) {
+      throw new ForbiddenException('This ticket is held by another engineer — only their chief service engineer or a manager can reassign it');
+    }
+  }
+
+  /**
+   * Throws unless `engineerId` is one this user may dispatch: the same list GET /service/engineers offers
+   * (management / admin: any engineer; a regional manager: their zone's; a chief: his team; an engineer: himself).
+   */
   private async assertMayAssign(user: AuthUser, engineerId: string, db: Db = this.db) {
-    if (user.role !== 'service_team') return;
-    if (engineerId === user.id) return;
+    if (user.role === 'management' || user.role === 'admin') return;
+    if (user.role === 'service_team' && engineerId === user.id) return;
     const team = await this.assignableEngineers(user, db);
     if (!team.some((e) => e.id === engineerId)) {
       throw new ForbiddenException(
-        team.length > 1
-          ? 'You can only assign tickets to engineers of your depot / team'
-          : 'Service engineers can only assign a ticket to themselves',
+        user.role !== 'service_team'
+          ? 'You can only assign engineers of your own zone'
+          : team.length > 1
+            ? 'You can only assign tickets to engineers of your depot / team'
+            : 'Service engineers can only assign a ticket to themselves',
       );
+    }
+  }
+
+  /** Field work (check-in/out, the service report, spares requests) is recorded by engineers or admin only. */
+  private assertFieldRole(user: AuthUser) {
+    // RolesGuard lets management through every endpoint, so the service layer draws this line itself
+    if (user.role !== 'service_team' && user.role !== 'admin') {
+      throw new ForbiddenException('Only the service engineer (or admin) records field work');
     }
   }
 
@@ -379,9 +446,12 @@ export class ServiceService {
       const legacy = wanted === 'received' ? ['received', 'new', 'created'] : wanted === 'revisit_required' ? ['revisit_required', 'revisit'] : [wanted];
       b = b.where('service_tickets.status', 'in', legacy as any);
     }
-    if (query.stage) {
+    if (query.stage === PENDING_STAGE) {
+      // the complement of the done statuses, so it counts exactly what the stats' pendingTickets counts
+      b = b.where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any);
+    } else if (query.stage) {
       const statuses = TICKET_STAGES[query.stage];
-      if (!statuses) throw new BadRequestException(`stage must be one of: ${Object.keys(TICKET_STAGES).join(', ')}`);
+      if (!statuses) throw new BadRequestException(`stage must be one of: ${[PENDING_STAGE, ...Object.keys(TICKET_STAGES)].join(', ')}`);
       b = b.where('service_tickets.status', 'in', statuses as any);
     }
     if (query.priority) b = b.where('service_tickets.priority', '=', query.priority as any);
@@ -391,7 +461,9 @@ export class ServiceService {
     }
     if (query.complaint_source) b = b.where('service_tickets.complaint_source', '=', query.complaint_source);
     if (truthy(query.unassigned)) b = b.where('service_tickets.assigned_to', 'is', null);
-    if (truthy(query.repeat)) b = b.where('service_tickets.is_repeat_complaint', '=', true);
+    if (truthy(query.repeat)) {
+      b = b.where('service_tickets.is_repeat_complaint', '=', true).where('service_tickets.status', 'not in', SERVICE_DONE_STATUSES as any);
+    }
     if (truthy(query.unverified)) {
       b = b.where('service_tickets.claimed_organisation_name', 'is not', null).where('service_tickets.status', 'not in', ['closed', 'cancelled'] as any);
     }
@@ -410,7 +482,7 @@ export class ServiceService {
         .where('service_tickets.status', 'not in', SERVICE_SLA_PAUSE_STATUSES as any)
         .where((eb: any) =>
           eb.or([
-            eb('service_tickets.planned_visit_date', '<', this.todayIst() as any),
+            eb.and([eb('service_tickets.planned_visit_date', '<', this.todayIst() as any), eb('service_tickets.status', '<>', 'in_progress')]),
             eb('service_tickets.sla_resolution_due_at', '<', new Date()),
           ]),
         );
@@ -425,6 +497,7 @@ export class ServiceService {
           sql<boolean>`lower(coalesce(service_tickets.equipment_serial, service_tickets.serial_number, '')) like ${s}`,
           sql<boolean>`lower(organisations.name) like ${s}`,
           sql<boolean>`lower(coalesce(service_tickets.claimed_organisation_name, '')) like ${s}`,
+          sql<boolean>`lower(coalesce(service_tickets.customer_reference, '')) like ${s}`,
         ]),
       );
     }
@@ -438,6 +511,7 @@ export class ServiceService {
   async findAllTickets(query: TicketListFilters & { page?: number; limit?: number }, user: AuthUser): Promise<PaginatedResult<any>> {
     this.assertViewRole(user);
     const { page, limit, offset } = getPaginationParams(query);
+    const chief = await this.isChiefEngineer(user);
 
     let baseQuery = this.db
       .selectFrom('service_tickets')
@@ -490,7 +564,12 @@ export class ServiceService {
         'service_tickets.resolved_at',
         'service_tickets.closed_at',
         'service_tickets.reopened_count',
+        'service_tickets.reopened_at',
+        // newest report, so the list can offer only the moves the API will take (resolve, sign off & close)
+        sql<any>`(select json_build_object('report_status', r.report_status, 'further_work_required', r.further_work_required, 'submitted_at', r.submitted_at, 'created_at', r.created_at, 'submitted_by', r.submitted_by)
+          from service_reports r where r.ticket_id = service_tickets.id order by r.created_at desc limit 1)`.as('latest_report'),
         'service_tickets.claimed_organisation_name',
+        'service_tickets.customer_reference',
         'service_tickets.intake_request_id',
         'service_tickets.version',
         'service_tickets.created_at',
@@ -502,6 +581,12 @@ export class ServiceService {
         'contacts.mobile as contact_mobile',
         'assignee.full_name as assignee_name',
       ])
+      // per row, canSupervise's rule: managers sign off everything they see; a chief only his territory
+      .select((eb: any) => {
+        if (this.isManager(user)) return sql<boolean>`true`.as('can_supervise');
+        const parts = chief ? this.territoryParts(eb, user) : [];
+        return (parts.length ? eb.or(parts) : sql<boolean>`false`).as('can_supervise');
+      })
       .orderBy('service_tickets.created_at', 'desc')
       .limit(limit)
       .offset(offset)
@@ -774,6 +859,7 @@ export class ServiceService {
         regionId: dto.region_id || org.region_id || (orgId === UNVERIFIED_ORG_ID ? user.region_id || null : null),
         receivedDate,
         customTicketNo: dto.ticket_no || dto.ticket_number || null,
+        customerReference: cleanText(dto.customer_reference || '', 80) || null,
         claimedOrganisationName: orgId === UNVERIFIED_ORG_ID ? claimedName : null,
         actorId: user.id,
       });
@@ -846,7 +932,7 @@ export class ServiceService {
         complaint_source: input.source,
         problem_category: input.problemCategory,
         received_date: (calendarDay(input.receivedDate) || todayInKolkata(now)) as any,
-        date_received: now,
+        date_received: slaStart, // when the complaint reached us (a back-dated day: its opening hour), as the SLA clock runs
         priority: priority as any,
         warranty_status: warranty as any,
         warranty_status_snapshot: warranty,
@@ -869,6 +955,7 @@ export class ServiceService {
         is_repeat_complaint: repeat.isRepeat,
         region_id: input.regionId || null,
         claimed_organisation_name: input.claimedOrganisationName || null,
+        customer_reference: input.customerReference || null,
         intake_request_id: input.intakeRequestId || null,
         created_by: input.actorId,
         updated_by: input.actorId,
@@ -901,6 +988,9 @@ export class ServiceService {
         })
         .execute();
     }
+    // born "Visit Scheduled": its visit record exists from the start, ready for check-in
+    const plannedDay = status === 'visit_scheduled' ? calendarDay(input.plannedVisitDate) : null;
+    if (plannedDay) await this.syncPendingVisit(trx, ticket, plannedDay);
 
     // "Enter once, use everywhere": the customer timeline learns about it immediately
     if (input.organisationId !== '00000000-0000-4000-8000-0000000000a1') {
@@ -999,12 +1089,15 @@ export class ServiceService {
       set.assigned_engineer_id = o.assignedTo;
     }
     if (o.plannedVisitDate !== undefined) set.planned_visit_date = o.plannedVisitDate;
+    // off the schedule (back to intake, or unscheduled): a stale planned day must not raise overdue alerts
+    else if (to === 'received' || (from === 'visit_scheduled' && to === 'assigned')) set.planned_visit_date = null;
 
     // First response = a person acting on the ticket. A system move (auto-escalation, actorId null) or parking it
     // (escalated / on hold) is not a response to the customer.
     if (!existing.first_response_at && o.actorId && !['received', 'created', 'escalated', 'on_hold'].includes(to)) set.first_response_at = now;
     if (to === 'resolved') set.resolved_at = now;
-    if (from === 'resolved' && to === 'in_progress') set.resolved_at = null;
+    // back to work after a resolution (re-work, revisit, returned report, reopen): that resolution no longer stands
+    if (['resolved', 'report_submitted', 'closed'].includes(from) && !SERVICE_DONE_STATUSES.includes(to)) set.resolved_at = null;
     if (to === 'closed') set.closed_at = now;
     if (to === 'cancelled') set.cancelled_at = now;
 
@@ -1059,11 +1152,16 @@ export class ServiceService {
     return row;
   }
 
+  /** §47: the audit row for one committed status change. Every transition gets one, whichever path made it. */
+  private auditTransition(actorId: string | null, existing: any, row: any, reason?: string | null) {
+    this.audit(actorId, 'service_ticket', row.id, 'status_change', { status: existing.status, assigned_to: existing.assigned_to }, { status: normalizeServiceStatus(row.status), assigned_to: row.assigned_to, reason });
+  }
+
   /** Domain events fired after a transition commits. */
   async announceTransition(existing: any, row: any, actorId: string | null, reason?: string | null) {
     const from = normalizeServiceStatus(existing.status);
     const to = normalizeServiceStatus(row.status);
-    this.audit(actorId, 'service_ticket', row.id, 'status_change', { status: existing.status, assigned_to: existing.assigned_to }, { status: to, assigned_to: row.assigned_to, reason });
+    this.auditTransition(actorId, existing, row, reason);
     await this.emitTicketEvent(AppEvents.SERVICE_STATUS_CHANGED, row.id, { actorId, from, to, reason });
     if (row.assigned_to && row.assigned_to !== existing.assigned_to) {
       await this.emitTicketEvent(AppEvents.SERVICE_ASSIGNED, row.id, { actorId, engineerId: row.assigned_to, previousEngineerId: existing.assigned_to });
@@ -1113,8 +1211,8 @@ export class ServiceService {
     }
 
     // ---- who may make this move
-    if (from === 'escalated' && !this.isManager(user)) {
-      throw new ForbiddenException('Only a regional manager, management or admin can de-escalate a ticket');
+    if (from === 'escalated' && !(await this.canSupervise(existing.id, user))) {
+      throw new ForbiddenException('Only the chief service engineer of this territory, a regional manager, management or admin can de-escalate a ticket');
     }
     if (to === 'reopened') {
       if (user.role !== 'management' && user.role !== 'admin') {
@@ -1126,8 +1224,13 @@ export class ServiceService {
         throw new BadRequestException(`The ${windowDays}-day reopen window has passed — raise a new ticket linked to this one`);
       }
     }
-    if (to === 'cancelled' && user.role === 'service_team' && existing.assigned_to !== user.id && existing.assigned_to !== null) {
-      throw new ForbiddenException('Only the assigned engineer or a manager can cancel this ticket');
+    // cancelling is final: an engineer cancels only their own ticket; the intake queue and a colleague's ticket
+    // need the chief service engineer who dispatches them, or a manager
+    if (to === 'cancelled' && user.role === 'service_team' && existing.assigned_to !== user.id) {
+      const team = await this.assignableEngineers(user);
+      if (team.length <= 1 || (existing.assigned_to && !team.some((e) => e.id === existing.assigned_to))) {
+        throw new ForbiddenException('Only the assigned engineer, their chief service engineer or a manager can cancel this ticket');
+      }
     }
 
     const reason = cleanText(dto.remarks || dto.status_reason || '', 1000) || null;
@@ -1140,14 +1243,25 @@ export class ServiceService {
     let assignedTo: string | null | undefined = undefined;
     if (requestedAssignee) {
       if (!ASSIGN_ROLES.includes(user.role)) throw new ForbiddenException('You cannot assign engineers');
+      if (requestedAssignee !== existing.assigned_to) await this.assertMayTakeFrom(user, existing.assigned_to);
+      // §47: changing the engineer is a reassignment, and the assignment history needs its reason
+      if (existing.assigned_to && requestedAssignee !== existing.assigned_to && (!reason || reason.length < 5)) {
+        throw new BadRequestException('A reason (at least 5 characters) is required to change the engineer');
+      }
       await this.assertMayAssign(user, requestedAssignee);
       await this.requireEngineer(this.db, requestedAssignee);
       assignedTo = requestedAssignee;
     }
+    // back to intake takes the engineer off the ticket: same rule as reassigning it
+    if (to === 'received' && assignedTo === undefined) await this.assertMayTakeFrom(user, existing.assigned_to);
     const effectiveAssignee = assignedTo !== undefined ? assignedTo : existing.assigned_to;
 
     if (to === 'assigned' && !effectiveAssignee) {
       throw new BadRequestException('Status assigned requires an assigned engineer');
+    }
+    // nobody could check in or file the report on an engineer-less ticket in progress (and /assign refuses it)
+    if (to === 'in_progress' && !effectiveAssignee) {
+      throw new BadRequestException('Work in progress needs an engineer — pick the engineer who will do the work');
     }
 
     // ---- visit date
@@ -1175,17 +1289,11 @@ export class ServiceService {
       );
     }
 
-    // ---- resolution evidence: a filed service report (rectification + customer sign-off), never a note alone
+    // ---- resolution evidence: this cycle's filed service report (rectification + customer sign-off), never a note
+    // alone, a report from before a reopen, or a report that itself says further work is needed
     if (to === 'resolved') {
-      const latest = (existing.reports || [])[0];
-      if (!latest) {
-        throw new BadRequestException(
-          'File the service report (work done and customer sign-off) to resolve this ticket — submitting the report marks it resolved.',
-        );
-      }
-      if (latest.report_status === 'Returned for Correction') {
-        throw new BadRequestException('The latest service report was returned for correction — file the corrected report to resolve the ticket.');
-      }
+      const blocker = serviceResolveBlocker(existing);
+      if (blocker) throw new BadRequestException(blocker);
     }
 
     const extra: Record<string, any> = {};
@@ -1209,24 +1317,28 @@ export class ServiceService {
       if (dto.billing_waived) extra.billing_status = 'waived';
     }
 
+    let newVisit: any = null;
     const updated = await this.db.transaction().execute(async (trx) => {
       if (to === 'cancelled') {
         await trx
           .updateTable('part_requests')
           .set({ status: 'Cancelled', store_remarks: 'Auto-released due to ticket cancellation', updated_at: new Date() })
           .where('ticket_id', '=', id)
-          .where('status', 'in', ['Requested', 'Reserved', 'Partially Issued', 'Unavailable – Ordered'])
+          .where('status', 'in', PART_OPEN_STATUSES)
           .execute();
       }
-      return this.applyTransition(trx, existing, to, {
+      const row = await this.applyTransition(trx, existing, to, {
         actorId: user.id,
         reason,
         assignedTo,
         plannedVisitDate: visitDate,
         set: extra,
       });
+      if (to === 'visit_scheduled' && visitDate) newVisit = await this.syncPendingVisit(trx, row, visitDate);
+      return row;
     });
 
+    if (newVisit) this.audit(user.id, 'service_visit', newVisit.id, 'create', null, { ticket_id: id, visit_number: newVisit.visit_number, engineer_ids: newVisit.engineer_ids, scheduled_start: newVisit.scheduled_start });
     await this.announceTransition(existing, updated, user.id, reason);
     return this.withAllowed(updated);
   }
@@ -1252,6 +1364,7 @@ export class ServiceService {
     if (engineerId === existing.assigned_to) throw new BadRequestException('This engineer is already assigned to the ticket');
     const reason = cleanText(dto.reason || '', 1000);
     if (reason.length < 5) throw new BadRequestException('A reason (at least 5 characters) is required to reassign the engineer');
+    await this.assertMayTakeFrom(user, existing.assigned_to);
     await this.assertMayAssign(user, engineerId);
     await this.requireEngineer(this.db, engineerId);
 
@@ -1307,8 +1420,12 @@ export class ServiceService {
     }
 
     const needsApproval = latest.report_status !== 'Approved';
-    if (needsApproval && !this.isManager(user)) {
-      throw new ForbiddenException('The service report must be approved by a manager before the ticket can be closed');
+    if (needsApproval) {
+      // closing on an unapproved report approves it: same sign-off rule as reviewing it
+      if (!(await this.canSupervise(id, user))) {
+        throw new ForbiddenException('The service report must be approved by a manager (or the territory chief service engineer) before the ticket can be closed');
+      }
+      this.assertNotOwnReport(latest, user);
     }
     const remarks = cleanText(body?.remarks || '', 1000);
     if (latest.customer_confirmation === false && remarks.length < 5) {
@@ -1432,6 +1549,7 @@ export class ServiceService {
   // 5. Service Reports & Approval Workflow (§33)
   // =========================================================================
   async submitReport(ticketId: string, dto: SubmitServiceReportDto, user: AuthUser) {
+    this.assertFieldRole(user);
     const ticket: any = await this.findOneTicket(ticketId, user);
     const status = normalizeServiceStatus(ticket.status);
 
@@ -1460,7 +1578,8 @@ export class ServiceService {
     if (problem.length < 5) throw new BadRequestException('Problem identified must be at least 5 characters');
     if (action.length < 5) throw new BadRequestException('Action taken must be at least 5 characters');
 
-    const confirmationType = dto.customer_confirmation_type || 'Signature';
+    // §33: how the customer signed off is recorded, never assumed — a report that does not say is refused
+    const confirmationType = dto.customer_confirmation_type || (dto.customer_confirmation === false ? 'Not Obtained' : '');
     if (!CONFIRMATION_TYPES.includes(confirmationType)) {
       throw new BadRequestException(`customer_confirmation_type must be one of: ${CONFIRMATION_TYPES.join(', ')}`);
     }
@@ -1489,6 +1608,10 @@ export class ServiceService {
     const partsJson = this.normalizeParts(dto.parts_replaced);
     const attachments = this.normalizeAttachments(dto.attachments);
     const reportUrl = this.normalizeReportUrl(dto.report_url);
+    // §33: a paper sign-off carries the signed service report itself (scan / photo of the job sheet, or a link)
+    if (obtained && PAPER_CONFIRMATIONS.includes(confirmationType) && attachments.length === 0 && !reportUrl) {
+      throw new BadRequestException(`Attach the signed service report (scan or photo of the signed job sheet) or link it — it is required for a "${confirmationType}" sign-off`);
+    }
     if (dto.visit_id) {
       const v = await this.db.selectFrom('service_visits').select('id').where('id', '=', dto.visit_id).where('ticket_id', '=', ticketId).executeTakeFirst();
       if (!v) throw new BadRequestException('Visit does not belong to this ticket');
@@ -1496,6 +1619,7 @@ export class ServiceService {
 
     const nextStatus: ServiceStatus = dto.further_work_required ? 'revisit_required' : 'report_submitted';
     const now = new Date();
+    const moves: { before: any; after: any; reason: string }[] = []; // audited once the transaction commits
 
     const report = await this.db.transaction().execute(async (trx) => {
       const inserted = await trx
@@ -1530,23 +1654,17 @@ export class ServiceService {
 
       // two honest history rows: work finished, then paperwork filed
       let current = ticket;
-      if (status === 'in_progress') {
-        const resolved = await this.applyTransition(trx, current, 'resolved', {
-          actorId: user.id,
-          reason: `Rectification completed: ${action.slice(0, 160)}`,
-        });
-        current = { ...current, ...resolved };
-      }
+      const move = async (to: ServiceStatus, reason: string, plannedVisitDate?: string | null) => {
+        const row = await this.applyTransition(trx, current, to, { actorId: user.id, reason, plannedVisitDate });
+        moves.push({ before: current, after: row, reason });
+        current = { ...current, ...row };
+      };
+      if (status === 'in_progress') await move('resolved', `Rectification completed: ${action.slice(0, 160)}`);
       if (dto.further_work_required) {
-        await this.applyTransition(trx, current, 'report_submitted', { actorId: user.id, reason: 'Service report submitted: further work required' }).then(async (row) => {
-          await this.applyTransition(trx, { ...current, ...row }, 'revisit_required', {
-            actorId: user.id,
-            reason: `Further work required: ${cleanText(dto.further_work_description || '', 300)}`,
-            plannedVisitDate: nextVisit,
-          });
-        });
+        await move('report_submitted', 'Service report submitted: further work required');
+        await move('revisit_required', `Further work required: ${cleanText(dto.further_work_description || '', 300)}`, nextVisit);
       } else {
-        await this.applyTransition(trx, current, 'report_submitted', { actorId: user.id, reason: 'Service report submitted for sign-off' });
+        await move('report_submitted', 'Service report submitted for sign-off');
       }
 
       await trx
@@ -1566,6 +1684,7 @@ export class ServiceService {
     });
 
     this.audit(user.id, 'service_report', report.id, 'create', null, report);
+    for (const m of moves) this.auditTransition(user.id, m.before, m.after, m.reason);
     await this.emitTicketEvent(AppEvents.SERVICE_REPORT_SUBMITTED, ticketId, { actorId: user.id, reportId: report.id, furtherWork: !!dto.further_work_required, nextStatus });
     return report;
   }
@@ -1622,12 +1741,27 @@ export class ServiceService {
     });
   }
 
+  /** A chief service engineer signs off his team's work, not his own: his own report goes to a manager. */
+  private assertNotOwnReport(report: { submitted_by?: string | null }, user: AuthUser) {
+    if (user.role === 'service_team' && report.submitted_by === user.id) {
+      throw new ForbiddenException('You filed this service report — a manager has to sign it off');
+    }
+  }
+
   async reviewReport(ticketId: string, reportId: string, dto: ReviewServiceReportDto, user: AuthUser) {
     const ticket: any = await this.findOneTicket(ticketId, user);
     if (!UUID_REGEX.test(reportId)) throw new NotFoundException(`Service report ${reportId} not found for ticket`);
+    if (!(await this.canSupervise(ticketId, user))) {
+      throw new ForbiddenException('Service reports are reviewed by managers, or by the chief service engineer of the ticket\'s territory');
+    }
 
     const report = await this.db.selectFrom('service_reports').selectAll().where('id', '=', reportId).where('ticket_id', '=', ticketId).executeTakeFirst();
     if (!report) throw new NotFoundException(`Service report ${reportId} not found for ticket`);
+    this.assertNotOwnReport(report, user);
+    // only the newest report speaks for the ticket: returning an older one must not send settled work back
+    if ((ticket.reports || [])[0]?.id !== reportId) {
+      throw new BadRequestException('A newer service report has been filed for this ticket — review that one instead');
+    }
     if (report.report_status !== 'Submitted') {
       throw new BadRequestException(`Only a submitted report can be reviewed (this one is ${report.report_status})`);
     }
@@ -1650,6 +1784,8 @@ export class ServiceService {
     const reason = cleanText(dto.return_reason || '', 500);
     if (reason.length < 5) throw new BadRequestException('A reason (at least 5 characters) is required to return a report for correction');
 
+    const moveReason = `Service report returned: ${reason}`;
+    let moved: any = null; // the ticket goes back to work only from report_submitted (a revisit ticket stays put)
     const updated = await this.db.transaction().execute(async (trx) => {
       const r = await trx
         .updateTable('service_reports')
@@ -1658,12 +1794,15 @@ export class ServiceService {
         .returningAll()
         .executeTakeFirstOrThrow();
       if (normalizeServiceStatus(ticket.status) === 'report_submitted') {
-        await this.applyTransition(trx, ticket, 'in_progress', { actorId: user.id, reason: `Service report returned: ${reason}` });
+        moved = await this.applyTransition(trx, ticket, 'in_progress', { actorId: user.id, reason: moveReason });
       }
       return r;
     });
     this.audit(user.id, 'service_report', reportId, 'report_returned', { report_status: report.report_status }, { report_status: 'Returned for Correction', return_reason: reason, ticket_id: ticketId });
-    await this.emitTicketEvent(AppEvents.SERVICE_STATUS_CHANGED, ticketId, { actorId: user.id, from: 'report_submitted', to: 'in_progress', reason: `Report returned: ${reason}` });
+    if (moved) {
+      this.auditTransition(user.id, ticket, moved, moveReason);
+      await this.emitTicketEvent(AppEvents.SERVICE_STATUS_CHANGED, ticketId, { actorId: user.id, from: 'report_submitted', to: 'in_progress', reason: `Report returned: ${reason}` });
+    }
     return updated;
   }
 
@@ -1671,6 +1810,7 @@ export class ServiceService {
   // 6. Visits Management (check-in / check-out)
   // =========================================================================
   private assertCanWork(ticket: any, user: AuthUser) {
+    this.assertFieldRole(user);
     if (['closed', 'cancelled'].includes(normalizeServiceStatus(ticket.status))) {
       throw new BadRequestException(`This ticket is ${ticket.status}`);
     }
@@ -1694,18 +1834,68 @@ export class ServiceService {
     if (start && end && end <= start) throw new BadRequestException('scheduled_end must be after scheduled_start');
     for (const eid of dto.engineer_ids || []) await this.requireEngineer(this.db, eid, 'Visit engineer');
 
+    // A visit planned for today or later schedules a ticket that is waiting for one (§32: one "Visit Scheduled").
+    const day = start ? calendarDay(start) || this.todayIst() : this.todayIst();
+    const status = normalizeServiceStatus(ticket.status);
+    const schedules = !!ticket.assigned_to && day >= this.todayIst() && ['assigned', 'reopened', 'revisit_required'].includes(status);
+
     const countRes = await this.db.selectFrom('service_visits').select(sql<number>`count(id)::int`.as('count')).where('ticket_id', '=', ticketId).executeTakeFirst();
     const nextVisitNumber = (countRes?.count || 0) + 1;
 
-    return this.db
+    let moved: any = null;
+    const moveReason = `Visit ${nextVisitNumber} planned for ${day.split('-').reverse().join('/')}`;
+    const visit = await this.db.transaction().execute(async (trx) => {
+      const v = await trx
+        .insertInto('service_visits')
+        .values({
+          ticket_id: ticketId,
+          visit_number: nextVisitNumber,
+          engineer_ids: JSON.stringify(dto.engineer_ids?.length ? dto.engineer_ids : [ticket.assigned_to || user.id]),
+          scheduled_start: start,
+          scheduled_end: end,
+          notes: dto.notes ? cleanText(dto.notes, 1000) : null,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      if (schedules) moved = await this.applyTransition(trx, ticket, 'visit_scheduled', { actorId: user.id, reason: moveReason, plannedVisitDate: day });
+      return v;
+    });
+    this.audit(user.id, 'service_visit', visit.id, 'create', null, { ticket_id: ticketId, visit_number: visit.visit_number, engineer_ids: visit.engineer_ids, scheduled_start: start });
+    if (moved) await this.announceTransition(ticket, moved, user.id, moveReason);
+    return visit;
+  }
+
+  /**
+   * §32: "Visit Scheduled" is one thing. Scheduling the ticket (status move) creates its visit record — or moves the
+   * pending one (not yet checked in) to the new day — so the engineer can check in on it straight away.
+   * Returns the visit it created, if any, for the caller to audit once the transaction commits.
+   */
+  private async syncPendingVisit(db: Db, ticket: any, day: string): Promise<any | null> {
+    const pending = await db
+      .selectFrom('service_visits')
+      .selectAll()
+      .where('ticket_id', '=', ticket.id)
+      .where('actual_check_in', 'is', null)
+      .orderBy('visit_number', 'desc')
+      .executeTakeFirst();
+    const { startHour } = await businessDay(db as any);
+    const start = new Date(`${day}T${String(startHour).padStart(2, '0')}:00:00+05:30`); // opening hour that day (IST)
+    if (pending) {
+      if (calendarDay(pending.scheduled_start as any) !== day) {
+        await db.updateTable('service_visits').set({ scheduled_start: start, scheduled_end: null, updated_at: new Date() }).where('id', '=', pending.id).execute();
+      }
+      return null;
+    }
+    const countRes = await db.selectFrom('service_visits').select(sql<number>`count(id)::int`.as('count')).where('ticket_id', '=', ticket.id).executeTakeFirst();
+    return db
       .insertInto('service_visits')
       .values({
-        ticket_id: ticketId,
-        visit_number: nextVisitNumber,
-        engineer_ids: JSON.stringify(dto.engineer_ids?.length ? dto.engineer_ids : [ticket.assigned_to || user.id]),
+        ticket_id: ticket.id,
+        visit_number: (countRes?.count || 0) + 1,
+        engineer_ids: JSON.stringify([ticket.assigned_to]),
         scheduled_start: start,
-        scheduled_end: end,
-        notes: dto.notes ? cleanText(dto.notes, 1000) : null,
+        scheduled_end: null,
+        notes: null,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -1737,6 +1927,7 @@ export class ServiceService {
       throw new BadRequestException(`Cannot check in while the ticket is ${status}`);
     }
 
+    const moves: { before: any; after: any; reason: string }[] = []; // audited once the transaction commits
     const updated = await this.db.transaction().execute(async (trx) => {
       const v = await trx
         .updateTable('service_visits')
@@ -1744,12 +1935,22 @@ export class ServiceService {
         .where('id', '=', visitId)
         .returningAll()
         .executeTakeFirstOrThrow();
-      if (status !== 'in_progress') {
-        await this.applyTransition(trx, ticket, 'in_progress', { actorId: user.id, reason: 'Visit check-in recorded by service engineer' });
+      let current = ticket;
+      const move = async (to: ServiceStatus, reason: string, plannedVisitDate?: string) => {
+        const row = await this.applyTransition(trx, current, to, { actorId: user.id, reason, plannedVisitDate });
+        moves.push({ before: current, after: row, reason });
+        current = { ...current, ...row };
+      };
+      // an unscheduled ticket passes through "Visit Scheduled" (today) on the way in: no stage is skipped
+      if (!canTransitionService(status, 'in_progress') && status !== 'in_progress') {
+        await move('visit_scheduled', 'Visit started on site without a prior schedule', this.todayIst());
       }
+      if (status !== 'in_progress') await move('in_progress', 'Visit check-in recorded by service engineer');
       return v;
     });
-    if (status !== 'in_progress') {
+    this.audit(user.id, 'service_visit', visitId, 'check_in', { actual_check_in: null }, { ticket_id: ticketId, actual_check_in: at, check_in_lat: dto.check_in_lat ?? null, check_in_lng: dto.check_in_lng ?? null });
+    for (const m of moves) this.auditTransition(user.id, m.before, m.after, m.reason);
+    if (moves.length) {
       await this.emitTicketEvent(AppEvents.SERVICE_STATUS_CHANGED, ticketId, { actorId: user.id, from: status, to: 'in_progress', reason: 'Engineer checked in on site' });
     }
     return updated;
@@ -1785,6 +1986,7 @@ export class ServiceService {
     };
     const next = nextByOutcome[outcome];
 
+    let moved: any = null;
     const result = await this.db.transaction().execute(async (trx) => {
       const v = await trx
         .updateTable('service_visits')
@@ -1793,11 +1995,13 @@ export class ServiceService {
         .returningAll()
         .executeTakeFirstOrThrow();
       if (next && status === 'in_progress') {
-        await this.applyTransition(trx, ticket, next, { actorId: user.id, reason: notes || outcome });
+        moved = await this.applyTransition(trx, ticket, next, { actorId: user.id, reason: notes || outcome });
       }
       return v;
     });
-    if (next && status === 'in_progress') {
+    this.audit(user.id, 'service_visit', visitId, 'check_out', { actual_check_out: null }, { ticket_id: ticketId, actual_check_out: out, visit_outcome: outcome, notes });
+    if (moved) {
+      this.auditTransition(user.id, ticket, moved, notes || outcome);
       await this.emitTicketEvent(AppEvents.SERVICE_STATUS_CHANGED, ticketId, { actorId: user.id, from: status, to: next, reason: notes || outcome });
       if (next === 'escalated') await this.emitTicketEvent(AppEvents.SERVICE_ESCALATED, ticketId, { actorId: user.id, reason: notes });
     }
@@ -1808,6 +2012,7 @@ export class ServiceService {
   // 7. Part Requests (connects to inventory)
   // =========================================================================
   async createPartRequest(ticketId: string, dto: CreatePartRequestDto, user: AuthUser) {
+    this.assertFieldRole(user);
     const ticket: any = await this.findOneTicket(ticketId, user);
     if (['closed', 'cancelled'].includes(normalizeServiceStatus(ticket.status))) {
       throw new BadRequestException(`Cannot request parts on a ${ticket.status} ticket`);
@@ -1826,7 +2031,7 @@ export class ServiceService {
       if (!p) throw new BadRequestException('Part (product) not found');
     }
 
-    return this.db
+    const request = await this.db
       .insertInto('part_requests')
       .values({
         ticket_id: ticketId,
@@ -1840,6 +2045,8 @@ export class ServiceService {
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    this.audit(user.id, 'part_request', request.id, 'create', null, { ticket_id: ticketId, part_name: name, quantity: qty, status: 'Requested' });
+    return request;
   }
 
   async getPartRequests(ticketId: string, user: AuthUser) {
@@ -1866,48 +2073,51 @@ export class ServiceService {
       throw new BadRequestException(`Cannot move a part request from ${current.status} to ${dto.status}`);
     }
 
-    const updated = await this.db
-      .updateTable('part_requests')
-      .set({
-        status: dto.status,
-        store_remarks: dto.store_remarks ? cleanText(dto.store_remarks, 500) : current.store_remarks,
-        serial_issued: dto.serial_issued ? cleanText(dto.serial_issued, 80) : current.serial_issued,
-        serial_returned: dto.serial_returned ? cleanText(dto.serial_returned, 80) : current.serial_returned,
-        updated_at: new Date(),
-      })
-      .where('id', '=', requestId)
-      .returningAll()
-      .executeTakeFirstOrThrow();
-
     const status = normalizeServiceStatus(ticket.status);
+    // One transaction: the part's new status and the ticket move it causes commit together (or neither does).
+    let move: { row: any; reason: string } | null = null;
+    const updated = await this.db.transaction().execute(async (trx) => {
+      const u = await trx
+        .updateTable('part_requests')
+        .set({
+          status: dto.status,
+          store_remarks: dto.store_remarks ? cleanText(dto.store_remarks, 500) : current.store_remarks,
+          serial_issued: dto.serial_issued ? cleanText(dto.serial_issued, 80) : current.serial_issued,
+          serial_returned: dto.serial_returned ? cleanText(dto.serial_returned, 80) : current.serial_returned,
+          updated_at: new Date(),
+        })
+        .where('id', '=', requestId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
 
-    // Stock unavailable → the ticket waits for the part (SLA clock pauses)
-    if (dto.status === 'Unavailable – Ordered' && status === 'in_progress') {
-      const row = await this.db.transaction().execute((trx) =>
-        this.applyTransition(trx, ticket, 'awaiting_part', { actorId: user.id, reason: `Part ${updated.part_name} is unavailable / on backorder` }),
-      );
-      await this.announceTransition(ticket, row, user.id, `Part ${updated.part_name} unavailable`);
-    }
-
-    // Everything issued → resume work (SLA clock restarts)
-    if (dto.status === 'Issued') {
-      const stillOpen = await this.db
-        .selectFrom('part_requests')
-        .select(sql<number>`count(id)::int`.as('n'))
-        .where('ticket_id', '=', ticketId)
-        .where('status', 'in', ['Requested', 'Reserved', 'Partially Issued', 'Unavailable – Ordered'])
-        .executeTakeFirst();
-      await this.emitTicketEvent(AppEvents.SERVICE_PART_ISSUED, ticketId, { actorId: user.id, partName: updated.part_name, quantity: updated.quantity });
-      if ((stillOpen?.n || 0) === 0 && status === 'awaiting_part') {
-        const today = this.todayIst();
-        const future = ticket.planned_visit_date && (calendarDay(ticket.planned_visit_date as any) || '') >= today && ticket.assigned_to;
-        const to: ServiceStatus = future ? 'visit_scheduled' : 'in_progress';
-        const row = await this.db.transaction().execute((trx) =>
-          this.applyTransition(trx, ticket, to, { actorId: user.id, reason: 'All requested spares issued — work can resume' }),
-        );
-        await this.announceTransition(ticket, row, user.id, 'Spares issued');
+      // Stock unavailable → the ticket waits for the part (SLA clock pauses)
+      if (dto.status === 'Unavailable – Ordered' && status === 'in_progress') {
+        const reason = `Part ${u.part_name} is unavailable / on backorder`;
+        move = { row: await this.applyTransition(trx, ticket, 'awaiting_part', { actorId: user.id, reason }), reason };
       }
+
+      // No request left open (the last one issued, cancelled or returned) → nothing to wait for: resume work
+      if (status === 'awaiting_part' && !PART_OPEN_STATUSES.includes(dto.status)) {
+        const stillOpen = await trx
+          .selectFrom('part_requests')
+          .select(sql<number>`count(id)::int`.as('n'))
+          .where('ticket_id', '=', ticketId)
+          .where('status', 'in', PART_OPEN_STATUSES)
+          .executeTakeFirst();
+        if ((stillOpen?.n || 0) === 0) {
+          const future = ticket.planned_visit_date && (calendarDay(ticket.planned_visit_date as any) || '') >= this.todayIst() && ticket.assigned_to;
+          const reason = dto.status === 'Issued' ? 'All requested spares issued — work can resume' : 'No spares request left open — work can resume';
+          move = { row: await this.applyTransition(trx, ticket, future ? 'visit_scheduled' : 'in_progress', { actorId: user.id, reason }), reason };
+        }
+      }
+      return u;
+    });
+    this.audit(user.id, 'part_request', requestId, 'status_change', { status: current.status }, { ticket_id: ticketId, status: updated.status, store_remarks: updated.store_remarks, serial_issued: updated.serial_issued, serial_returned: updated.serial_returned });
+    if (dto.status === 'Issued') {
+      await this.emitTicketEvent(AppEvents.SERVICE_PART_ISSUED, ticketId, { actorId: user.id, partName: updated.part_name, quantity: updated.quantity });
     }
+    const m = move as { row: any; reason: string } | null;
+    if (m) await this.announceTransition(ticket, m.row, user.id, m.reason);
     return updated;
   }
 
@@ -1978,7 +2188,7 @@ export class ServiceService {
       // received day counts from 09:00 IST that day, as the SLA clock does) to closure.
       q(noStage)
         .select(
-          sql<number>`coalesce(round(avg(greatest(extract(epoch from (service_tickets.closed_at - (case when service_tickets.received_date is not null and service_tickets.received_date < (service_tickets.created_at at time zone 'Asia/Kolkata')::date then (service_tickets.received_date + time '09:00') at time zone 'Asia/Kolkata' else service_tickets.created_at end))), 0) / 86400)::numeric, 1), 0)::float`.as('avg_days'),
+          sql<number>`coalesce(round(avg(${TICKET_CLOSURE_SECONDS} / 86400)::numeric, 1), 0)::float`.as('avg_days'),
         )
         .where('service_tickets.status', '=', 'closed')
         .where('service_tickets.closed_at', 'is not', null)
@@ -2000,7 +2210,7 @@ export class ServiceService {
       q(noStage)
         .select([
           'service_tickets.priority as priority',
-          sql<number>`coalesce(round(avg(greatest(extract(epoch from (service_tickets.closed_at - (case when service_tickets.received_date is not null and service_tickets.received_date < (service_tickets.created_at at time zone 'Asia/Kolkata')::date then (service_tickets.received_date + time '09:00') at time zone 'Asia/Kolkata' else service_tickets.created_at end))), 0) / 3600)::numeric, 1), 0)::float`.as('avg_hours'),
+          sql<number>`coalesce(round(avg(${TICKET_CLOSURE_SECONDS} / 3600)::numeric, 1), 0)::float`.as('avg_hours'),
           sql<number>`count(*)::int`.as('closed'),
         ])
         .where('service_tickets.status', '=', 'closed')
@@ -2018,7 +2228,7 @@ export class ServiceService {
           .select([
             'service_tickets.assigned_to as employee_id',
             sql<number>`count(service_tickets.id) filter (where service_tickets.status not in ('resolved','closed','report_submitted','cancelled'))::int`.as('active_tickets'),
-            sql<number>`count(service_tickets.id) filter (where service_tickets.status not in ('resolved','closed','report_submitted','cancelled') and (service_tickets.planned_visit_date < ${today}::date or service_tickets.sla_resolution_due_at < now()) and service_tickets.status not in ('awaiting_part','awaiting_customer','on_hold'))::int`.as('overdue_tickets'),
+            sql<number>`count(service_tickets.id) filter (where service_tickets.status not in ('resolved','closed','report_submitted','cancelled') and ((service_tickets.planned_visit_date < ${today}::date and service_tickets.status <> 'in_progress') or service_tickets.sla_resolution_due_at < now()) and service_tickets.status not in ('awaiting_part','awaiting_customer','on_hold'))::int`.as('overdue_tickets'),
             sql<number>`count(service_tickets.id) filter (where service_tickets.status in ('resolved','closed','report_submitted'))::int`.as('completed_tickets'),
           ])
           .where('service_tickets.deleted_at', 'is', null)
@@ -2050,15 +2260,15 @@ export class ServiceService {
     const statusCount = (statuses: readonly string[]) => byStatus.reduce((n, r) => n + (statuses.includes(String(r.status)) ? r.c : 0), 0);
     const stageCounts: Record<string, number> = { all: byStatus.reduce((n, r) => n + r.c, 0) };
     for (const [stage, statuses] of Object.entries(TICKET_STAGES)) stageCounts[stage] = statusCount(statuses);
-    const pending = stageCounts.all - statusCount(SERVICE_DONE_STATUSES);
+    stageCounts[PENDING_STAGE] = stageCounts.all - statusCount(SERVICE_DONE_STATUSES);
 
     return {
       total: stageCounts.all,
       newTickets: stageCounts.open,
-      pendingTickets: pending,
+      pendingTickets: stageCounts[PENDING_STAGE],
       assignedTickets: assigned?.c || 0,
       overdueTickets: overdue?.c || 0,
-      awaitingParts: statusCount(['awaiting_part']),
+      awaitingParts: stageCounts.awaiting_part,
       completedTickets: stageCounts.completed,
       resolvedTickets: stageCounts.completed,
       stageCounts,
@@ -2227,7 +2437,8 @@ export class ServiceService {
       .where('deleted_at', 'is', null)
       .where('priority', '=', 'critical')
       .where('assigned_to', 'is', null)
-      .where('status', 'in', ['received', 'new', 'created'])
+      // parking it on hold does not take a critical ticket off this alarm
+      .where('status', 'in', ['received', 'new', 'created', 'on_hold'])
       .where('auto_escalated_at', 'is', null)
       .where('created_at', '<', cutoff)
       .execute();
@@ -2247,12 +2458,13 @@ export class ServiceService {
       }
     }
 
-    // 12.2 response SLA missed (nobody has picked it up)
+    // 12.2 response SLA missed (nobody has picked it up). Any open status: escalating or parking a ticket is not a
+    // response (see first_response_at in applyTransition), so those must not dodge the alarm either.
     const respLate = await this.db
       .selectFrom('service_tickets')
       .select('id')
       .where('deleted_at', 'is', null)
-      .where('status', 'in', ['received', 'new', 'created'])
+      .where('status', 'not in', SERVICE_DONE_STATUSES as any)
       .where('first_response_at', 'is', null)
       .where('sla_response_due_at', '<', now)
       .where('sla_response_breach_notified_at', 'is', null)

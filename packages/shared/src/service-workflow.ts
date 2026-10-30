@@ -62,8 +62,8 @@ export const SERVICE_TRANSITIONS: Record<ServiceStatus, ServiceStatus[]> = {
   awaiting_part: ['visit_scheduled', 'in_progress', 'escalated', 'cancelled'],
   awaiting_customer: ['visit_scheduled', 'in_progress', 'assigned', 'cancelled'],
   escalated: ['assigned', 'visit_scheduled', 'in_progress', 'cancelled'],
-  on_hold: ['assigned', 'visit_scheduled', 'in_progress', 'cancelled'],
-  revisit_required: ['visit_scheduled', 'in_progress'],
+  on_hold: ['assigned', 'visit_scheduled', 'in_progress', 'escalated', 'cancelled'],
+  revisit_required: ['visit_scheduled', 'in_progress', 'escalated', 'cancelled'],
   resolved: ['report_submitted', 'in_progress'],
   report_submitted: ['closed', 'in_progress', 'revisit_required'],
   closed: ['reopened'],
@@ -100,6 +100,30 @@ export function canTransitionService(from: string, to: string): boolean {
 
 export function allowedNextServiceStatuses(from: string): ServiceStatus[] {
   return SERVICE_TRANSITIONS[normalizeServiceStatus(from)] ?? [];
+}
+
+type ResolutionReport = { report_status?: string | null; further_work_required?: boolean | null; submitted_at?: string | Date | null; created_at?: string | Date | null };
+
+/**
+ * Why a ticket cannot be marked resolved by hand (null = it can). The newest report (reports newest-first) must
+ * record this cycle's finished work: filed (not a draft), not returned for correction, not a "further work
+ * required" report, and filed after the ticket was last reopened. API guard and UI mirror share this rule.
+ */
+export function serviceResolveBlocker(ticket: { reports?: ResolutionReport[] | null; reopened_at?: string | Date | null }): string | null {
+  const latest = (ticket.reports || [])[0];
+  if (!latest || !['Submitted', 'Approved'].includes(String(latest.report_status))) {
+    return latest?.report_status === 'Returned for Correction'
+      ? 'The latest service report was returned for correction — file the corrected report to resolve the ticket.'
+      : 'File the service report (work done and customer sign-off) to resolve this ticket — submitting the report marks it resolved.';
+  }
+  if (latest.further_work_required) {
+    return 'The latest service report says further work is needed — file the report for that work to resolve the ticket.';
+  }
+  const filedAt = new Date((latest.submitted_at || latest.created_at) as any).getTime();
+  if (ticket.reopened_at && filedAt < new Date(ticket.reopened_at as any).getTime()) {
+    return 'The service report on file is from before the ticket was reopened — file a new report for this work to resolve it.';
+  }
+  return null;
 }
 
 /* ---------------------------- Public customer portal ---------------------------- */

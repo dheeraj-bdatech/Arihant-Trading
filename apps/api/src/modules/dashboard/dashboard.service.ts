@@ -2,7 +2,7 @@ import { todayInKolkata } from '../../common/utils/ist-date.util.js';
 import { Injectable, Inject } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
-import type { Database, AuthUser, DashboardMetricsDto } from '@arihant/shared';
+import { SERVICE_DONE_STATUSES, type Database, type AuthUser, type DashboardMetricsDto } from '@arihant/shared';
 import { claimScopeFilter } from '../expense-management/expense-scope.js';
 import {
   DashboardMetricsService,
@@ -81,18 +81,19 @@ export class DashboardService {
         .executeTakeFirst(),
     ]);
 
-    // 5. Service tickets metrics (deleted tickets excluded; cancelled tickets are not open)
+    // 5. Service tickets metrics (deleted tickets excluded). Open = not finished, the Service Desk's own definition
+    // (a ticket whose report is filed is done work awaiting sign-off, not an open fault).
     const tickets = () => this.db.selectFrom('service_tickets').where('deleted_at', 'is', null);
     const [ticketTotal, ticketOpen, ticketCritical] = await Promise.all([
       tickets().select(sql<number>`count(id)::int`.as('c')).executeTakeFirst(),
       tickets()
         .select(sql<number>`count(id)::int`.as('c'))
-        .where('status', 'not in', ['resolved', 'closed', 'cancelled'])
+        .where('status', 'not in', SERVICE_DONE_STATUSES)
         .executeTakeFirst(),
       tickets()
         .select(sql<number>`count(id)::int`.as('c'))
         .where('priority', '=', 'critical')
-        .where('status', 'not in', ['resolved', 'closed', 'cancelled'])
+        .where('status', 'not in', SERVICE_DONE_STATUSES)
         .executeTakeFirst(),
     ]);
 

@@ -238,6 +238,7 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
         warranty_status: 'in_warranty',
         customer_confirmation: true,
         customer_name_signed: 'ACP Rajiv Kumar, Station Security Head',
+        customer_confirmation_type: 'Signature',
         further_work_required: false,
         report_url: 'https://docs.arihant.com/service/SR-2026-9001.pdf',
       };
@@ -275,6 +276,8 @@ describe('Module 6: Service & After-Sales Management E2E Test Suite (Sections 31
           parts_replaced: 'None (awaiting delivery of optic assembly)',
           customer_confirmation: true,
           customer_name_signed: 'ACP Rajiv Kumar, Station Security Head',
+          customer_confirmation_type: 'Signature',
+          attachments: [{ name: 'Signed job sheet.pdf', url: 'https://files.example.com/job-sheet-signed.pdf' }],
           further_work_required: true,
           further_work_description: 'Install the replacement optic assembly',
           next_visit_date: nextVisit,
