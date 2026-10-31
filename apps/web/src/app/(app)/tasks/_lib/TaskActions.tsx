@@ -265,15 +265,29 @@ export const TaskActionDialog: React.FC<{
         if (failures.length) note = ` Some files were not attached: ${failures.join(' ')}`;
       }
       notifyTasksChanged();
-      const msgs: Partial<Record<TaskDialogAction, string>> = {
+      const pickedName = (list: { id: string; full_name: string }[]) => list.find((u) => u.id === v.to_user_id)?.full_name;
+      const newAssignee = detail.assignee_name || pickedName(assignees) || 'the new assignee';
+      // escalations are newest first
+      const escalatedTo = detail.escalations?.[0]?.escalated_to_name || pickedName(users) || 'your manager';
+      const newDeadline = v.new_deadline ? ` New deadline ${formatTaskDateTime(detail.deadline)}.` : '';
+      const msgs: Record<TaskDialogAction, string> = {
+        start: 'Task started.',
         complete: detail.status === 'awaiting_approval' ? 'Submitted for approval.' : 'Task completed.',
-        raise_blocker: detail.open_blocker?.status === 'accepted' ? 'Blocker raised and accepted automatically (approved leave).' : 'Blocker raised — your manager has been notified.',
         approve: 'Completion approved.',
+        send_back: `Sent back to ${detail.assignee_name || 'the assignee'} for rework.${newDeadline}`,
+        reopen: `Task reopened — back in progress.${newDeadline}`,
+        cancel: 'Task cancelled.',
+        extend_deadline: `Deadline extended to ${formatTaskDateTime(detail.deadline)}.`,
+        reassign: `Reassigned to ${newAssignee}.`,
+        escalate: `Escalated to ${escalatedTo}.`,
+        raise_blocker: detail.open_blocker?.status === 'accepted' ? 'Blocker raised and accepted automatically (approved leave).' : 'Blocker raised — your manager has been notified.',
         accept_blocker: 'Blocker accepted.',
         reject_blocker: 'Blocker rejected.',
         resolve_blocker: 'Blocker resolved — work resumes.',
+        withdraw_blocker: 'Blocker withdrawn.',
+        correction: 'Correction applied and recorded.',
       };
-      onDone(detail, (msgs[action] || `${copy.title} done.`) + note);
+      onDone(detail, msgs[action] + note);
     } catch (err) {
       if (isConflict(err) && (err as any)?.data?.code === 'STALE_VERSION') {
         onConflict();
@@ -374,10 +388,19 @@ export const TaskActionDialog: React.FC<{
                 { id: 'extend', title: 'Set a new deadline now', text: 'Pick the new deadline yourself.' },
               ].map((o) => (
                 <label key={o.id} className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${v.mode === o.id ? 'border-[#0F5E63] bg-[#E3EFEE]/50' : 'border-[#DCD8CE]'}`}>
-                  <input type="radio" name="mode" value={o.id} checked={v.mode === o.id} onChange={() => set('mode', o.id)} className="mt-0.5 accent-[#0F5E63]" />
+                  <input
+                    type="radio"
+                    name="mode"
+                    value={o.id}
+                    aria-label={o.title}
+                    aria-describedby={`accept-mode-${o.id}`}
+                    checked={v.mode === o.id}
+                    onChange={() => set('mode', o.id)}
+                    className="mt-0.5 accent-[#0F5E63]"
+                  />
                   <span>
                     <span className="block text-sm font-semibold text-[#14213D]">{o.title}</span>
-                    <span className="block text-xs text-[#4A5568]">{o.text}</span>
+                    <span id={`accept-mode-${o.id}`} className="block text-xs text-[#4A5568]">{o.text}</span>
                   </span>
                 </label>
               ))}

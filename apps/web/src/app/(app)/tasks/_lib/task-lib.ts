@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { minutesToDays } from '@arihant/shared';
 import type {
   TaskBlockerStatus,
   TaskBlockerType,
@@ -326,6 +327,15 @@ export const addDays = (iso: string, n: number) => {
 export const teamTasksHref = (params: Record<string, string | undefined>) => {
   const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]).toString();
   return `/tasks/team${qs ? `?${qs}` : ''}`;
+};
+
+/** A delay or excused credit: "5 min" or "3 h 20 min" under a day, else "1 day" / "2.5 days". */
+export const formatDuration = (minutes: number) => {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m} min`;
+  if (m < 1440) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+  const d = minutesToDays(m);
+  return `${d} day${d === 1 ? '' : 's'}`;
 };
 
 export const fileSize = (bytes: number) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);

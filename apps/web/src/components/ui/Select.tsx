@@ -60,7 +60,9 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
     ref,
   ) => {
     const generatedId = useId();
-    const selectId = id || (label ? label.toLowerCase().replace(/[^a-z0-9]+/g, '-') : generatedId);
+    const selectId = id || generatedId;
+    const labelId = `${selectId}-label`;
+    const triggerId = `${selectId}-trigger`;
 
     const [isOpen, setIsOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -280,8 +282,15 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         className="w-full flex flex-col justify-start text-left relative"
       >
         {label && (
+          // Labels the visible trigger (the native select below is hidden from assistive tech).
+          // A click focuses the trigger like a native select would, without opening the list.
           <label
-            htmlFor={selectId}
+            id={labelId}
+            htmlFor={triggerId}
+            onClick={(e) => {
+              e.preventDefault();
+              triggerRef.current?.focus();
+            }}
             className="block text-xs font-semibold text-[#14213D] mb-1.5"
           >
             {required && typeof label === 'string' ? label.replace(/\s*\*\s*$/, '') : label}
@@ -320,12 +329,15 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         {/* Visible Searchable Trigger Button */}
         <button
           ref={triggerRef}
+          id={triggerId}
           type="button"
           onClick={handleToggle}
           onKeyDown={handleKeyDown}
           disabled={disabled}
           aria-expanded={isOpen}
           aria-haspopup="listbox"
+          // Announced as "<label>, <current value>"
+          aria-labelledby={label ? `${labelId} ${triggerId}` : undefined}
           className={twMerge(
             'flex h-10 w-full items-center justify-between rounded-[8px] border border-[#C9C4B8] bg-white px-3.5 py-2 text-xs text-[#14213D] transition-colors focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15 disabled:cursor-not-allowed disabled:opacity-50 text-left',
             isOpen && 'border-[#0F5E63] ring-2 ring-[#0F5E63]/15',
@@ -399,6 +411,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
             <div
               ref={listRef}
               role="listbox"
+              aria-labelledby={label ? labelId : undefined}
               className="min-h-0 max-h-60 overflow-y-auto p-1 space-y-0.5"
             >
               {filteredOptions.length > 0 ? (

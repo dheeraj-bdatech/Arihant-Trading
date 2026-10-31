@@ -48,7 +48,7 @@ import {
   type TaskDisplayStatus,
   type TaskPriority,
 } from '@arihant/shared';
-import { errorMessage, fileSize, saveBlob, useTaskSummary, type TaskAttachment, type TaskUpdate } from './task-lib';
+import { errorMessage, fileSize, formatDuration, saveBlob, useTaskSummary, type TaskAttachment, type TaskUpdate } from './task-lib';
 
 export { useToaster } from '../../expenses/_lib/expense-ui';
 export { MultiSelect } from '../../expenses/_lib/MultiSelect';
@@ -394,7 +394,7 @@ function updateDetails(u: TaskUpdate): string | null {
   if (m.raised_after_deadline) bits.push('raised after the deadline');
   if (m.new_deadline) bits.push(`new deadline ${formatTaskDateTime(m.new_deadline)}`);
   if (m.source && TASK_DEADLINE_SOURCE_LABELS[m.source as keyof typeof TASK_DEADLINE_SOURCE_LABELS]) bits.push(TASK_DEADLINE_SOURCE_LABELS[m.source as keyof typeof TASK_DEADLINE_SOURCE_LABELS]);
-  if (m.locked_unexcused_minutes) bits.push(`${Math.round(m.locked_unexcused_minutes / 144) / 10} day(s) already overdue stay unexcused`);
+  if (m.locked_unexcused_minutes) bits.push(`${formatDuration(m.locked_unexcused_minutes)} already overdue stays unexcused`);
   if (m.to_name) bits.push(`to ${m.to_name}`);
   if (m.reason_type) bits.push(TASK_REASSIGN_REASON_LABELS[m.reason_type as keyof typeof TASK_REASSIGN_REASON_LABELS] || m.reason_type);
   if (m.mode) bits.push(m.mode === 'pause' ? 'pause (deadline moves when resolved)' : 'extend now');
