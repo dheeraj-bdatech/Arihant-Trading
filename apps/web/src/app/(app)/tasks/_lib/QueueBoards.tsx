@@ -8,11 +8,11 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Ban, CheckCircle2, CircleCheck, ExternalLink, Flag, Hourglass, Paperclip, PauseCircle, ShieldAlert, Undo2, type LucideIcon } from 'lucide-react';
+import { ArrowRightLeft, Ban, CheckCircle2, CircleCheck, Clock, ExternalLink, Flag, Hourglass, Paperclip, PauseCircle, ShieldAlert, Undo2, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui';
 import { api } from '@/lib/api';
-import { formatTaskDate, formatTaskDateTime, type TaskPriority } from '@arihant/shared';
-import { errorMessage, notifyTasksChanged, type TaskAttachment, type TaskRow } from './task-lib';
+import { formatTaskDate, formatTaskDateTime, istDateOf, type TaskPriority } from '@arihant/shared';
+import { errorMessage, istToday, notifyTasksChanged, type TaskAttachment, type TaskRow } from './task-lib';
 import { DelayBadge, FileViewer, FlagChip, PriorityBadge, TaskConflictCallout, blockerTypeLabel } from './task-ui';
 import { TaskActionDialog, type ActionTask, type TaskDialogAction } from './TaskActions';
 import { DueChip, PRIORITY_STRIPE, initials } from './TaskBoard';
@@ -41,6 +41,10 @@ export interface PendingBlocker {
   dependency_user_name: string | null;
   dependency_customer_name: string | null;
   extension_count: number;
+  customer_id: string | null;
+  tender_id: string | null;
+  demo_id: string | null;
+  service_ticket_id: string | null;
   same_type_count: number;
   blocker_count: number;
   age_hours: number;
@@ -67,11 +71,37 @@ export const blockerActionTask = (b: PendingBlocker): ActionTask => ({
   evidence_required: false,
   approval_required: false,
   assigned_to: b.assigned_to,
-  customer_id: null,
+  customer_id: b.customer_id,
+  tender_id: b.tender_id,
+  demo_id: b.demo_id,
+  service_ticket_id: b.service_ticket_id,
   is_overdue: b.is_task_overdue,
   start_date: null,
   open_blocker: { id: b.id, status: 'pending_review', blocker_type: b.blocker_type as any, raised_at: b.created_at, raised_after_deadline: b.raised_after_deadline, raised_by: b.assigned_to, dependency_user_id: null },
 });
+
+/** A manager's decision on a pending blocker: which dialog it opens and what it pre-fills. */
+export interface BlockerDecision {
+  action: TaskDialogAction;
+  initial?: Record<string, unknown>;
+}
+
+/**
+ * The five outcomes a manager has for a pending blocker. "Extend deadline" is Accept in EXTEND mode, so the
+ * blocker is recorded as a genuine dependency and the delay excused — a plain extension would leave it pending
+ * and the task blocked. It pre-fills the deadline the employee asked for while that is still in the future.
+ * Reassign withdraws the blocker; escalate keeps it open and routes it to the person escalated to.
+ */
+export const blockerDecisions = (b: PendingBlocker) => {
+  const asked = b.requested_new_deadline ? istDateOf(b.requested_new_deadline) : null;
+  return {
+    reject: { action: 'reject_blocker' },
+    accept: { action: 'accept_blocker' },
+    extend: { action: 'accept_blocker', initial: { mode: 'extend', ...(asked && asked >= istToday() ? { new_deadline: asked } : {}) } },
+    reassign: { action: 'reassign' },
+    escalate: { action: 'escalate' },
+  } satisfies Record<string, BlockerDecision>;
+};
 
 const matches = (q: string, ...fields: (string | null | undefined)[]) => !q || fields.some((f) => f?.toLowerCase().includes(q));
 
@@ -234,7 +264,7 @@ const DecidedCard: React.FC<{ task: TaskRow; children?: React.ReactNode }> = ({ 
 function useDecisionBoard(reloadAll: () => void, notify: QueueBoardProps['notify'], onChanged: () => void) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: ActionTask } | null>(null);
+  const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: ActionTask; initial?: Record<string, unknown> } | null>(null);
   const [conflict, setConflict] = useState(false);
   const endDrag = () => {
     setDragId(null);
@@ -244,6 +274,7 @@ function useDecisionBoard(reloadAll: () => void, notify: QueueBoardProps['notify
     <TaskActionDialog
       action={dialog?.action ?? null}
       task={dialog?.task ?? null}
+      initial={dialog?.initial}
       onClose={() => setDialog(null)}
       onDone={(_detail, message) => {
         setDialog(null);
@@ -300,7 +331,7 @@ const BoardFrame: React.FC<{ hint: string; error: string | null; conflict: React
 // ------------------------------------------------------------------ blocker reviews
 const BLOCKER_COLUMNS: ColumnDef[] = [
   { id: 'review', label: 'Needs your review', icon: ShieldAlert, accent: '#9A3412', empty: 'No blocker is waiting for your decision.' },
-  { id: 'accepted', label: 'Accepted · clock paused', icon: PauseCircle, accent: '#0F5E63', empty: 'Accepted blockers stay here until the dependency clears.', drop: { action: 'accept_blocker', label: 'Accept' } },
+  { id: 'accepted', label: 'Accepted', icon: PauseCircle, accent: '#0F5E63', empty: 'Accepted blockers stay here until the dependency clears.', drop: { action: 'accept_blocker', label: 'Accept' } },
   { id: 'rejected', label: 'Reject', icon: Ban, accent: '#881337', empty: 'Drop a blocker here to reject it. The task returns to its previous status and the delay counts as unapproved.', drop: { action: 'reject_blocker', label: 'Reject' } },
 ];
 
@@ -331,7 +362,7 @@ export const BlockerReviewBoard: React.FC<QueueBoardProps> = ({ search, scope, t
 
   return (
     <BoardFrame
-      hint="Genuine dependency or poor execution? Drag a blocker onto Accepted (deadline relief) or Reject, or use the buttons on the card. Review time is never counted against the employee."
+      hint="Genuine dependency or poor execution? Drag a blocker onto Accepted (deadline relief) or Reject, or use the card to accept, reject, extend the deadline, reassign or escalate. Review time is never counted against the employee."
       error={pending.error || blocked.error}
       conflict={b.conflictEl}
       dialog={b.dialogEl}
@@ -399,13 +430,26 @@ export const BlockerReviewBoard: React.FC<QueueBoardProps> = ({ search, scope, t
                       {r.extension_count >= 2 && <FlagChip>{r.extension_count} extensions</FlagChip>}
                     </div>
                   )}
-                  <div className="flex items-center gap-2 border-t border-[#ECE9E2] pt-2">
-                    <Button size="xs" variant="secondary" className="h-9 flex-1 md:h-7" leftIcon={<Ban className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ action: 'reject_blocker', task: blockerActionTask(r) })}>
-                      Reject
-                    </Button>
-                    <Button size="xs" className="h-9 flex-1 md:h-7" leftIcon={<CheckCircle2 className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ action: 'accept_blocker', task: blockerActionTask(r) })}>
-                      Accept
-                    </Button>
+                  <div className="space-y-1.5 border-t border-[#ECE9E2] pt-2">
+                    <div className="flex items-center gap-2">
+                      <Button size="xs" variant="secondary" className="h-9 flex-1 md:h-7" leftIcon={<Ban className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ ...blockerDecisions(r).reject, task: blockerActionTask(r) })}>
+                        Reject
+                      </Button>
+                      <Button size="xs" className="h-9 flex-1 md:h-7" leftIcon={<CheckCircle2 className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ ...blockerDecisions(r).accept, task: blockerActionTask(r) })}>
+                        Accept
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      <Button size="xs" variant="ghost" className="h-9 px-1 md:h-7" leftIcon={<Clock className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ ...blockerDecisions(r).extend, task: blockerActionTask(r) })}>
+                        Extend
+                      </Button>
+                      <Button size="xs" variant="ghost" className="h-9 px-1 md:h-7" leftIcon={<ArrowRightLeft className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ ...blockerDecisions(r).reassign, task: blockerActionTask(r) })}>
+                        Reassign
+                      </Button>
+                      <Button size="xs" variant="ghost" className="h-9 px-1 md:h-7" leftIcon={<ShieldAlert className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ ...blockerDecisions(r).escalate, task: blockerActionTask(r) })}>
+                        Escalate
+                      </Button>
+                    </div>
                   </div>
                 </CardShell>
               ))}
@@ -415,6 +459,7 @@ export const BlockerReviewBoard: React.FC<QueueBoardProps> = ({ search, scope, t
                   <p className="flex items-center gap-1.5 text-[11px] text-[#4A5568]">
                     <Flag className="h-3 w-3 shrink-0 text-[#0F5E63]" aria-hidden />
                     <span className="truncate">{t.open_blocker ? blockerTypeLabel(t.open_blocker.blocker_type) : 'Blocker'}</span>
+                    <span className="shrink-0 text-[#6B7280]">· {t.open_blocker?.decision === 'accept_extend' ? 'new deadline' : 'clock paused'}</span>
                   </p>
                   <Button size="xs" variant="secondary" className="h-9 w-full md:h-7" leftIcon={<CheckCircle2 className="h-3.5 w-3.5" />} onClick={() => b.setDialog({ action: 'resolve_blocker', task: t })}>
                     Mark resolved

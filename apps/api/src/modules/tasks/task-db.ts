@@ -27,6 +27,8 @@ const DATE_KEYS = new Set([
   'period_from',
   'period_to',
   'expected_resolution_date',
+  'leave_from',
+  'leave_to',
 ]);
 
 const pad = (n: number) => String(n).padStart(2, '0');

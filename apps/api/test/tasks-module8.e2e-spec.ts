@@ -272,16 +272,19 @@ describe('Module 8 — Task & Productivity Management (e2e)', () => {
       expect(old.body.assignment_history[0]).toMatchObject({ reason_type: 'workload' });
     });
 
-    it('escalation target gains manager powers on that task', async () => {
+    it('escalation goes upward: a peer manager is refused; the manager above acts on it and closes it', async () => {
       const id = await one(u.mgr);
-      const e = await act(u.mgr, id, 'escalate', { to_user_id: u.mgr2.id, reason: 'Needs a second opinion on pricing' });
+      const peer = await act(u.mgr, id, 'escalate', { to_user_id: u.mgr2.id, reason: 'Needs a second opinion on pricing' });
+      expect(peer.status).toBe(400);
+      expect(peer.body.errors.to_user_id).toMatch(/upward/);
+      const e = await act(u.mgr, id, 'escalate', { to_user_id: u.mgmt.id, reason: 'Needs a second opinion on pricing' });
       expect(e.status).toBe(200);
-      const seen = await get(u.mgr2, id);
+      const seen = await get(u.mgmt, id);
       expect(seen.status).toBe(200);
       expect(seen.body.allowed_actions).toEqual(expect.arrayContaining(['extend_deadline', 'reassign']));
       const esc = seen.body.escalations[0];
-      expect((await http().post(`/api/task-escalations/${esc.id}/close`).set(bearer(u.mgr2)).send({})).status).toBe(400);
-      expect((await http().post(`/api/task-escalations/${esc.id}/close`).set(bearer(u.mgr2)).send({ comment: 'Approved the discount' })).status).toBe(200);
+      expect((await http().post(`/api/task-escalations/${esc.id}/close`).set(bearer(u.mgmt)).send({})).status).toBe(400);
+      expect((await http().post(`/api/task-escalations/${esc.id}/close`).set(bearer(u.mgmt)).send({ comment: 'Approved the discount' })).status).toBe(200);
     });
 
     it('a task created by mistake can be deleted by its creator only before anyone touches it', async () => {

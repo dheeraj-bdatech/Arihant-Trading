@@ -9,6 +9,7 @@ import { Kysely, sql, type RawBuilder, type Transaction } from 'kysely';
 import {
   TASK_STATUS_LABELS,
   computeTaskDelay,
+  leaveCreditWindow,
   isTaskOverdue,
   isTaskWithoutUpdate,
   minutesToDays,
@@ -140,7 +141,7 @@ export class TaskStore {
         'dmo.demo_no as demo_no',
         'stk.ticket_no as ticket_no',
         'tpl.recurrence_type as recurrence_type',
-        sql<any>`(select json_build_object('id', b.id, 'status', b.status, 'blocker_type', b.blocker_type, 'raised_at', b.created_at,
+        sql<any>`(select json_build_object('id', b.id, 'status', b.status, 'decision', b.decision, 'blocker_type', b.blocker_type, 'raised_at', b.created_at,
                   'raised_after_deadline', b.raised_after_deadline, 'raised_by', b.raised_by, 'dependency_user_id', b.dependency_user_id)
                   from task_blockers b where b.task_id = t.id and b.status in ('pending_review', 'accepted') limit 1)`.as('open_blocker'),
       ] as any);
@@ -160,6 +161,13 @@ export class TaskStore {
     const row = await trx.selectFrom('tasks').selectAll().where('id', '=', id).forUpdate().executeTakeFirst();
     if (!row) throw new NotFoundException('Task not found');
     return row;
+  }
+
+  /** The leave an approved-leave blocker may credit (see leaveCreditWindow); null for every other blocker. */
+  async leaveWindowFor(db: DB, b: { blocker_type: string; leave_id: string | null }) {
+    if (b.blocker_type !== 'approved_leave' || !b.leave_id) return null;
+    const l = await db.selectFrom('employee_leaves').select(['from_date', 'to_date']).where('id', '=', b.leave_id).executeTakeFirst();
+    return l ? leaveCreditWindow(l.from_date as unknown as string, l.to_date as unknown as string) : null;
   }
 
   async openBlocker(db: DB, taskId: string) {
@@ -205,7 +213,7 @@ export class TaskStore {
     if (!r) return r;
     const ob = typeof r.open_blocker === 'string' ? JSON.parse(r.open_blocker) : r.open_blocker || null;
     const hasAccepted = ob?.status === 'accepted';
-    const input = { ...r, has_accepted_blocker: hasAccepted, accepted_blocker_raised_at: hasAccepted ? ob.raised_at : null };
+    const input = { ...r, has_accepted_blocker: hasAccepted, accepted_blocker_decision: hasAccepted ? ob.decision : null, accepted_blocker_raised_at: hasAccepted ? ob.raised_at : null };
     const delay = computeTaskDelay(input, now);
     const display = taskDisplayStatus(input, now);
     return {
@@ -228,7 +236,7 @@ export class TaskStore {
   overdueSql(alias = 't'): RawBuilder<boolean> {
     const t = sql.ref(alias);
     return sql<boolean>`(${t}.deadline is not null and ${t}.deadline < now() and (${t}.status in ('not_started', 'in_progress')
-      or (${t}.status = 'blocked' and not exists (select 1 from task_blockers ob where ob.task_id = ${t}.id and ob.status = 'accepted'))))`;
+      or (${t}.status = 'blocked' and not exists (select 1 from task_blockers ob where ob.task_id = ${t}.id and ob.status = 'accepted' and ob.decision is distinct from 'accept_extend'))))`;
   }
 
   /** No assignee update beyond the priority threshold (mirrors isTaskWithoutUpdate). */

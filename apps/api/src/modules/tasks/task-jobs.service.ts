@@ -16,6 +16,7 @@ import { sql } from 'kysely';
 import {
   formatTaskDateTime,
   istEndOfDay,
+  leaveCreditWindow,
   planPauseResume,
   todayInKolkata,
 } from '@arihant/shared';
@@ -222,15 +223,20 @@ export class TaskJobsService implements OnApplicationBootstrap {
     return true;
   }
 
-  /** Approved-leave blockers end with the leave: resolved at the end of the last leave day, blocked time credited. */
+  /**
+   * Approved-leave blockers end with the leave: resolved at the end of the last leave day. The blocked time is credited
+   * when the blocker paused the clock; one accepted with a new deadline already has its relief. Cancelled leave earns
+   * nothing here.
+   */
   private async closeEndedLeaveBlockers() {
     const today = todayInKolkata();
     const rows = await this.db
       .selectFrom('task_blockers as b')
       .innerJoin('employee_leaves as l', 'l.id', 'b.leave_id')
-      .select(['b.id', 'b.task_id', 'b.created_at', 'b.previous_task_status', 'b.excused_minutes', 'l.to_date'])
+      .select(['b.id', 'b.task_id', 'b.created_at', 'b.previous_task_status', 'b.excused_minutes', 'b.decision', 'l.from_date', 'l.to_date'])
       .where('b.status', '=', 'accepted')
       .where('b.blocker_type', '=', 'approved_leave')
+      .where('l.status', '=', 'approved')
       .where('l.to_date', '<', today)
       .execute();
     let closed = 0;
@@ -242,8 +248,8 @@ export class TaskJobsService implements OnApplicationBootstrap {
         const resolvedAt = istEndOfDay(b.to_date as unknown as string);
         const patch: Record<string, unknown> = { status: task.status === 'blocked' ? b.previous_task_status || 'in_progress' : task.status, last_update_at: new Date() };
         let shift = 0;
-        if (task.deadline) {
-          const p = planPauseResume({ deadline: new Date(task.deadline), raised_at: new Date(b.created_at), resolved_at: resolvedAt });
+        if (task.deadline && b.decision !== 'accept_extend') {
+          const p = planPauseResume({ deadline: new Date(task.deadline), raised_at: new Date(b.created_at), resolved_at: resolvedAt, within: leaveCreditWindow(b.from_date as unknown as string, b.to_date as unknown as string) });
           shift = p.shift_minutes;
           patch.deadline = p.new_deadline;
           patch.excused_delay_minutes = task.excused_delay_minutes + shift;
@@ -251,7 +257,7 @@ export class TaskJobsService implements OnApplicationBootstrap {
         }
         await trx.updateTable('task_blockers').set({ status: 'resolved', resolved_at: resolvedAt, resolution_note: 'Leave ended (closed automatically)', excused_minutes: b.excused_minutes + shift }).where('id', '=', b.id).execute();
         await trx.updateTable('tasks').set({ ...(patch as any), version: sql`version + 1` }).where('id', '=', task.id).execute();
-        await this.store.log(trx, task.id, { kind: 'blocker_resolved', author: null, comment: 'Approved leave ended — blocker closed and blocked time added to the deadline.', from: task.status, to: patch.status as string, metadata: { blocker_id: b.id, shift_minutes: shift } });
+        await this.store.log(trx, task.id, { kind: 'blocker_resolved', author: null, comment: shift ? 'Approved leave ended — blocker closed and blocked time added to the deadline.' : 'Approved leave ended — blocker closed.', from: task.status, to: patch.status as string, metadata: { blocker_id: b.id, shift_minutes: shift } });
         closed++;
       });
     }

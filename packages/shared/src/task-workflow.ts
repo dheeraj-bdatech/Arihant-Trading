@@ -402,15 +402,27 @@ export function relativeDue(deadline: string | Date | null | undefined, now: Dat
 export interface OverdueInput {
   status: TaskStatus | string;
   deadline: string | Date | null;
-  /** An accepted (still open) blocker pauses the overdue clock. */
+  /** An accepted (still open) blocker pauses the overdue clock — see `isTaskClockPaused`. */
   has_accepted_blocker?: boolean;
+  /** That blocker's decision. Accepting with a new deadline (`accept_extend`) does not pause the clock. */
+  accepted_blocker_decision?: string | null;
 }
 
-/** Derived OVERDUE: deadline passed and the assignee's work is still open (accepted blockers excepted). */
+/**
+ * Whether an open accepted blocker has paused the task's clock (overdue suspended, delay frozen at the raise).
+ * PAUSE and approved leave do; EXTEND does not — the manager already set a new deadline that covers the dependency,
+ * so the clock runs against it and missing it is an unapproved delay, whether or not the blocker is marked resolved.
+ * The SQL mirrors are TaskStore.overdueSql and the dashboard's TASK_OVERDUE.
+ */
+export function isTaskClockPaused(t: Pick<OverdueInput, 'status' | 'has_accepted_blocker' | 'accepted_blocker_decision'>): boolean {
+  return t.status === 'blocked' && Boolean(t.has_accepted_blocker) && t.accepted_blocker_decision !== 'accept_extend';
+}
+
+/** Derived OVERDUE: deadline passed and the assignee's work is still open (a clock-pausing blocker excepted). */
 export function isTaskOverdue(t: OverdueInput, now: Date = new Date()): boolean {
   if (!t.deadline) return false;
   if (!TASK_OVERDUE_CAPABLE_STATUSES.includes(t.status as TaskStatus)) return false;
-  if (t.status === 'blocked' && t.has_accepted_blocker) return false;
+  if (isTaskClockPaused(t)) return false;
   return new Date(t.deadline).getTime() < now.getTime();
 }
 
@@ -423,7 +435,7 @@ export interface DelayInput extends OverdueInput {
   original_deadline: string | Date | null;
   completed_at: string | Date | null;
   unexcused_locked_minutes?: number | null;
-  /** When the open accepted blocker was raised; the delay clock freezes there while it is open. */
+  /** When the open accepted blocker was raised; the delay clock freezes there while it pauses the clock. */
   accepted_blocker_raised_at?: string | Date | null;
 }
 
@@ -455,7 +467,7 @@ export function computeTaskDelay(t: DelayInput, now: Date = new Date()): DelayRe
   const effective = new Date(t.deadline ?? originalRaw);
   let ref: Date;
   if (done) ref = new Date(t.completed_at as string | Date);
-  else if (t.status === 'blocked' && t.has_accepted_blocker) ref = t.accepted_blocker_raised_at ? new Date(t.accepted_blocker_raised_at) : now;
+  else if (isTaskClockPaused(t)) ref = t.accepted_blocker_raised_at ? new Date(t.accepted_blocker_raised_at) : now;
   else ref = now;
 
   const total = minutesBetween(original, ref);
@@ -495,10 +507,18 @@ export function planDeadlineExtension(input: {
  * Accepting a blocker in PAUSE mode: when it is resolved the deadline moves out by the time the task
  * was blocked (raise → resolve; pending manager review time included, so slow decisions never count
  * against the employee). Time already overdue before the raise stays in "finish − deadline".
+ * `within` limits the credit to part of that span — an approved-leave blocker credits only the leave itself.
  */
-export function planPauseResume(input: { deadline: Date; raised_at: Date; resolved_at: Date }): { new_deadline: Date; shift_minutes: number } {
-  const shift = minutesBetween(input.raised_at, input.resolved_at);
+export function planPauseResume(input: { deadline: Date; raised_at: Date; resolved_at: Date; within?: { from: Date; to: Date } | null }): { new_deadline: Date; shift_minutes: number } {
+  const from = input.within && input.within.from > input.raised_at ? input.within.from : input.raised_at;
+  const to = input.within && input.within.to < input.resolved_at ? input.within.to : input.resolved_at;
+  const shift = minutesBetween(from, to);
   return { new_deadline: new Date(input.deadline.getTime() + shift * 60000), shift_minutes: shift };
+}
+
+/** The span an approved leave covers, in IST: its first day from midnight to the end of its last day. */
+export function leaveCreditWindow(fromDate: string, toDate: string): { from: Date; to: Date } {
+  return { from: istDateTime(fromDate, '00:00:00'), to: istEndOfDay(toDate) };
 }
 
 // ============================================================================ no-update signal

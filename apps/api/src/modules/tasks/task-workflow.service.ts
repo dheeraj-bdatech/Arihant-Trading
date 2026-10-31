@@ -21,7 +21,7 @@ import {
   type TaskStatus,
   type TaskTransitionRule,
 } from '@arihant/shared';
-import { TaskStore, TASK_EVENTS } from './task-store.service.js';
+import { TaskStore, TASK_EVENTS, type DB } from './task-store.service.js';
 import { TasksService } from './tasks.service.js';
 import { isLinked } from './task-input.service.js';
 import { isAdminLike, type TaskSettings } from './task-masters.service.js';
@@ -229,7 +229,7 @@ export class TaskWorkflowService {
       }
 
       case 'cancel': {
-        await this.closeOpenBlocker(trx, task, user, 'withdrawn', 'Task cancelled', now, false);
+        await this.closeOpenBlocker(trx, task, user, 'Task cancelled', now, false);
         await trx
           .updateTable('task_escalations')
           .set({ status: 'closed', closed_at: now, closed_by: user.id, outcome_comment: 'Task cancelled' })
@@ -271,7 +271,7 @@ export class TaskWorkflowService {
 
         const overdueMinutes = task.deadline && new Date(task.deadline) < now ? Math.floor((now.getTime() - new Date(task.deadline).getTime()) / 60000) : 0;
         // An open blocker belonged to the previous assignee's situation: close it (pause time is credited).
-        const closed = await this.closeOpenBlocker(trx, task, user, 'resolved', 'Closed on reassignment', now, true);
+        const closed = await this.closeOpenBlocker(trx, task, user, 'Closed on reassignment', now, true);
         const patch: Record<string, unknown> = {
           assigned_to: target.id,
           reporting_manager_id: target.reporting_manager_id,
@@ -321,8 +321,9 @@ export class TaskWorkflowService {
         const errors: FieldErrors = {};
         let toId = readUuid(errors, 'to_user_id', dto.to_user_id, { label: 'Escalate to' });
         throwIfErrors(errors);
+        const allowed = new Set((await this.escalationTargets(trx, task, user)).map((t) => t.id));
         if (!toId) {
-          const mine = (await this.store.access.managerChain(user.id)).find((c) => c.is_active && c.id !== task.assigned_to);
+          const mine = (await this.store.access.managerChain(user.id)).find((c) => c.is_active && allowed.has(c.id));
           if (mine) toId = mine.id;
           else {
             const mgmt = await trx
@@ -332,12 +333,15 @@ export class TaskWorkflowService {
               .where('is_active', '=', true)
               .where('id', 'not in', [user.id, task.assigned_to!].filter(Boolean))
               .orderBy('created_at')
-              .executeTakeFirst();
-            toId = mgmt?.id ?? null;
+              .execute();
+            toId = mgmt.find((m) => allowed.has(m.id))?.id ?? null;
           }
         }
         if (!toId) throw new TaskValidationException({ to_user_id: 'There is nobody above you to escalate to — choose a management user.' });
         if (toId === user.id || toId === task.assigned_to) throw new TaskValidationException({ to_user_id: 'Escalate to someone other than yourself or the assignee.' });
+        if (!allowed.has(toId)) {
+          throw new TaskValidationException({ to_user_id: 'Escalate upward — to someone above you in the reporting line, a department head or management.' });
+        }
         const target = await trx.selectFrom('users').select(['id', 'full_name', 'is_active', 'role']).where('id', '=', toId).executeTakeFirst();
         if (!target?.is_active) throw new TaskValidationException({ to_user_id: 'Escalation target must be an active user.' });
         const ob = await this.store.openBlocker(trx, task.id);
@@ -363,7 +367,11 @@ export class TaskWorkflowService {
         if (status && status !== task.status) {
           const ob = await this.store.openBlocker(trx, task.id);
           if (status === 'blocked' && !ob) throw new TaskValidationException({ status: 'A task can only be BLOCKED with an open blocker — raise one instead.' });
-          if (status !== 'blocked' && ob) await this.closeOpenBlocker(trx, task, user, 'resolved', 'Closed by admin correction', now, false);
+          if (status !== 'blocked' && ob) {
+            // Same as resolving it: an accepted PAUSE blocker's blocked time is added to the deadline.
+            const closed = await this.closeOpenBlocker(trx, task, user, 'Closed by admin correction', now, true);
+            if (closed?.patch) Object.assign(patch, closed.patch);
+          }
           patch.status = status;
           if (status === 'cancelled') Object.assign(patch, { cancelled_reason: comment, cancelled_by: user.id, cancelled_at: now });
           if ((status === 'completed' || status === 'awaiting_approval') && !task.completed_at && completedAt === undefined) patch.completed_at = now;
@@ -371,7 +379,8 @@ export class TaskWorkflowService {
         if (progress !== null) patch.progress_percent = progress;
         if (completedAt !== undefined) patch.completed_at = completedAt;
         if (deadline) {
-          await trx.insertInto('task_deadline_changes').values({ task_id: task.id, old_deadline: task.deadline, new_deadline: deadline, reason: comment!, source: 'correction', changed_by: user.id }).execute();
+          const current = (patch.deadline as Date | undefined) ?? task.deadline;
+          await trx.insertInto('task_deadline_changes').values({ task_id: task.id, old_deadline: current, new_deadline: deadline, reason: comment!, source: 'correction', changed_by: user.id }).execute();
           patch.deadline = deadline;
         }
         if (!Object.keys(patch).length) throw new TaskValidationException({ status: 'Nothing to correct.' });
@@ -384,6 +393,41 @@ export class TaskWorkflowService {
       default:
         throw new BadRequestException(`Action "${rule.action}" is handled elsewhere.`);
     }
+  }
+
+  // ------------------------------------------------------------------ escalation targets
+  /**
+   * Escalation goes upward: the escalating manager's own reporting line, the head of the task's or their own
+   * department, or management / admin. Never the escalator, the assignee, or the person the open blocker is
+   * waiting on (they would be deciding their own dependency).
+   */
+  async escalationTargets(db: DB, task: TaskRow, user: AuthUser) {
+    const chain = (await this.store.access.managerChain(user.id)).filter((c) => c.is_active).map((c) => c.id);
+    const ob = await this.store.openBlocker(db, task.id);
+    const exclude = [user.id, task.assigned_to, ob?.dependency_user_id].filter((x): x is string => Boolean(x));
+    return db
+      .selectFrom('users as u')
+      .select(['u.id', 'u.full_name', 'u.role'])
+      .where('u.is_active', '=', true)
+      .where('u.id', 'not in', exclude)
+      .where((eb) =>
+        eb.or([
+          ...(chain.length ? [eb('u.id', 'in', chain)] : []),
+          eb('u.role', 'in', ['management', 'admin']),
+          sql<boolean>`u.id in (select d.head_user_id from departments d where d.head_user_id is not null
+            and (d.id = ${task.department_id} or d.id = (select me.department_id from users me where me.id = ${user.id})))`,
+        ]),
+      )
+      .orderBy('u.full_name')
+      .execute();
+  }
+
+  /** Who `user` may escalate this task to (the escalate dialog's list); refused like the action itself. */
+  async listEscalationTargets(id: string, user: AuthUser) {
+    const task = await this.store.getVisible(id, user);
+    const r = resolveTaskAction(task.status, 'escalate', await this.store.access.actorKinds(task, user));
+    if (!r.ok) throw forbiddenFor(r.reason, 'escalate', task.status);
+    return this.escalationTargets(this.db, task, user);
   }
 
   // ------------------------------------------------------------------ helpers
@@ -444,26 +488,29 @@ export class TaskWorkflowService {
   }
 
   /**
-   * Closes the task's open blocker (cancel / reassign / correction). An accepted PAUSE blocker credits its
-   * blocked time to the deadline exactly like a normal resolution.
+   * Closes the task's open blocker (cancel / reassign / correction). One still awaiting review is withdrawn (never
+   * decided); an accepted one is resolved, so it keeps counting once, as accepted. An accepted PAUSE blocker credits
+   * its blocked time to the deadline exactly like a normal resolution when `creditPause` is set.
    */
-  async closeOpenBlocker(trx: Transaction<Database>, task: TaskRow, user: AuthUser, status: 'withdrawn' | 'resolved', note: string, now: Date, creditPause: boolean) {
+  async closeOpenBlocker(trx: Transaction<Database>, task: TaskRow, user: AuthUser, note: string, now: Date, creditPause: boolean) {
     const ob = await this.store.openBlocker(trx, task.id);
     if (!ob) return null;
     let patch: Record<string, unknown> | undefined;
     let excused = 0;
     if (creditPause && ob.status === 'accepted' && (ob.decision === 'accept_pause' || ob.decision === 'auto_accept_leave') && task.deadline) {
-      const p = planPauseResume({ deadline: new Date(task.deadline), raised_at: new Date(ob.created_at), resolved_at: now });
-      excused = p.shift_minutes;
-      await trx
-        .insertInto('task_deadline_changes')
-        .values({ task_id: task.id, old_deadline: task.deadline, new_deadline: p.new_deadline, reason: note, source: 'pause_resume', blocker_id: ob.id, excused_minutes: p.shift_minutes, changed_by: user.id })
-        .execute();
-      patch = { deadline: p.new_deadline, excused_delay_minutes: task.excused_delay_minutes + p.shift_minutes };
+      const p = planPauseResume({ deadline: new Date(task.deadline), raised_at: new Date(ob.created_at), resolved_at: now, within: await this.store.leaveWindowFor(trx, ob) });
+      if (p.shift_minutes > 0) {
+        excused = p.shift_minutes;
+        await trx
+          .insertInto('task_deadline_changes')
+          .values({ task_id: task.id, old_deadline: task.deadline, new_deadline: p.new_deadline, reason: note, source: 'pause_resume', blocker_id: ob.id, excused_minutes: p.shift_minutes, changed_by: user.id })
+          .execute();
+        patch = { deadline: p.new_deadline, excused_delay_minutes: task.excused_delay_minutes + p.shift_minutes };
+      }
     }
     await trx
       .updateTable('task_blockers')
-      .set({ status: ob.status === 'pending_review' && status === 'resolved' ? 'withdrawn' : status, resolved_at: now, resolved_by: user.id, resolution_note: note, excused_minutes: ob.excused_minutes + excused })
+      .set({ status: ob.status === 'pending_review' ? 'withdrawn' : 'resolved', resolved_at: now, resolved_by: user.id, resolution_note: note, excused_minutes: ob.excused_minutes + excused })
       .where('id', '=', ob.id)
       .execute();
     return { blocker: ob, patch, restoreStatus: task.status === 'blocked' ? ((ob.previous_task_status as TaskStatus) || 'in_progress') : null };

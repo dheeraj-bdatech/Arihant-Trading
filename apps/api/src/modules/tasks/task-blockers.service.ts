@@ -256,11 +256,16 @@ export class TaskBlockersService {
         case 'resolve': {
           if (b.status !== 'pending_review' && b.status !== 'accepted') throw conflict('This blocker is already closed.');
           if (!isAssignee && !isManager) throw new ForbiddenException('Only the assignee or their manager can resolve this blocker.');
+          // Closing it undecided would skip the review: the manager accepts or rejects; only the employee may drop it.
+          if (b.status === 'pending_review' && !isAssignee) throw new ForbiddenException('This blocker is waiting for your review — accept or reject it.');
           comment = readComment(dto.note ?? dto.comment, { required: true, min: TASK_MIN_COMMENT_LENGTH, field: 'note', label: 'Resolution note' });
           blockerPatch = { status: b.status === 'accepted' ? 'resolved' : 'withdrawn', resolved_at: now, resolved_by: user.id, resolution_note: comment };
           taskPatch = { status: restore, last_update_at: now };
-          if (b.status === 'accepted' && (b.decision === 'accept_pause' || b.decision === 'auto_accept_leave') && task.deadline) {
-            const p = planPauseResume({ deadline: new Date(task.deadline), raised_at: new Date(b.created_at), resolved_at: now });
+          const p =
+            b.status === 'accepted' && (b.decision === 'accept_pause' || b.decision === 'auto_accept_leave') && task.deadline
+              ? planPauseResume({ deadline: new Date(task.deadline), raised_at: new Date(b.created_at), resolved_at: now, within: await this.store.leaveWindowFor(trx, b) })
+              : null;
+          if (p && p.shift_minutes > 0) {
             await trx
               .insertInto('task_deadline_changes')
               .values({ task_id: task.id, old_deadline: task.deadline, new_deadline: p.new_deadline, reason: `Blocked time added back: ${comment}`, source: 'pause_resume', blocker_id: b.id, excused_minutes: p.shift_minutes, changed_by: user.id })
@@ -328,6 +333,37 @@ export class TaskBlockersService {
     return this.decide(id, 'resolve', dto, user);
   }
 
+  // ========================================================================== leave cancelled
+  /**
+   * A cancelled leave ends its blockers now: an accepted one is resolved, crediting only leave already taken (none if
+   * the leave had not started); one still awaiting review is withdrawn. The task returns to its previous status.
+   */
+  async closeForCancelledLeave(leaveId: string, user: AuthUser) {
+    const open = await this.db.selectFrom('task_blockers').select('task_id').where('leave_id', '=', leaveId).where('status', 'in', ['pending_review', 'accepted']).execute();
+    for (const { task_id } of open) {
+      await this.db.transaction().execute(async (trx) => {
+        const task = await this.store.lock(trx, task_id);
+        const now = new Date();
+        const closed = await this.workflow.closeOpenBlocker(trx, task, user, 'Leave cancelled', now, true);
+        if (!closed) return;
+        const patch: Record<string, unknown> = { ...(closed.patch || {}), ...(closed.restoreStatus ? { status: closed.restoreStatus } : {}), last_update_at: now };
+        await trx
+          .updateTable('tasks')
+          .set({ ...(patch as any), version: sql`version + 1`, updated_by: user.id })
+          .where('id', '=', task.id)
+          .execute();
+        await this.store.log(trx, task.id, {
+          kind: closed.blocker.status === 'accepted' ? 'blocker_resolved' : 'blocker_withdrawn',
+          author: user,
+          comment: 'Leave cancelled — blocker closed; only leave already taken is credited.',
+          from: task.status,
+          to: (patch.status as string) || task.status,
+          metadata: { blocker_id: closed.blocker.id, leave_id: leaveId },
+        });
+      });
+    }
+  }
+
   // ========================================================================== queues
   private blockerColumns() {
     return [
@@ -356,6 +392,10 @@ export class TaskBlockersService {
       't.version as task_version',
       't.assigned_to',
       't.extension_count',
+      't.customer_id',
+      't.tender_id',
+      't.demo_id',
+      't.service_ticket_id',
       'emp.full_name as assignee_name',
       'dep.full_name as dependency_user_name',
       'org.name as dependency_customer_name',

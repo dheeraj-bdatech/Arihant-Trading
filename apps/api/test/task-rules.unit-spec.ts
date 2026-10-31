@@ -15,6 +15,7 @@ import {
   isTaskWithoutUpdate,
   istDateOf,
   istEndOfDay,
+  leaveCreditWindow,
   noUpdateThresholdDays,
   planDeadlineExtension,
   planPauseResume,
@@ -117,6 +118,9 @@ describe('Module 8 — derived overdue (IST)', () => {
     const later = at('2026-11-01T00:00:00Z');
     expect(isTaskOverdue({ status: 'blocked', deadline, has_accepted_blocker: true }, later)).toBe(false);
     expect(isTaskOverdue({ status: 'blocked', deadline, has_accepted_blocker: false }, later)).toBe(true);
+    for (const decision of ['accept_pause', 'auto_accept_leave']) expect(isTaskOverdue({ status: 'blocked', deadline, has_accepted_blocker: true, accepted_blocker_decision: decision }, later)).toBe(false);
+    // Accepted with a new deadline: the clock runs against that deadline even while the blocker stays open.
+    expect(isTaskOverdue({ status: 'blocked', deadline, has_accepted_blocker: true, accepted_blocker_decision: 'accept_extend' }, later)).toBe(true);
     expect(taskDisplayStatus({ status: 'in_progress', deadline }, later)).toBe('overdue');
     expect(taskDisplayStatus({ status: 'in_progress', deadline }, at('2026-10-01T00:00:00Z'))).toBe('in_progress');
   });
@@ -168,6 +172,18 @@ describe('Module 8 — delay classification & excused time', () => {
     expect(r.delay_class).toBe('late_excused');
   });
 
+  it('approved leave credits only the leave itself, however early or late the blocker is closed', () => {
+    const leave = leaveCreditWindow('2026-11-10', '2026-11-11'); // 10-11 Nov IST
+    expect(leave.from.toISOString()).toBe('2026-11-09T18:30:00.000Z');
+    // raised a week before, closed a week after: two leave days (to 23:59:59 IST)
+    const all = planPauseResume({ deadline: D, raised_at: new Date('2026-11-03T05:00:00Z'), resolved_at: new Date('2026-11-18T05:00:00Z'), within: leave });
+    expect(all.shift_minutes).toBe(2 * DAY - 1);
+    // cancelled before the leave began: nothing
+    expect(planPauseResume({ deadline: D, raised_at: new Date('2026-11-03T05:00:00Z'), resolved_at: new Date('2026-11-08T05:00:00Z'), within: leave }).shift_minutes).toBe(0);
+    // cancelled at noon IST on the first leave day: half a day
+    expect(planPauseResume({ deadline: D, raised_at: new Date('2026-11-03T05:00:00Z'), resolved_at: new Date('2026-11-10T06:30:00Z'), within: leave }).shift_minutes).toBe(DAY / 2);
+  });
+
   it('PAUSE raised after the deadline keeps the pre-raise lateness unexcused', () => {
     const raised = plus(D, 2 * DAY);
     const resolved = plus(D, 4 * DAY);
@@ -183,6 +199,14 @@ describe('Module 8 — delay classification & excused time', () => {
       plus(D, 10 * DAY),
     );
     expect(r).toMatchObject({ delay_class: 'open', unexcused_delay_minutes: DAY });
+  });
+
+  it('a blocker accepted with a new deadline does not freeze the clock: time past that deadline is unexcused', () => {
+    const r = computeTaskDelay(
+      { status: 'blocked', deadline: plus(D, 2 * DAY), original_deadline: D, completed_at: null, has_accepted_blocker: true, accepted_blocker_decision: 'accept_extend', accepted_blocker_raised_at: plus(D, -DAY) },
+      plus(D, 5 * DAY),
+    );
+    expect(r).toMatchObject({ delay_class: 'open_overdue', total_delay_minutes: 5 * DAY, excused_delay_minutes: 2 * DAY, unexcused_delay_minutes: 3 * DAY });
   });
 
   it('a rejected blocker never paused the clock — all delay is unexcused', () => {

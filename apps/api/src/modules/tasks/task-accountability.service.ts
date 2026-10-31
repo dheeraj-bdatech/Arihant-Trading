@@ -91,6 +91,7 @@ export class TaskAccountabilityService {
         't.last_update_at',
         sql<string | null>`null`.as('category_name'),
         sql<Date | null>`(select b.created_at from task_blockers b where b.task_id = t.id and b.status = 'accepted' limit 1)`.as('accepted_blocker_raised_at'),
+        sql<string | null>`(select b.decision from task_blockers b where b.task_id = t.id and b.status = 'accepted' limit 1)`.as('accepted_blocker_decision'),
       ])
       .where('t.assigned_to', 'in', empIds)
       .where((eb) =>
@@ -102,14 +103,14 @@ export class TaskAccountabilityService {
       )
       .execute();
     const tasks = tasksRaw.map((t: any) => classify(t as MetricTask, s, now));
+    // Blockers belong to whoever raised them — a task reassigned later does not carry them to the new assignee.
     const blockers = (await this.db
       .selectFrom('task_blockers as b')
-      .innerJoin('tasks as t', 't.id', 'b.task_id')
-      .select(['b.id', 'b.task_id', 'b.blocker_type', 'b.status', 'b.decision', 'b.raised_after_deadline', 'b.requested_new_deadline', 'b.excused_minutes', 'b.created_at', 't.assigned_to'])
-      .where('t.assigned_to', 'in', empIds)
+      .select(['b.id', 'b.task_id', 'b.blocker_type', 'b.status', 'b.decision', 'b.raised_after_deadline', 'b.requested_new_deadline', 'b.excused_minutes', 'b.created_at', 'b.raised_by'])
+      .where('b.raised_by', 'in', empIds)
       .where('b.created_at', '>=', fromTs)
       .where('b.created_at', '<=', toTs)
-      .execute()) as unknown as (MetricBlocker & { assigned_to: string })[];
+      .execute()) as unknown as (MetricBlocker & { raised_by: string })[];
 
     const inPeriod = (t: ClassifiedTask) => {
       const due = t.original_deadline ?? t.deadline;
@@ -154,7 +155,7 @@ export class TaskAccountabilityService {
       is_active: e.is_active,
       department: e.department_name,
       manager: e.manager_name,
-      ...rowFor(tasks.filter((t) => t.assigned_to === e.id), blockers.filter((b) => b.assigned_to === e.id)),
+      ...rowFor(tasks.filter((t) => t.assigned_to === e.id), blockers.filter((b) => b.raised_by === e.id)),
     }));
     const totals = rowFor(tasks, blockers);
     // Weekly on-time trend for the period (completed tasks by IST week of completion).
@@ -211,13 +212,14 @@ export class TaskAccountabilityService {
     if (want('no_update')) out.no_update = await base().where(this.store.noUpdateSql(s)).orderBy('t.last_update_at').limit(200).execute();
     if (want('excessive_extensions')) out.excessive_extensions = await base().where('t.status', '<>', 'cancelled').where('t.extension_count', '>', s.max_extensions_before_flag).limit(200).execute();
     if (want('rework')) out.rework = await base().where('t.status', '<>', 'cancelled').where((eb) => eb.or([eb('t.rework_count', '>', 0), eb('t.reopen_count', '>', 0)])).orderBy('t.updated_at', 'desc').limit(200).execute();
+    // Blocker flags name the employee who raised the blocker (the task may have been reassigned since).
     const blockerBase = () =>
       this.db
         .selectFrom('task_blockers as b')
         .innerJoin('tasks as t', 't.id', 'b.task_id')
-        .leftJoin('users as emp', 'emp.id', 't.assigned_to')
-        .select(['b.id', 'b.task_id', 'b.blocker_type', 'b.status', 'b.created_at', 'b.raised_after_deadline', 'b.decision_comment', 't.task_number', 't.title', 'emp.full_name as assignee_name', 't.assigned_to'])
-        .where(empFilter('t.assigned_to'));
+        .leftJoin('users as emp', 'emp.id', 'b.raised_by')
+        .select(['b.id', 'b.task_id', 'b.blocker_type', 'b.status', 'b.created_at', 'b.raised_after_deadline', 'b.decision_comment', 't.task_number', 't.title', 'emp.full_name as assignee_name', 'b.raised_by as assigned_to'])
+        .where(empFilter('b.raised_by'));
     if (want('blocker_after_deadline')) out.blocker_after_deadline = await blockerBase().where('b.raised_after_deadline', '=', true).orderBy('b.created_at', 'desc').limit(200).execute();
     if (want('rejected_blocker')) out.rejected_blocker = await blockerBase().where('b.status', '=', 'rejected').orderBy('b.created_at', 'desc').limit(200).execute();
     if (want('blocker_sla')) {

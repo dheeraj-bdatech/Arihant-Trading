@@ -32,7 +32,7 @@ import {
 import { FilterMenu, RowMenu, Spinner, type RowMenuItem } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { formatTaskDate, formatTaskDateTime, relativeDue, type TaskActorKind, type TaskPriority, type TaskStatus } from '@arihant/shared';
+import { formatTaskDate, formatTaskDateTime, isTaskClockPaused, relativeDue, type TaskActorKind, type TaskPriority, type TaskStatus } from '@arihant/shared';
 import { errorMessage, isConflict, notifyTasksChanged, type TaskRow } from './task-lib';
 import { BlockerBadge, DelayBadge, PriorityBadge, StatusBadge, TaskConflictCallout } from './task-ui';
 import { TaskActionDialog, type TaskDialogAction } from './TaskActions';
@@ -473,7 +473,7 @@ export const DueChip: React.FC<{ task: TaskRow }> = ({ task: t }) => {
   }
   if (!t.deadline) return <span className="text-[11px] text-[#6B7280]">No deadline</span>;
   const diff = new Date(t.deadline).getTime() - Date.now();
-  const paused = t.status === 'blocked' && t.open_blocker?.status === 'accepted';
+  const paused = isTaskClockPaused({ status: t.status, has_accepted_blocker: t.open_blocker?.status === 'accepted', accepted_blocker_decision: t.open_blocker?.decision });
   const late = !paused && (t.is_overdue || diff < 0);
   const tone = paused
     ? 'bg-[#EEF1F5] text-[#4A5568]'

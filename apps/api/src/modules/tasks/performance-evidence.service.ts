@@ -140,6 +140,7 @@ export class PerformanceEvidenceService {
         'cust.name as customer_name',
         'tdr.tender_no',
         sql<Date | null>`(select b.created_at from task_blockers b where b.task_id = t.id and b.status = 'accepted' limit 1)`.as('accepted_blocker_raised_at'),
+        sql<string | null>`(select b.decision from task_blockers b where b.task_id = t.id and b.status = 'accepted' limit 1)`.as('accepted_blocker_decision'),
       ])
       .where('t.assigned_to', '=', q.employee_id);
     const due = sql`coalesce(t.original_deadline, t.deadline)`;
@@ -156,10 +157,12 @@ export class PerformanceEvidenceService {
         .selectFrom('task_blockers as b')
         .innerJoin('tasks as t', 't.id', 'b.task_id')
         .select(['b.id', 'b.task_id', 'b.blocker_type', 'b.status', 'b.decision', 'b.raised_after_deadline', 'b.requested_new_deadline', 'b.excused_minutes', 'b.created_at', 'b.description', 'b.decision_comment', 't.task_number'])
+        // Only blockers this employee raised: on the period's tasks, or raised in the period on work since reassigned.
+        .where('b.raised_by', '=', q.employee_id)
         .where((eb) =>
           eb.or([
             ...(taskIds.length ? [eb('b.task_id', 'in', taskIds)] : []),
-            eb.and([eb('b.raised_by', '=', q.employee_id), eb('b.created_at', '>=', fromTs), eb('b.created_at', '<=', toTs)]),
+            eb.and([eb('b.created_at', '>=', fromTs), eb('b.created_at', '<=', toTs)]),
           ]),
         )
         .orderBy('b.created_at')

@@ -4,14 +4,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { Ban, CheckCircle2, ExternalLink, Eye, Flag, Search, ShieldCheck } from 'lucide-react';
+import { ArrowRightLeft, Ban, CheckCircle2, Clock, ExternalLink, Eye, Flag, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { Badge, Button, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader } from '@/components/ui';
 import { api } from '@/lib/api';
 import { formatTaskDateTime } from '@arihant/shared';
 import { errorMessage, notifyTasksChanged, useTaskSummary } from '../_lib/task-lib';
 import { DueText, FlagChip, PriorityBadge, TaskConflictCallout, TaskViewMenu, blockerTypeLabel, useToaster } from '../_lib/task-ui';
 import { TaskActionDialog, type ActionTask, type TaskDialogAction } from '../_lib/TaskActions';
-import { blockerActionTask as toActionTask, waitingAge as age, type PendingBlocker } from '../_lib/QueueBoards';
+import { blockerActionTask as toActionTask, blockerDecisions, waitingAge as age, type BlockerDecision, type PendingBlocker } from '../_lib/QueueBoards';
 
 export default function BlockerQueuePage() {
   const { summary } = useTaskSummary();
@@ -23,7 +23,8 @@ export default function BlockerQueuePage() {
   const [rows, setRows] = useState<PendingBlocker[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
-  const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: ActionTask } | null>(null);
+  const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: ActionTask; initial?: Record<string, unknown> } | null>(null);
+  const decide = (b: PendingBlocker, d: BlockerDecision) => setDialog({ ...d, task: toActionTask(b) });
 
   const load = useCallback(async () => {
     setError(null);
@@ -97,7 +98,7 @@ export default function BlockerQueuePage() {
         </div>
       </Card>
       <InfoCallout variant="info" title="Genuine dependency or poor execution?">
-        Accept a genuine dependency (extend the deadline now, or pause the clock until it is resolved), or reject it — the task returns to its previous status and any delay counts as unapproved. Time a blocker waits for your review is never counted against the employee.
+        Accept a genuine dependency (pause the clock until it is resolved, or extend the deadline now), or reject it — the task returns to its previous status and any delay counts as unapproved. If someone else should do the work, reassign it; if the decision is above you, escalate. Time a blocker waits for your review is never counted against the employee.
       </InfoCallout>
       {conflict && <TaskConflictCallout onRefresh={load} />}
       {error && <InfoCallout variant="danger" title="Could not load blockers">{error}</InfoCallout>}
@@ -160,19 +161,23 @@ export default function BlockerQueuePage() {
                   Deadline <DueText deadline={b.deadline} open compact />
                   {b.is_task_overdue && <Badge variant="urgent" size="sm">Overdue</Badge>}
                 </div>
-                {/* phones: Reject / Accept share a row as big thumb targets, the escalation link below */}
-                <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap [&_button]:h-10 sm:[&_button]:h-8">
-                  <Button size="sm" variant="secondary" leftIcon={<Ban className="h-4 w-4" />} onClick={() => setDialog({ action: 'reject_blocker', task: toActionTask(b) })}>
+                {/* phones: extend / reassign / escalate share the top row, Reject / Accept the bottom row as big thumb targets */}
+                <div className="grid w-full grid-cols-6 gap-2 sm:flex sm:w-auto sm:flex-wrap [&_button]:h-10 sm:[&_button]:h-8">
+                  <Button size="sm" variant="ghost" className="col-span-2 px-1 sm:px-3" leftIcon={<Clock className="h-4 w-4" />} onClick={() => decide(b, blockerDecisions(b).extend)}>
+                    Extend
+                  </Button>
+                  <Button size="sm" variant="ghost" className="col-span-2 px-1 sm:px-3" leftIcon={<ArrowRightLeft className="h-4 w-4" />} onClick={() => decide(b, blockerDecisions(b).reassign)}>
+                    Reassign
+                  </Button>
+                  <Button size="sm" variant="ghost" className="col-span-2 px-1 sm:px-3" leftIcon={<ShieldAlert className="h-4 w-4" />} onClick={() => decide(b, blockerDecisions(b).escalate)}>
+                    Escalate
+                  </Button>
+                  <Button size="sm" variant="secondary" className="col-span-3" leftIcon={<Ban className="h-4 w-4" />} onClick={() => decide(b, blockerDecisions(b).reject)}>
                     Reject
                   </Button>
-                  <Button size="sm" leftIcon={<CheckCircle2 className="h-4 w-4" />} onClick={() => setDialog({ action: 'accept_blocker', task: toActionTask(b) })}>
+                  <Button size="sm" className="col-span-3" leftIcon={<CheckCircle2 className="h-4 w-4" />} onClick={() => decide(b, blockerDecisions(b).accept)}>
                     Accept
                   </Button>
-                  <Link href={`/tasks/${b.task_id}`} className="col-span-2">
-                    <Button size="sm" variant="ghost" className="w-full sm:w-auto">
-                      Reassign / escalate…
-                    </Button>
-                  </Link>
                 </div>
               </div>
             </Card>
@@ -182,6 +187,7 @@ export default function BlockerQueuePage() {
       <TaskActionDialog
         action={dialog?.action ?? null}
         task={dialog?.task ?? null}
+        initial={dialog?.initial}
         onClose={() => setDialog(null)}
         onDone={(_, msg) => {
           setDialog(null);

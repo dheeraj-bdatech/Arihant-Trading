@@ -49,7 +49,23 @@ export type TaskDialogAction =
 /** Minimal task shape the dialogs need (list rows and detail both satisfy it). */
 export type ActionTask = Pick<
   TaskDetail,
-  'id' | 'task_number' | 'title' | 'version' | 'status' | 'deadline' | 'progress_percent' | 'evidence_required' | 'approval_required' | 'assigned_to' | 'customer_id' | 'is_overdue' | 'open_blocker' | 'start_date'
+  | 'id'
+  | 'task_number'
+  | 'title'
+  | 'version'
+  | 'status'
+  | 'deadline'
+  | 'progress_percent'
+  | 'evidence_required'
+  | 'approval_required'
+  | 'assigned_to'
+  | 'customer_id'
+  | 'tender_id'
+  | 'demo_id'
+  | 'service_ticket_id'
+  | 'is_overdue'
+  | 'open_blocker'
+  | 'start_date'
 >;
 
 const COPY: Record<TaskDialogAction, { title: string; description: string; confirm: string; danger?: boolean }> = {
@@ -163,6 +179,7 @@ export const TaskActionDialog: React.FC<{
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [assignees, setAssignees] = useState<AssigneeOption[]>([]);
+  const [escalationTargets, setEscalationTargets] = useState<{ id: string; full_name: string; role: string }[]>([]);
   const [leaves, setLeaves] = useState<{ id: string; from_date: string; to_date: string; leave_type: string }[]>([]);
   const users = useActiveUsers([task?.assigned_to, user?.id]);
 
@@ -173,7 +190,16 @@ export const TaskActionDialog: React.FC<{
     setFiles([]);
     setErrors({});
     setMessage(null);
-    if (action === 'reassign') api.get<AssigneeOption[]>('/tasks/lookups/assignees').then((r) => setAssignees(r.filter((a) => a.id !== task.assigned_to && a.scope !== 'self'))).catch(() => setAssignees([]));
+    if (action === 'reassign') {
+      // Colleagues outside the team only for linked work — the API refuses them for a general task.
+      const linked = Boolean(task.customer_id || task.tender_id || task.demo_id || task.service_ticket_id);
+      api
+        .get<AssigneeOption[]>('/tasks/lookups/assignees')
+        .then((r) => setAssignees(r.filter((a) => a.id !== task.assigned_to && a.scope !== 'self' && (linked || a.scope !== 'peer'))))
+        .catch(() => setAssignees([]));
+    }
+    // Escalation goes upward; the API decides who that is for this task and this user.
+    if (action === 'escalate') api.get<{ id: string; full_name: string; role: string }[]>(`/tasks/${task.id}/escalation-targets`).then(setEscalationTargets).catch(() => setEscalationTargets([]));
     if (action === 'raise_blocker' && task.assigned_to) {
       api.get<any[]>('/task-calendar/leaves', { employee_id: task.assigned_to, from: istToday() }).then(setLeaves).catch(() => setLeaves([]));
     }
@@ -371,7 +397,7 @@ export const TaskActionDialog: React.FC<{
               <legend className="text-xs font-semibold text-[#14213D] mb-1">How should the deadline change?</legend>
               {[
                 { id: 'pause', title: 'Pause the clock', text: 'When the blocker is resolved, the deadline moves out by the time it was blocked.' },
-                { id: 'extend', title: 'Set a new deadline now', text: 'Pick the new deadline yourself.' },
+                { id: 'extend', title: 'Set a new deadline now', text: 'Pick the new deadline yourself. The clock keeps running against it, even while the blocker stays open.' },
               ].map((o) => (
                 <label key={o.id} className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${v.mode === o.id ? 'border-[#0F5E63] bg-[#E3EFEE]/50' : 'border-[#DCD8CE]'}`}>
                   <input type="radio" name="mode" value={o.id} checked={v.mode === o.id} onChange={() => set('mode', o.id)} className="mt-0.5 accent-[#0F5E63]" />
@@ -414,13 +440,26 @@ export const TaskActionDialog: React.FC<{
               options={TASK_REASSIGN_REASONS.map((r) => ({ value: r, label: TASK_REASSIGN_REASON_LABELS[r] }))}
             />
             <DeadlineInput label="New deadline (optional)" value={v.new_deadline || ''} min={istToday()} onChange={(x) => set('new_deadline', x)} error={errors.new_deadline} helperText="Leave empty to keep the current deadline." />
+            {task.open_blocker?.status === 'pending_review' && (
+              <InfoCallout variant="neutral">The open blocker has not been decided. Reassigning withdraws it, so it counts as neither approved nor rejected, and the task returns to its previous status for the new assignee.</InfoCallout>
+            )}
+            {task.open_blocker?.status === 'accepted' && <InfoCallout variant="neutral">The accepted blocker is closed on reassignment; any time it paused the clock is added back to the deadline.</InfoCallout>}
             {commentField('reason', 'Reason', 'Why is this being reassigned?')}
           </>
         )}
 
         {action === 'escalate' && (
           <>
-            <UserSelect label="Escalate to" value={v.to_user_id || ''} onChange={(x) => set('to_user_id', x)} users={users} placeholder="Your own manager (default)" error={errors.to_user_id} />
+            <UserSelect
+              label="Escalate to"
+              value={v.to_user_id || ''}
+              onChange={(x) => set('to_user_id', x)}
+              users={escalationTargets}
+              placeholder="Your own manager (default)"
+              error={errors.to_user_id}
+              helperText="Someone above you: your reporting line, a department head or management."
+            />
+            {task.open_blocker?.status === 'pending_review' && <InfoCallout variant="neutral">The blocker stays open for review — the person you escalate to can accept or reject it.</InfoCallout>}
             {commentField('reason', 'Reason', 'What decision or help is needed?')}
           </>
         )}

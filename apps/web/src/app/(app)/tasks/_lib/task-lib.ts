@@ -79,7 +79,7 @@ export interface TaskRow {
   completion_remarks: string | null;
   delay_reason: string | null;
   progress_at_completion: number | null;
-  open_blocker: { id: string; status: TaskBlockerStatus; blocker_type: TaskBlockerType; raised_at: string; raised_after_deadline: boolean; raised_by: string; dependency_user_id: string | null } | null;
+  open_blocker: { id: string; status: TaskBlockerStatus; decision?: string | null; blocker_type: TaskBlockerType; raised_at: string; raised_after_deadline: boolean; raised_by: string; dependency_user_id: string | null } | null;
   is_overdue: boolean;
   delay_class: TaskDelayClass | null;
   total_delay_days: number;

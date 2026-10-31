@@ -81,8 +81,8 @@ export const VISIT_OPEN = ['planned', 'modified', 'rescheduled'];
 /* ------------------------------------------------------------------ tasks -- */
 /** Open work. Overdue tasks are always a subset of these. */
 export const TASK_OPEN = ['not_started', 'in_progress', 'blocked'];
-/** Module 8: overdue = deadline passed, work open, no accepted blocker (derived, never stored). */
-export const TASK_OVERDUE = sql`k.deadline < now() and (k.status in ('not_started', 'in_progress') or (k.status = 'blocked' and not exists (select 1 from task_blockers b where b.task_id = k.id and b.status = 'accepted')))`;
+/** Module 8: overdue = deadline passed, work open, no clock-pausing blocker (derived, never stored; mirrors isTaskOverdue). */
+export const TASK_OVERDUE = sql`k.deadline < now() and (k.status in ('not_started', 'in_progress') or (k.status = 'blocked' and not exists (select 1 from task_blockers b where b.task_id = k.id and b.status = 'accepted' and b.decision is distinct from 'accept_extend')))`;
 
 /* ----------------------------------------------------------------- scopes -- */
 /**

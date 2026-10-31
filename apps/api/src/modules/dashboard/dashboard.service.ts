@@ -4,6 +4,7 @@ import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { SERVICE_DONE_STATUSES, type Database, type AuthUser, type DashboardMetricsDto } from '@arihant/shared';
 import { claimScopeFilter } from '../expense-management/expense-scope.js';
+import { TaskStore } from '../tasks/task-store.service.js';
 import {
   DashboardMetricsService,
   LEAD_ACTIVE,
@@ -24,6 +25,7 @@ export class DashboardService {
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly metrics: DashboardMetricsService,
+    private readonly tasks: TaskStore,
   ) {}
 
   /** Sidebar badges: the same live / closing figures the dashboards show for this user's scope. */
@@ -149,14 +151,16 @@ export class DashboardService {
       });
     }
 
-    // Blocked tasks — timestamp is when the blocker was raised, not "now"
+    // Blocked tasks the user may see (the Tasks module's visibility rule) — timestamp is when the blocker was raised, not "now"
+    const visibleTask = this.tasks.access.scope(user, await this.tasks.masters.settings());
     const blockedTasks = await this.db
-      .selectFrom('tasks')
-      .innerJoin('task_blockers', 'tasks.id', 'task_blockers.task_id')
-      .select(['tasks.id', 'tasks.title', 'task_blockers.blocker_type', 'task_blockers.description', 'task_blockers.created_at'])
-      .where('tasks.status', '=', 'blocked')
-      .where('task_blockers.status', 'in', ['pending_review', 'accepted'])
-      .orderBy('task_blockers.created_at', 'desc')
+      .selectFrom('tasks as t')
+      .innerJoin('task_blockers as b', 't.id', 'b.task_id')
+      .select(['t.id', 't.title', 'b.blocker_type', 'b.description', 'b.created_at'])
+      .where('t.status', '=', 'blocked')
+      .where('b.status', 'in', ['pending_review', 'accepted'])
+      .where(visibleTask)
+      .orderBy('b.created_at', 'desc')
       .limit(2)
       .execute();
 

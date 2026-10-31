@@ -98,6 +98,7 @@ export class TaskCalendarController {
   constructor(
     private readonly masters: TaskMastersService,
     private readonly tasks: TasksService,
+    private readonly blockers: TaskBlockersService,
   ) {}
 
   @Get('holidays')
@@ -126,8 +127,10 @@ export class TaskCalendarController {
   }
 
   @Post('leaves/:id/cancel') @HttpCode(200)
-  cancelLeave(@Param('id') id: string, @Body() dto: Body_, @CurrentUser() user: AuthUser) {
-    return this.masters.cancelLeave(id, dto, user);
+  async cancelLeave(@Param('id') id: string, @Body() dto: Body_, @CurrentUser() user: AuthUser) {
+    const leave = await this.masters.cancelLeave(id, dto, user);
+    await this.blockers.closeForCancelledLeave(id, user);
+    return leave;
   }
 
   @Get('departments')
@@ -279,6 +282,11 @@ export class TasksController {
   @Post(':id/reassign') @HttpCode(200)
   reassign(@Param('id') id: string, @Body() dto: Body_, @CurrentUser() user: AuthUser) {
     return this.act(id, 'reassign', dto, user);
+  }
+
+  @Get(':id/escalation-targets')
+  escalationTargets(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.workflow.listEscalationTargets(id, user);
   }
 
   @Post(':id/escalate') @HttpCode(200)

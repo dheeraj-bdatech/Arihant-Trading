@@ -32,8 +32,8 @@ export function staleVersion(): ConflictException {
 
 /** Mandatory on every mutation of an existing task (optimistic locking). */
 export function readVersion(v: unknown): number {
-  const n = Number(v);
-  if (v === undefined || v === null || v === '' || !Number.isInteger(n) || n < 1) {
+  const n = typeof v === 'number' || typeof v === 'string' ? Number(v) : NaN;
+  if (v === '' || !Number.isInteger(n) || n < 1) {
     throw new TaskValidationException({ version: 'version is required — refresh and try again.' });
   }
   return n;
@@ -92,6 +92,8 @@ export function readDate(errors: FieldErrors, field: string, value: unknown, opt
  * Deadlines arrive as a date ("2026-10-20" → 23:59:59 IST that day), an IST wall-clock time
  * ("2026-10-20T15:30") or a full ISO instant with offset.
  */
+const MAX_FUTURE_YEARS = 10;
+
 export function readDeadline(errors: FieldErrors, field: string, value: unknown, opts: { required?: boolean; label: string }): Date | null {
   if (value === undefined || value === null || value === '') {
     if (opts.required) errors[field] = `${opts.label} is required.`;
@@ -110,6 +112,11 @@ export function readDeadline(errors: FieldErrors, field: string, value: unknown,
   }
   if (!d || Number.isNaN(d.getTime())) {
     errors[field] = `${opts.label} must be a valid date or date-time.`;
+    return null;
+  }
+  // Delay and excused time are stored in whole minutes; an absurd year would overflow them (and is never a real deadline).
+  if (d.getTime() > Date.now() + MAX_FUTURE_YEARS * 365.25 * 86400000) {
+    errors[field] = `${opts.label} must be within the next ${MAX_FUTURE_YEARS} years.`;
     return null;
   }
   return d;

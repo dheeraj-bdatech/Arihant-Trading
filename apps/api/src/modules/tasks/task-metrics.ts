@@ -25,6 +25,7 @@ export interface MetricTask {
   generated_late: boolean;
   last_update_at: Date | string | null;
   accepted_blocker_raised_at: Date | string | null;
+  accepted_blocker_decision: string | null;
 }
 
 export interface MetricBlocker {
