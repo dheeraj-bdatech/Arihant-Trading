@@ -6,7 +6,7 @@
  * follow a manager change automatically); `tasks.reporting_manager_id` is only the historical snapshot.
  */
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { Kysely, sql, type ExpressionBuilder } from 'kysely';
+import { Kysely, sql, type ExpressionBuilder, type RawBuilder } from 'kysely';
 import type { AuthUser, Database, TaskActorKind } from '@arihant/shared';
 import { TASK_DB } from './task-db.js';
 import { TaskMastersService, isAdminLike, type TaskSettings } from './task-masters.service.js';
@@ -63,9 +63,15 @@ export class TaskAccessService {
         sql<boolean>`exists (select 1 from task_blockers b where b.task_id = t.id and b.dependency_user_id = ${user.id})`,
         sql<boolean>`exists (select 1 from task_assignment_history h where h.task_id = t.id and h.from_user_id = ${user.id})`,
       ];
-      if (isRm(user)) ors.push(eb('t.assigned_to', 'in', fieldTeamIds(user.id, user.zone_id ?? null) as any));
+      if (isRm(user)) ors.push(this.regionalTeamSql(user));
       return eb.or(ors);
     };
+  }
+
+  /** SQL twin of `isRegionalReport`: the task's assignee is on this regional manager's field team (false for anyone else). */
+  regionalTeamSql(user: AuthUser, alias = 't'): RawBuilder<boolean> {
+    if (!isRm(user)) return sql<boolean>`false`;
+    return sql<boolean>`${sql.ref(alias)}.assigned_to in ${fieldTeamIds(user.id, user.zone_id ?? null)}`;
   }
 
   /**

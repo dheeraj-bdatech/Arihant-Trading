@@ -270,7 +270,9 @@ export class TaskStore {
 
   /**
    * Work routed to `user` for a decision (approval / blocker review): they are the assignee's first active
-   * manager, an open escalation target, the department head, or a fallback approver when no manager exists.
+   * manager, the regional manager whose field team the assignee is on (they may decide it — `hasManagerAuthority`
+   * — even when the employee reports elsewhere), an open escalation target, the department head, or a fallback
+   * approver when no manager exists.
    */
   routedToSql(user: AuthUser, s: TaskSettings, alias = 't'): RawBuilder<boolean> {
     const t = sql.ref(alias);
@@ -278,6 +280,7 @@ export class TaskStore {
     const isFallback = fallbackRoles.includes(user.role);
     return sql<boolean>`(${t}.assigned_to <> ${user.id} and (
       (select c.id from user_manager_chain(${t}.assigned_to) c where c.is_active order by c.depth limit 1) = ${user.id}
+      or ${this.access.regionalTeamSql(user, alias)}
       or exists (select 1 from task_escalations e where e.task_id = ${t}.id and e.escalated_to = ${user.id} and e.status <> 'closed')
       or ${t}.department_id in (select id from departments where head_user_id = ${user.id})
       or (${isFallback}::boolean and not exists (select 1 from user_manager_chain(${t}.assigned_to) c where c.is_active))

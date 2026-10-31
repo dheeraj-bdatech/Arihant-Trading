@@ -42,6 +42,7 @@ describe('Task & blocker regressions (e2e)', () => {
   let tag = '';
   let general = '';
   let deptId = '';
+  let zoneId = '';
 
   const http = () => request(app.getHttpServer());
   const bearer = (w: Who) => ({ Authorization: `Bearer ${w.token}` });
@@ -139,6 +140,7 @@ describe('Task & blocker regressions (e2e)', () => {
         await conn.deleteFrom('audit_log').where('actor_id', 'in', tempUserIds).execute();
         await conn.deleteFrom('users').where('id', 'in', tempUserIds).execute();
         if (deptId) await conn.deleteFrom('departments').where('id', '=', deptId).execute();
+        if (zoneId) await conn.deleteFrom('zones').where('id', '=', zoneId).execute();
         await sql`set session_replication_role = default`.execute(conn);
       });
     }
@@ -297,6 +299,50 @@ describe('Task & blocker regressions (e2e)', () => {
     const pending = async (w: Who) => (await http().get('/api/task-blockers/pending').query({ scope: 'all' }).set(bearer(w))).body.some((b: any) => b.id === bid);
     expect({ employee: await pending(u.e1), otherManager: await pending(u.mgr2) }).toEqual({ employee: false, otherManager: false });
     expect((await http().get('/api/task-blockers/waiting-on-me').set(bearer(u.out))).body).toEqual([]);
+  });
+
+  it("a regional manager's zone staff who report elsewhere land in the RM's queues too; the line manager keeps theirs", async () => {
+    // A fresh zone so the RM's queues hold only what this test puts there.
+    zoneId = randomUUID();
+    await db.insertInto('zones').values({ id: zoneId, code: `BLKQA-${tag}`, name: `BlkQa zone ${tag}` } as any).execute();
+    const hash = await bcrypt.hash('password123', 10);
+    const add = async (k: string, role: string, manager: string) => {
+      const id = randomUUID();
+      tempUserIds.push(id);
+      await db.insertInto('users').values({ id, full_name: `BlkQa ${k}`, email: `blkqa.${k}.${tag}@test.local`, role, reporting_manager_id: manager, zone_id: zoneId, password_hash: hash } as any).execute();
+      return login(`blkqa.${k}.${tag}@test.local`);
+    };
+    const zrm = await add('zrm', 'regional_manager', u.mgmt.id);
+    const zrep = await add('zrep', 'sales', u.mgr.id); // in the zone, reports to a manager outside it
+    const zdesk = await add('zdesk', 'tender_team', u.mgr.id); // national role sitting in the zone → not the RM's team
+    const summary = async (w: Who) => (await http().get('/api/tasks/my/summary').set(bearer(w))).body;
+    const blockerQueue = async (w: Who) => (await http().get('/api/task-blockers/pending').set(bearer(w))).body.map((b: any) => b.id);
+    const approvalQueue = async (w: Who) => (await http().get('/api/tasks/approvals/pending').set(bearer(w))).body.map((t: any) => t.id);
+
+    const blocked = await one(u.mgr, zrep);
+    await raise(zrep, blocked, { blocker_type: 'missing_information', description: 'Site drawings for the survey are not shared yet' });
+    const bid = await openBlockerId(blocked);
+    const awaiting = await one(u.mgr, zrep, { approval_required: true });
+    expect((await act(zrep, awaiting, 'complete', { remarks: 'Survey report handed in for review' })).status).toBe(200);
+    const desk = await one(u.mgr, zdesk);
+    await raise(zdesk, desk, { blocker_type: 'external_portal_issue', portal_name: 'GeM', description: 'GeM portal is down for scheduled maintenance' });
+    const deskBid = await openBlockerId(desk);
+
+    // The RM may decide the rep's work, so it is routed to them — exactly that, nothing from the tender desk.
+    expect(await blockerQueue(zrm)).toEqual([bid]);
+    expect(await approvalQueue(zrm)).toEqual([awaiting]);
+    expect(await summary(zrm)).toMatchObject({ pending_blockers: 1, pending_approvals: 1 });
+    expect((await decideById(zrm, deskBid, desk, 'accept', { mode: 'pause', comment: 'Not my team' })).status).toBe(404);
+    // The reporting manager still has all of it; a peer manager none of it.
+    expect(await blockerQueue(u.mgr)).toEqual(expect.arrayContaining([bid, deskBid]));
+    expect(await approvalQueue(u.mgr)).toContain(awaiting);
+    expect((await blockerQueue(u.mgr2)).filter((b: string) => [bid, deskBid].includes(b))).toEqual([]);
+
+    // Either of them deciding clears it from both queues.
+    expect((await decideById(zrm, bid, blocked, 'accept', { mode: 'pause', comment: 'Customer confirmed the drawings are delayed' })).status).toBe(200);
+    expect((await act(zrm, awaiting, 'approve', { comment: 'Report checked' })).status).toBe(200);
+    expect({ rm: await blockerQueue(zrm), mgr: (await blockerQueue(u.mgr)).includes(bid) }).toEqual({ rm: [], mgr: false });
+    expect(await summary(zrm)).toMatchObject({ pending_blockers: 0, pending_approvals: 0 });
   });
 
   it('state edges: raise on awaiting approval / cancelled, a decision race, deciding after cancel', async () => {
