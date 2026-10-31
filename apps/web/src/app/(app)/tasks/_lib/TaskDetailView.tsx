@@ -49,12 +49,11 @@ import {
   TASK_REASSIGN_REASON_LABELS,
   describeRecurrence,
   formatTaskDateTime,
-  minutesToDays,
   relativeDue,
   type TaskDeadlineChangeSource,
   type TaskReassignReason,
 } from '@arihant/shared';
-import { errorMessage, fieldErrors, isConflict, notifyTasksChanged, useTaskCategories, type TaskAttachment, type TaskDetail } from './task-lib';
+import { errorMessage, fieldErrors, formatDuration, isConflict, notifyTasksChanged, useTaskCategories, type TaskAttachment, type TaskDetail } from './task-lib';
 import {
   ActivityTimeline,
   BlockerBadge,
@@ -326,8 +325,8 @@ export const TaskDetailView: React.FC<{ taskId: string; variant?: 'page' | 'popu
       {historyLine && <SideRow label="History">{historyLine}</SideRow>}
       {delayed && (
         <SideRow label="Delay">
-          <span className="text-[#9A3412]">{Number(task.unexcused_delay_days).toFixed(1)} d unexcused</span>
-          <span className="text-[#4A5568]"> · {Number(task.excused_delay_days).toFixed(1)} d excused</span>
+          <span className="text-[#9A3412]">{formatDuration(Number(task.unexcused_delay_days) * 1440)} unexcused</span>
+          <span className="text-[#4A5568]"> · {formatDuration(Number(task.excused_delay_days) * 1440)} excused</span>
         </SideRow>
       )}
     </>
@@ -435,7 +434,7 @@ export const TaskDetailView: React.FC<{ taskId: string; variant?: 'page' | 'popu
                       <p className="text-[11px] text-[#4A5568]">
                         {formatTaskDateTime(b.created_at)}
                         {b.raised_after_deadline ? ' · after deadline' : ''}
-                        {b.excused_minutes ? ` · ${minutesToDays(b.excused_minutes)} day(s) excused` : ''}
+                        {b.excused_minutes ? ` · ${formatDuration(b.excused_minutes)} excused` : ''}
                       </p>
                       {b.decision_comment && (
                         <p className="text-[11px] text-[#4A5568]">
@@ -461,8 +460,8 @@ export const TaskDetailView: React.FC<{ taskId: string; variant?: 'page' | 'popu
                       <div className="font-mono text-[11px] text-[#4A5568]">
                         {formatTaskDateTime(c.old_deadline)} → {formatTaskDateTime(c.new_deadline)}
                       </div>
-                      {c.excused_minutes > 0 && <div className="text-[#0F5E63]">{minutesToDays(c.excused_minutes)} day(s) excused</div>}
-                      {c.locked_unexcused_minutes > 0 && <div className="text-[#9A3412]">{minutesToDays(c.locked_unexcused_minutes)} day(s) already overdue — stays unexcused</div>}
+                      {c.excused_minutes > 0 && <div className="text-[#0F5E63]">{formatDuration(c.excused_minutes)} excused</div>}
+                      {c.locked_unexcused_minutes > 0 && <div className="text-[#9A3412]">{formatDuration(c.locked_unexcused_minutes)} already overdue — stays unexcused</div>}
                       <div className="text-[#4A5568]">
                         {c.changed_by_name || 'System'} · “{c.reason}”
                       </div>

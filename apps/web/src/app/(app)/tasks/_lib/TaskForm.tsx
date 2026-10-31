@@ -1103,7 +1103,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                       form.frequency === t ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D] hover:border-[#0F5E63]'
                     } ${i === TASK_RECURRENCE_TYPES.length - 1 ? 'col-span-2 sm:col-span-1' : ''}`}
                   >
-                    <input type="radio" name="frequency" value={t} checked={form.frequency === t} onChange={() => setFrequency(t)} disabled={disabled} className="accent-[#0F5E63]" />
+                    <input type="radio" name="frequency" value={t} aria-label={TASK_RECURRENCE_LABELS[t]} checked={form.frequency === t} onChange={() => setFrequency(t)} disabled={disabled} className="accent-[#0F5E63]" />
                     {t !== 'one_time' && <Repeat className="h-3.5 w-3.5 shrink-0" aria-hidden />}
                     <span className="truncate">{TASK_RECURRENCE_LABELS[t]}</span>
                   </label>
@@ -1241,7 +1241,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ prefill, variant = 'page', o
                         key={m}
                         className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold sm:min-h-0 ${rec.endMode === m ? 'border-[#0F5E63] bg-[#E3EFEE] text-[#0F5E63]' : 'border-[#C9C4B8] bg-white text-[#14213D]'}`}
                       >
-                        <input type="radio" name="end_mode" value={m} checked={rec.endMode === m} onChange={() => updateRec({ endMode: m }, ['end_date', 'max_occurrences'])} disabled={disabled} className="accent-[#0F5E63]" />
+                        <input type="radio" name="end_mode" value={m} aria-label={label} checked={rec.endMode === m} onChange={() => updateRec({ endMode: m }, ['end_date', 'max_occurrences'])} disabled={disabled} className="accent-[#0F5E63]" />
                         {label}
                       </label>
                     ))}
