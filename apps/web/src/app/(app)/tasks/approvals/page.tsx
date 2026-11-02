@@ -26,7 +26,8 @@ export default function ApprovalQueuePage() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      setRows(await api.get<ApprovalRow[]>('/tasks/approvals/pending', { scope }));
+      const res = await api.get<any>('/tasks/approvals/pending', { scope, page_size: 100 });
+      setRows(Array.isArray(res) ? res : res?.data || []);
       setConflict(false);
     } catch (e) {
       setError(errorMessage(e));

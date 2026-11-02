@@ -29,7 +29,8 @@ export default function BlockerQueuePage() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      setRows(await api.get<PendingBlocker[]>('/task-blockers/pending', { scope }));
+      const res = await api.get<any>('/task-blockers/pending', { scope, page_size: 100 });
+      setRows(Array.isArray(res) ? res : res?.data || []);
       setConflict(false);
     } catch (e) {
       setError(errorMessage(e));

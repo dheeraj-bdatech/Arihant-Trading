@@ -139,6 +139,14 @@ export default function VisitsPage() {
   const [employeeActivities, setEmployeeActivities] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
+  const safeTrips: any[] = Array.isArray(trips) ? trips : (trips as any)?.data || [];
+  const safeOrganisations: any[] = Array.isArray(organisations) ? organisations : (organisations as any)?.data || [];
+  const safeProducts: any[] = Array.isArray(products) ? products : (products as any)?.data || [];
+  const safeUsersList: any[] = Array.isArray(usersList) ? usersList : (usersList as any)?.data || [];
+  const safeSelectedOrgHistory: any[] = Array.isArray(selectedOrgHistory) ? selectedOrgHistory : (selectedOrgHistory as any)?.data || [];
+  const safeEmployeeActivities: any[] = Array.isArray(employeeActivities) ? employeeActivities : (employeeActivities as any)?.data || [];
+  const safeAuditLogs: any[] = Array.isArray(auditLogs) ? auditLogs : (auditLogs as any)?.data || [];
+
   // Filters
   const searchParams = useSearchParams();
   const [urlFilters] = useState(() => visitUrlFilters(searchParams));
@@ -366,7 +374,7 @@ export default function VisitsPage() {
   const effectiveDemoLocation = useMemo(() => {
     if (newVisit.location) return newVisit.location;
     if (newVisit.trip_id) {
-      const trip = trips.find((t) => t.id === newVisit.trip_id);
+      const trip = safeTrips.find((t) => t.id === newVisit.trip_id);
       if (trip?.base_location) return trip.base_location;
     }
     if (travelDetails.travel_to) return travelDetails.travel_to;
@@ -451,7 +459,7 @@ export default function VisitsPage() {
         api.get('/demos/equipment').catch(() => []),
       ]);
 
-      setTrips(tripsRes || []);
+      setTrips(Array.isArray(tripsRes) ? tripsRes : (tripsRes?.data || []));
       setOrganisations(orgsRes.data || []);
       setProducts(Array.isArray(prodsRes) ? prodsRes : (prodsRes?.data || []));
       setUsersList(usersRes.data || []);
@@ -474,8 +482,8 @@ export default function VisitsPage() {
 
       // Load employee activity
       if (user?.id) {
-        const actRes = await api.get(`/visits/employees/${user.id}/activities`).catch(() => []);
-        setEmployeeActivities(actRes || []);
+        const actRes = await api.get(`/visits/employees/${user.id}/activities`, { limit: 100 }).catch(() => []);
+        setEmployeeActivities(Array.isArray(actRes) ? actRes : (actRes?.data || []));
       }
     } catch (err) {
       console.error('Failed to load visit planning data:', err);
@@ -521,8 +529,8 @@ export default function VisitsPage() {
   // Load customer history when selectedOrgId changes
   useEffect(() => {
     if (selectedOrgId) {
-      api.get(`/visits/organisations/${selectedOrgId}/history`)
-        .then((data) => setSelectedOrgHistory(data || []))
+      api.get(`/visits/organisations/${selectedOrgId}/history`, { limit: 100 })
+        .then((data) => setSelectedOrgHistory(Array.isArray(data) ? data : (data?.data || [])))
         .catch(() => setSelectedOrgHistory([]));
     }
   }, [selectedOrgId]);
@@ -911,8 +919,8 @@ export default function VisitsPage() {
     setSelectedVisit(visit);
     setIsAuditOpen(true);
     try {
-      const logs = await api.get(`/visits/${visit.id}/audit`);
-      setAuditLogs(logs || []);
+      const logs = await api.get(`/visits/${visit.id}/audit`, { limit: 100 });
+      setAuditLogs(Array.isArray(logs) ? logs : (logs?.data || []));
     } catch (err) {
       setAuditLogs([]);
     }
@@ -984,7 +992,7 @@ export default function VisitsPage() {
       count: visitsTotal || undefined,
     },
     ...(canSeeTeamActivity ? [{ key: 'manager_dashboard', label: 'Team activity', icon: <Shield /> }] : []),
-    { key: 'trips', label: 'Trips & multi-stop plans', icon: <Route />, count: trips.length || undefined },
+    { key: 'trips', label: 'Trips & multi-stop plans', icon: <Route />, count: safeTrips.length || undefined },
     { key: 'customer_history', label: 'Customer timeline', icon: <Building /> },
     { key: 'employee_activity', label: 'Employee activity', icon: <History /> },
   ].map((o) => ({
@@ -1940,12 +1948,12 @@ export default function VisitsPage() {
             </Button>
           </div>
 
-          {trips.length === 0 ? (
+          {safeTrips.length === 0 ? (
             <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
               No tour programs planned yet. Create one to organize multi-stop customer visits.
             </div>
           ) : (
-            trips.map((t) => (
+            safeTrips.map((t) => (
               <div key={t.id} className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#ECE9E2] pb-3">
                   <div className="space-y-1">
@@ -2005,10 +2013,10 @@ export default function VisitsPage() {
                     Planned Stop Itinerary ({t.visits?.length || 0} visits)
                   </span>
 
-                  {(!t.visits || t.visits.length === 0) ? (
+                  {(!t.visits || !Array.isArray(t.visits) || t.visits.length === 0) ? (
                     <p className="text-xs text-[#6B7280] italic">No visits currently attached to this tour.</p>
                   ) : (
-                    t.visits.map((tv: any, idx: number) => (
+                    (Array.isArray(t.visits) ? t.visits : []).map((tv: any, idx: number) => (
                       <div
                         key={tv.id}
                         className="flex items-center justify-between p-3 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-xs"
@@ -2067,12 +2075,12 @@ export default function VisitsPage() {
       {activeTab === 'customer_history' && (
         <div className="space-y-4">
           <div className="space-y-3">
-            {selectedOrgHistory.length === 0 ? (
+            {safeSelectedOrgHistory.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
                 No past field visits or interactions recorded for this customer.
               </div>
             ) : (
-              selectedOrgHistory.map((item) => (
+              safeSelectedOrgHistory.map((item) => (
                 <div
                   key={item.id}
                   className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-2"
@@ -2132,12 +2140,12 @@ export default function VisitsPage() {
           </div>
 
           <div className="space-y-3">
-            {employeeActivities.length === 0 ? (
+            {safeEmployeeActivities.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
                 No activity records logged yet. Completing field visits will automatically populate this dossier.
               </div>
             ) : (
-              employeeActivities.map((act) => (
+              safeEmployeeActivities.map((act) => (
                 <div key={act.id} className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-sm text-[#14213D]">{act.title}</span>
@@ -2505,14 +2513,14 @@ export default function VisitsPage() {
                       </label>
                     </div>
 
-                    {trips.length > 0 && !newVisit.travel_required && (
+                    {safeTrips.length > 0 && !newVisit.travel_required && (
                       <Select
                         label="Attach to Existing Tour Program (Optional)"
                         value={newVisit.trip_id}
                         onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
                         options={[
                           { value: '', label: '-- Standalone Field Visit --' },
-                          ...trips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})` })),
+                          ...safeTrips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})` })),
                         ]}
                       />
                     )}
@@ -2985,7 +2993,7 @@ export default function VisitsPage() {
                         onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
                         options={[
                           { value: '', label: '-- Auto-Generate New Tour Program --' },
-                          ...trips.map((t) => ({
+                          ...safeTrips.map((t) => ({
                             value: t.id,
                             label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})`,
                           })),
@@ -3783,10 +3791,10 @@ export default function VisitsPage() {
         maxWidth="md"
       >
         <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-          {auditLogs.length === 0 ? (
+          {safeAuditLogs.length === 0 ? (
             <p className="text-xs text-[#4A5568] italic p-4 text-center">No audit records found.</p>
           ) : (
-            auditLogs.map((log) => (
+            safeAuditLogs.map((log) => (
               <div key={log.id} className="p-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-xs space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-[#0F5E63]">{log.action}</span>

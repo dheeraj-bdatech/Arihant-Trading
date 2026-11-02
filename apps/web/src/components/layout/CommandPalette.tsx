@@ -41,6 +41,8 @@ export const CommandPalette: React.FC<{
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  /** The text `results` were found for: until the search for what is typed now returns, Enter waits. */
+  const [resultsFor, setResultsFor] = useState('');
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -182,6 +184,7 @@ export const CommandPalette: React.FC<{
   useEffect(() => {
     if (!query.trim()) {
       setResults(allowedStaticItems);
+      setResultsFor('');
       setIsLoading(false);
       return;
     }
@@ -255,8 +258,12 @@ export const CommandPalette: React.FC<{
         );
 
         setResults([...tenderItems, ...orgItems, ...leadItems, ...ticketItems, ...filteredStatic]);
+        setResultsFor(q);
       } catch {
-        if (!stale) setResults(allowedStaticItems);
+        if (!stale) {
+          setResults(allowedStaticItems);
+          setResultsFor(query.trim());
+        }
       } finally {
         if (!stale) setIsLoading(false);
       }
@@ -286,7 +293,7 @@ export const CommandPalette: React.FC<{
   };
 
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (isLoading && e.key === 'Enter') return;
+    if ((isLoading || resultsFor !== query.trim()) && e.key === 'Enter') return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setActive((i) => (results.length ? (i + 1) % results.length : 0));

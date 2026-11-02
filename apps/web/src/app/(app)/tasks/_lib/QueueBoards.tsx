@@ -303,7 +303,8 @@ function usePending<T>(path: string, scope: 'mine' | 'all') {
   const load = useCallback(async () => {
     setError(null);
     try {
-      setRows(await api.get<T[]>(path, { scope }));
+      const res = await api.get<any>(path, { scope, page_size: 100 });
+      setRows(Array.isArray(res) ? res : res?.data || []);
     } catch (e) {
       setError(errorMessage(e));
     }

@@ -155,16 +155,18 @@ function ExpensesHub() {
   }, [isManagement, regions.length]);
 
   // The claims that concern this user (every member's for management / admin), with the filters. A dashboard link
-  // (exact statuses) lists every claim this user may read that matches, as its figure counts them: the
-  // concern-you list would leave out e.g. other members' drafts for management, or claims another accountant handled.
+  // (exact statuses) for management or Accounts lists every claim they may read that matches, as their figures count
+  // them: the concern-you list would leave out other members' drafts for management, or claims another accountant
+  // handled. Everyone else's links (approver=me, mine=true) already sit inside the claims that concern them.
+  const wholeScopeLinks = isManagement || role === 'accounts';
   const request = useMemo(() => {
     const { stage, statuses, ...filters } = values;
     return {
       ...filters,
       statuses: statuses || STAGES.find((s) => s.key === stage)?.statuses.join(','),
-      relevant_only: statuses ? undefined : true,
+      relevant_only: statuses && wholeScopeLinks ? undefined : true,
     };
-  }, [values]);
+  }, [values, wholeScopeLinks]);
   // The exact statuses from a dashboard link, named for the Status menu
   const exactStatuses = values.statuses
     ? (values.approver === 'me' ? 'Waiting on you: ' : values.mine === 'true' ? 'Yours: ' : '') +
@@ -516,7 +518,9 @@ function ExpensesHub() {
                   key: o.key,
                   label: o.label,
                   active: !exactStatuses && (values.stage || 'all') === o.key,
-                  onSelect: () => set({ stage: o.key === 'all' ? null : o.key, ...LINK_ONLY_KEYS }),
+                  // a link's paid / decided-on dates go with it: they mean nothing for another stage (no paid date yet)
+                  onSelect: () =>
+                    set({ stage: o.key === 'all' ? null : o.key, ...LINK_ONLY_KEYS, ...(values.date_field ? { date_field: null, date_from: null, date_to: null } : {}) }),
                 })),
               ]}
             />

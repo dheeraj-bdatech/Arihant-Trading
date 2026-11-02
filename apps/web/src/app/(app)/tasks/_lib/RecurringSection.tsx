@@ -68,8 +68,8 @@ export function RecurringSection() {
     let live = true;
     const load = () =>
       api
-        .get<TemplateRow[]>('/task-templates')
-        .then((r) => live && setRows(r))
+        .get<any>('/task-templates', { page_size: 100 })
+        .then((r) => live && setRows(Array.isArray(r) ? r : r?.data || []))
         .catch((e) => live && setError(errorMessage(e, 'Could not load recurring tasks.')));
     load();
     window.addEventListener('tasks:changed', load);

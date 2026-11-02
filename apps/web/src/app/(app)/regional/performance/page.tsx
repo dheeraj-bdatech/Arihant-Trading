@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Award, Calendar, Compass, Download, MapPin, Presentation, Target, Users } from 'lucide-react';
 import type { PerformanceFigures, SalesPerformanceDto } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
@@ -135,7 +135,16 @@ const csvLine = (name: string, role: string, region: string, zone: string, f: Pe
     })
     .join(',');
 
+// useSearchParams needs a Suspense boundary (Next.js renders the page shell without the query string)
 export default function SalesPerformancePage() {
+  return (
+    <Suspense fallback={<PageLoader label="Loading performance" rows={4} />}>
+      <SalesPerformance />
+    </Suspense>
+  );
+}
+
+function SalesPerformance() {
   const { hasRole } = useAuth();
   const today = istToday();
   const [groupBy, setGroupBy] = useState<'rep' | 'region'>('rep');
@@ -147,31 +156,44 @@ export default function SalesPerformancePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // The view lives in the link (?from=&to=&group_by=region&zone_id=&region_id=): a refresh or a shared link opens the
-  // same figures, and the command dashboard links straight to a period and grouping.
+  // same figures, and the command dashboard links straight to a period and grouping. The default period (this month
+  // to today) stays out of the link, so a bookmark keeps meaning "month to date" on later days.
   const [urlRead, setUrlRead] = useState(false);
   const router = useRouter();
+  const search = useSearchParams().toString();
+  // links this page wrote itself: when they arrive back (perhaps after a newer one) they are not a new view
+  const written = useRef(new Set<string>());
 
   const allowed = hasRole(['sales', 'regional_manager', 'management', 'admin']);
 
+  // the link → the view: on load, and when it changes from outside (the sidebar link, back / forward)
   useEffect(() => {
-    const q = new URLSearchParams(window.location.search);
+    if (written.current.delete(search)) return;
+    const q = new URLSearchParams(search);
     const day = /^\d{4}-\d{2}-\d{2}$/;
-    if (day.test(q.get('from') || '')) setFrom(q.get('from')!);
-    if (day.test(q.get('to') || '')) setTo(q.get('to')!);
-    if (q.get('group_by') === 'region') setGroupBy('region');
+    setFrom(day.test(q.get('from') || '') ? q.get('from')! : monthStart(today));
+    setTo(day.test(q.get('to') || '') ? q.get('to')! : today);
+    setGroupBy(q.get('group_by') === 'region' ? 'region' : 'rep');
     setZoneId(q.get('zone_id') || '');
     setRegionId(q.get('region_id') || '');
     setUrlRead(true);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
+  // the view → the link (a half-typed or reversed period is not written)
   useEffect(() => {
-    if (!urlRead) return;
-    const q = new URLSearchParams({ from, to });
+    if (!urlRead || !from || !to || from > to) return;
+    const q = new URLSearchParams();
+    if (from !== monthStart(today)) q.set('from', from);
+    if (to !== today) q.set('to', to);
     if (groupBy === 'region') q.set('group_by', 'region');
     if (zoneId) q.set('zone_id', zoneId);
     if (regionId) q.set('region_id', regionId);
-    if (`?${q}` !== window.location.search) router.replace(`${window.location.pathname}?${q}`, { scroll: false });
-  }, [urlRead, from, to, groupBy, zoneId, regionId, router]);
+    const next = q.toString();
+    if (next === window.location.search.replace(/^\?/, '')) return;
+    written.current.add(next);
+    router.replace(next ? `${window.location.pathname}?${next}` : window.location.pathname, { scroll: false });
+  }, [urlRead, from, to, groupBy, zoneId, regionId, router, today]);
 
   useEffect(() => {
     if (!allowed || !urlRead) return;
