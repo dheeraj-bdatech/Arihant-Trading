@@ -23,6 +23,7 @@ import { TaskStore } from './task-store.service.js';
 import { TaskInputService, isLinked, type TaskLinks } from './task-input.service.js';
 import { TaskGeneratorService, horizonDays, parseRule, type TemplateRow } from './task-generator.service.js';
 import { isAdminLike } from './task-masters.service.js';
+import { buildPaginatedResult } from '../../common/utils/pagination.js';
 import {
   TaskValidationException,
   UUID_RE,
@@ -31,6 +32,8 @@ import {
   readDate,
   readEnum,
   readInt,
+  readPage,
+  readSearch,
   readUuid,
   readVersion,
   staleVersion,
@@ -73,34 +76,92 @@ export class TaskTemplatesService {
   }
 
   // ------------------------------------------------------------------ read
+  /**
+   * Recurring series I can see, a page at a time (`page`, `page_size` ≤ 100), by status then title. `status` and
+   * `search` (title or assignee) narrow the rows; `totals` (status counts, active series by frequency, what needs
+   * attention) cover every series in scope so the Recurring tab's menu and charts do not depend on the page.
+   */
   async list(query: Record<string, unknown>, user: AuthUser) {
     const s = await this.store.masters.settings();
-    let q = this.db
-      .selectFrom('task_templates as tp')
-      .innerJoin('users as emp', 'emp.id', 'tp.assigned_to')
-      .leftJoin('users as asg', 'asg.id', 'tp.assigned_by')
-      .leftJoin('task_categories as cat', 'cat.id', 'tp.category_id')
-      .selectAll('tp')
-      .select([
-        'emp.full_name as assignee_name',
-        'emp.is_active as assignee_active',
-        'asg.full_name as assigned_by_name',
-        'cat.name as category_name',
-        sql<number>`(select count(*)::int from tasks x where x.template_id = tp.id)`.as('instance_count'),
-        sql<number>`(select count(*)::int from tasks x where x.template_id = tp.id and x.status in ('not_started', 'in_progress', 'blocked') and x.deadline < now())`.as('open_overdue_count'),
-        sql<string>`(select min(x.deadline) from tasks x where x.template_id = tp.id and x.status in ('not_started', 'in_progress', 'blocked') and x.deadline >= now())`.as('next_deadline'),
-      ])
-      .orderBy('tp.status')
-      .orderBy('tp.title');
+    const { page, limit, offset } = readPage(query);
+    const search = readSearch(query);
+    let scoped = this.db.selectFrom('task_templates as tp').innerJoin('users as emp', 'emp.id', 'tp.assigned_to');
     if (!this.store.access.canViewAll(user)) {
       const team = await this.store.access.teamIds(user, s);
-      q = q.where((eb) => eb.or([eb('tp.assigned_to', '=', user.id), eb('tp.assigned_by', '=', user.id), eb('tp.created_by', '=', user.id), ...(team.length ? [eb('tp.assigned_to', 'in', team)] : [])]));
+      scoped = scoped.where((eb) => eb.or([eb('tp.assigned_to', '=', user.id), eb('tp.assigned_by', '=', user.id), eb('tp.created_by', '=', user.id), ...(team.length ? [eb('tp.assigned_to', 'in', team)] : [])]));
     }
+    if (typeof query.assignee_id === 'string' && UUID_RE.test(query.assignee_id)) scoped = scoped.where('tp.assigned_to', '=', query.assignee_id);
+    let q = scoped;
     if (typeof query.status === 'string' && ['active', 'paused', 'ended'].includes(query.status)) q = q.where('tp.status', '=', query.status);
-    if (typeof query.assignee_id === 'string' && UUID_RE.test(query.assignee_id)) q = q.where('tp.assigned_to', '=', query.assignee_id);
-    if (typeof query.search === 'string' && query.search.trim()) q = q.where(sql<boolean>`lower(tp.title) like ${`%${query.search.trim().toLowerCase()}%`}`);
-    const rows = await q.limit(500).execute();
-    return rows.map((r: any) => ({ ...r, schedule: describeRecurrence(r.recurrence_type, parseRule(r.recurrence_rule)) }));
+    if (search) {
+      const like = `%${search.toLowerCase()}%`;
+      q = q.where(sql<boolean>`(lower(tp.title) like ${like} or lower(emp.full_name) like ${like})`);
+    }
+    const n = (expr: ReturnType<typeof sql>) => sql<number>`(count(*) filter (where ${expr}))::int`;
+    const [totals, countRow, rows] = await Promise.all([
+      scoped
+        .select([
+          sql<number>`count(*)::int`.as('all'),
+          n(sql`tp.status = 'active'`).as('active'),
+          n(sql`tp.status = 'paused'`).as('paused'),
+          n(sql`tp.status = 'ended'`).as('ended'),
+          n(sql`tp.needs_reassignment or emp.is_active = false`).as('needs_reassignment'),
+          n(sql`exists (select 1 from tasks x where x.template_id = tp.id and x.status in ('not_started', 'in_progress', 'blocked') and x.deadline < now())`).as('with_overdue'),
+          ...RECURRING_TYPES.map((k) => n(sql`tp.status = 'active' and tp.recurrence_type = ${k}`).as(`active_${k}`)),
+        ])
+        .executeTakeFirst() as Promise<Record<string, number> | undefined>,
+      q.select(sql<number>`count(*)::int`.as('n')).executeTakeFirst(),
+      q
+        .leftJoin('users as asg', 'asg.id', 'tp.assigned_by')
+        .leftJoin('task_categories as cat', 'cat.id', 'tp.category_id')
+        .selectAll('tp')
+        .select(['emp.full_name as assignee_name', 'emp.is_active as assignee_active', 'asg.full_name as assigned_by_name', 'cat.name as category_name'])
+        .orderBy('tp.status')
+        .orderBy('tp.title')
+        .orderBy('tp.id')
+        .limit(limit)
+        .offset(offset)
+        .execute(),
+    ]);
+    // Instance counts for this page's series only, in one grouped read.
+    const ids = rows.map((r) => r.id);
+    const stats = ids.length
+      ? await this.db
+          .selectFrom('tasks as x')
+          .select([
+            'x.template_id',
+            sql<number>`count(*)::int`.as('instance_count'),
+            sql<number>`(count(*) filter (where x.status in ('not_started', 'in_progress', 'blocked') and x.deadline < now()))::int`.as('open_overdue_count'),
+            sql<string>`min(x.deadline) filter (where x.status in ('not_started', 'in_progress', 'blocked') and x.deadline >= now())`.as('next_deadline'),
+          ])
+          .where('x.template_id', 'in', ids)
+          .groupBy('x.template_id')
+          .execute()
+      : [];
+    const byId = new Map(stats.map((r) => [r.template_id, r]));
+    const data = rows.map((r: any) => {
+      const st = byId.get(r.id);
+      return {
+        ...r,
+        instance_count: st?.instance_count ?? 0,
+        open_overdue_count: st?.open_overdue_count ?? 0,
+        next_deadline: st?.next_deadline ?? null,
+        schedule: describeRecurrence(r.recurrence_type, parseRule(r.recurrence_rule)),
+      };
+    });
+    const t = totals || {};
+    return {
+      ...buildPaginatedResult(data, Number(countRow?.n || 0), page, limit),
+      totals: {
+        all: Number(t.all || 0),
+        active: Number(t.active || 0),
+        paused: Number(t.paused || 0),
+        ended: Number(t.ended || 0),
+        needs_reassignment: Number(t.needs_reassignment || 0),
+        with_overdue: Number(t.with_overdue || 0),
+        active_by_frequency: Object.fromEntries(RECURRING_TYPES.map((k) => [k, Number(t[`active_${k}`] || 0)])),
+      },
+    };
   }
 
   async detail(id: string, user: AuthUser) {

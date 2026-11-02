@@ -3,7 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { Kysely, sql } from 'kysely';
 import { randomUUID } from 'crypto';
-import { addIsoDays, todayInKolkata } from '@arihant/shared';
+import { COMMAND_SECTIONS, addIsoDays, todayInKolkata } from '@arihant/shared';
 import { AppModule } from '../src/app.module';
 import { KYSELY_DB } from '../src/common/database/database.module';
 import { configureApp } from '../src/common/app-setup';
@@ -339,5 +339,67 @@ describe('Module 10 — Management Command dashboard', () => {
     expect((await command('admin')).sections.map((x: any) => x.key)).toContain('service');
     expect((await api().patch('/api/admin/access/management/service').set(auth('admin')).send({ blocked: false })).status).toBe(200);
     expect((await command('mgmt')).sections.map((x: any) => x.key)).toContain('service');
+  });
+
+  describe('loaded a page at a time', () => {
+    const get = (query: Record<string, any>, who = 'mgmt') => api().get('/api/dashboard/command').query(query).set(auth(who));
+    const records = (query: Record<string, any>, who = 'mgmt') => api().get('/api/dashboard/command/records').query(query).set(auth(who));
+    /** Rates and "repeated reasons" are not counts of their records; every other figure is. */
+    const NOT_A_COUNT = new Set(['sales.conversion', 'demos.results', 'demos.failure_reasons', 'team.productivity']);
+
+    it('a page of cards comes in board order, and `order` names every card still to load', async () => {
+      const full = await command();
+      expect(full.order).toEqual(full.sections.map((x: any) => x.key));
+      const page = (await get({ sections: 'visits,sales,nonsense' })).body;
+      expect(page.sections.map((x: any) => x.key)).toEqual(['sales', 'visits']);
+      expect(page.order).toEqual(full.order);
+      expect(fig(page, 'sales', 'followups_overdue').value).toBe(fig(full, 'sales', 'followups_overdue').value);
+    });
+
+    it('only=action returns just the figures that need action, on every card', async () => {
+      const body = (await get({ only: 'action' })).body;
+      const kind = new Map(COMMAND_SECTIONS.flatMap((d) => d.items.map((i) => [`${d.key}.${i.key}`, i.kind] as const)));
+      const shown = body.sections.flatMap((x: any) => x.metrics.map((m: any) => `${x.key}.${m.key}`));
+      expect(shown.length).toBeGreaterThan(0);
+      for (const k of shown) expect(kind.get(k)).toBe('action');
+      expect(body.order).toHaveLength(8);
+    });
+
+    it("every count figure's records add up to the figure", async () => {
+      const body = await command();
+      for (const section of body.sections) {
+        for (const m of section.metrics) {
+          if (NOT_A_COUNT.has(`${section.key}.${m.key}`)) continue;
+          const r = await records({ section: section.key, metric: m.key, limit: 5 });
+          expect(r.status).toBe(200);
+          expect({ figure: `${section.key}.${m.key}`, total: r.body.total }).toEqual({ figure: `${section.key}.${m.key}`, total: m.value });
+          expect(r.body.items.length).toBe(Math.min(5, m.value));
+        }
+      }
+    });
+
+    it('pages walk the whole list once, in a stable order', async () => {
+      const org = await ins('organisations', { name: s(`${STAMP} Paging Org`), city: s(`${CITY}x`), created_by: s(uid.sales) });
+      for (const d of [0, 1, 1, 5]) {
+        await ins('visits', { organisation_id: s(org), assigned_to: s(uid.sales), planned_date: s(addIsoDays(today, d)), status: s('planned') });
+      }
+      const first = (await records({ section: 'visits', metric: 'upcoming', limit: 1 })).body;
+      expect(first.total).toBeGreaterThanOrEqual(4);
+      const seen: string[] = [];
+      let offset: number | null = 0;
+      while (offset !== null) {
+        const page: any = (await records({ section: 'visits', metric: 'upcoming', limit: 1, offset })).body;
+        seen.push(...page.items.map((i: any) => i.id));
+        offset = page.next;
+      }
+      expect(seen).toHaveLength(first.total);
+      expect(new Set(seen).size).toBe(first.total);
+    });
+
+    it('records are refused to other roles, and for a figure that does not exist', async () => {
+      expect((await records({ section: 'sales', metric: 'followups_overdue' }, 'sales')).status).toBe(403);
+      expect((await records({ section: 'sales', metric: 'nonsense' })).status).toBe(400);
+      expect((await records({ section: 'sales', metric: 'followups_overdue', limit: 500 })).body.items.length).toBeLessThanOrEqual(50);
+    });
   });
 });

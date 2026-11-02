@@ -607,6 +607,8 @@ export class ServiceService {
         return (parts.length ? eb.or(parts) : sql<boolean>`false`).as('can_supervise');
       })
       .orderBy('service_tickets.created_at', 'desc')
+      // unique tiebreak: tickets created in the same instant must not repeat or vanish across pages
+      .orderBy('service_tickets.id', 'desc')
       .limit(limit)
       .offset(offset)
       .execute();

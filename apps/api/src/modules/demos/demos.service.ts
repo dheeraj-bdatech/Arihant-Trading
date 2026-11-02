@@ -1,4 +1,4 @@
-import { calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { addIsoDays, calendarDay, todayInKolkata } from '../../common/utils/ist-date.util.js';
 import {
   Injectable,
   NotFoundException,
@@ -9,11 +9,12 @@ import {
   Logger,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Kysely, sql } from 'kysely';
+import { Kysely, sql, type RawBuilder } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { AppEvents } from '../../common/events/event-names.js';
 import { ServiceService } from '../service/service.service.js';
+import { isoWeekday } from '@arihant/shared';
 import type { Database, AuthUser, PaginatedResult, DemoStatus } from '@arihant/shared';
 import type {
   CreateDemoDto,
@@ -47,8 +48,11 @@ export const DEMO_PENDING_STATUSES: DemoStatus[] = ['requested', 'under_planning
 /** "Active pipeline" — every open demo: the pending requests plus confirmed ones (all but completed / cancelled). */
 export const DEMO_ACTIVE_STATUSES: DemoStatus[] = [...DEMO_PENDING_STATUSES, 'confirmed'];
 
-/** A filter dimension a breakdown can leave out (see DemosService.demoScope). */
-type DemoFilterDimension = 'status' | 'location' | 'outcome';
+/**
+ * A filter dimension a breakdown can leave out (see DemosService.demoScope). 'outcome' drops the result and the failure
+ * reason; 'failure_reason' only the reason (failed trials by reason still keep `result=fail`).
+ */
+type DemoFilterDimension = 'status' | 'location' | 'outcome' | 'failure_reason';
 
 function formatDateOnly(d: any, fallback: string = ''): string {
   if (!d) return fallback;
@@ -471,26 +475,85 @@ export class DemosService {
       baseQuery = baseQuery.where(sql<boolean>`coalesce(demos.confirmed_date, demos.requested_date) ${sql.raw(op)} ${day}::date`);
     }
 
-    if ((query.result || query.failure_reason) && except !== 'outcome') {
+    const result = except === 'outcome' ? undefined : query.result;
+    const failureReason = except === 'outcome' || except === 'failure_reason' ? undefined : query.failure_reason;
+    if (result || failureReason) {
       baseQuery = baseQuery.where(({ exists, selectFrom }) =>
         exists(
           selectFrom('demo_outcomes')
             .select('demo_outcomes.id')
             .whereRef('demo_outcomes.demo_id', '=', 'demos.id')
-            .$if(Boolean(query.result), (qb) => qb.where('demo_outcomes.result', '=', query.result!))
-            .$if(Boolean(query.failure_reason), (qb) => qb.where('demo_outcomes.failure_reason', '=', query.failure_reason!)),
+            .$if(Boolean(result), (qb) => qb.where('demo_outcomes.result', '=', result!))
+            .$if(Boolean(failureReason), (qb) => qb.where('demo_outcomes.failure_reason', '=', failureReason!)),
         ),
       );
     }
+
+    // Field-failure log filters, and My demos' "Needs your action" list (same predicates as the summary counts).
+    const flags = this.demoFlags(user);
+    if (query.service_escort_required) {
+      baseQuery = baseQuery.where(query.service_escort_required === 'true' ? flags.escorted : sql<boolean>`not ${flags.escorted}`);
+    }
+    if (query.has_service_ticket) {
+      baseQuery = baseQuery.where(query.has_service_ticket === 'true' ? flags.ticketed : sql<boolean>`not ${flags.ticketed}`);
+    }
+    if (query.needs_action === 'true') baseQuery = baseQuery.where(flags.needsAction);
 
     if (query.search) {
       const s = containsPattern(query.search);
       // sql.ref quotes the camelCase aliases ("requestedUser"); unquoted, Postgres folds them and the query fails.
       const columns = ['demos.demo_no', 'organisations.name', 'demos.location', 'products.name', 'requestedUser.full_name', 'assignee.full_name'];
-      baseQuery = baseQuery.where((eb) => eb.or(columns.map((c) => sql<boolean>`lower(${sql.ref(c)}) like ${s}`)));
+      baseQuery = baseQuery.where((eb) =>
+        eb.or([
+          ...columns.map((c) => sql<boolean>`lower(${sql.ref(c)}) like ${s}`),
+          // the outcome's failure reason and remarks, and the breakdown ticket number (what the field-failure log searches)
+          sql<boolean>`exists (select 1 from demo_outcomes o where o.demo_id = demos.id and (lower(o.failure_reason) like ${s} or lower(o.remarks) like ${s}))`,
+          sql<boolean>`exists (select 1 from service_tickets st where st.id = demos.service_ticket_id and lower(st.ticket_no) like ${s})`,
+        ]),
+      );
     }
 
     return baseQuery;
+  }
+
+  /**
+   * Per-demo conditions over `demos`, shared by the register filters (demoScope) and the counts (getDemoSummary), so a
+   * tile always counts the rows its list shows.
+   *  - thisWeek / approvalPending / outcomeDue: My demos' tiles (cancelled demos never count).
+   *  - needsAction: open demos whose next step is the caller's — the rule of the page's primary action
+   *    (toDemoRecord in apps/web demos/page.tsx): assign a specialist, approve the request, confirm the date,
+   *    record a held demo's outcome, or (sales and other non-coordinators) request a unit.
+   *  - escorted / ticketed: the field-failure log's escort and service-ticket filters.
+   */
+  private demoFlags(user: AuthUser) {
+    const today = todayInKolkata();
+    const weekStart = addIsoDays(today, -((isoWeekday(today) + 6) % 7));
+    const day = sql`coalesce(demos.confirmed_date, demos.requested_date)`;
+    const outcomeDue = sql<boolean>`(demos.status = 'confirmed' and (${day} > ${today}::date) is not true)`;
+
+    const coordinator = ['demo_team', 'management', 'regional_manager', 'admin'].includes(user.role);
+    const actions = [outcomeDue];
+    if (coordinator) actions.push(sql<boolean>`(demos.assigned_to is null and demos.status in ('requested', 'under_planning'))`);
+    if (['management', 'admin'].includes(user.role)) actions.push(sql<boolean>`demos.status = 'requested'`);
+    if (['demo_team', 'admin'].includes(user.role)) {
+      actions.push(sql<boolean>`demos.status in ('under_planning', 'team_assigned', 'equipment_reserved', 'rescheduled')`);
+    }
+    if (!coordinator) {
+      actions.push(sql<boolean>`(demos.status <> 'confirmed' and not exists (select 1 from demo_reservations r where r.demo_id = demos.id))`);
+    }
+
+    return {
+      thisWeek: sql<boolean>`(demos.status <> 'cancelled' and ${day} between ${weekStart}::date and ${addIsoDays(weekStart, 6)}::date)`,
+      // the request itself, a task handed in for sign-off, or a unit request waiting on the custodian
+      approvalPending: sql<boolean>`(demos.status <> 'cancelled' and (demos.status = 'requested'
+        or exists (select 1 from tasks t where t.demo_id = demos.id and t.approval_required = true and t.status = 'awaiting_approval')
+        or exists (select 1 from demo_reservations r where r.demo_id = demos.id and r.status = 'requested')))`,
+      outcomeDue,
+      needsAction: sql<boolean>`(demos.status not in ('completed', 'cancelled') and (${sql.join(actions, sql` or `)}))`,
+      escorted: sql<boolean>`(demos.service_escort_required is true)`,
+      ticketed: sql<boolean>`(demos.service_ticket_id is not null
+        or exists (select 1 from demo_outcomes o where o.demo_id = demos.id and o.service_ticket_id is not null))`,
+    };
   }
 
   async findAllDemos(query: DemoQueryDto, user: AuthUser): Promise<PaginatedResult<any>> {
@@ -636,11 +699,14 @@ export class DemosService {
   /**
    * Counts of the demo register under its current filters, for the page's menus, view counts and KPI cards.
    * `total` applies every filter (it is the list's total). Each breakdown applies every filter except its own
-   * dimension, so e.g. the status counts still show every status while one status is selected.
+   * dimension, so e.g. the status counts still show every status while one status is selected. The flag counts
+   * (My demos' tiles, the field-failure log's escort / ticket coverage) apply every filter.
    */
   async getDemoSummary(query: DemoQueryDto, user: AuthUser) {
     const countOf = sql<number>`count(distinct demos.id)::int`;
-    const [totalRow, statusRows, locationRows, resultRows] = await Promise.all([
+    const countWhere = (cond: RawBuilder<boolean>) => sql<number>`(count(distinct demos.id) filter (where ${cond}))::int`;
+    const flags = this.demoFlags(user);
+    const [totalRow, statusRows, locationRows, resultRows, reasonRows, flagRow] = await Promise.all([
       this.demoScope(query, user).select(countOf.as('count')).executeTakeFirst(),
       this.demoScope(query, user, 'status').select(['demos.status', countOf.as('count')]).groupBy('demos.status').execute(),
       this.demoScope(query, user, 'location')
@@ -655,6 +721,23 @@ export class DemosService {
         .select(['demo_outcomes.result', countOf.as('count')])
         .groupBy('demo_outcomes.result')
         .execute(),
+      // failed trials by recorded reason (a failure without one is the rest of the failed total)
+      this.demoScope(query, user, 'failure_reason')
+        .innerJoin('demo_outcomes', 'demo_outcomes.demo_id', 'demos.id')
+        .where('demo_outcomes.result', '=', 'fail')
+        .where('demo_outcomes.failure_reason', 'is not', null)
+        .select(['demo_outcomes.failure_reason', countOf.as('count')])
+        .groupBy('demo_outcomes.failure_reason')
+        .execute(),
+      this.demoScope(query, user)
+        .select([
+          countWhere(flags.thisWeek).as('this_week'),
+          countWhere(flags.approvalPending).as('approval_pending'),
+          countWhere(flags.outcomeDue).as('outcome_due'),
+          countWhere(flags.escorted).as('service_escorted'),
+          countWhere(flags.ticketed).as('service_ticketed'),
+        ])
+        .executeTakeFirst(),
     ]);
 
     const by_status: Record<string, number> = {};
@@ -663,6 +746,8 @@ export class DemosService {
     for (const r of locationRows) by_location[r.location!] = r.count;
     const by_result: Record<string, number> = { success: 0, fail: 0, partial: 0 };
     for (const r of resultRows) by_result[r.result!] = r.count;
+    const by_failure_reason: Record<string, number> = {};
+    for (const r of reasonRows) by_failure_reason[r.failure_reason!] = r.count;
     const sumOf = (statuses: DemoStatus[]) => statuses.reduce((n, st) => n + (by_status[st] || 0), 0);
 
     return {
@@ -671,8 +756,16 @@ export class DemosService {
       by_status,
       by_location,
       by_result,
+      by_failure_reason,
       pending_requests: sumOf(DEMO_PENDING_STATUSES),
       active_pipeline: sumOf(DEMO_ACTIVE_STATUSES),
+      // My demos (with assigned_to): this IST week (Mon–Sun), waiting on an approval, held but no outcome yet
+      this_week: flagRow?.this_week || 0,
+      approval_pending: flagRow?.approval_pending || 0,
+      outcome_due: flagRow?.outcome_due || 0,
+      // Field-failure log (with result=fail): trials a service engineer escorted / with a breakdown ticket
+      service_escorted: flagRow?.service_escorted || 0,
+      service_ticketed: flagRow?.service_ticketed || 0,
     };
   }
 
@@ -2644,10 +2737,21 @@ export class DemosService {
   // 8. AUDIT TRAIL (§23)
   // =========================================================================
 
-  async getAuditTrail(demoId: string, user: AuthUser) {
+  /**
+   * The demo's audit events, newest first, one page at a time ({ data, total, page, limit, totalPages }), plus its
+   * reschedule history whole on every page (a handful of entries, each a coordinator's decision with a reason).
+   */
+  async getAuditTrail(demoId: string, user: AuthUser, options: { page?: number; limit?: number } = {}) {
     await this.assertDemoAccess(demoId, user);
-    const logs = await this.db
+    const { page, limit, offset } = getPaginationParams(options);
+    // entity ids are only unique per table: the demo's own entries, not another record's that shares the id
+    const base = this.db
       .selectFrom('audit_log')
+      .where('audit_log.entity_type', '=', 'demo')
+      .where('audit_log.entity_id', '=', demoId);
+
+    const countRes = await base.select(sql<number>`count(audit_log.id)::int`.as('total')).executeTakeFirst();
+    const logs = await base
       .leftJoin('users as actor', 'audit_log.actor_id', 'actor.id')
       .select([
         'audit_log.id',
@@ -2658,8 +2762,10 @@ export class DemosService {
         'actor.full_name as actor_name',
         'actor.role as actor_role',
       ])
-      .where('audit_log.entity_id', '=', demoId)
       .orderBy('audit_log.created_at', 'desc')
+      .orderBy('audit_log.id', 'desc')
+      .limit(limit)
+      .offset(offset)
       .execute();
 
     const reschedules = await this.db
@@ -2679,7 +2785,7 @@ export class DemosService {
       .execute();
 
     return {
-      audit_logs: logs,
+      ...buildPaginatedResult(logs, countRes?.total || 0, page, limit),
       reschedule_events: reschedules,
     };
   }

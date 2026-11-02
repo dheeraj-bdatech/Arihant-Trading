@@ -181,6 +181,8 @@ export class FollowUpsService {
       ])
       .orderBy('follow_ups.due_date', 'asc')
       .orderBy('follow_ups.created_at', 'desc')
+      // unique tiebreak: follow-ups due and created together must not repeat or vanish across pages
+      .orderBy('follow_ups.id', 'desc')
       .limit(limit)
       .offset(offset)
       .execute();

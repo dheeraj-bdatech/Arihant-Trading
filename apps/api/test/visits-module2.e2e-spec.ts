@@ -136,6 +136,28 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
       const match = allFound.find((v: any) => v.id === normalVisitId);
       expect(match).toBeDefined();
       expect(match.organisation_id).toBe(testOrg1Id);
+
+      // No dates sent: the board covers 30 days either side of today
+      expect(res.body.window).toEqual({ dateFrom: istDay(-30), dateTo: istDay(30) });
+      expect(typeof res.body.summary.overdueCount).toBe('number');
+    });
+
+    it('team board pages an open-ended group via group + page', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/visits/manager/field-activity')
+        .query({ group: 'today', page: 1, limit: 5 })
+        .set('Authorization', `Bearer ${rmToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.page).toBe(1);
+      expect(res.body.limit).toBe(5);
+      expect(res.body.data.some((v: any) => v.id === normalVisitId)).toBe(true);
+
+      const bad = await request(app.getHttpServer())
+        .get('/api/visits/manager/field-activity')
+        .query({ group: 'everything' })
+        .set('Authorization', `Bearer ${rmToken}`);
+      expect(bad.status).toBe(400);
     });
 
     it('sales executive completes the visit and submits post-visit update', async () => {
@@ -172,8 +194,9 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      const match = res.body.find((v: any) => v.id === normalVisitId);
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.total).toBeGreaterThanOrEqual(1);
+      const match = res.body.data.find((v: any) => v.id === normalVisitId);
       expect(match).toBeDefined();
       expect(match.status).toBe('completed');
       expect(match.person_met).toContain('Sharma');
@@ -185,8 +208,8 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      const match = res.body.find((a: any) => a.entity_id === normalVisitId);
+      expect(Array.isArray(res.body.data)).toBe(true);
+      const match = res.body.data.find((a: any) => a.entity_id === normalVisitId);
       expect(match).toBeDefined();
       expect(match.status).toBe('completed');
       expect(match.title).toContain('Field Visit');
@@ -210,14 +233,14 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
       const histRes = await request(app.getHttpServer())
         .get(`/api/visits/organisations/${testOrg1Id}/history`)
         .set('Authorization', `Bearer ${salesToken}`);
-      const matches = histRes.body.filter((v: any) => v.id === normalVisitId);
+      const matches = histRes.body.data.filter((v: any) => v.id === normalVisitId);
       expect(matches.length).toBe(1);
 
       // Verify employee activity count for this visit is still exactly 1
       const actRes = await request(app.getHttpServer())
         .get(`/api/visits/employees/${salesUserId}/activities`)
         .set('Authorization', `Bearer ${salesToken}`);
-      const actMatches = actRes.body.filter((a: any) => a.entity_id === normalVisitId);
+      const actMatches = actRes.body.data.filter((a: any) => a.entity_id === normalVisitId);
       expect(actMatches.length).toBe(1);
     });
   });
@@ -297,6 +320,21 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
       const managerVisit = res.body.visits.find((v: any) => v.id === managerAddedVisitId);
       expect(managerVisit).toBeDefined();
       expect(managerVisit.manager_assigned).toBe(true);
+    });
+
+    it('trip list is paged and carries each trip\'s stops', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/visits/trips')
+        .query({ page: 1, limit: 10 })
+        .set('Authorization', `Bearer ${salesToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.page).toBe(1);
+      expect(res.body.limit).toBe(10);
+      expect(res.body.total).toBeGreaterThanOrEqual(1);
+      const trip = res.body.data.find((t: any) => t.id === tripId);
+      expect(trip).toBeDefined();
+      expect(trip.visits.length).toBe(2);
     });
   });
 
@@ -658,10 +696,10 @@ describe('Module 2: Visit & Field Planning E2E Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.length).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.total).toBeGreaterThanOrEqual(1);
 
-      const actions = res.body.map((a: any) => a.action);
+      const actions = res.body.data.map((a: any) => a.action);
       expect(actions).toContain('CREATE_VISIT');
     });
   });

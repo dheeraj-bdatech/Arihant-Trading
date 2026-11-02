@@ -274,7 +274,7 @@ describe('Task & blocker regressions (e2e)', () => {
     expect((await decideById(u.head, bid, id, 'accept', { mode: 'pause', comment: 'before escalation' })).status).toBe(404);
     const e = await escalateTo(u.head);
     expect(e.status).toBe(200);
-    const inQueue = async (w: Who) => (await http().get('/api/task-blockers/pending').set(bearer(w))).body.some((b: any) => b.id === bid);
+    const inQueue = async (w: Who) => (await http().get('/api/task-blockers/pending').query({ page_size: 100 }).set(bearer(w))).body.data.some((b: any) => b.id === bid);
     expect(await inQueue(u.head)).toBe(true);
     expect((await http().post(`/api/task-escalations/${e.body.escalations[0].id}/close`).set(bearer(u.head)).send({ comment: 'Handing back to the line manager' })).status).toBe(200);
     expect(await inQueue(u.head)).toBe(false);
@@ -296,9 +296,9 @@ describe('Task & blocker regressions (e2e)', () => {
     res.other_mgr_accept = (await decideById(u.mgr2, bid, id, 'accept', { mode: 'pause', comment: 'other manager tries' })).status;
     res.self_accept = (await decideById(u.e1, bid, id, 'accept', { mode: 'pause', comment: 'self tries' })).status;
     expect(res).toEqual({ accounts_accept: 403, dep_accept: 403, dep_resolve: 403, dep_withdraw: 403, out_accept: 404, peer_accept: 404, other_mgr_accept: 404, self_accept: 403 });
-    const pending = async (w: Who) => (await http().get('/api/task-blockers/pending').query({ scope: 'all' }).set(bearer(w))).body.some((b: any) => b.id === bid);
+    const pending = async (w: Who) => (await http().get('/api/task-blockers/pending').query({ scope: 'all', page_size: 100 }).set(bearer(w))).body.data.some((b: any) => b.id === bid);
     expect({ employee: await pending(u.e1), otherManager: await pending(u.mgr2) }).toEqual({ employee: false, otherManager: false });
-    expect((await http().get('/api/task-blockers/waiting-on-me').set(bearer(u.out))).body).toEqual([]);
+    expect((await http().get('/api/task-blockers/waiting-on-me').set(bearer(u.out))).body.data).toEqual([]);
   });
 
   it("a regional manager's zone staff who report elsewhere land in the RM's queues too; the line manager keeps theirs", async () => {
@@ -316,8 +316,8 @@ describe('Task & blocker regressions (e2e)', () => {
     const zrep = await add('zrep', 'sales', u.mgr.id); // in the zone, reports to a manager outside it
     const zdesk = await add('zdesk', 'tender_team', u.mgr.id); // national role sitting in the zone → not the RM's team
     const summary = async (w: Who) => (await http().get('/api/tasks/my/summary').set(bearer(w))).body;
-    const blockerQueue = async (w: Who) => (await http().get('/api/task-blockers/pending').set(bearer(w))).body.map((b: any) => b.id);
-    const approvalQueue = async (w: Who) => (await http().get('/api/tasks/approvals/pending').set(bearer(w))).body.map((t: any) => t.id);
+    const blockerQueue = async (w: Who) => (await http().get('/api/task-blockers/pending').query({ page_size: 100 }).set(bearer(w))).body.data.map((b: any) => b.id);
+    const approvalQueue = async (w: Who) => (await http().get('/api/tasks/approvals/pending').query({ page_size: 100 }).set(bearer(w))).body.data.map((t: any) => t.id);
 
     const blocked = await one(u.mgr, zrep);
     await raise(zrep, blocked, { blocker_type: 'missing_information', description: 'Site drawings for the survey are not shared yet' });

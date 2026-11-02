@@ -202,7 +202,7 @@ describe('Module 8 — Task & Productivity Management (e2e)', () => {
       expect(done.body.status).toBe('awaiting_approval');
       expect(done.body.progress_percent).toBe(100);
       expect((await act(u.e1, id, 'approve')).status).toBe(403); // nobody approves their own work
-      const queue = (await http().get('/api/tasks/approvals/pending').set(bearer(u.mgr))).body;
+      const queue = (await http().get('/api/tasks/approvals/pending').query({ page_size: 100 }).set(bearer(u.mgr))).body.data;
       expect(queue.some((t: any) => t.id === id)).toBe(true);
       const approved = await act(u.mgr, id, 'approve');
       expect(approved.body.status).toBe('completed');
@@ -305,7 +305,7 @@ describe('Module 8 — Task & Productivity Management (e2e)', () => {
       expect((await blocker(u.e1, id, { blocker_type: 'vendor_dependency', description: 'short' })).body.errors).toMatchObject({ vendor_name: expect.any(String), description: expect.any(String) });
       const ok = await blocker(u.e1, id, { blocker_type: 'another_employee', dependency_user_id: u.e2.id, description: 'Need the requirement list from colleague' });
       expect(ok.body.status).toBe('blocked');
-      const waiting = (await http().get('/api/task-blockers/waiting-on-me').set(bearer(u.e2))).body;
+      const waiting = (await http().get('/api/task-blockers/waiting-on-me').query({ page_size: 100 }).set(bearer(u.e2))).body.data;
       expect(waiting.some((b: any) => b.task_id === id)).toBe(true);
       expect((await decide(u.e1, id, 'accept', { mode: 'pause', comment: 'self accept' })).status).toBe(403);
       const rej = await decide(u.mgr, id, 'reject', { comment: 'Ask them directly, this is routine' });
@@ -368,9 +368,9 @@ describe('Module 8 — Task & Productivity Management (e2e)', () => {
       const id = await one(u.mgr, { approval_required: true, assignee_ids: [u.e2.id] });
       await act(u.e2, id, 'complete', { remarks: 'done', confirm_full_completion: true });
       await db.updateTable('users').set({ reporting_manager_id: u.mgr2.id }).where('id', '=', u.e2.id).execute();
-      const mine = (await http().get('/api/tasks/approvals/pending').set(bearer(u.mgr2))).body;
+      const mine = (await http().get('/api/tasks/approvals/pending').query({ page_size: 100 }).set(bearer(u.mgr2))).body.data;
       expect(mine.some((t: any) => t.id === id)).toBe(true);
-      expect((await http().get('/api/tasks/approvals/pending').set(bearer(u.mgr))).body.some((t: any) => t.id === id)).toBe(false);
+      expect((await http().get('/api/tasks/approvals/pending').query({ page_size: 100 }).set(bearer(u.mgr))).body.data.some((t: any) => t.id === id)).toBe(false);
       expect((await act(u.mgr2, id, 'approve')).status).toBe(200);
       await db.updateTable('users').set({ reporting_manager_id: u.mgr.id }).where('id', '=', u.e2.id).execute();
     });

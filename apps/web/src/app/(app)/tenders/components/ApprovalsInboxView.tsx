@@ -1,11 +1,25 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Button, Badge, Input, Select, Textarea, Modal, InfoCallout, Spinner } from '@/components/ui';
+import {
+  Card,
+  Button,
+  Badge,
+  Input,
+  Select,
+  Textarea,
+  Modal,
+  InfoCallout,
+  Spinner,
+  RecordViews,
+  type RecordItem,
+  type BoardLane,
+} from '@/components/ui';
 import { CheckCircle2, XCircle, ShieldAlert, ArrowRight, RefreshCw, HelpCircle, UserX, UserCheck } from 'lucide-react';
 import { formatTaskDate, formatTaskDateTime } from '@arihant/shared';
 import { api } from '@/lib/api';
 import { istToday, istDateOf } from '@/lib/ist-date';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 
 /** Row of GET /tenders/delegations (the user is the delegator or the delegatee). */
 interface DelegationRow {
@@ -40,7 +54,26 @@ interface ApprovalsInboxViewProps {
   onCountChange?: (count: number) => void;
 }
 
-/** Shape returned by GET /tenders/approvals-inbox (one server query feeds the list, heading and KPI counts). */
+/** Approval requests fetched per page while the inbox scrolls. */
+const INBOX_PAGE_SIZE = 20;
+
+/** Board lanes of the inbox: inside or past the approval SLA. */
+const INBOX_LANES: BoardLane[] = [
+  { key: 'within_sla', label: 'Within SLA', tone: 'warning' },
+  { key: 'sla_breached', label: 'SLA breached', tone: 'danger' },
+];
+
+/** One page of GET /tenders/approvals-inbox; `total` / `sla_breached_total` count every pending tender in scope. */
+interface InboxPage {
+  data: InboxItem[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  sla_breached_total?: number;
+}
+
+/** Row of GET /tenders/approvals-inbox (one server query feeds the list, heading and KPI counts). */
 interface InboxItem {
   id: string;
   tender_number: string;
@@ -83,9 +116,8 @@ const errorText = (err: any, fallback: string) => {
 };
 
 export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCountChange }: ApprovalsInboxViewProps) {
-  const [items, setItems] = useState<InboxItem[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [breached, setBreached] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Decision dialog
@@ -112,20 +144,27 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
 
   const canApprove = currentUser?.role === 'management' || currentUser?.role === 'admin';
 
-  const loadApprovals = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const res = await api.get<{ data: InboxItem[]; total: number }>('/tenders/approvals-inbox');
-      const list = Array.isArray(res?.data) ? res.data : [];
-      setItems(list);
-      onCountChange?.(typeof res?.total === 'number' ? res.total : list.length);
-    } catch (err: any) {
-      setError(errorText(err, 'Could not load the approvals inbox.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [onCountChange]);
+  // Infinite scroll, most urgent first (server order). Page 1 also carries the totals for the heading and the page KPI;
+  // the hook swallows fetch errors, so page 1 reports its own here.
+  const fetchInboxPage = useCallback(
+    async (page: number) => {
+      try {
+        const res = await api.get<InboxPage>('/tenders/approvals-inbox', { page, limit: INBOX_PAGE_SIZE });
+        if (page === 1) {
+          setError(null);
+          setBreached(res?.sla_breached_total ?? 0);
+          onCountChange?.(typeof res?.total === 'number' ? res.total : 0);
+        }
+        return res;
+      } catch (err: any) {
+        if (page === 1) setError(errorText(err, 'Could not load the approvals inbox.'));
+        throw err;
+      }
+    },
+    [onCountChange],
+  );
+  const inbox = useInfiniteList<InboxItem>(fetchInboxPage);
+  const { rows: items, total, loading, refresh: loadApprovals } = inbox;
 
   const loadDelegates = useCallback(async () => {
     try {
@@ -137,9 +176,8 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
   }, []);
 
   useEffect(() => {
-    loadApprovals();
     loadDelegates();
-  }, [loadApprovals, loadDelegates]);
+  }, [loadDelegates]);
 
   /** Active Management / Admin users other than me, for the delegate picker. */
   const loadDelegateOptions = useCallback(async () => {
@@ -290,8 +328,160 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
     }
   };
 
-  const total = items.length;
-  const breached = items.filter((i) => i.sla_breached).length;
+  // One request in the List view: the full card with its decision buttons.
+  const renderInboxCard = (item: InboxItem) => {
+    const slaLeft = item.sla_hours - item.hours_pending;
+    const decisionsEnabled = canApprove && item.can_decide;
+    return (
+      <Card key={item.id} className="p-5 hover:border-[#0F5E63] transition-all bg-white">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-2 flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs font-bold text-[#0F5E63] px-2 py-0.5 rounded bg-[#E3EFEE]">
+                {item.tender_number}
+              </span>
+              <Badge variant={(item.category || '').toLowerCase().includes('pq') ? 'cyber' : 'default'} size="sm">
+                {(item.category_name || item.category || 'General').toUpperCase()}
+              </Badge>
+              {item.sla_breached ? (
+                <Badge variant="danger" size="sm">
+                  SLA breached ({item.hours_pending}h / {item.sla_hours}h)
+                </Badge>
+              ) : (
+                <Badge variant="warning" size="sm">
+                  {slaLeft}h left in SLA
+                </Badge>
+              )}
+              {item.deadline_passed && (
+                <Badge variant="danger" size="sm">
+                  Bid deadline passed
+                </Badge>
+              )}
+            </div>
+
+            <h3 className="text-base font-serif font-bold text-[#14213D] leading-snug break-words">
+              {item.tender_title || item.requirement_text || item.tender_number}
+            </h3>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-xs text-[#4A5568]">
+              <div>
+                <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Buyer</span>
+                <span className="font-medium text-[#14213D]">{item.organisation_name || '—'}</span>
+              </div>
+              <div>
+                <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Est. value</span>
+                <span className="font-mono font-semibold text-[#0F5E63]">{formatCurrency(item.estimated_value)}</span>
+              </div>
+              <div>
+                <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Submission deadline (IST)</span>
+                <span className="font-mono text-[#9A3412] font-medium">
+                  {item.submission_deadline ? formatTaskDateTime(item.submission_deadline) : 'Not set'}
+                </span>
+              </div>
+              <div>
+                <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Territory</span>
+                <span className="font-medium text-[#14213D]">
+                  {[item.zone_name, item.region_name].filter(Boolean).join(' / ') || item.state || '—'}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-[#4A5568]">
+              Requested by{' '}
+              <span className="font-semibold text-[#14213D]">{item.requested_by_name || 'team member'}</span>
+              {item.requested_by_role ? ` (${item.requested_by_role.replace(/_/g, ' ')})` : ''} on{' '}
+              <span className="font-mono">{formatTaskDateTime(item.requested_at)}</span>
+              {item.request_note ? ` — “${item.request_note}”` : ''}
+            </p>
+
+            {canApprove && !item.can_decide && item.decision_blocked_reason && (
+              <div className="p-2.5 rounded-lg bg-[#FBEBDD] border border-[#9A3412]/30 flex items-center gap-2 text-xs text-[#9A3412]">
+                <ShieldAlert className="w-4 h-4 shrink-0" />
+                <span>{item.decision_blocked_reason}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col sm:flex-row lg:flex-col gap-2 shrink-0 justify-center">
+            {canApprove ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => openDecision(item, 'approve')}
+                  disabled={!decisionsEnabled}
+                  leftIcon={<CheckCircle2 className="w-4 h-4" />}
+                >
+                  Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={() => openDecision(item, 'reject')}
+                  disabled={!decisionsEnabled}
+                  leftIcon={<XCircle className="w-4 h-4" />}
+                >
+                  Reject
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => openDecision(item, 'return')}
+                  disabled={!decisionsEnabled}
+                  leftIcon={<HelpCircle className="w-4 h-4" />}
+                >
+                  Return
+                </Button>
+              </div>
+            ) : (
+              <Badge variant="warning" size="sm">
+                Awaiting Management
+              </Badge>
+            )}
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => onOpenDossier(item.id)}
+              rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
+            >
+              View full dossier
+            </Button>
+          </div>
+        </div>
+      </Card>
+    );
+  };
+
+  // The same requests as RecordViews items (Cards / Board): Approve as the button, Reject / Return as quick actions.
+  const inboxRecords: RecordItem[] = items.map((item) => {
+    const decisionsEnabled = canApprove && item.can_decide;
+    return {
+      key: item.id,
+      code: item.tender_number,
+      title: item.tender_title || item.requirement_text || item.tender_number,
+      subtitle: item.organisation_name || undefined,
+      status: item.sla_breached
+        ? { label: `SLA breached (${item.hours_pending}h / ${item.sla_hours}h)`, tone: 'danger' }
+        : { label: `${item.sla_hours - item.hours_pending}h left in SLA`, tone: 'warning' },
+      badges: item.deadline_passed ? [{ label: 'Bid deadline passed', tone: 'danger' }] : undefined,
+      due: { date: item.submission_deadline, label: 'Bid closes' },
+      value: formatCurrency(item.estimated_value),
+      owner: item.requested_by_name || undefined,
+      facts: [
+        { label: 'Territory', value: [item.zone_name, item.region_name].filter(Boolean).join(' / ') || item.state || '—' },
+        { label: 'Requested', value: formatTaskDateTime(item.requested_at) },
+      ],
+      primary: decisionsEnabled ? { label: 'Approve', icon: <CheckCircle2 />, onClick: () => openDecision(item, 'approve') } : undefined,
+      quick: decisionsEnabled
+        ? [
+            { label: 'Reject', icon: <XCircle />, onClick: () => openDecision(item, 'reject') },
+            { label: 'Return for clarification', icon: <HelpCircle />, onClick: () => openDecision(item, 'return') },
+          ]
+        : undefined,
+      onOpen: () => onOpenDossier(item.id),
+    };
+  });
+  const breachedIds = new Set(items.filter((i) => i.sla_breached).map((i) => i.id));
 
   return (
     <div className="space-y-6">
@@ -404,130 +594,23 @@ export function ApprovalsInboxView({ currentUser, onOpenDossier, onChanged, onCo
           </p>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 gap-4">
-          {items.map((item) => {
-            const slaLeft = item.sla_hours - item.hours_pending;
-            const decisionsEnabled = canApprove && item.can_decide;
-            return (
-              <Card key={item.id} className="p-5 hover:border-[#0F5E63] transition-all bg-white">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  <div className="space-y-2 flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs font-bold text-[#0F5E63] px-2 py-0.5 rounded bg-[#E3EFEE]">
-                        {item.tender_number}
-                      </span>
-                      <Badge variant={(item.category || '').toLowerCase().includes('pq') ? 'cyber' : 'default'} size="sm">
-                        {(item.category_name || item.category || 'General').toUpperCase()}
-                      </Badge>
-                      {item.sla_breached ? (
-                        <Badge variant="danger" size="sm">
-                          SLA breached ({item.hours_pending}h / {item.sla_hours}h)
-                        </Badge>
-                      ) : (
-                        <Badge variant="warning" size="sm">
-                          {slaLeft}h left in SLA
-                        </Badge>
-                      )}
-                      {item.deadline_passed && (
-                        <Badge variant="danger" size="sm">
-                          Bid deadline passed
-                        </Badge>
-                      )}
-                    </div>
-
-                    <h3 className="text-base font-serif font-bold text-[#14213D] leading-snug break-words">
-                      {item.tender_title || item.requirement_text || item.tender_number}
-                    </h3>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-xs text-[#4A5568]">
-                      <div>
-                        <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Buyer</span>
-                        <span className="font-medium text-[#14213D]">{item.organisation_name || '—'}</span>
-                      </div>
-                      <div>
-                        <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Est. value</span>
-                        <span className="font-mono font-semibold text-[#0F5E63]">{formatCurrency(item.estimated_value)}</span>
-                      </div>
-                      <div>
-                        <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Submission deadline (IST)</span>
-                        <span className="font-mono text-[#9A3412] font-medium">
-                          {item.submission_deadline ? formatTaskDateTime(item.submission_deadline) : 'Not set'}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="block text-[10px] uppercase font-semibold text-[#4A5568]/70">Territory</span>
-                        <span className="font-medium text-[#14213D]">
-                          {[item.zone_name, item.region_name].filter(Boolean).join(' / ') || item.state || '—'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <p className="text-[11px] text-[#4A5568]">
-                      Requested by{' '}
-                      <span className="font-semibold text-[#14213D]">{item.requested_by_name || 'team member'}</span>
-                      {item.requested_by_role ? ` (${item.requested_by_role.replace(/_/g, ' ')})` : ''} on{' '}
-                      <span className="font-mono">{formatTaskDateTime(item.requested_at)}</span>
-                      {item.request_note ? ` — “${item.request_note}”` : ''}
-                    </p>
-
-                    {canApprove && !item.can_decide && item.decision_blocked_reason && (
-                      <div className="p-2.5 rounded-lg bg-[#FBEBDD] border border-[#9A3412]/30 flex items-center gap-2 text-xs text-[#9A3412]">
-                        <ShieldAlert className="w-4 h-4 shrink-0" />
-                        <span>{item.decision_blocked_reason}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row lg:flex-col gap-2 shrink-0 justify-center">
-                    {canApprove ? (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="primary"
-                          onClick={() => openDecision(item, 'approve')}
-                          disabled={!decisionsEnabled}
-                          leftIcon={<CheckCircle2 className="w-4 h-4" />}
-                        >
-                          Approve
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          onClick={() => openDecision(item, 'reject')}
-                          disabled={!decisionsEnabled}
-                          leftIcon={<XCircle className="w-4 h-4" />}
-                        >
-                          Reject
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => openDecision(item, 'return')}
-                          disabled={!decisionsEnabled}
-                          leftIcon={<HelpCircle className="w-4 h-4" />}
-                        >
-                          Return
-                        </Button>
-                      </div>
-                    ) : (
-                      <Badge variant="warning" size="sm">
-                        Awaiting Management
-                      </Badge>
-                    )}
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      onClick={() => onOpenDossier(item.id)}
-                      rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
-                    >
-                      View full dossier
-                    </Button>
-                  </div>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+        <RecordViews
+          storageKey="tender-approvals"
+          defaultView="list"
+          items={inboxRecords}
+          lanes={INBOX_LANES}
+          laneOf={(i) => (breachedIds.has(i.key) ? 'sla_breached' : 'within_sla')}
+          list={<div className="grid grid-cols-1 gap-4">{items.map(renderInboxCard)}</div>}
+          summary={
+            <>
+              <strong className="text-[#14213D]">{items.length}</strong> of <strong className="text-[#14213D]">{total}</strong> pending
+            </>
+          }
+          empty="No tender is awaiting internal approval."
+          onLoadMore={inbox.loadMore}
+          hasMore={inbox.hasMore}
+          loadingMore={inbox.loadingMore}
+        />
       )}
 
       {/* Decision dialog — reuses POST /tenders/:id/approve | /reject | /transition */}

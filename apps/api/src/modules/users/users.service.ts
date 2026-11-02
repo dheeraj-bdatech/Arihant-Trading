@@ -113,6 +113,8 @@ export class UsersService {
         'manager.full_name as reporting_manager_name',
       ])
       .orderBy('users.full_name', 'asc')
+      // unique tiebreak: two people with the same name must not repeat or vanish across pages
+      .orderBy('users.id', 'asc')
       .limit(limit)
       .offset(offset)
       .execute();

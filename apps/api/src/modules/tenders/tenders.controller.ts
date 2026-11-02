@@ -21,6 +21,9 @@ import {
   CreateTenderPortalIssueDto,
   UpdateTenderPortalIssueDto,
   TenderQueryDto,
+  TenderPageQueryDto,
+  TenderEmdTrackingQueryDto,
+  TenderCalendarQueryDto,
   TransitionTenderDto,
   HoldTenderDto,
   ResumeTenderDto,
@@ -237,15 +240,15 @@ export class TendersController {
 
   @Get('calendar')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
-  async getCalendarEvents(@CurrentUser() user: AuthUser, @Query() query: any) {
+  async getCalendarEvents(@CurrentUser() user: AuthUser, @Query() query: TenderCalendarQueryDto) {
     return this.tendersService.getCalendarEvents(user, query);
   }
 
   @Get('finance/emd-tracking')
   // RM: "EMD tracking" for their region (RBAC spec §2); the service scopes them to their tender list.
   @Roles('management', 'accounts', 'tender_team', 'regional_manager', 'admin')
-  async getFinanceEmdTracking(@CurrentUser() user: AuthUser) {
-    return this.tendersService.getFinanceEmdTracking(user);
+  async getFinanceEmdTracking(@CurrentUser() user: AuthUser, @Query() query: TenderEmdTrackingQueryDto) {
+    return this.tendersService.getFinanceEmdTracking(user, query);
   }
 
   @Get('stats')
@@ -263,14 +266,14 @@ export class TendersController {
 
   @Get('approvals-inbox')
   @Roles('management', 'regional_manager', 'tender_team', 'admin')
-  async getApprovalsInbox(@CurrentUser() user: AuthUser) {
-    return this.tendersService.getApprovalsInbox(user);
+  async getApprovalsInbox(@CurrentUser() user: AuthUser, @Query() query: TenderPageQueryDto) {
+    return this.tendersService.getApprovalsInbox(user, new Date(), query);
   }
 
   @Get('my-tenders')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
-  async getMyTenders(@CurrentUser() user: AuthUser) {
-    return this.tendersService.getMyTenders(user);
+  async getMyTenders(@CurrentUser() user: AuthUser, @Query() query: TenderQueryDto) {
+    return this.tendersService.getMyTenders(user, query);
   }
 
   @Get('reports/summary')
@@ -327,8 +330,8 @@ export class TendersController {
 
   @Get('portal-issues')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'admin')
-  async getAllPortalIssues(@CurrentUser() user: AuthUser) {
-    return this.tendersService.getAllPortalIssues(user);
+  async getAllPortalIssues(@CurrentUser() user: AuthUser, @Query() query: TenderPageQueryDto) {
+    return this.tendersService.getAllPortalIssues(user, query);
   }
 
   @Post('portal-issues')

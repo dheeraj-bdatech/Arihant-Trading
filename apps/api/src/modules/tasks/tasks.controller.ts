@@ -351,8 +351,8 @@ export class TaskBlockersController {
   }
 
   @Get('waiting-on-me')
-  waiting(@CurrentUser() user: AuthUser) {
-    return this.blockers.waitingOnMe(user);
+  waiting(@Query() query: Body_, @CurrentUser() user: AuthUser) {
+    return this.blockers.waitingOnMe(query, user);
   }
 
   @Post(':id/withdraw') @HttpCode(200)

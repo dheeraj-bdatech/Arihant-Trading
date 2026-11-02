@@ -22,6 +22,7 @@ import { TaskStore, TASK_EVENTS } from './task-store.service.js';
 import { TasksService } from './tasks.service.js';
 import { TaskWorkflowService, forbiddenFor } from './task-workflow.service.js';
 import { isAdminLike } from './task-masters.service.js';
+import { buildPaginatedResult } from '../../common/utils/pagination.js';
 import {
   TaskValidationException,
   UUID_RE,
@@ -30,10 +31,13 @@ import {
   readDate,
   readDeadline,
   readEnum,
+  readPage,
+  readSearch,
   readText,
   readUuid,
   readVersion,
   staleVersion,
+  taskSearchSql,
   throwIfErrors,
   type FieldErrors,
 } from './task-common.js';
@@ -404,21 +408,38 @@ export class TaskBlockersService {
     ] as const;
   }
 
-  async pendingQueue(query: Record<string, unknown>, user: AuthUser) {
-    const s = await this.store.masters.settings();
-    let q = this.db
+  /** Blockers joined to their task and the names the queues show (aliases b, t, emp, dep, org). */
+  private blockerQueue() {
+    return this.db
       .selectFrom('task_blockers as b')
       .innerJoin('tasks as t', 't.id', 'b.task_id')
       .leftJoin('users as emp', 'emp.id', 't.assigned_to')
       .leftJoin('users as dep', 'dep.id', 'b.dependency_user_id')
-      .leftJoin('organisations as org', 'org.id', 'b.dependency_customer_id')
-      .select(this.blockerColumns() as any)
-      .where('b.status', '=', 'pending_review')
-      .where(this.store.access.scope(user, s));
+      .leftJoin('organisations as org', 'org.id', 'b.dependency_customer_id');
+  }
+
+  /**
+   * Blockers waiting for my review, oldest first, a page at a time (`page`, `page_size` ≤ 100, `search` on task
+   * number / title / assignee). `totals.sla_breached` counts the whole queue, not just this page.
+   */
+  async pendingQueue(query: Record<string, unknown>, user: AuthUser) {
+    const s = await this.store.masters.settings();
+    const { page, limit, offset } = readPage(query);
+    const search = readSearch(query);
+    let q = this.blockerQueue().where('b.status', '=', 'pending_review').where(this.store.access.scope(user, s));
     if (!(query.scope === 'all' && isAdminLike(user))) q = q.where(this.store.routedToSql(user, s));
-    const rows: any[] = await q.orderBy('b.created_at').limit(300).execute();
+    if (search) q = q.where(taskSearchSql(search));
+    const [countRow, rows] = await Promise.all([
+      q
+        .select([
+          sql<number>`count(*)::int`.as('n'),
+          sql<number>`(count(*) filter (where b.created_at <= now() - make_interval(hours => ${s.blocker_review_sla_hours}::int)))::int`.as('breached'),
+        ])
+        .executeTakeFirst(),
+      q.select(this.blockerColumns() as any).orderBy('b.created_at').orderBy('b.id').limit(limit).offset(offset).execute() as Promise<any[]>,
+    ]);
     const now = Date.now();
-    return rows.map((r) => {
+    const data = rows.map((r) => {
       const ageHours = Math.floor((now - new Date(r.created_at).getTime()) / 3600000);
       return {
         ...r,
@@ -429,21 +450,19 @@ export class TaskBlockersService {
         is_task_overdue: r.deadline ? new Date(r.deadline).getTime() < now : false,
       };
     });
+    return { ...buildPaginatedResult(data, Number(countRow?.n || 0), page, limit), totals: { sla_breached: Number(countRow?.breached || 0) } };
   }
 
-  async waitingOnMe(user: AuthUser) {
-    const rows: any[] = await this.db
-      .selectFrom('task_blockers as b')
-      .innerJoin('tasks as t', 't.id', 'b.task_id')
-      .leftJoin('users as emp', 'emp.id', 't.assigned_to')
-      .leftJoin('users as dep', 'dep.id', 'b.dependency_user_id')
-      .leftJoin('organisations as org', 'org.id', 'b.dependency_customer_id')
-      .select(this.blockerColumns() as any)
-      .where('b.dependency_user_id', '=', user.id)
-      .where('b.status', 'in', ['pending_review', 'accepted'])
-      .orderBy('b.created_at')
-      .execute();
+  /** Open blockers that wait on me as the dependency, oldest first, a page at a time (`page`, `page_size` ≤ 100). */
+  async waitingOnMe(query: Record<string, unknown>, user: AuthUser) {
+    const { page, limit, offset } = readPage(query);
+    const q = this.blockerQueue().where('b.dependency_user_id', '=', user.id).where('b.status', 'in', ['pending_review', 'accepted']);
+    const [countRow, rows] = await Promise.all([
+      q.select(sql<number>`count(*)::int`.as('n')).executeTakeFirst(),
+      q.select(this.blockerColumns() as any).orderBy('b.created_at').orderBy('b.id').limit(limit).offset(offset).execute() as Promise<any[]>,
+    ]);
     const now = Date.now();
-    return rows.map((r) => ({ ...r, waiting_hours: Math.floor((now - new Date(r.created_at).getTime()) / 3600000) }));
+    const data = rows.map((r) => ({ ...r, waiting_hours: Math.floor((now - new Date(r.created_at).getTime()) / 3600000) }));
+    return buildPaginatedResult(data, Number(countRow?.n || 0), page, limit);
   }
 }

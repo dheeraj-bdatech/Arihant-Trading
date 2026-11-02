@@ -122,6 +122,9 @@ export class VisitsController {
     @Query('dateTo') dateTo?: string,
     @Query('travel_required') travel_required?: boolean | string,
     @Query('demo_required') demo_required?: boolean | string,
+    @Query('group') group?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
     @CurrentUser() user?: AuthUser,
   ) {
     return this.visitsService.getManagerFieldActivity(
@@ -134,6 +137,9 @@ export class VisitsController {
         dateTo,
         travel_required,
         demo_required,
+        group,
+        page,
+        limit,
       },
       user!,
     );
@@ -150,6 +156,9 @@ export class VisitsController {
     @Query('dateTo') dateTo?: string,
     @Query('travel_required') travel_required?: boolean | string,
     @Query('demo_required') demo_required?: boolean | string,
+    @Query('group') group?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
     @CurrentUser() user?: AuthUser,
   ) {
     return this.visitsService.getManagerFieldActivity(
@@ -162,6 +171,9 @@ export class VisitsController {
         dateTo,
         travel_required,
         demo_required,
+        group,
+        page,
+        limit,
       },
       user!,
     );
@@ -176,9 +188,11 @@ export class VisitsController {
     @Query('employee_id') employee_id?: string,
     @Query('dateFrom') dateFrom?: string,
     @Query('dateTo') dateTo?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
     @CurrentUser() user?: AuthUser,
   ) {
-    return this.visitsService.findAllTrips({ employee_id, dateFrom, dateTo }, user!);
+    return this.visitsService.findAllTrips({ employee_id, dateFrom, dateTo, page, limit }, user!);
   }
 
   @Post('trips')
@@ -208,8 +222,13 @@ export class VisitsController {
   // -----------------------------------------------------------
   @Get('organisations/:orgId/history')
   @Roles('management', 'regional_manager', 'sales', 'tender_team', 'demo_team', 'service_team', 'admin')
-  async getCustomerVisitHistory(@Param('orgId', VisitIdPipe) orgId: string, @CurrentUser() user: AuthUser) {
-    return this.visitsService.getCustomerVisitHistory(orgId, user);
+  async getCustomerVisitHistory(
+    @Param('orgId', VisitIdPipe) orgId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.visitsService.getCustomerVisitHistory(orgId, user, { page, limit });
   }
 
   @Get('employees/:employeeId/activities')
@@ -217,8 +236,10 @@ export class VisitsController {
   async getEmployeeActivities(
     @Param('employeeId', VisitIdPipe) employeeId: string,
     @CurrentUser() user: AuthUser,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
   ) {
-    return this.visitsService.getEmployeeActivities(employeeId, user);
+    return this.visitsService.getEmployeeActivities(employeeId, user, { page, limit });
   }
 
   // -----------------------------------------------------------
@@ -322,7 +343,12 @@ export class VisitsController {
 
   @Get(':id/audit')
   @Roles('management', 'regional_manager', 'sales', 'admin')
-  async getVisitAudit(@Param('id', VisitIdPipe) id: string, @CurrentUser() user: AuthUser) {
-    return this.visitsService.getVisitAudit(id, user);
+  async getVisitAudit(
+    @Param('id', VisitIdPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.visitsService.getVisitAudit(id, user, { page, limit });
   }
 }

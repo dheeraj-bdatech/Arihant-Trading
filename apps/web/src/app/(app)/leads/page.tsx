@@ -170,6 +170,10 @@ const INTERACTION_TYPE_OPTIONS = [
 // Specific Demo Kit standard accessories mapping
 /** Leads fetched per request while the register scrolls. */
 const LEADS_PAGE_SIZE = 25;
+/** Follow-ups fetched per request while the Follow-ups Desk scrolls. */
+const FOLLOWUPS_PAGE_SIZE = 25;
+/** A customer's opportunities fetched per request in the Customer 360 drawer ("Load more" reads the next). */
+const CUSTOMER_LEADS_PAGE_SIZE = 20;
 
 // Dashboard deep links (/leads?followup=overdue&created_from=…): the register's first filters, read from the URL
 // before the first fetch. Unknown values are ignored; the effect in the page then drops these keys from the address bar.
@@ -249,9 +253,7 @@ export default function LeadsPage() {
   const [customersLoading, setCustomersLoading] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
 
-  // 3. Follow-ups Desk State
-  const [followups, setFollowups] = useState<any[]>([]);
-  const [followupsLoading, setFollowupsLoading] = useState(false);
+  // 3. Follow-ups Desk State (the desk itself is useInfiniteList below, paged as the reader scrolls)
   const [followupTimeframe, setFollowupTimeframe] = useState<string>('all');
 
   // 4. Executive Metrics HUD State
@@ -286,7 +288,8 @@ export default function LeadsPage() {
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [customerTimeline, setCustomerTimeline] = useState<any[]>([]);
   const [customerContacts, setCustomerContacts] = useState<any[]>([]);
-  const [customerLeads, setCustomerLeads] = useState<any[]>([]);
+  // The organisation whose opportunities the Customer 360 drawer lists (paged, see customerLeadsList)
+  const [customer360OrgId, setCustomer360OrgId] = useState<string | null>(null);
   const [customerTimelineLoading, setCustomerTimelineLoading] = useState(false);
   const [customerManagementSummary, setCustomerManagementSummary] = useState<any | null>(null);
   const [c360Tab, setC360Tab] = useState<'management' | 'timeline' | 'contacts' | 'deals' | 'linked'>('management');
@@ -842,31 +845,45 @@ export default function LeadsPage() {
     }
   }, [customersPage, customerSearch]);
 
-  // Fetch Follow-ups Desk
-  const fetchFollowups = useCallback(async () => {
-    try {
-      setFollowupsLoading(true);
+  // Follow-ups Desk: one page per request, appended as the desk scrolls (infinite scroll).
+  // `fetchFollowups` re-reads the pages already loaded, in place, after a follow-up changes.
+  const fetchFollowupsPage = useCallback(
+    (page: number) => {
       const tf =
         followupTimeframe === 'today'
           ? 'due_today'
           : followupTimeframe !== 'all' && followupTimeframe !== 'completed'
           ? followupTimeframe
           : undefined;
-
-      const res = await api.get('/follow-ups', {
+      return api.get('/follow-ups', {
         timeframe: tf,
         status: followupTimeframe === 'completed' ? 'completed' : undefined,
-        limit: 50,
+        page,
+        limit: FOLLOWUPS_PAGE_SIZE,
       });
-      const list = Array.isArray(res) ? res : (res?.data || []);
-      setFollowups(list);
-    } catch (err) {
-      console.error('Failed to load follow-ups:', err);
-      setFollowups([]);
-    } finally {
-      setFollowupsLoading(false);
-    }
-  }, [followupTimeframe]);
+    },
+    [followupTimeframe],
+  );
+  const followupsList = useInfiniteList<any>(fetchFollowupsPage, { enabled: activeTab === 'followups' });
+  const { rows: followups, total: followupsTotal, loading: followupsLoading, refresh: fetchFollowups } = followupsList;
+
+  // Read the next follow-ups page when the end of the desk scrolls into view
+  const followupsEnd = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = followupsEnd.current;
+    if (!el || !followupsList.hasMore || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((entries) => entries[0]?.isIntersecting && followupsList.loadMore(), { rootMargin: '200px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [followupsList.hasMore, followupsList.loadMore, followups.length]);
+
+  // Customer 360 opportunities: the open organisation's leads, one page per request ("Load more" reads the next).
+  const fetchCustomerLeadsPage = useCallback(
+    (page: number) => api.get('/leads', { organisation_id: customer360OrgId, page, limit: CUSTOMER_LEADS_PAGE_SIZE }),
+    [customer360OrgId],
+  );
+  const customerLeadsList = useInfiniteList<any>(fetchCustomerLeadsPage, { enabled: !!customer360OrgId });
+  const { rows: customerLeads, total: customerLeadsTotal } = customerLeadsList;
 
   // Fetch Executive Reports
   const fetchReports = useCallback(async () => {
@@ -938,11 +955,10 @@ export default function LeadsPage() {
   }, [fetchDashboardStats]);
 
   useEffect(() => {
-    // The leads register loads itself (useInfiniteList) whenever its tab is open.
+    // The leads register and the follow-ups desk load themselves (useInfiniteList) whenever their tab is open.
     if (activeTab === 'customers') fetchCustomers();
-    else if (activeTab === 'followups') fetchFollowups();
     else if (activeTab === 'reports') fetchReports();
-  }, [activeTab, fetchCustomers, fetchFollowups, fetchReports]);
+  }, [activeTab, fetchCustomers, fetchReports]);
 
   // Debounced Duplicate Detection during Lead Creation
   useEffect(() => {
@@ -1027,11 +1043,14 @@ export default function LeadsPage() {
       setCustomerTimelineLoading(true);
       setIsCustomer360Open(true);
       setC360Tab('management');
-      const [orgRes, timelineRes, contactsRes, leadsRes] = await Promise.allSettled([
+      // The opportunities list pages itself (customerLeadsList): a new organisation starts it at page 1, the same one
+      // re-reads the pages already loaded.
+      if (orgId === customer360OrgId) customerLeadsList.refresh();
+      else setCustomer360OrgId(orgId);
+      const [orgRes, timelineRes, contactsRes] = await Promise.allSettled([
         api.get(`/organisations/${orgId}`),
         api.get(`/organisations/${orgId}/timeline`),
         api.get(`/contacts?organisation_id=${orgId}`),
-        api.get(`/leads?organisation_id=${orgId}&limit=50`),
       ]);
 
       if (orgRes.status === 'fulfilled') setSelectedCustomer(orgRes.value);
@@ -1044,7 +1063,6 @@ export default function LeadsPage() {
         }
       }
       if (contactsRes.status === 'fulfilled') setCustomerContacts(contactsRes.value || []);
-      if (leadsRes.status === 'fulfilled') setCustomerLeads(leadsRes.value.data || []);
     } catch (err) {
       console.error('Failed to load customer 360:', err);
     } finally {
@@ -2358,8 +2376,8 @@ export default function LeadsPage() {
                   Clear
                 </Button>
               )}
-              <span className="whitespace-nowrap text-xs text-[#4A5568] lg:ml-auto">
-                Total {followups.length} follow-ups displayed
+              <span className="whitespace-nowrap font-mono text-xs text-[#4A5568] lg:ml-auto">
+                {followups.length} of {followupsTotal} {followupsTotal === 1 ? 'follow-up' : 'follow-ups'}
               </span>
             </div>
           )}
@@ -2850,6 +2868,14 @@ export default function LeadsPage() {
                 })}
               </TableBody>
             </Table>
+          )}
+          <div ref={followupsEnd} />
+          {followupsList.hasMore && !followupsLoading && (
+            <div className="flex justify-center">
+              <Button variant="secondary" size="sm" isLoading={followupsList.loadingMore} onClick={followupsList.loadMore}>
+                Load more
+              </Button>
+            </div>
           )}
         </div>
       )}
@@ -4972,7 +4998,7 @@ export default function LeadsPage() {
               <div>
                 <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Pipeline Volume</span>
                 <span className="font-extrabold text-[#14213D] mt-0.5 block">
-                  {customerLeads.length} Leads • {customerTimeline.length} Touchpoints
+                  {customerLeadsTotal} Leads • {customerTimeline.length} Touchpoints
                 </span>
                 <span className="text-[10px] text-[#4A5568] block">
                   {customerContacts.length} Registered Contacts
@@ -5047,7 +5073,7 @@ export default function LeadsPage() {
                 <Briefcase className="h-3.5 w-3.5" />
                 <span>Opportunities</span>
                 <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'deals' ? 'bg-white/20 text-white' : 'bg-[#DCD8CE] text-[#14213D]'}`}>
-                  {customerLeads.length}
+                  {customerLeadsTotal}
                 </span>
               </button>
 
@@ -5586,9 +5612,16 @@ export default function LeadsPage() {
                     <Briefcase className="h-4 w-4 text-[#0F5E63]" />
                     <span>Active Pipeline & Opportunities</span>
                   </span>
+                  {customerLeads.length > 0 && (
+                    <span className="font-mono text-xs text-[#4A5568]">
+                      {customerLeads.length} of {customerLeadsTotal}
+                    </span>
+                  )}
                 </div>
 
-                {customerLeads.length === 0 ? (
+                {customerLeadsList.loading ? (
+                  <PageLoader label="Loading opportunities" />
+                ) : customerLeads.length === 0 ? (
                   <div className="p-6 text-center text-[#4A5568] italic bg-[#FBFAF7] rounded-lg border border-[#DCD8CE]">
                     No deals or opportunities registered under this organisation.
                   </div>
@@ -5635,6 +5668,13 @@ export default function LeadsPage() {
                         </div>
                       </div>
                     ))}
+                    {customerLeadsList.hasMore && (
+                      <div className="flex justify-center pt-1">
+                        <Button variant="secondary" size="sm" isLoading={customerLeadsList.loadingMore} onClick={customerLeadsList.loadMore}>
+                          Load more
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

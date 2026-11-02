@@ -3,12 +3,14 @@ import { DashboardService } from './dashboard.service.js';
 import { DashboardWorkspaceService } from './dashboard-workspace.service.js';
 import { DashboardPerformanceService } from './dashboard-performance.service.js';
 import { DashboardCommandService } from './dashboard-command.service.js';
+import { DashboardCommandRecordsService } from './dashboard-command-records.service.js';
 import { DashboardLayoutService } from './dashboard-layout.service.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import type { AuthUser, CommandDashboardDto, CommandLayout, DashboardMetricsDto, DashboardWorkspaceDto, SalesPerformanceDto } from '@arihant/shared';
+import { COMMAND_SECTIONS } from '@arihant/shared';
+import type { AuthUser, CommandDashboardDto, CommandLayout, CommandRecordsDto, CommandSectionKey, DashboardMetricsDto, DashboardWorkspaceDto, SalesPerformanceDto } from '@arihant/shared';
 
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard)
@@ -18,6 +20,7 @@ export class DashboardController {
     private readonly workspaceService: DashboardWorkspaceService,
     private readonly performanceService: DashboardPerformanceService,
     private readonly commandService: DashboardCommandService,
+    private readonly recordsService: DashboardCommandRecordsService,
     private readonly layoutService: DashboardLayoutService,
   ) {}
 
@@ -74,8 +77,30 @@ export class DashboardController {
   @Get('command')
   @UseGuards(RolesGuard)
   @Roles('management', 'admin')
-  async getCommand(@CurrentUser() user: AuthUser): Promise<CommandDashboardDto> {
-    return this.commandService.getCommand(user, await this.layoutService.get(user.id));
+  async getCommand(@CurrentUser() user: AuthUser, @Query('sections') sections?: string, @Query('only') only?: string): Promise<CommandDashboardDto> {
+    const known = new Set<string>(COMMAND_SECTIONS.map((s) => s.key));
+    return this.commandService.getCommand(user, await this.layoutService.get(user.id), {
+      // a page of cards (`sections=sales,visits`) or, with only=action, just what needs action on every card
+      sections: sections ? (sections.split(',').filter((k) => known.has(k)) as CommandSectionKey[]) : undefined,
+      only: only === 'action' ? 'action' : undefined,
+    });
+  }
+
+  /**
+   * The records behind one command figure, a page at a time (`offset`, `limit` ≤ 50), with the figure's own rule and
+   * the caller's results period — what a figure's tab lists on the board.
+   */
+  @Get('command/records')
+  @UseGuards(RolesGuard)
+  @Roles('management', 'admin')
+  async getCommandRecords(
+    @CurrentUser() user: AuthUser,
+    @Query('section') section?: string,
+    @Query('metric') metric?: string,
+    @Query('offset') offset?: string,
+    @Query('limit') limit?: string,
+  ): Promise<CommandRecordsDto> {
+    return this.recordsService.records(user, await this.layoutService.get(user.id), { section, metric, offset, limit });
   }
 
   /** The caller's saved layout of the command dashboard (sections, figures, order, period). */

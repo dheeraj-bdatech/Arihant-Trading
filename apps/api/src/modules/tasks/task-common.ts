@@ -3,13 +3,28 @@
  * Text sanitising is reused from Module 9 (strip tags/control chars, report rather than truncate).
  */
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { sql } from 'kysely';
 import { isIsoDateString, istDateTime, istEndOfDay } from '@arihant/shared';
 import { readText, sanitizeFileName } from '../expense-management/expense-validation.js';
+import { getPaginationParams } from '../../common/utils/pagination.js';
 
 export { readText, sanitizeFileName };
 export type FieldErrors = Record<string, string>;
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ------------------------------------------------------------------ paged reads
+/** Page and page size of a list request, named as GET /tasks names them (`page`, `page_size` or `limit`); at most 100 a page. */
+export const readPage = (q: Record<string, unknown>) => getPaginationParams({ page: q.page as number, limit: (q.page_size ?? q.limit) as number });
+
+/** Trimmed search text (at most 100 characters), or null. */
+export const readSearch = (q: Record<string, unknown>) => (typeof q.search === 'string' && q.search.trim() ? q.search.trim().slice(0, 100) : null);
+
+/** Search on task number, title and assignee name (aliases `t`, `emp`) — the task list and both review queues. */
+export function taskSearchSql(search: string) {
+  const like = `%${search.toLowerCase()}%`;
+  return sql<boolean>`(lower(t.title) like ${like} or lower(t.task_number) like ${like} or lower(emp.full_name) like ${like})`;
+}
 
 /** 400 with field-level errors the forms render under each input. */
 export class TaskValidationException extends BadRequestException {

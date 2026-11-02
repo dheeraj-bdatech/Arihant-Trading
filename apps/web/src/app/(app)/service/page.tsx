@@ -35,6 +35,7 @@ import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { dropUrlParams } from '@/lib/url-filters';
 import { useOpenParam } from '@/lib/use-open-param';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { canOpen } from '@/lib/route-access';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
 import {
@@ -184,17 +185,16 @@ type ActionCtx = { kind: 'status' | 'close' | 'report' | 'link' | 'reassign' | '
 /** "Flags" dropdown: single-select; each key is a server-side list filter of the same name. */
 const FLAG_KEYS = ['all', 'portal', 'assigned', 'unassigned', 'no_machine', 'sla_breached', 'overdue', 'repeat', 'unverified'] as const;
 type FlagKey = (typeof FLAG_KEYS)[number];
+/** Tickets per register page (infinite scroll). */
+const TICKETS_PAGE_SIZE = 25;
 
 export default function ServicePage() {
   const { user } = useAuth();
   const role = (user?.role as string) || '';
   const userId = user?.id || '';
 
-  // Data states
-  const [tickets, setTickets] = useState<any[]>([]);
-  const [ticketTotal, setTicketTotal] = useState(0);
+  // Data states (the ticket register itself is useInfiniteList below, paged as the reader scrolls)
   const [stats, setStats] = useState<any | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('all');
 
@@ -234,41 +234,57 @@ export default function ServicePage() {
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  // Fetch tickets & stats — both with the same filters. The API counts each tile/stage without its own
+  // Tickets & stats — both with the same filters. The API counts each tile/stage without its own
   // dimension, so a tile's number is exactly what the list totals once that tile is clicked.
-  const fetchSeq = useRef(0);
-  const fetchData = useCallback(async () => {
-    const seq = ++fetchSeq.current;
-    try {
-      setLoadError(null);
-      const filters = {
-        stage: activeTab !== 'all' ? activeTab : undefined,
-        priority: priorityFilter !== 'all' ? priorityFilter : undefined,
-        complaint_source: sourceFilter !== 'all' ? sourceFilter : undefined,
-        ...(activeFlag !== 'all' ? { [activeFlag]: 'true' } : {}),
-        search: debouncedSearch || undefined,
-      };
-      const [ticketsRes, statsRes] = await Promise.all([
-        api.get('/service/tickets', { ...filters, limit: 100 }),
-        api.get('/service/stats', filters).catch(() => null),
-      ]);
-      if (seq !== fetchSeq.current) return; // filters changed meanwhile: a newer response owns the screen
-      setTickets(ticketsRes.data || []);
-      setTicketTotal(ticketsRes.total ?? (ticketsRes.data || []).length);
-      // No stats (endpoint failed): drop stale numbers so the tiles fall back to counts over the loaded list.
-      setStats(statsRes || null);
-    } catch (err) {
-      if (seq !== fetchSeq.current) return; // a newer request owns the screen: its result (or error) is what counts
-      console.error('Failed to load service tickets:', err);
-      setLoadError(errMsg(err, 'Failed to load service tickets.'));
-    } finally {
-      if (seq === fetchSeq.current) setIsLoading(false);
-    }
-  }, [activeTab, priorityFilter, sourceFilter, activeFlag, debouncedSearch]);
+  const ticketFilters = useMemo(
+    () => ({
+      stage: activeTab !== 'all' ? activeTab : undefined,
+      priority: priorityFilter !== 'all' ? priorityFilter : undefined,
+      complaint_source: sourceFilter !== 'all' ? sourceFilter : undefined,
+      ...(activeFlag !== 'all' ? { [activeFlag]: 'true' } : {}),
+      search: debouncedSearch || undefined,
+    }),
+    [activeTab, priorityFilter, sourceFilter, activeFlag, debouncedSearch],
+  );
+
+  // Ticket register: one page per request, appended as the register scrolls (infinite scroll). Until the
+  // deep-link filters are read the first page is held (never answered, so the loader stays up); the filtered
+  // request replaces it. The hook swallows fetch errors, so page 1 reports its own here.
+  const fetchTicketsPage = useCallback(
+    async (page: number) => {
+      if (!urlFiltersRead) return new Promise<never>(() => {});
+      try {
+        const res = await api.get('/service/tickets', { ...ticketFilters, page, limit: TICKETS_PAGE_SIZE });
+        if (page === 1) setLoadError(null);
+        return res;
+      } catch (err) {
+        if (page === 1) setLoadError(errMsg(err, 'Failed to load service tickets.'));
+        throw err;
+      }
+    },
+    [ticketFilters, urlFiltersRead],
+  );
+  const ticketsList = useInfiniteList<any>(fetchTicketsPage);
+  const { rows: tickets, total: ticketTotal, loading: isLoading, refresh: refreshTickets } = ticketsList;
+
+  const statsSeq = useRef(0);
+  const fetchStats = useCallback(async () => {
+    if (!urlFiltersRead) return;
+    const seq = ++statsSeq.current;
+    const res = await api.get('/service/stats', ticketFilters).catch(() => null);
+    // filters changed meanwhile: a newer response owns the screen. No stats (endpoint failed): drop stale
+    // numbers so the tiles fall back to counts over the loaded list.
+    if (seq === statsSeq.current) setStats(res || null);
+  }, [ticketFilters, urlFiltersRead]);
 
   useEffect(() => {
-    if (urlFiltersRead) fetchData();
-  }, [fetchData, urlFiltersRead]);
+    fetchStats();
+  }, [fetchStats]);
+
+  /** Re-read the ticket pages already loaded (in place) and the stats. */
+  const fetchData = useCallback(async () => {
+    await Promise.all([refreshTickets(), fetchStats()]);
+  }, [refreshTickets, fetchStats]);
 
   // Load auxiliary reference data (the new-ticket popup loads its own)
   useEffect(() => {
@@ -940,10 +956,15 @@ export default function ServicePage() {
           empty="No tickets match the current filters."
           summary={
             <>
-              {ticketTotal > tickets.length ? `Showing ${tickets.length} of ${ticketTotal} tickets` : `${ticketTotal} ticket${ticketTotal === 1 ? '' : 's'}`}
+              <span className="font-mono text-xs">
+                {tickets.length} of {ticketTotal} {ticketTotal === 1 ? 'ticket' : 'tickets'}
+              </span>
               {breachedCount > 0 && <span className="font-semibold text-[#881337]"> · {breachedCount} SLA breached</span>}
             </>
           }
+          onLoadMore={ticketsList.loadMore}
+          hasMore={ticketsList.hasMore}
+          loadingMore={ticketsList.loadingMore}
         />
       )}
 

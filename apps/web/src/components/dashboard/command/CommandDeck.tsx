@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowRight, ArrowUpRight, ChevronRight, Flame, Info, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { CountUp } from '@/components/ui';
+import { ArrowRight, ArrowUpRight, ChevronDown, ChevronRight, Flame, Info, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Button, CountUp } from '@/components/ui';
 import { useAuth } from '@/lib/auth-context';
 import { canOpen } from '@/lib/route-access';
 import './command-deck.css';
@@ -29,6 +29,42 @@ function useMounted(delay = 60) {
   return m;
 }
 
+/* -------------------------------------------------------- infinite scroll -- */
+/**
+ * Infinite scroll over a list already in hand: shows `step` entries, then the next `step` each time the marker after
+ * them nears the viewport — and keeps going while it stays in view, so a tall screen fills itself. When `scroller`
+ * scrolls (overflow auto / scroll) the box is the viewport; otherwise the page is.
+ */
+export function useReveal(total: number, step: number, scroller?: React.RefObject<HTMLElement>) {
+  const [count, setCount] = useState(step);
+  const marker = useRef<HTMLDivElement>(null);
+  const more = count < total;
+  useEffect(() => {
+    const el = marker.current;
+    if (!el || !more || typeof IntersectionObserver === 'undefined') return;
+    const box = scroller?.current;
+    const root = box && /auto|scroll/.test(getComputedStyle(box).overflowY) ? box : null;
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && setCount((c) => c + step), {
+      root,
+      rootMargin: '0px 0px 240px 0px',
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [more, step, count, scroller]);
+  return { count: Math.min(count, total), left: Math.max(0, total - count), more, marker, next: () => setCount((c) => c + step), reset: () => setCount(step) };
+}
+export type Reveal = ReturnType<typeof useReveal>;
+
+/** The marker useReveal watches; its button is the fallback for keyboards and browsers without IntersectionObserver. */
+export const RevealMore: React.FC<{ reveal: Reveal; noun: string; className?: string }> = ({ reveal, noun, className = '' }) =>
+  reveal.more ? (
+    <div ref={reveal.marker} className={`dx-more ${className}`}>
+      <Button size="sm" variant="secondary" rightIcon={<ChevronDown className="h-3.5 w-3.5" />} onClick={reveal.next}>
+        {reveal.left} more {noun}
+      </Button>
+    </div>
+  ) : null;
+
 /* -------------------------------------------------------------------- hero -- */
 export interface HeroStat {
   label: string;
@@ -41,28 +77,51 @@ export const HeroBanner: React.FC<{
   stats: HeroStat[];
   ctaHref: string;
   ctaLabel: string;
-}> = ({ greeting, name, stats, ctaHref, ctaLabel }) => (
-  <section className="dx-hero dx-rise">
-    <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-      <h1 className="dx-hero__title min-w-0">
-        {greeting}, <em>{name}</em>
-      </h1>
-      <div className="flex flex-col gap-3 lg:items-end">
-        <div className="dx-hero__stats">
-          {stats.map((s) => (
-            <div key={s.label} className="dx-hstat" data-tone={s.tone}>
-              <div className="dx-hstat__v">{s.value}</div>
-              <div className="dx-hstat__l">{s.label}</div>
-            </div>
-          ))}
+  /** One slim row (greeting, stat pills, link) so the figures below start above the fold. */
+  compact?: boolean;
+}> = ({ greeting, name, stats, ctaHref, ctaLabel, compact }) => {
+  const title = (
+    <h1 className={`dx-hero__title min-w-0 ${compact ? 'flex-1' : ''}`}>
+      {greeting}, <em>{name}</em>
+    </h1>
+  );
+  const statList = (
+    <div className="dx-hero__stats">
+      {stats.map((s) => (
+        <div key={s.label} className="dx-hstat" data-tone={s.tone}>
+          <div className="dx-hstat__v">{s.value}</div>
+          <div className="dx-hstat__l">{s.label}</div>
         </div>
-        <Link href={ctaHref} className="dx-cta self-start lg:self-end">
-          {ctaLabel} <ArrowRight size={15} />
-        </Link>
-      </div>
+      ))}
     </div>
-  </section>
-);
+  );
+  if (compact) {
+    return (
+      <section className="dx-hero dx-hero--compact dx-rise">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2.5">
+          {title}
+          {statList}
+          <Link href={ctaHref} className="dx-cta">
+            {ctaLabel} <ArrowRight size={14} />
+          </Link>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="dx-hero dx-rise">
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+        {title}
+        <div className="flex flex-col gap-3 lg:items-end">
+          {statList}
+          <Link href={ctaHref} className="dx-cta self-start lg:self-end">
+            {ctaLabel} <ArrowRight size={15} />
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
+};
 
 /* ---------------------------------------------------------------- KPI tile -- */
 export interface KpiProps {
@@ -175,8 +234,15 @@ export function timeAgo(iso?: string | null): string {
 
 type AttentionFilter = 'all' | AttentionItem['severity'];
 
-export const AttentionList: React.FC<{ items: AttentionItem[] }> = ({ items }) => {
+/**
+ * `pageSize` turns on infinite scroll: the rows sit in a box that fills the rest of the panel and scrolls on its own
+ * (`.dx-cmd-card` gives the panel its height), loading `pageSize` rows at a time as it is scrolled.
+ */
+export const AttentionList: React.FC<{ items: AttentionItem[]; pageSize?: number }> = ({ items, pageSize }) => {
   const [filter, setFilter] = useState<AttentionFilter>('all');
+  const box = useRef<HTMLDivElement>(null);
+  const shown = filter === 'all' ? items : items.filter((i) => i.severity === filter);
+  const reveal = useReveal(shown.length, pageSize ?? Infinity, box);
 
   if (items.length === 0) {
     return (
@@ -192,40 +258,53 @@ export const AttentionList: React.FC<{ items: AttentionItem[] }> = ({ items }) =
 
   const count = (s: AttentionFilter) => (s === 'all' ? items.length : items.filter((i) => i.severity === s).length);
   const tabs = (['all', 'critical', 'warning', 'info'] as const).filter((t) => t === 'all' || count(t) > 0);
-  const shown = filter === 'all' ? items : items.filter((i) => i.severity === filter);
 
   return (
     <>
       <div className="dx-tabs" role="tablist" aria-label="Filter alerts by severity">
         {tabs.map((t) => (
-          <button key={t} type="button" role="tab" aria-selected={filter === t} className="dx-tab" onClick={() => setFilter(t)}>
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={filter === t}
+            className="dx-tab"
+            onClick={() => {
+              setFilter(t);
+              reveal.reset();
+              box.current?.scrollTo({ top: 0 });
+            }}
+          >
             {t === 'all' ? 'All' : SEV[t].label} <b>{count(t)}</b>
           </button>
         ))}
       </div>
-      <ul className="dx-attn">
-        {shown.map((it, i) => {
-          const { Icon, tone } = SEV[it.severity];
-          return (
-            <li key={it.id} className="dx-slide" style={{ animationDelay: `${i * 40}ms` }} data-tone={tone}>
-              <Link href={it.href} className="dx-attn__row">
-                <span className="dx-attn__ic">
-                  <Icon className="h-4 w-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="dx-attn__t">{it.title}</span>
-                  {it.detail && <span className="dx-attn__d">{it.detail}</span>}
-                </span>
-                <span className="flex shrink-0 flex-col items-end gap-1.5">
-                  {it.right}
-                  {it.when && <span className="dx-attn__when">{it.when}</span>}
-                </span>
-                <ArrowUpRight size={15} className="dx-attn__go hidden shrink-0 sm:block" />
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+      <div ref={box} className={pageSize ? 'dx-cmd-pane' : undefined}>
+        <ul className="dx-attn">
+          {shown.slice(0, reveal.count).map((it, i) => {
+            const { Icon, tone } = SEV[it.severity];
+            return (
+              <li key={it.id} className="dx-slide" style={{ animationDelay: `${(i % (pageSize ?? Infinity)) * 40}ms` }} data-tone={tone}>
+                <Link href={it.href} className="dx-attn__row">
+                  <span className="dx-attn__ic">
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="dx-attn__t">{it.title}</span>
+                    {it.detail && <span className="dx-attn__d">{it.detail}</span>}
+                  </span>
+                  <span className="flex shrink-0 flex-col items-end gap-1.5">
+                    {it.right}
+                    {it.when && <span className="dx-attn__when">{it.when}</span>}
+                  </span>
+                  <ArrowUpRight size={15} className="dx-attn__go hidden shrink-0 sm:block" />
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+        <RevealMore reveal={reveal} noun={filter === 'all' ? 'to act on' : SEV[filter].label.toLowerCase()} />
+      </div>
     </>
   );
 };

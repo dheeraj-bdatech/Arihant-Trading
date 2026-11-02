@@ -201,18 +201,17 @@ const demoUrlFilters = (q: UrlParams) => {
   };
 };
 /**
- * Every page of a /demos query, for the views whose counts and client-side filters need the whole set (my demos,
- * field failures, a calendar week). The API serves at most 100 rows a page; 20 pages bound a runaway query.
+ * One calendar week of /demos in a single request: a week is a natural bound (the demo team runs a few demos a day
+ * on a limited depot fleet), far under the API's 100-row page. Cancelled demos never show on the calendar, so they
+ * are left out in the query (within a status filter, its other statuses).
  */
-const fetchAllDemos = async (params: Record<string, string>): Promise<any[]> => {
-  const rows: any[] = [];
-  for (let page = 1; page <= 20; page++) {
-    const res = await api.get('/demos', { ...params, page, limit: 100 });
-    rows.push(...(res?.data || []));
-    if (page >= (res?.totalPages || 1)) break;
-  }
-  return rows;
+const fetchDemoWeek = async (params: Record<string, string>, from: string, to: string): Promise<any[]> => {
+  const status = (params.status ? params.status.split(',') : DEMO_STATUSES.map((s) => s.key)).filter((s) => s !== 'cancelled').join(',');
+  if (!status || from > to) return [];
+  const res = await api.get('/demos', { ...params, status, date_from: from, date_to: to, page: 1, limit: 100 });
+  return res?.data || [];
 };
+const AUDIT_PAGE_SIZE = 50;
 /** Only a technical failure quarantines the trial's units (demos.service submitOutcome). */
 const isQuarantiningFailure = (demo: any) => demo?.outcome?.result === 'fail' && demo?.outcome?.failure_reason === 'TECHNICAL_FAILURE';
 type BadgeVariant = NonNullable<BadgeProps['variant']>;
@@ -320,59 +319,48 @@ function DemosPageContent() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [serviceEngineers, setServiceEngineers] = useState<any[]>([]);
   const [analyticsData, setAnalyticsData] = useState<any | null>(null);
-  const [customerHistoryDemos, setCustomerHistoryDemos] = useState<any[]>([]);
   // Bumped after every reload, so views that fetch for themselves (the calendar week) re-read too
   const [dataVersion, setDataVersion] = useState(0);
 
-  // Demos assigned to the current user, and every failed trial: filtered by the API (assigned_to / result=fail,
-  // under the caller's RBAC scope) and read in full, so their counts never stop at the first page.
-  const [myDemosList, setMyDemosList] = useState<any[]>([]);
-  const [failedDemos, setFailedDemos] = useState<any[]>([]);
+  // My demos (assigned to the signed-in user): its tiles and view count are SQL counts (/demos/summary with
+  // assigned_to); "Needs your action" is the server's needs_action filter, one page at a time.
+  const [mySummary, setMySummary] = useState<any | null>(null);
+  const fetchMyActionPage = useCallback(
+    (page: number) => api.get('/demos', { assigned_to: user?.id, needs_action: 'true', page, limit: DEMOS_PAGE_SIZE }),
+    [user?.id],
+  );
+  const myActionList = useInfiniteList<any>(fetchMyActionPage, { enabled: Boolean(user?.id) });
+  const loadMyWeek = useCallback(
+    (from: string, to: string) => (user?.id ? fetchDemoWeek({ assigned_to: user.id }, from, to) : Promise.resolve([])),
+    [user?.id],
+  );
 
-  // Filtered Failures for Management Incident Audit
-  const displayedFailures = useMemo(() => {
-    return failedDemos.filter((d) => {
-      // Reason filter
-      if (failReasonFilter !== 'all' && d.outcome?.failure_reason !== failReasonFilter) {
-        return false;
-      }
-      // Escort filter
-      if (failEscortFilter === 'escorted' && !d.service_escort_required) return false;
-      if (failEscortFilter === 'unescorted' && d.service_escort_required) return false;
+  // Field failures: failed trials (result=fail) under the incident log's filters, applied by the API and read one
+  // page at a time. The KPI cards, breakdown and menu counts are SQL counts over every failed trial (failureSummary).
+  const [failureSummary, setFailureSummary] = useState<any | null>(null);
+  const failureParams = useMemo(() => {
+    const params: Record<string, string> = { result: 'fail' };
+    if (failSearchQuery.trim()) params.search = failSearchQuery.trim();
+    if (failReasonFilter !== 'all') params.failure_reason = failReasonFilter;
+    if (failEscortFilter !== 'all') params.service_escort_required = String(failEscortFilter === 'escorted');
+    if (failServiceTicketFilter !== 'all') params.has_service_ticket = String(failServiceTicketFilter === 'ticket_logged');
+    return params;
+  }, [failSearchQuery, failReasonFilter, failEscortFilter, failServiceTicketFilter]);
+  const fetchFailuresPage = useCallback(
+    (page: number) => api.get('/demos', { ...failureParams, page, limit: DEMOS_PAGE_SIZE }),
+    [failureParams],
+  );
+  const failuresList = useInfiniteList<any>(fetchFailuresPage);
+  const displayedFailures = failuresList.rows;
 
-      // Service ticket filter
-      const hasTicket = Boolean(d.service_ticket_id || d.outcome?.service_ticket_id);
-      if (failServiceTicketFilter === 'ticket_logged' && !hasTicket) return false;
-      if (failServiceTicketFilter === 'no_ticket' && hasTicket) return false;
-
-      // Text search
-      if (failSearchQuery) {
-        const q = failSearchQuery.toLowerCase();
-        const orgName = (d.organisation_name || '').toLowerCase();
-        const prodName = (d.product_name || '').toLowerCase();
-        const loc = (d.location || '').toLowerCase();
-        const demoNo = (d.demo_no || '').toLowerCase();
-        const reason = (d.outcome?.failure_reason || '').toLowerCase();
-        const ticketNo = (d.service_ticket_no || d.service_ticket_id || '').toLowerCase();
-        const remarks = (d.outcome?.remarks || d.outcome?.notes || '').toLowerCase();
-        if (
-          !orgName.includes(q) &&
-          !prodName.includes(q) &&
-          !loc.includes(q) &&
-          !demoNo.includes(q) &&
-          !reason.includes(q) &&
-          !ticketNo.includes(q) &&
-          !remarks.includes(q)
-        ) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [failedDemos, failReasonFilter, failEscortFilter, failServiceTicketFilter, failSearchQuery]);
-
+  // Customer trial history: the picked organisation's demos, one page at a time (stale answers are dropped by the hook).
   const [selectedHistoryOrgId, setSelectedHistoryOrgId] = useState<string>('');
-  const historySeq = useRef(0);
+  const fetchHistoryPage = useCallback(
+    (page: number) => api.get('/demos', { organisation_id: selectedHistoryOrgId, page, limit: DEMOS_PAGE_SIZE }),
+    [selectedHistoryOrgId],
+  );
+  const historyList = useInfiniteList<any>(fetchHistoryPage, { enabled: Boolean(selectedHistoryOrgId) });
+  const customerHistoryDemos = historyList.rows;
   const [isLoading, setIsLoading] = useState(true);
   const [loadedOnce, setLoadedOnce] = useState(false);
 
@@ -414,11 +402,10 @@ function DemosPageContent() {
   const filteredDemos = pipelineList.rows;
   // The pipeline calendar reads its visible week from the server under the same filters (any date filter narrows it)
   const loadCalendarWeek = useCallback(
-    async (from: string, to: string) => {
+    (from: string, to: string) => {
       const lo = filterParams.date_from && filterParams.date_from > from ? filterParams.date_from : from;
       const hi = filterParams.date_to && filterParams.date_to < to ? filterParams.date_to : to;
-      if (lo > hi) return [];
-      return fetchAllDemos({ ...filterParams, date_from: lo, date_to: hi });
+      return fetchDemoWeek(filterParams, lo, hi);
     },
     [filterParams],
   );
@@ -602,6 +589,8 @@ function DemosPageContent() {
     if (withFiltered) {
       void pipelineList.refresh();
       void queueList.refresh();
+      void myActionList.refresh();
+      void failuresList.refresh();
       void loadFilteredCounts();
       void refreshLinkedDemo();
       setDataVersion((v) => v + 1);
@@ -618,16 +607,16 @@ function DemosPageContent() {
         teamRes,
         serviceRes,
       ] = await Promise.all([
-        user?.id ? fetchAllDemos({ assigned_to: user.id }) : Promise.resolve([]),
-        fetchAllDemos({ result: 'fail' }),
+        user?.id ? api.get('/demos/summary', { assigned_to: user.id }).catch(() => null) : Promise.resolve(null),
+        api.get('/demos/summary', { result: 'fail' }).catch(() => null),
         api.get('/demos/equipment'),
         api.get('/masters/products'),
         api.get('/demos/team/availability').catch(() => []),
         api.get('/users', { role: 'service_team' }).catch(() => ({ data: [] })),
       ]);
 
-      setMyDemosList(myRes);
-      setFailedDemos(failedRes);
+      setMySummary(myRes);
+      setFailureSummary(failedRes);
       setEquipmentList(equipRes || []);
       setProducts(productsRes || []);
       setTeamMembers(teamRes || []);
@@ -680,23 +669,6 @@ function DemosPageContent() {
       runAvailabilityCheck();
     }
   }, [availFilterProduct, availFilterLocation, availFilterDate, activeTab]);
-
-  // Handle customer history load
-  const loadCustomerHistory = async (orgId: string) => {
-    const seq = ++historySeq.current;
-    setSelectedHistoryOrgId(orgId);
-    setCustomerHistoryDemos([]);
-    if (!orgId) return;
-    try {
-      const rows = await fetchAllDemos({ organisation_id: orgId });
-      // switching customers quickly: only the last pick may fill the timeline
-      if (seq === historySeq.current) setCustomerHistoryDemos(rows);
-    } catch (err) {
-      console.error('Failed to load customer history:', err);
-    }
-  };
-
-
 
   // Pipeline filter-row helpers
   // Locations under the other filters (server counts), plus the selected one even if nothing matches it now.
@@ -2056,9 +2028,9 @@ function DemosPageContent() {
   const showRegisterFilters = activeTab === 'pipeline' || activeTab === 'coordinator' || activeTab === 'analytics';
   const viewOptions = [
     { key: 'pipeline', label: 'Demo pipeline & requests', icon: <Layers />, count: pipelineList.total },
-    { key: 'my_demos', label: 'My demos', icon: <Users />, count: myDemosList.length },
+    { key: 'my_demos', label: 'My demos', icon: <Users />, count: mySummary?.total ?? 0 },
     { key: 'coordinator', label: 'Coordinator planning queue', icon: <Wrench />, count: pendingPlanningCount },
-    { key: 'failures', label: 'Field failures & incidents', icon: <AlertTriangle />, count: failedDemos.length, urgent: true },
+    { key: 'failures', label: 'Field failures & incidents', icon: <AlertTriangle />, count: failureSummary?.total ?? failuresList.total, urgent: true },
     { key: 'fleet', label: 'Depot fleet & availability', icon: <Package />, count: equipmentList.length },
     { key: 'analytics', label: 'Analytics & failure insights', icon: <BarChart3 /> },
     { key: 'history', label: 'Customer trial history', icon: <History /> },
@@ -2129,21 +2101,21 @@ function DemosPageContent() {
         <StatGrid cols={4} className="gap-3">
           <StatCard
             label="Total Trial Failures"
-            value={failedDemos.length}
+            value={failureSummary?.total ?? failuresList.total}
             subtext="Field deficiencies & objections"
             valueColor="rose"
             icon={<AlertTriangle className="h-4 w-4 text-[#881337]" />}
           />
           <StatCard
             label="Technical Breakdowns"
-            value={failedDemos.filter((d) => d.outcome?.failure_reason === 'TECHNICAL_FAILURE').length}
+            value={failureSummary?.by_failure_reason?.TECHNICAL_FAILURE ?? 0}
             subtext="Hardware / calibration / defect"
             valueColor="rose"
             icon={<Wrench className="h-4 w-4 text-[#881337]" />}
           />
           <StatCard
             label="Auto Service Tickets"
-            value={failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length}
+            value={failureSummary?.service_ticketed ?? 0}
             subtext="Breakdown tickets auto-logged"
             valueColor="amber"
             icon={<ShieldAlert className="h-4 w-4 text-[#9A3412]" />}
@@ -2284,11 +2256,11 @@ function DemosPageContent() {
                   icon={<AlertTriangle />}
                   className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
                   options={[
-                    { key: 'all', label: 'All failure reasons', count: failedDemos.length },
+                    { key: 'all', label: 'All failure reasons', count: failureSummary?.total ?? failuresList.total },
                     ...Object.entries(FAILURE_REASON_METADATA).map(([k, v]) => ({
                       key: k,
                       label: v.label,
-                      count: failedDemos.filter((d) => d.outcome?.failure_reason === k).length,
+                      count: failureSummary?.by_failure_reason?.[k] ?? 0,
                     })),
                   ].map((o) => ({ ...o, active: failReasonFilter === o.key, onSelect: () => setFailReasonFilter(o.key) }))}
                 />
@@ -2297,8 +2269,8 @@ function DemosPageContent() {
                   icon={<ShieldCheck />}
                   options={[
                     { key: 'all', label: 'All escort scenarios', count: undefined },
-                    { key: 'escorted', label: 'Service escorted', count: failedDemos.filter((d) => d.service_escort_required).length },
-                    { key: 'unescorted', label: 'Unescorted (solo sales)', count: failedDemos.filter((d) => !d.service_escort_required).length },
+                    { key: 'escorted', label: 'Service escorted', count: failureSummary?.service_escorted },
+                    { key: 'unescorted', label: 'Unescorted (solo sales)', count: failureSummary != null ? Math.max(0, failureSummary.total - (failureSummary.service_escorted || 0)) : undefined },
                   ].map((o) => ({ ...o, active: failEscortFilter === o.key, onSelect: () => setFailEscortFilter(o.key) }))}
                 />
                 <FilterMenu
@@ -2306,8 +2278,8 @@ function DemosPageContent() {
                   icon={<Wrench />}
                   options={[
                     { key: 'all', label: 'All ticket states', count: undefined },
-                    { key: 'ticket_logged', label: 'Ticket logged', count: failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length },
-                    { key: 'no_ticket', label: 'No ticket', count: failedDemos.filter((d) => !(d.service_ticket_id || d.outcome?.service_ticket_id)).length },
+                    { key: 'ticket_logged', label: 'Ticket logged', count: failureSummary?.service_ticketed },
+                    { key: 'no_ticket', label: 'No ticket', count: failureSummary != null ? Math.max(0, failureSummary.total - (failureSummary.service_ticketed || 0)) : undefined },
                   ].map((o) => ({ ...o, active: failServiceTicketFilter === o.key, onSelect: () => setFailServiceTicketFilter(o.key) }))}
                 />
                 {hasFailureFilters && (
@@ -2326,7 +2298,7 @@ function DemosPageContent() {
                   </Button>
                 )}
                 <span className="whitespace-nowrap pl-1 text-[11px] text-[#4A5568]">
-                  <b className="font-mono text-[#14213D]">{displayedFailures.length}</b> of {failedDemos.length}
+                  <b className="font-mono text-[#14213D]">{displayedFailures.length}</b> of {failureSummary?.total ?? failuresList.total}
                 </span>
               </div>
             </>
@@ -2539,15 +2511,10 @@ function DemosPageContent() {
       {/* =================================================================== */}
       {activeTab === 'my_demos' && (() => {
         // The demo specialist's day-to-day: their week at a glance, then only what is waiting on them.
-        const weekStart = addIsoDays(istToday(), -((new Date(`${istToday()}T00:00:00`).getDay() + 6) % 7));
-        const weekEnd = addIsoDays(weekStart, 6);
-        const live = myDemosList.filter((d) => d.status !== 'cancelled');
-        const thisWeek = live.filter((d) => demoDay(d) >= weekStart && demoDay(d) <= weekEnd).length;
-        const approvalPending = live.filter(
-          (d) => d.status === 'requested' || d.task_approval === 'pending' || (d.reservations || []).some((r: any) => r.status === 'requested'),
-        ).length;
-        const outcomeDue = live.filter((d) => d.status === 'confirmed' && !isDemoDayAhead(d)).length;
-        const actionItems = live.map(toDemoRecord).filter((i) => i.primary && !i.primary.disabled);
+        const thisWeek = mySummary?.this_week ?? 0;
+        const approvalPending = mySummary?.approval_pending ?? 0;
+        const outcomeDue = mySummary?.outcome_due ?? 0;
+        const actionItems = myActionList.rows.map(toDemoRecord).filter((i: any) => i.primary && !i.primary.disabled);
         const stats = [
           { label: 'This week', value: thisWeek, tone: 'text-[#0F5E63]' },
           { label: 'Approval pending', value: approvalPending, tone: approvalPending ? 'text-[#9A3412]' : 'text-[#14213D]' },
@@ -2570,7 +2537,7 @@ function DemosPageContent() {
               </div>
             </Card>
 
-            {myDemosList.length === 0 ? (
+            {mySummary && mySummary.total === 0 && myActionList.rows.length === 0 ? (
               <EmptyState
                 icon={<Users className="h-8 w-8 text-[#4A5568]" />}
                 title="No demos assigned to you yet"
@@ -2580,7 +2547,9 @@ function DemosPageContent() {
               <>
                 <Card padding="md">
                   <DemoCalendar
-                    demos={myDemosList}
+                    demos={myActionList.rows}
+                    loadRange={loadMyWeek}
+                    reloadKey={dataVersion}
                     onOpen={(d) => setLinkedDemo(d)}
                     statusLabel={demoStatusLabel}
                     statusTone={(st) => toneFor(demoStatusLabel(st))}
@@ -2589,9 +2558,16 @@ function DemosPageContent() {
                 {actionItems.length > 0 && (
                   <section className="space-y-2">
                     <h3 className="font-serif text-sm font-semibold text-[#14213D]">
-                      Needs your action <span className="font-mono text-xs text-[#4A5568]">({actionItems.length})</span>
+                      Needs your action <span className="font-mono text-xs text-[#4A5568]">({myActionList.total})</span>
                     </h3>
                     <RecordList items={actionItems} />
+                    {myActionList.hasMore && (
+                      <div className="flex justify-center pt-2">
+                        <Button variant="outline" size="xs" onClick={myActionList.loadMore} isLoading={myActionList.loadingMore}>
+                          Load more action items ({myActionList.rows.length} of {myActionList.total})
+                        </Button>
+                      </div>
+                    )}
                   </section>
                 )}
               </>
@@ -3154,7 +3130,7 @@ function DemosPageContent() {
                 label="Select Organisation / Department"
                 value={selectedHistoryOrgId}
                 placeholder="— Select a Client Organisation —"
-                onChange={(org) => loadCustomerHistory(org?.id || '')}
+                onChange={(org) => setSelectedHistoryOrgId(org?.id || '')}
               />
             </div>
           </Card>
@@ -3225,16 +3201,12 @@ function DemosPageContent() {
           {/* Root-cause breakdown + response status (real data only) */}
           {(() => {
             const byReason = Object.entries(
-              failedDemos.reduce((acc: Record<string, number>, d) => {
-                const k = d.outcome?.failure_reason || 'UNSPECIFIED';
-                acc[k] = (acc[k] || 0) + 1;
-                return acc;
-              }, {}),
-            ).sort((x, y) => y[1] - x[1]);
-            const max = Math.max(1, ...byReason.map(([, n]) => n));
-            const ticketed = failedDemos.filter((d) => d.service_ticket_id || d.outcome?.service_ticket_id).length;
-            const escorted = failedDemos.filter((d) => d.service_escort_required).length;
-            const total = Math.max(1, failedDemos.length);
+              (failureSummary?.by_failure_reason || {}) as Record<string, number>,
+            ).sort((x, y) => Number(y[1]) - Number(x[1]));
+            const max = Math.max(1, ...byReason.map(([, n]) => Number(n)));
+            const ticketed = failureSummary?.service_ticketed ?? 0;
+            const escorted = failureSummary?.service_escorted ?? 0;
+            const total = Math.max(1, failureSummary?.total ?? 0);
             return (
               <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
                 <Card className="lg:col-span-3 p-4 sm:p-5">
@@ -3258,7 +3230,7 @@ function DemosPageContent() {
                             <span className="font-mono font-bold text-[#9A3412]">{n}</span>
                           </div>
                           <div className="h-2 rounded-full bg-[#ECE9E2] overflow-hidden">
-                            <div className="h-full rounded-full bg-gradient-to-r from-[#C98A1B] to-[#9A3412]" style={{ width: `${(n / max) * 100}%` }} />
+                            <div className="h-full rounded-full bg-gradient-to-r from-[#C98A1B] to-[#9A3412]" style={{ width: `${(Number(n) / max) * 100}%` }} />
                           </div>
                         </button>
                       );
@@ -3275,7 +3247,7 @@ function DemosPageContent() {
                     <div key={r.label}>
                       <div className="flex items-baseline justify-between text-xs">
                         <span className="font-semibold text-[#14213D]">{r.label}</span>
-                        <span className="font-mono font-bold" style={{ color: r.color }}>{r.n} / {failedDemos.length}</span>
+                        <span className="font-mono font-bold" style={{ color: r.color }}>{r.n} / {failureSummary?.total ?? 0}</span>
                       </div>
                       <div className="h-2 rounded-full bg-[#ECE9E2] overflow-hidden mt-1">
                         <div className="h-full rounded-full" style={{ width: `${Math.min(100, (r.n / total) * 100)}%`, background: r.color }} />

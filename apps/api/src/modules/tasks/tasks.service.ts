@@ -10,6 +10,7 @@ import {
   TASK_DELAY_CLASSES,
   TASK_DISPLAY_STATUSES,
   TASK_MAX_BULK_ASSIGNEES,
+  TASK_OVERDUE_CAPABLE_STATUSES,
   TASK_PRIORITIES,
   addIsoDays,
   allowedTaskActions,
@@ -25,6 +26,7 @@ import {
 import { TaskStore, TASK_EVENTS } from './task-store.service.js';
 import { TaskInputService, isLinked, type TaskLinks } from './task-input.service.js';
 import { isAdminLike, type TaskSettings } from './task-masters.service.js';
+import { buildPaginatedResult } from '../../common/utils/pagination.js';
 import {
   TaskValidationException,
   UUID_RE,
@@ -32,9 +34,12 @@ import {
   readBool,
   readDate,
   readDeadline,
+  readPage,
+  readSearch,
   readText,
   readVersion,
   staleVersion,
+  taskSearchSql,
   throwIfErrors,
   type FieldErrors,
 } from './task-common.js';
@@ -44,6 +49,8 @@ const SORTS: Record<string, any> = {
   priority: sql`case t.priority when 'critical' then 4 when 'high' then 3 when 'medium' then 2 else 1 end`,
   created_at: sql`t.created_at`,
   updated_at: sql`t.updated_at`,
+  /** Finished work newest first (the board's Completed lane); a row without a finish time falls back to its last change. */
+  completed_at: sql`coalesce(t.completed_at, t.updated_at)`,
   last_update_at: sql`t.last_update_at`,
   task_number: sql`t.task_number`,
   title: sql`lower(t.title)`,
@@ -76,6 +83,14 @@ export interface TaskFilters {
   has_open_blocker: boolean | null;
   no_update: boolean;
   delay_class: TaskDelayClass | null;
+  /** Only tasks whose open blocker is in this state (Blocker reviews board: accepted blockers). */
+  open_blocker_status: 'pending_review' | 'accepted' | null;
+  /** true: signed off (approved_at set) — the Approvals board's Approved column; false: never approved. */
+  approved: boolean | null;
+  /** Sent back for rework at least once (the Approvals board's Sent back column). */
+  reworked: boolean;
+  /** Work still counting down, due from now to N days ahead (the board's "Due in 7 days"). */
+  due_within_days: number | null;
   search: string | null;
   view: 'mine' | 'team' | 'assigned_by_me' | 'all';
   include_cancelled: boolean;
@@ -111,7 +126,11 @@ export function parseTaskFilters(q: Record<string, unknown>): TaskFilters {
     has_open_blocker: q.has_open_blocker === 'true' ? true : q.has_open_blocker === 'false' ? false : null,
     no_update: q.no_update === 'true',
     delay_class: (TASK_DELAY_CLASSES as string[]).includes(q.delay_class as string) ? (q.delay_class as TaskDelayClass) : null,
-    search: typeof q.search === 'string' && q.search.trim() ? q.search.trim().slice(0, 100) : null,
+    open_blocker_status: q.open_blocker_status === 'pending_review' || q.open_blocker_status === 'accepted' ? q.open_blocker_status : null,
+    approved: q.approved === 'true' ? true : q.approved === 'false' ? false : null,
+    reworked: q.reworked === 'true',
+    due_within_days: Number.isInteger(Number(q.due_within_days)) && Number(q.due_within_days) >= 1 && Number(q.due_within_days) <= 366 ? Number(q.due_within_days) : null,
+    search: readSearch(q),
     view: (['mine', 'team', 'assigned_by_me', 'all'] as const).includes(q.view as any) ? (q.view as any) : 'all',
     include_cancelled: q.include_cancelled === 'true' || statuses.includes('cancelled'),
     page: Math.max(1, Math.floor(Number(q.page) || 1)),
@@ -169,10 +188,15 @@ export class TasksService {
       }
       if (f.no_update) and.push(this.store.noUpdateSql(s));
       if (f.delay_class) and.push(this.store.delayClassSql(f.delay_class));
-      if (f.search) {
-        const like = `%${f.search.toLowerCase()}%`;
-        and.push(eb.or([sql<boolean>`lower(t.title) like ${like}`, sql<boolean>`lower(t.task_number) like ${like}`, sql<boolean>`lower(emp.full_name) like ${like}`]));
+      if (f.open_blocker_status) and.push(sql<boolean>`exists (select 1 from task_blockers sb where sb.task_id = t.id and sb.status = ${f.open_blocker_status})`);
+      if (f.approved !== null) and.push(eb('t.approved_at', f.approved ? 'is not' : 'is', null));
+      if (f.reworked) and.push(eb('t.rework_count', '>', 0));
+      // Mirrors the board's "Due in 7 days": not yet late (so never overdue), and only work whose deadline still counts down.
+      if (f.due_within_days) {
+        and.push(eb('t.status', 'in', TASK_OVERDUE_CAPABLE_STATUSES));
+        and.push(sql<boolean>`(t.deadline >= now() and t.deadline <= now() + make_interval(days => ${f.due_within_days}::int))`);
       }
+      if (f.search) and.push(taskSearchSql(f.search));
       return and.length ? eb.and(and) : sql<boolean>`true`;
     };
   }
@@ -187,6 +211,8 @@ export class TasksService {
       this.store
         .withJoins(base)
         .orderBy(sql`${SORTS[f.sort_by]} ${sql.raw(f.sort_dir)} nulls last`)
+        // Same priority: the nearest deadline first. task_number is unique, so pages never repeat or skip a row.
+        .$if(f.sort_by === 'priority', (q) => q.orderBy(sql`t.deadline asc nulls last`))
         .orderBy('t.task_number', 'desc')
         .limit(f.page_size)
         .offset((f.page - 1) * f.page_size)
@@ -591,11 +617,26 @@ export class TasksService {
   }
 
   // ========================================================================== queues
+  /**
+   * Work waiting for my approval, oldest hand-in first, a page at a time (`page`, `page_size` ≤ 100, `search` on task
+   * number / title / assignee). `totals.sla_breached` counts the whole queue, not just this page.
+   */
   async approvalsQueue(query: Record<string, unknown>, user: AuthUser) {
     const s = await this.store.masters.settings();
-    let q = this.store.withJoins(this.store.scoped(user, s)).where('t.status', '=', 'awaiting_approval');
+    const { page, limit, offset } = readPage(query);
+    const search = readSearch(query);
+    let q = this.store.scoped(user, s).where('t.status', '=', 'awaiting_approval');
     if (!(query.scope === 'all' && isAdminLike(user))) q = q.where(this.store.routedToSql(user, s));
-    const rows = await q.orderBy('t.completed_at').limit(200).execute();
+    if (search) q = q.where(taskSearchSql(search));
+    const [countRow, rows] = await Promise.all([
+      q
+        .select([
+          sql<number>`count(*)::int`.as('n'),
+          sql<number>`(count(*) filter (where t.completed_at <= now() - make_interval(hours => ${s.approval_sla_hours}::int)))::int`.as('breached'),
+        ])
+        .executeTakeFirst(),
+      this.store.withJoins(q).orderBy('t.completed_at').orderBy('t.id').limit(limit).offset(offset).execute(),
+    ]);
     const ids = rows.map((r: any) => r.id);
     const evidence = ids.length
       ? await this.db
@@ -607,11 +648,12 @@ export class TasksService {
           .execute()
       : [];
     const now = new Date();
-    return rows.map((r: any) => {
+    const data = rows.map((r: any) => {
       const t = this.store.serialize(r, s, now);
       const waitingHours = r.completed_at ? Math.floor((now.getTime() - new Date(r.completed_at).getTime()) / 3600000) : 0;
       return { ...t, evidence: evidence.filter((e) => e.task_id === r.id), waiting_hours: waitingHours, sla_breached: waitingHours >= s.approval_sla_hours };
     });
+    return { ...buildPaginatedResult(data, Number(countRow?.n || 0), page, limit), totals: { sla_breached: Number(countRow?.breached || 0) } };
   }
 
   async needsReassignment(user: AuthUser) {

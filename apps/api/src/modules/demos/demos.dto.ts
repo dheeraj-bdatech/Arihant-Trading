@@ -511,4 +511,19 @@ export class DemoQueryDto {
   @IsOptional()
   @IsString()
   failure_reason?: string;
+
+  /** Field-failure log: whether a service engineer escorted the trial (`true`) or not (`false`). */
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  service_escort_required?: 'true' | 'false';
+
+  /** Field-failure log: whether a breakdown service ticket is linked to the demo or its outcome. */
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  has_service_ticket?: 'true' | 'false';
+
+  /** My demos: only open demos whose next step is the caller's (see DemosService.demoFlags). */
+  @IsOptional()
+  @IsIn(['true'])
+  needs_action?: 'true';
 }

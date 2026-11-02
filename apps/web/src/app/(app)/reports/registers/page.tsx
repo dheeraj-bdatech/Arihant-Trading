@@ -24,6 +24,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { api, ApiError } from '@/lib/api';
 import { canRead, type ReadableModule } from '@/lib/module-access';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { ReportsNav } from '../_lib/report-ui';
 import {
   Card,
@@ -150,25 +151,100 @@ const probabilityBadge = (p: unknown): BadgeVariant => {
 
 const rows = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : Array.isArray(res?.items) ? res.items : []);
 
+/** Rows per register page; the next page is read as the register scrolls (infinite scroll). */
+const REGISTER_PAGE_SIZE = 25;
+/** Rows per request when a CSV export reads a whole register (the API's page cap). */
+const EXPORT_PAGE_SIZE = 100;
+
+type StatusOption = { key: string; label: string };
+const statusOptionsOf = (keys: readonly string[], label: (k: string) => string = (k) => k.replace(/_/g, ' ')): StatusOption[] =>
+  keys.map((key) => ({ key, label: label(key) }));
+
 // `access` = the module read permission the dataset needs; expense reports are scoped server-side for every role.
 // `roles` narrows a dataset to the roles it is meant for (finance reports for Accounts / Management / Admin).
+// `statusParam` / `statuses` = the API's status filter and its options (search is `search` on every one);
+// `row` reshapes an API row for this view.
 const FINANCE_ROLES: readonly string[] = ['accounts', 'management', 'admin'];
-const DATASETS: readonly {
+type Dataset = {
   key: string;
   label: string;
   url: string;
   access: ReadableModule | null;
   roles?: readonly string[];
   params?: Record<string, string | number>;
-}[] = [
-  { key: 'tenders', label: 'GeM Bids', url: '/tenders', access: 'tenders' },
-  { key: 'leads', label: 'Sales Pipeline', url: '/leads', access: 'leads' },
-  { key: 'visits', label: 'Field Itineraries', url: '/visits', access: 'visits' },
-  { key: 'expenses', label: 'Expense Claims', url: '/expense-reports', access: null },
+  statusParam?: string;
+  statuses?: StatusOption[];
+  row?: (r: any) => any;
+};
+const DATASETS: readonly Dataset[] = [
+  { key: 'tenders', label: 'GeM Bids', url: '/tenders', access: 'tenders', statusParam: 'status', statuses: statusOptionsOf(TENDER_STATUSES) },
+  {
+    key: 'leads',
+    label: 'Sales Pipeline',
+    url: '/leads',
+    access: 'leads',
+    statusParam: 'status',
+    // won / dropped are legacy names the API folds into converted / lost
+    statuses: statusOptionsOf(LEAD_STATUSES.filter((s) => s !== 'won' && s !== 'dropped')),
+  },
+  { key: 'visits', label: 'Field Itineraries', url: '/visits', access: 'visits', statusParam: 'status', statuses: statusOptionsOf(VISIT_STATUSES) },
+  {
+    key: 'expenses',
+    label: 'Expense Claims',
+    url: '/expense-reports',
+    access: null,
+    statusParam: 'statuses',
+    statuses: statusOptionsOf(EXPENSE_CLAIM_STATUSES, (k) => EXPENSE_STATUS_LABELS[k as keyof typeof EXPENSE_STATUS_LABELS] ?? k),
+    // Module 9 report rows are per expense line; keep the field names this view already uses.
+    row: (r) => ({ ...r, id: r.item_id, category: r.category_name, status: r.status_label || r.status, manager_remarks: r.reviewer_comment }),
+  },
   // Paid claims with their bank reference (UTR), payment date and Tally voucher — the Accounts settlement register.
   { key: 'settlements', label: 'Settlements & Vouchers', url: '/expense-claims', access: 'expenses', roles: FINANCE_ROLES, params: { statuses: 'processed', sort_by: 'updated_at', sort_dir: 'desc' } },
-  { key: 'service', label: 'Service Desk', url: '/service/tickets', access: 'service' },
+  {
+    key: 'service',
+    label: 'Service Desk',
+    url: '/service/tickets',
+    access: 'service',
+    statusParam: 'status',
+    statuses: statusOptionsOf(SERVICE_STATUSES, (k) => SERVICE_STATUS_LABELS[k as ServiceStatus] ?? k),
+  },
 ];
+
+/** A register's request: its fixed params plus the search and status filter, both applied in SQL. */
+const queryOf = (ds: Dataset, search: string, status: string): Record<string, unknown> => ({
+  ...(ds.params || {}),
+  search: search || undefined,
+  ...(ds.statusParam && status !== 'all' ? { [ds.statusParam]: status } : {}),
+});
+const isRefusal = (err: unknown) => err instanceof ApiError && (err.status === 401 || err.status === 403);
+
+/**
+ * One register as a server-paged infinite list. Only the open tab reads: the others hold their first page
+ * (never answered, so the loader shows when the tab opens, not an empty register for a frame). The hook
+ * swallows fetch errors, so page 1 reports its own through `report`. Page 1's `totals` (expense claims
+ * answer them for the whole filtered set) are kept for footers.
+ */
+function useRegister(ds: Dataset, active: boolean, search: string, status: string, report: (ds: Dataset, err: unknown) => void) {
+  const [totals, setTotals] = useState<any>(null);
+  const fetchPage = useCallback(
+    async (page: number) => {
+      if (!active) return new Promise<never>(() => {});
+      try {
+        const res = await api.get(ds.url, { ...queryOf(ds, search, status), page, limit: REGISTER_PAGE_SIZE });
+        if (page === 1) {
+          report(ds, null);
+          setTotals(res?.totals ?? null);
+        }
+        return ds.row ? { ...res, data: rows(res).map(ds.row) } : res;
+      } catch (err) {
+        if (page === 1) report(ds, err);
+        throw err;
+      }
+    },
+    [ds, active, search, status, report],
+  );
+  return { ...useInfiniteList<any>(fetchPage), totals };
+}
 
 const KPI_CARDS: { key: string; title: string; icon: React.ReactNode; variant: 'primary' | 'amber' | 'emerald' }[] = [
   { key: 'tenders', title: 'Live GeM Bids', icon: <FileText className="h-4 w-4" />, variant: 'primary' },
@@ -194,68 +270,82 @@ export default function ConsolidatedReportsPage() {
   const [tabChoice, setActiveTab] = useState('');
   // Never land on a tab the role cannot see (Accounts opens on Expense Claims, not an empty GeM Bids tab).
   const activeTab = visible.has(tabChoice) ? tabChoice : DATASETS.find((ds) => visible.has(ds.key))?.key || 'expenses';
-  const [isLoading, setIsLoading] = useState(true);
   const [failed, setFailed] = useState<string[]>([]);
 
-  // Data sets
-  const [tenders, setTenders] = useState<any[]>([]);
-  const [leads, setLeads] = useState<any[]>([]);
-  const [visits, setVisits] = useState<any[]>([]);
-  const [expenses, setExpenses] = useState<any[]>([]);
-  const [tickets, setTickets] = useState<any[]>([]);
-  const [settlements, setSettlements] = useState<any[]>([]);
-
-  // Search & filter (shared by every tab)
+  // Search & filter (shared by every tab), both applied by the API; search 300 ms after typing stops
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchTerm.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
-  const fetchAllReportData = useCallback(async () => {
-    setIsLoading(true);
-    const bad: string[] = [];
-    const refused: string[] = [];
-    const load = (ds: (typeof DATASETS)[number]) =>
-      api.get(ds.url, { limit: 100, ...(ds.params || {}) }).catch((err: unknown) => {
-        console.error(`Reports: ${ds.url} failed`, err);
-        // No permission → simply hide that report; anything else is a load failure the user can retry.
-        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) refused.push(ds.key);
-        else bad.push(ds.label);
-        return null;
-      });
-    const res = await Promise.all(DATASETS.map((ds) => (allowed.has(ds.key) ? load(ds) : null)));
-    const byKey = Object.fromEntries(DATASETS.map((ds, i) => [ds.key, res[i]]));
-    const { tenders: tendersRes, leads: leadsRes, visits: visitsRes, expenses: expensesRes, service: serviceRes, settlements: settlementsRes } = byKey;
-    setTenders(rows(tendersRes));
-    setLeads(rows(leadsRes));
-    setVisits(rows(visitsRes));
-    // Module 9 report rows are per expense line; keep the field names this view already uses.
-    setExpenses(rows(expensesRes).map((r: any) => ({ ...r, id: r.item_id, category: r.category_name, status: r.status_label || r.status, manager_remarks: r.reviewer_comment })));
-    setTickets(rows(serviceRes));
-    setSettlements(rows(settlementsRes));
-    setFailed(bad);
-    setDenied(refused);
-    setIsLoading(false);
-  }, [allowed]);
+  /** A register answered (err null) or failed: no permission hides it; anything else is a load failure the user can retry. */
+  const report = useCallback((ds: Dataset, err: unknown) => {
+    if (!err) {
+      setFailed((f) => (f.includes(ds.label) ? f.filter((l) => l !== ds.label) : f));
+      return;
+    }
+    console.error(`Reports: ${ds.url} failed`, err);
+    if (isRefusal(err)) setDenied((d) => (d.includes(ds.key) ? d : [...d, ds.key]));
+    else setFailed((f) => (f.includes(ds.label) ? f : [...f, ds.label]));
+  }, []);
+
+  // Each register pages in SQL; only the open tab reads.
+  const dsOf = (key: string) => DATASETS.find((ds) => ds.key === key)!;
+  const tendersList = useRegister(dsOf('tenders'), activeTab === 'tenders', debouncedSearch, statusFilter, report);
+  const leadsList = useRegister(dsOf('leads'), activeTab === 'leads', debouncedSearch, statusFilter, report);
+  const visitsList = useRegister(dsOf('visits'), activeTab === 'visits', debouncedSearch, statusFilter, report);
+  const expensesList = useRegister(dsOf('expenses'), activeTab === 'expenses', debouncedSearch, statusFilter, report);
+  const settlementsList = useRegister(dsOf('settlements'), activeTab === 'settlements', debouncedSearch, statusFilter, report);
+  const ticketsList = useRegister(dsOf('service'), activeTab === 'service', debouncedSearch, statusFilter, report);
+  const lists: Record<string, typeof tendersList> = {
+    tenders: tendersList,
+    leads: leadsList,
+    visits: visitsList,
+    expenses: expensesList,
+    settlements: settlementsList,
+    service: ticketsList,
+  };
+  const activeList = lists[activeTab] ?? expensesList;
+  const { rows: tenders } = tendersList;
+  const { rows: leads } = leadsList;
+  const { rows: visits } = visitsList;
+  const { rows: expenses } = expensesList;
+  const { rows: tickets } = ticketsList;
+  const { rows: settlements } = settlementsList;
+
+  // KPI cards and the View menu: each register's total, read as one row per register (the rows themselves load
+  // only on their tab). A register the API refuses (403) is hidden here already. Only failures are reported: a
+  // register's own list clears its failure once it loads.
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const fetchCounts = useCallback(async () => {
+    const res = await Promise.all(
+      DATASETS.map((ds) =>
+        allowed.has(ds.key)
+          ? api.get(ds.url, { ...(ds.params || {}), page: 1, limit: 1 }).catch((err: unknown) => {
+              report(ds, err);
+              return null;
+            })
+          : null,
+      ),
+    );
+    setCounts(Object.fromEntries(DATASETS.flatMap((ds, i) => (res[i] ? [[ds.key, Number(res[i].total ?? rows(res[i]).length)]] : []))));
+  }, [allowed, report]);
 
   useEffect(() => {
-    fetchAllReportData();
-  }, [fetchAllReportData]);
+    fetchCounts();
+  }, [fetchCounts]);
 
-  // Search + status filtering, applied to the active tab's rows
-  const matches = (r: any) => {
-    const q = searchTerm.trim().toLowerCase();
-    if (!q) return true;
-    return Object.values(r).some((v) => typeof v === 'string' || typeof v === 'number' ? String(v).toLowerCase().includes(q) : false);
+  const retry = () => {
+    setFailed([]);
+    fetchCounts();
+    activeList.refresh();
   };
-  const byStatus = (r: any) => statusFilter === 'all' || String(r.status || '').toLowerCase() === statusFilter;
-  const vTenders = tenders.filter((r) => matches(r) && byStatus(r));
-  const vLeads = leads.filter((r) => matches(r) && byStatus(r));
-  const vVisits = visits.filter((r) => matches(r) && byStatus(r));
-  const vExpenses = expenses.filter((r) => matches(r) && byStatus(r));
-  const vTickets = tickets.filter((r) => matches(r) && byStatus(r));
-  const vSettlements = settlements.filter((r) => matches(r) && byStatus(r));
 
   const tenderRegister = register(
-    vTenders,
+    tenders,
     (t): RecordItem => ({
       key: String(t.id),
       code: t.tender_no,
@@ -273,7 +363,7 @@ export default function ConsolidatedReportsPage() {
     (t) => laneIn(TENDER_STATUSES, t.status),
   );
 
-  const tenderList = vTenders.length ? (
+  const tenderList = tenders.length ? (
     <RecordTable items={tenderRegister.items}>
       <Table>
         <TableHeader>
@@ -288,7 +378,7 @@ export default function ConsolidatedReportsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {vTenders.map((t) => {
+          {tenders.map((t) => {
             const closes = t.bid_closing_date || t.submission_deadline;
             const daysLeft = TENDER_PRE_SUBMISSION.includes(String(t.status || '').toLowerCase()) ? daysFromToday(closes) : null;
             const place = [t.city, t.state].filter(Boolean).join(', ');
@@ -330,7 +420,7 @@ export default function ConsolidatedReportsPage() {
   ) : undefined;
 
   const leadRegister = register(
-    vLeads,
+    leads,
     (l): RecordItem => ({
       key: String(l.id),
       title: txt(l.organisation_name),
@@ -349,7 +439,7 @@ export default function ConsolidatedReportsPage() {
     (l) => laneIn(LEAD_STATUSES, l.status),
   );
 
-  const leadList = vLeads.length ? (
+  const leadList = leads.length ? (
     <RecordTable items={leadRegister.items}>
       <Table>
         <TableHeader>
@@ -364,7 +454,7 @@ export default function ConsolidatedReportsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {vLeads.map((l) => {
+          {leads.map((l) => {
             const value = l.value_lakh || l.estimated_value_lakh;
             const place = [l.city, l.state].filter(Boolean).join(', ');
             return (
@@ -408,7 +498,7 @@ export default function ConsolidatedReportsPage() {
   ) : undefined;
 
   const visitRegister = register(
-    vVisits,
+    visits,
     (v): RecordItem => ({
       key: String(v.id),
       title: txt(v.organisation_name),
@@ -426,7 +516,7 @@ export default function ConsolidatedReportsPage() {
     (v) => laneIn(VISIT_STATUSES, v.status),
   );
 
-  const visitList = vVisits.length ? (
+  const visitList = visits.length ? (
     <RecordTable items={visitRegister.items}>
       <Table>
         <TableHeader>
@@ -440,7 +530,7 @@ export default function ConsolidatedReportsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {vVisits.map((v) => {
+          {visits.map((v) => {
             const place = v.location || v.city;
             const directive = v.manager_name ? `Directive by ${v.manager_name}` : undefined;
             return (
@@ -476,7 +566,7 @@ export default function ConsolidatedReportsPage() {
   ) : undefined;
 
   const expenseRegister = register(
-    vExpenses,
+    expenses,
     (e): RecordItem => ({
       key: String(e.id),
       title: txt(e.employee_name),
@@ -493,7 +583,7 @@ export default function ConsolidatedReportsPage() {
     (e) => laneIn(EXPENSE_LANE_KEYS, EXPENSE_STATUS_LABELS[e.status as keyof typeof EXPENSE_STATUS_LABELS] || e.status),
   );
 
-  const expenseList = vExpenses.length ? (
+  const expenseList = expenses.length ? (
     <RecordTable items={expenseRegister.items}>
       <Table>
         <TableHeader>
@@ -508,7 +598,7 @@ export default function ConsolidatedReportsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {vExpenses.map((e) => (
+          {expenses.map((e) => (
             <TableRow key={String(e.id)}>
               <TableCell className="font-bold whitespace-nowrap">
                 <span className="font-mono text-[#0F5E63]">{txt(e.claim_number)}</span>
@@ -544,7 +634,7 @@ export default function ConsolidatedReportsPage() {
   ) : undefined;
 
   const serviceRegister = register(
-    vTickets,
+    tickets,
     (s): RecordItem => {
       const st = normalizeServiceStatus(s.status);
       return {
@@ -566,7 +656,7 @@ export default function ConsolidatedReportsPage() {
     (s) => laneIn(SERVICE_STATUSES, normalizeServiceStatus(s.status)),
   );
 
-  const serviceList = vTickets.length ? (
+  const serviceList = tickets.length ? (
     <RecordTable items={serviceRegister.items}>
       <Table>
         <TableHeader>
@@ -581,7 +671,7 @@ export default function ConsolidatedReportsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {vTickets.map((s) => {
+          {tickets.map((s) => {
             const st = normalizeServiceStatus(s.status);
             const complaint = txt(s.complaint || s.complaint_description);
             return (
@@ -630,7 +720,7 @@ export default function ConsolidatedReportsPage() {
 
   // Settlement register: one row per paid claim with how it was paid (UTR, date) and its Tally voucher.
   const settlementRegister = register(
-    vSettlements,
+    settlements,
     (c): RecordItem => ({
       key: String(c.id),
       code: c.claim_number,
@@ -647,8 +737,11 @@ export default function ConsolidatedReportsPage() {
     }),
     () => 'paid',
   );
-  const settlementTotal = vSettlements.reduce((sum, c) => sum + Number(c.total_approved || 0), 0);
-  const settlementList = vSettlements.length ? (
+  // Whole filtered set from the API's totals (only some pages are loaded); the loaded rows' sum until they arrive.
+  const settlementCount: number = settlementsList.totals?.count ?? settlementsList.total;
+  const settlementTotal: number =
+    settlementsList.totals?.total_approved ?? settlements.reduce((sum, c) => sum + Number(c.total_approved || 0), 0);
+  const settlementList = settlements.length ? (
     <RecordTable items={settlementRegister.items}>
       <Table>
         <TableHeader>
@@ -663,7 +756,7 @@ export default function ConsolidatedReportsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {vSettlements.map((c) => (
+          {settlements.map((c) => (
             <TableRow key={String(c.id)}>
               <TableCell className="font-bold whitespace-nowrap">
                 <span className="font-mono text-[#0F5E63]">{txt(c.claim_number)}</span>
@@ -679,7 +772,7 @@ export default function ConsolidatedReportsPage() {
             </TableRow>
           ))}
           <TableRow className="bg-[#FBFAF7]">
-            <TableCell colSpan={3} className="text-xs uppercase tracking-wide text-[#4A5568]">Total paid ({vSettlements.length} claims)</TableCell>
+            <TableCell colSpan={3} className="text-xs uppercase tracking-wide text-[#4A5568]">Total paid ({settlementCount} claims)</TableCell>
             <TableCell className="text-right font-mono font-bold text-[#14213D] whitespace-nowrap">{formatINR(settlementTotal)}</TableCell>
             <TableCell colSpan={3} />
           </TableRow>
@@ -690,17 +783,20 @@ export default function ConsolidatedReportsPage() {
 
   const filtersOn = Boolean(searchTerm.trim()) || statusFilter !== 'all';
   const emptyText = filtersOn ? 'No records match this search or status.' : 'No records in this report yet.';
-  const summaryOf = (shown: number, total: number, one: string, many: string) =>
-    shown === total ? `${total} ${total === 1 ? one : many}` : `${shown} of ${total} ${total === 1 ? one : many}`;
+  const summaryOf = (list: { rows: unknown[]; total: number }, one: string, many: string) => (
+    <span className="font-mono text-xs">
+      {list.rows.length} of {list.total} {list.total === 1 ? one : many}
+    </span>
+  );
+  /** Infinite scroll for a register: the next page as the reader nears the end. */
+  const pagingOf = (list: typeof tendersList) => ({ onLoadMore: list.loadMore, hasMore: list.hasMore, loadingMore: list.loadingMore });
 
-  const activeRows: any[] = { tenders, leads, visits, expenses, service: tickets, settlements }[activeTab] || [];
-  const statusOptions = Array.from(new Set(activeRows.map((r) => String(r.status || '').toLowerCase()).filter(Boolean))).sort();
+  const statusOptions = dsOf(activeTab)?.statuses ?? [];
 
   const switchTab = (id: string) => {
     setActiveTab(id);
     setStatusFilter('all');
   };
-  const counts: Record<string, number> = { tenders: tenders.length, leads: leads.length, visits: visits.length, expenses: expenses.length, service: tickets.length, settlements: settlements.length };
 
   /** An instant as IST "DD/MM/YYYY HH:mm" for a CSV cell; "N/A" when missing. */
   const istStamp = (value: string | null | undefined): string => {
@@ -736,9 +832,34 @@ export default function ConsolidatedReportsPage() {
     document.body.removeChild(link);
   };
 
-  // The bids on screen (search and status filter applied), with IST dates and the bid value (QA BUG-013).
-  const handleExportTenders = () => {
-    const exportData = vTenders.map((t) => ({
+  // CSV exports carry the whole register with the current search and status filter, read from the API page by
+  // page (the screen holds only the pages scrolled to so far).
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const runExport = async (key: string, filename: string, toRow: (r: any) => Record<string, any>) => {
+    const ds = dsOf(key);
+    setExporting(true);
+    setExportError(null);
+    try {
+      const all: any[] = [];
+      for (let page = 1; ; page++) {
+        const res = await api.get(ds.url, { ...queryOf(ds, debouncedSearch, statusFilter), page, limit: EXPORT_PAGE_SIZE });
+        const batch = rows(res);
+        all.push(...(ds.row ? batch.map(ds.row) : batch));
+        if (!batch.length || page >= Number(res?.totalPages ?? 1)) break;
+      }
+      exportToCsv(filename, all.map(toRow));
+    } catch (err) {
+      console.error(`Reports: ${ds.url} export failed`, err);
+      setExportError(`We couldn't export ${ds.label}. Please try again in a moment.`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // The bids matching the search and status filter, with IST dates and the bid value (QA BUG-013).
+  const handleExportTenders = () =>
+    runExport('tenders', 'Arihant_GeM_Tenders_Report', (t) => ({
       'Tender No': t.tender_no,
       'Organisation': t.organisation_name || t.department || 'N/A',
       'Category': tenderCategory(t),
@@ -750,11 +871,9 @@ export default function ConsolidatedReportsPage() {
       'Zone': t.zone_name || t.zone_code || 'N/A',
       'City': t.city || 'N/A',
     }));
-    exportToCsv('Arihant_GeM_Tenders_Report', exportData);
-  };
 
-  const handleExportLeads = () => {
-    const exportData = leads.map((l) => ({
+  const handleExportLeads = () =>
+    runExport('leads', 'Arihant_Sales_Funnel_Report', (l) => ({
       'Organisation': l.organisation_name || 'N/A',
       'Product': l.product_name || 'N/A',
       'Category': codeLabel(l.category, 'Follow Up'),
@@ -764,11 +883,9 @@ export default function ConsolidatedReportsPage() {
       'Assigned To': l.assigned_to_name || 'N/A',
       'Next Follow-Up': l.next_followup_date || 'N/A',
     }));
-    exportToCsv('Arihant_Sales_Funnel_Report', exportData);
-  };
 
-  const handleExportVisits = () => {
-    const exportData = visits.map((v) => ({
+  const handleExportVisits = () =>
+    runExport('visits', 'Arihant_Field_Visits_Report', (v) => ({
       'Organisation': v.organisation_name || 'N/A',
       'Location': v.location || v.city || 'N/A',
       'Planned Date': v.planned_date,
@@ -777,11 +894,9 @@ export default function ConsolidatedReportsPage() {
       'Purpose': v.purpose || 'N/A',
       'Manager Intervention': v.manager_name ? `Directive by ${v.manager_name}` : 'None',
     }));
-    exportToCsv('Arihant_Field_Visits_Report', exportData);
-  };
 
-  const handleExportExpenses = () => {
-    const exportData = expenses.map((e) => ({
+  const handleExportExpenses = () =>
+    runExport('expenses', 'Arihant_Expenses_Audit_Report', (e) => ({
       'Employee': e.employee_name || 'N/A',
       'Date': e.expense_date,
       'Category': txt(e.category, 'Travel'),
@@ -791,11 +906,9 @@ export default function ConsolidatedReportsPage() {
       'Manager': e.manager_name || 'N/A',
       'Manager Remarks': e.manager_remarks || 'N/A',
     }));
-    exportToCsv('Arihant_Expenses_Audit_Report', exportData);
-  };
 
-  const handleExportSettlements = () => {
-    const exportData = settlements.map((c) => ({
+  const handleExportSettlements = () =>
+    runExport('settlements', 'Arihant_Expense_Settlements_Report', (c) => ({
       'Claim No': c.claim_number,
       'Employee': c.employee_name || 'N/A',
       'Region': c.region_name || 'N/A',
@@ -804,11 +917,9 @@ export default function ConsolidatedReportsPage() {
       'UTR / Bank Reference': c.payment_reference || 'Not recorded',
       'Tally Voucher': c.tally_voucher_ref || 'N/A',
     }));
-    exportToCsv('Arihant_Expense_Settlements_Report', exportData);
-  };
 
-  const handleExportService = () => {
-    const exportData = tickets.map((s) => ({
+  const handleExportService = () =>
+    runExport('service', 'Arihant_Service_Desk_Report', (s) => ({
       'Ticket No': s.ticket_no,
       'Customer': s.organisation_name || 'N/A',
       'Equipment Serial': s.equipment_serial || 'N/A',
@@ -818,8 +929,6 @@ export default function ConsolidatedReportsPage() {
       'Engineer': s.assigned_to_name || 'N/A',
       'Complaint': s.complaint || 'N/A',
     }));
-    exportToCsv('Arihant_Service_Desk_Report', exportData);
-  };
 
   return (
     <PageContainer>
@@ -830,37 +939,37 @@ export default function ConsolidatedReportsPage() {
         actions={
           <div className="flex items-center gap-2.5">
             {activeTab === 'tenders' && (
-              <Button variant="outline" onClick={handleExportTenders}>
+              <Button variant="outline" isLoading={exporting} disabled={exporting} onClick={handleExportTenders}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Tenders CSV
               </Button>
             )}
             {activeTab === 'leads' && (
-              <Button variant="outline" onClick={handleExportLeads}>
+              <Button variant="outline" isLoading={exporting} disabled={exporting} onClick={handleExportLeads}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Funnel CSV
               </Button>
             )}
             {activeTab === 'visits' && (
-              <Button variant="outline" onClick={handleExportVisits}>
+              <Button variant="outline" isLoading={exporting} disabled={exporting} onClick={handleExportVisits}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Visits CSV
               </Button>
             )}
             {activeTab === 'expenses' && (
-              <Button variant="outline" onClick={handleExportExpenses}>
+              <Button variant="outline" isLoading={exporting} disabled={exporting} onClick={handleExportExpenses}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Expenses CSV
               </Button>
             )}
             {activeTab === 'settlements' && (
-              <Button variant="outline" onClick={handleExportSettlements}>
+              <Button variant="outline" isLoading={exporting} disabled={exporting} onClick={handleExportSettlements}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Settlements CSV
               </Button>
             )}
             {activeTab === 'service' && (
-              <Button variant="outline" onClick={handleExportService}>
+              <Button variant="outline" isLoading={exporting} disabled={exporting} onClick={handleExportService}>
                 <Download className="h-4 w-4 mr-2" />
                 Export Service CSV
               </Button>
@@ -876,7 +985,7 @@ export default function ConsolidatedReportsPage() {
           <StatCard
             key={c.key}
             title={c.title}
-            value={counts[c.key]}
+            value={counts[c.key] ?? '—'}
             icon={c.icon}
             variant={c.variant}
             className={activeTab === c.key ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
@@ -914,24 +1023,25 @@ export default function ConsolidatedReportsPage() {
             />
           </div>
           <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
-            <FilterMenu
-              label="Status"
-              icon={<Layers />}
-              align="right"
-              // Below `lg` the row stacks and this menu sits at the left edge, where a right-anchored panel
-              // would open off-screen; anchor it left there. From `lg` up it is at the row's right end.
-              className="max-lg:[&_.filter-menu-panel]:left-0 max-lg:[&_.filter-menu-panel]:right-auto [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
-              options={[
-                { key: 'all', label: 'All statuses', count: activeRows.length, active: statusFilter === 'all', onSelect: () => setStatusFilter('all') },
-                ...statusOptions.map((st) => ({
-                  key: st,
-                  label: st.replace(/_/g, ' '),
-                  count: activeRows.filter((r) => String(r.status || '').toLowerCase() === st).length,
-                  active: statusFilter === st,
-                  onSelect: () => setStatusFilter(st),
-                })),
-              ]}
-            />
+            {statusOptions.length > 0 && (
+              <FilterMenu
+                label="Status"
+                icon={<Layers />}
+                align="right"
+                // Below `lg` the row stacks and this menu sits at the left edge, where a right-anchored panel
+                // would open off-screen; anchor it left there. From `lg` up it is at the row's right end.
+                className="max-lg:[&_.filter-menu-panel]:left-0 max-lg:[&_.filter-menu-panel]:right-auto [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                options={[
+                  { key: 'all', label: 'All statuses', active: statusFilter === 'all', onSelect: () => setStatusFilter('all') },
+                  ...statusOptions.map((st) => ({
+                    key: st.key,
+                    label: st.label,
+                    active: statusFilter === st.key,
+                    onSelect: () => setStatusFilter(st.key),
+                  })),
+                ]}
+              />
+            )}
             {(searchTerm || statusFilter !== 'all') && (
               <Button
                 variant="ghost"
@@ -955,14 +1065,19 @@ export default function ConsolidatedReportsPage() {
             We couldn&apos;t load {failed.join(', ')}. The other reports are up to date. Please try again in a moment — if it keeps happening, contact your
             administrator.
           </p>
-          <Button variant="secondary" size="xs" className="mt-2" leftIcon={<RefreshCw className="h-3.5 w-3.5" />} onClick={fetchAllReportData}>
+          <Button variant="secondary" size="xs" className="mt-2" leftIcon={<RefreshCw className="h-3.5 w-3.5" />} onClick={retry}>
             Try again
           </Button>
         </InfoCallout>
       )}
+      {exportError && (
+        <InfoCallout variant="danger" onClose={() => setExportError(null)}>
+          {exportError}
+        </InfoCallout>
+      )}
 
       {/* Content Body */}
-      {isLoading ? (
+      {activeList.loading ? (
         <PageLoader label="Loading consolidated records" />
       ) : (
         <>
@@ -975,7 +1090,8 @@ export default function ConsolidatedReportsPage() {
               lanes={TENDER_LANES}
               laneOf={tenderRegister.laneOf}
               hideEmptyLanes
-              summary={summaryOf(vTenders.length, tenders.length, 'bid', 'bids')}
+              summary={summaryOf(tendersList, 'bid', 'bids')}
+              {...pagingOf(tendersList)}
               empty={emptyText}
             />
           )}
@@ -988,7 +1104,8 @@ export default function ConsolidatedReportsPage() {
               lanes={LEAD_LANES}
               laneOf={leadRegister.laneOf}
               hideEmptyLanes
-              summary={summaryOf(vLeads.length, leads.length, 'lead', 'leads')}
+              summary={summaryOf(leadsList, 'lead', 'leads')}
+              {...pagingOf(leadsList)}
               empty={emptyText}
             />
           )}
@@ -1001,7 +1118,8 @@ export default function ConsolidatedReportsPage() {
               lanes={VISIT_LANES}
               laneOf={visitRegister.laneOf}
               hideEmptyLanes
-              summary={summaryOf(vVisits.length, visits.length, 'visit', 'visits')}
+              summary={summaryOf(visitsList, 'visit', 'visits')}
+              {...pagingOf(visitsList)}
               empty={emptyText}
             />
           )}
@@ -1014,7 +1132,8 @@ export default function ConsolidatedReportsPage() {
               lanes={EXPENSE_LANES}
               laneOf={expenseRegister.laneOf}
               hideEmptyLanes
-              summary={summaryOf(vExpenses.length, expenses.length, 'expense line', 'expense lines')}
+              summary={summaryOf(expensesList, 'expense line', 'expense lines')}
+              {...pagingOf(expensesList)}
               empty={emptyText}
             />
           )}
@@ -1027,7 +1146,8 @@ export default function ConsolidatedReportsPage() {
               lanes={[{ key: 'paid', label: 'Paid', tone: 'success' }]}
               laneOf={settlementRegister.laneOf}
               hideEmptyLanes
-              summary={summaryOf(vSettlements.length, settlements.length, 'settled claim', 'settled claims')}
+              summary={summaryOf(settlementsList, 'settled claim', 'settled claims')}
+              {...pagingOf(settlementsList)}
               empty={filtersOn ? emptyText : 'No claims have been paid yet.'}
             />
           )}
@@ -1040,7 +1160,8 @@ export default function ConsolidatedReportsPage() {
               lanes={SERVICE_LANES}
               laneOf={serviceRegister.laneOf}
               hideEmptyLanes
-              summary={summaryOf(vTickets.length, tickets.length, 'ticket', 'tickets')}
+              summary={summaryOf(ticketsList, 'ticket', 'tickets')}
+              {...pagingOf(ticketsList)}
               empty={emptyText}
             />
           )}

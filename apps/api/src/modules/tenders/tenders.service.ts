@@ -14,7 +14,7 @@ import { isUUID } from 'class-validator';
 import { KYSELY_DB } from '../../common/database/database.module.js';
 import { getPaginationParams, buildPaginatedResult } from '../../common/utils/pagination.js';
 import { assertRegionScope, checkRegionScope, assertNotSelfApproval } from '../../common/utils/scope.util.js';
-import { calendarDay } from '../../common/utils/ist-date.util.js';
+import { calendarDay, addIsoDays } from '../../common/utils/ist-date.util.js';
 import {
   TENDER_UPCOMING_DAYS,
   TENDER_URGENT_HOURS,
@@ -40,6 +40,9 @@ import {
   CreateTenderPortalIssueDto,
   UpdateTenderPortalIssueDto,
   TenderQueryDto,
+  TenderPageQueryDto,
+  TenderEmdTrackingQueryDto,
+  TenderCalendarQueryDto,
   TransitionTenderDto,
   HoldTenderDto,
   ResumeTenderDto,
@@ -809,6 +812,8 @@ export class TendersService {
         .orderBy(sql`case when tenders.submission_deadline is null then 1 else 0 end`, 'asc')
         .orderBy('tenders.submission_deadline', sortDirection);
     }
+    // Unique tiebreak: bids with the same sort value keep one order, so pages never repeat or skip a row.
+    orderQuery = orderQuery.orderBy('tenders.id', sortDirection);
 
     const items = await orderQuery
       .select([
@@ -2862,10 +2867,47 @@ export class TendersService {
   // 4. Portal Issues Management (Section 2 child table & Section 9)
   // =========================================================================
 
-  async getAllPortalIssues(user: AuthUser) {
-    let q = this.db
+  /**
+   * Portal issues hub (§25): one page of the issues in the caller's scope, newest first, with the hub's counts (total,
+   * open, escalated, resolved) over every issue in scope, so the cards and the View-menu badge never need the full list.
+   */
+  async getAllPortalIssues(user: AuthUser, query: TenderPageQueryDto = {}) {
+    const { page, limit, offset } = getPaginationParams({
+      page: Number(query.page || 1),
+      limit: Number(query.limit || 20),
+    });
+
+    let base = this.db
       .selectFrom('tender_portal_issues')
       .leftJoin('tenders', 'tender_portal_issues.tender_id', 'tenders.id')
+      .where('tenders.is_deleted', '=', false);
+
+    if (user.role === 'regional_manager') {
+      base = base.where(rmTenderScope(user));
+    } else if (user.role === 'sales') {
+      base = base.where((eb) =>
+        eb.or([
+          eb('tenders.assigned_to', '=', user.id),
+          eb('tenders.owner', '=', user.id),
+          eb('tenders.tender_owner_id', '=', user.id),
+          eb('tenders.created_by', '=', user.id),
+          eb('tender_portal_issues.reported_by', '=', user.id),
+          eb('tender_portal_issues.responsible_person_id', '=', user.id),
+        ]),
+      );
+    }
+
+    // "Open" = not yet resolved / closed (OPEN, IN_PROGRESS, ESCALATED) — the same rule as the dashboard's open_portal_issues.
+    const counts = await base
+      .select([
+        sql<number>`count(tender_portal_issues.id)::int`.as('total'),
+        sql<number>`count(case when upper(coalesce(tender_portal_issues.resolution_status, 'OPEN')) not in ('RESOLVED', 'CLOSED') then 1 end)::int`.as('open'),
+        sql<number>`count(case when upper(coalesce(tender_portal_issues.resolution_status, '')) = 'ESCALATED' then 1 end)::int`.as('escalated'),
+      ])
+      .executeTakeFirst();
+    const total = counts?.total || 0;
+
+    const rows = await base
       .leftJoin('users as rep', 'tender_portal_issues.reported_by', 'rep.id')
       .leftJoin('users as resp', 'tender_portal_issues.responsible_person_id', 'resp.id')
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
@@ -2883,24 +2925,21 @@ export class TendersService {
         'rep.full_name as reported_by_name',
         'resp.full_name as responsible_name',
       ])
-      .where('tenders.is_deleted', '=', false);
+      .orderBy('tender_portal_issues.created_at', 'desc')
+      .orderBy('tender_portal_issues.id', 'desc')
+      .limit(limit)
+      .offset(offset)
+      .execute();
 
-    if (user.role === 'regional_manager') {
-      q = q.where(rmTenderScope(user));
-    } else if (user.role === 'sales') {
-      q = q.where((eb) =>
-        eb.or([
-          eb('tenders.assigned_to', '=', user.id),
-          eb('tenders.owner', '=', user.id),
-          eb('tenders.tender_owner_id', '=', user.id),
-          eb('tenders.created_by', '=', user.id),
-          eb('tender_portal_issues.reported_by', '=', user.id),
-          eb('tender_portal_issues.responsible_person_id', '=', user.id),
-        ]),
-      );
-    }
-
-    return q.orderBy('tender_portal_issues.created_at', 'desc').execute();
+    return {
+      ...buildPaginatedResult(rows, total, page, limit),
+      counts: {
+        total,
+        open: counts?.open || 0,
+        escalated: counts?.escalated || 0,
+        resolved: total - (counts?.open || 0),
+      },
+    };
   }
 
   async getPortalIssues(tenderId: string, user?: AuthUser) {
@@ -3652,8 +3691,12 @@ export class TendersService {
     };
   }
 
+  /**
+   * §26 win / loss analysis. Every count, sum and breakdown is aggregated in SQL over all decided bids in scope; only the
+   * 50 most recent outcome rows are read (`recent_completed`).
+   */
   async getWinLossReport(user: AuthUser) {
-    let query = this.db
+    let base = this.db
       .selectFrom('tender_outcomes')
       .innerJoin('tenders', 'tender_outcomes.tender_id', 'tenders.id')
       .leftJoin('products', 'tenders.product_id', 'products.id')
@@ -3662,36 +3705,12 @@ export class TendersService {
       .leftJoin('users as assigned_user', 'tenders.assigned_to', 'assigned_user.id')
       .leftJoin('users as owner_user', 'tenders.tender_owner_id', 'owner_user.id')
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
-      .select([
-        'tender_outcomes.id as outcome_id',
-        'tender_outcomes.tender_id',
-        'tender_outcomes.result',
-        'tender_outcomes.reason',
-        'tender_outcomes.competitor',
-        'tender_outcomes.value_lakh',
-        'tender_outcomes.result_date',
-        'tender_outcomes.technical_issue',
-        'tender_outcomes.pricing_issue',
-        'tender_outcomes.eligibility_issue',
-        'tender_outcomes.documentation_issue',
-        'tender_outcomes.other_reason',
-        'tender_outcomes.notes',
-        'tenders.tender_no',
-        'tenders.requirement_text as tender_title',
-        'tenders.category as tender_category',
-        'products.name as product_name',
-        'regions.name as region_name',
-        'zones.name as zone_name',
-        'assigned_user.full_name as assigned_person_name',
-        'owner_user.full_name as tender_owner_name',
-        'organisations.name as organisation_name',
-      ] as any)
       .where('tenders.is_deleted', '=', false);
 
     if (user.role === 'regional_manager') {
-      query = query.where(rmTenderScope(user));
+      base = base.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
-      query = query.where((eb) =>
+      base = base.where((eb) =>
         eb.or([
           eb('tenders.assigned_to', '=', user.id),
           eb('tenders.owner', '=', user.id),
@@ -3701,68 +3720,106 @@ export class TendersService {
       );
     }
 
-    const outcomes = (await query.orderBy('tender_outcomes.result_date', 'desc').execute()) as any[];
+    const round2 = (n: unknown) => Math.round((Number(n) || 0) * 100) / 100;
+    // A loss factor counts when its flag is filled in or the free-text reason names it.
+    const lostWith = (flag: string, ...words: string[]) =>
+      sql<number>`count(case when tender_outcomes.result = 'lost' and (nullif(${sql.ref(`tender_outcomes.${flag}`)}, '') is not null or ${sql.join(
+        words.map((w) => sql`strpos(lower(coalesce(tender_outcomes.reason, '')), ${w}) > 0`),
+        sql` or `,
+      )}) then 1 end)::int`;
 
-    let wonCount = 0;
-    let lostCount = 0;
-    let totalWonValueLakh = 0;
-    const lossReasons: Record<string, number> = {};
-    const competitors: Record<string, number> = {};
-    const wonByProduct: Record<string, { count: number; value_lakh: number }> = {};
-    const wonByRegion: Record<string, { count: number; value_lakh: number }> = {};
-    const wonByCategory: Record<string, { count: number; value_lakh: number }> = {};
-    const wonByPerson: Record<string, { count: number; value_lakh: number }> = {};
-
-    let technicalIssuesCount = 0;
-    let pricingIssuesCount = 0;
-    let eligibilityIssuesCount = 0;
-    let documentationIssuesCount = 0;
-    let otherReasonsCount = 0;
-
-    for (const o of outcomes) {
-      const val = Number(o.value_lakh) || 0;
-      if (o.result === 'won') {
-        wonCount++;
-        totalWonValueLakh += val;
-
-        const prod = o.product_name || 'Standard Equipment';
-        wonByProduct[prod] = {
-          count: (wonByProduct[prod]?.count || 0) + 1,
-          value_lakh: Math.round(((wonByProduct[prod]?.value_lakh || 0) + val) * 100) / 100,
-        };
-
-        const reg = o.region_name || 'Unassigned Region';
-        wonByRegion[reg] = {
-          count: (wonByRegion[reg]?.count || 0) + 1,
-          value_lakh: Math.round(((wonByRegion[reg]?.value_lakh || 0) + val) * 100) / 100,
-        };
-
-        const cat = o.tender_category || 'General / MHA';
-        wonByCategory[cat] = {
-          count: (wonByCategory[cat]?.count || 0) + 1,
-          value_lakh: Math.round(((wonByCategory[cat]?.value_lakh || 0) + val) * 100) / 100,
-        };
-
-        const person = o.tender_owner_name || o.assigned_person_name || 'Unassigned Team';
-        wonByPerson[person] = {
-          count: (wonByPerson[person]?.count || 0) + 1,
-          value_lakh: Math.round(((wonByPerson[person]?.value_lakh || 0) + val) * 100) / 100,
-        };
-      } else if (o.result === 'lost') {
-        lostCount++;
-        const r = o.reason || 'UNSPECIFIED';
-        lossReasons[r] = (lossReasons[r] || 0) + 1;
-        if (o.competitor) {
-          competitors[o.competitor] = (competitors[o.competitor] || 0) + 1;
-        }
-
-        if (o.technical_issue || r.toLowerCase().includes('tech')) technicalIssuesCount++;
-        if (o.pricing_issue || r.toLowerCase().includes('price') || r.toLowerCase().includes('l1')) pricingIssuesCount++;
-        if (o.eligibility_issue || r.toLowerCase().includes('eligib')) eligibilityIssuesCount++;
-        if (o.documentation_issue || r.toLowerCase().includes('doc')) documentationIssuesCount++;
-        if (o.other_reason || r.toLowerCase().includes('other')) otherReasonsCount++;
+    // Won bids grouped by one label; a missing (or empty) label falls back to `fallback`, merged with any equal name.
+    const wonBy = async (label: RawBuilder<string | null>, fallback: string) => {
+      const rows = await base
+        .where('tender_outcomes.result', '=', 'won')
+        .select([
+          label.as('label'),
+          sql<number>`count(tender_outcomes.id)::int`.as('count'),
+          sql<number>`coalesce(sum(tender_outcomes.value_lakh), 0)::float8`.as('value_lakh'),
+        ])
+        .groupBy(label)
+        .execute();
+      const out: Record<string, { count: number; value_lakh: number }> = {};
+      for (const r of rows) {
+        const key = r.label || fallback;
+        out[key] = { count: (out[key]?.count || 0) + r.count, value_lakh: round2((out[key]?.value_lakh || 0) + Number(r.value_lakh)) };
       }
-    }
+      return out;
+    };
+    const lostCountBy = async (label: RawBuilder<string | null>, fallback: string | null) => {
+      let q = base.where('tender_outcomes.result', '=', 'lost');
+      if (fallback === null) q = q.where(sql<boolean>`${label} is not null`);
+      const rows = await q
+        .select([label.as('label'), sql<number>`count(tender_outcomes.id)::int`.as('count')])
+        .groupBy(label)
+        .execute();
+      const out: Record<string, number> = {};
+      for (const r of rows) {
+        const key = (r.label || fallback) as string;
+        out[key] = (out[key] || 0) + r.count;
+      }
+      return out;
+    };
+
+    const [totals, wonByProduct, wonByRegion, wonByCategory, wonByPerson, lossReasons, competitors, recent] = await Promise.all([
+      base
+        .select([
+          sql<number>`count(case when tender_outcomes.result = 'won' then 1 end)::int`.as('won'),
+          sql<number>`count(case when tender_outcomes.result = 'lost' then 1 end)::int`.as('lost'),
+          sql<number>`coalesce(sum(case when tender_outcomes.result = 'won' then tender_outcomes.value_lakh end), 0)::float8`.as('won_value_lakh'),
+          lostWith('technical_issue', 'tech').as('technical'),
+          lostWith('pricing_issue', 'price', 'l1').as('pricing'),
+          lostWith('eligibility_issue', 'eligib').as('eligibility'),
+          lostWith('documentation_issue', 'doc').as('documentation'),
+          lostWith('other_reason', 'other').as('other'),
+        ])
+        .executeTakeFirst(),
+      wonBy(sql`nullif(products.name, '')`, 'Standard Equipment'),
+      wonBy(sql`nullif(regions.name, '')`, 'Unassigned Region'),
+      wonBy(sql`nullif(tenders.category::text, '')`, 'General / MHA'),
+      wonBy(sql`coalesce(nullif(owner_user.full_name, ''), nullif(assigned_user.full_name, ''))`, 'Unassigned Team'),
+      lostCountBy(sql`nullif(tender_outcomes.reason, '')`, 'UNSPECIFIED'),
+      lostCountBy(sql`nullif(tender_outcomes.competitor, '')`, null),
+      base
+        .select([
+          'tender_outcomes.id as outcome_id',
+          'tender_outcomes.tender_id',
+          'tender_outcomes.result',
+          'tender_outcomes.reason',
+          'tender_outcomes.competitor',
+          'tender_outcomes.value_lakh',
+          'tender_outcomes.result_date',
+          'tender_outcomes.technical_issue',
+          'tender_outcomes.pricing_issue',
+          'tender_outcomes.eligibility_issue',
+          'tender_outcomes.documentation_issue',
+          'tender_outcomes.other_reason',
+          'tender_outcomes.notes',
+          'tenders.tender_no',
+          'tenders.requirement_text as tender_title',
+          'tenders.category as tender_category',
+          'products.name as product_name',
+          'regions.name as region_name',
+          'zones.name as zone_name',
+          'assigned_user.full_name as assigned_person_name',
+          'owner_user.full_name as tender_owner_name',
+          'organisations.name as organisation_name',
+        ] as any)
+        .orderBy('tender_outcomes.result_date', 'desc')
+        .orderBy('tender_outcomes.id', 'desc')
+        .limit(50)
+        .execute() as Promise<any[]>,
+    ]);
+
+    const wonCount = totals?.won || 0;
+    const lostCount = totals?.lost || 0;
+    const factors = {
+      technical: totals?.technical || 0,
+      pricing: totals?.pricing || 0,
+      eligibility: totals?.eligibility || 0,
+      documentation: totals?.documentation || 0,
+      other: totals?.other || 0,
+    };
 
     const totalDecided = wonCount + lostCount;
     const winRate = totalDecided > 0 ? Math.round((wonCount / totalDecided) * 100) : 0;
@@ -3774,7 +3831,7 @@ export class TendersService {
       lost_count: lostCount,
       total_decided: totalDecided,
       win_rate: winRate,
-      total_won_value_lakh: Math.round(totalWonValueLakh * 100) / 100,
+      total_won_value_lakh: round2(totals?.won_value_lakh),
       reasons: lossReasons,
       loss_reasons: lossReasons,
       won_by_product: wonByProduct,
@@ -3788,24 +3845,18 @@ export class TendersService {
         by_salesperson: wonByPerson,
       },
       loss_factors: {
-        technical_issues: technicalIssuesCount,
-        pricing_issues: pricingIssuesCount,
-        eligibility_issues: eligibilityIssuesCount,
-        documentation_issues: documentationIssuesCount,
-        other_reasons: otherReasonsCount,
+        technical_issues: factors.technical,
+        pricing_issues: factors.pricing,
+        eligibility_issues: factors.eligibility,
+        documentation_issues: factors.documentation,
+        other_reasons: factors.other,
       },
       lost_breakdown: {
         reasons: lossReasons,
         competitors,
-        factors: {
-          technical: technicalIssuesCount,
-          pricing: pricingIssuesCount,
-          eligibility: eligibilityIssuesCount,
-          documentation: documentationIssuesCount,
-          other: otherReasonsCount,
-        },
+        factors,
       },
-      recent_completed: outcomes.slice(0, 50),
+      recent_completed: recent,
     };
   }
 
@@ -3996,14 +4047,40 @@ export class TendersService {
 
   /**
    * Approvals Inbox: exactly the tenders currently awaiting approval in the caller's scope, most urgent first
-   * (open deadlines soonest first, then no deadline, then deadlines already passed), newest request first on ties.
+   * (open deadlines soonest first, then no deadline, then deadlines already passed), newest request first on ties,
+   * one page at a time (the order is SQL, ending in the tender id, so pages never repeat or skip a row).
    * Each row carries its open request (who / when / note), the approval SLA clock (from the request, not from tender
    * creation) and `can_decide`, which mirrors the server's approve/reject rules (Management/Admin + dual control).
+   * `total` and `sla_breached_total` count every pending tender in scope, not just the page.
    */
-  async getApprovalsInbox(user: AuthUser, now: Date = new Date()) {
+  async getApprovalsInbox(user: AuthUser, now: Date = new Date(), query: TenderPageQueryDto = {}) {
     const settings = await this.getSettings();
     const slaHours = Number((settings as any)?.approval_sla_hours) || 24;
     const allowSelfApproval = Boolean(settings?.allow_self_approval);
+    const { page, limit, offset } = getPaginationParams({
+      page: Number(query.page || 1),
+      limit: Number(query.limit || 20),
+    });
+
+    const nowIso = now.toISOString();
+    const deadline = sql`coalesce(tenders.submission_deadline, tenders.bid_closing_date)`;
+    // When approval was requested: the latest open request, else the latest move into the stage, else the tender's own
+    // timestamps — the same fallbacks as `requested_at` on each row below.
+    const requestedAt = sql`coalesce(
+      (select max(ta.requested_at) from tender_approvals ta where ta.tender_id = tenders.id and ta.status = 'PENDING'),
+      (select max(h.created_at) from tender_status_history h
+        where h.tender_id = tenders.id and lower(h.to_status) in ('awaiting_internal_approval', 'awaiting_approval')),
+      tenders.last_activity_at, tenders.updated_at, tenders.created_at)`;
+
+    const counts = await this.pendingApprovalsQuery(user)
+      .select([
+        sql<number>`count(tenders.id)::int`.as('total'),
+        // Same rule as `sla_breached` on a row: whole hours pending > the SLA.
+        sql<number>`count(case when floor(extract(epoch from (${nowIso}::timestamptz - ${requestedAt})) / 3600) > ${slaHours} then 1 end)::int`.as(
+          'sla_breached',
+        ),
+      ])
+      .executeTakeFirst();
 
     const rows = await this.pendingApprovalsQuery(user)
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
@@ -4041,8 +4118,16 @@ export class TendersService {
         'tender_categories.code as category_code',
         'assignee.full_name as assigned_to_name',
       ])
+      // Open deadlines first (soonest first), then no deadline, then deadlines already passed; newest request on ties.
+      .orderBy(sql`case when ${deadline} is null then 1 when ${deadline} < ${nowIso} then 2 else 0 end`, 'asc')
+      .orderBy(sql`case when ${deadline} >= ${nowIso} then ${deadline} end`, 'asc')
+      .orderBy(requestedAt, 'desc')
+      .orderBy('tenders.id', 'asc')
+      .limit(limit)
+      .offset(offset)
       .execute();
 
+    // Request / history rows for this page's tenders only.
     const ids = rows.map((r) => r.id);
     const [requests, history] = ids.length
       ? await Promise.all([
@@ -4132,29 +4217,18 @@ export class TendersService {
       };
     });
 
-    const bucket = (i: (typeof items)[number]) => (i.hours_left === null ? 1 : i.deadline_passed ? 2 : 0);
-    items.sort((a, b) => {
-      const ba = bucket(a);
-      const bb = bucket(b);
-      if (ba !== bb) return ba - bb;
-      if (ba === 0) {
-        const d = (a.hours_left as number) - (b.hours_left as number);
-        if (d !== 0) return d;
-      }
-      return Date.parse(b.requested_at) - Date.parse(a.requested_at);
-    });
-
     return {
-      data: items,
-      total: items.length,
+      ...buildPaginatedResult(items, counts?.total || 0, page, limit),
+      sla_breached_total: counts?.sla_breached || 0,
       can_decide: isDecider,
       sla_hours: slaHours,
       generated_at: now.toISOString(),
     };
   }
 
-  async getMyTenders(user: AuthUser) {
-    return this.findAll({ assigned_to: user.id }, user);
+  /** The caller's own bids (assigned to them), with the register's paging, sort and filters. */
+  async getMyTenders(user: AuthUser, query: TenderQueryDto = {}) {
+    return this.findAll({ ...query, assigned_to: user.id, assignedPerson: undefined }, user);
   }
 
   // =========================================================================
@@ -5042,68 +5116,114 @@ export class TendersService {
     return updated;
   }
 
-  async getFinanceEmdTracking(user: AuthUser) {
-    const instruments = await this.db
+  /**
+   * Finance, EMD & PBG view: one page of the instruments in the picked view (`filter`: refund_due | blocked | pbg | all,
+   * default all), newest first. The KPI totals (EMD blocked, refunds due, refunds pending > 30 days, active PBGs) and
+   * each view's count are aggregated in SQL over every EMD / PBG in scope, so they never depend on the page loaded.
+   */
+  async getFinanceEmdTracking(user: AuthUser, query: TenderEmdTrackingQueryDto = {}) {
+    const { page, limit, offset } = getPaginationParams({
+      page: Number(query.page || 1),
+      limit: Number(query.limit || 20),
+    });
+    const filter = query.filter || 'all';
+    const today = todayInKolkata();
+
+    const base = this.db
       .selectFrom('tender_financial_instruments')
       .leftJoin('tenders', 'tender_financial_instruments.tender_id', 'tenders.id')
-      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
-      .select([
-        'tender_financial_instruments.id',
-        'tender_financial_instruments.tender_id',
-        'tender_financial_instruments.instrument_type',
-        'tender_financial_instruments.amount',
-        'tender_financial_instruments.mode',
-        'tender_financial_instruments.status',
-        'tender_financial_instruments.reference_number',
-        'tender_financial_instruments.bank',
-        'tender_financial_instruments.issue_date',
-        'tender_financial_instruments.expiry_date',
-        'tender_financial_instruments.remarks',
-        'tender_financial_instruments.created_at',
-        'tender_financial_instruments.updated_at',
-        'tenders.tender_number',
-        'tenders.tender_no',
-        'tenders.status as tender_status',
-        'tenders.submission_deadline',
-        'tenders.result_date',
-        'organisations.name as organisation_name',
-      ])
       .where('tender_financial_instruments.instrument_type', 'in', ['EMD', 'PBG'])
       .where((eb) => eb.or([eb('tenders.is_deleted', '=', false), eb('tenders.is_deleted', 'is', null)]))
       // A regional manager tracks the EMDs of the bids their tender list shows; finance / tender team are All-India.
-      .$if(user.role === 'regional_manager', (qb) => qb.where(rmTenderScope(user)))
-      .orderBy('tender_financial_instruments.created_at', 'desc')
-      .execute();
+      .$if(user.role === 'regional_manager', (qb) => qb.where(rmTenderScope(user)));
 
-    const totalEmdBlocked = instruments
-      .filter((i) => i.instrument_type === 'EMD' && ['Issued', 'Submitted'].includes(i.status))
-      .reduce((sum, i) => sum + Number(i.amount || 0), 0);
+    const views = {
+      refund_due: sql<boolean>`tender_financial_instruments.instrument_type = 'EMD' and tender_financial_instruments.status = 'Refund Due'`,
+      blocked: sql<boolean>`tender_financial_instruments.instrument_type = 'EMD' and tender_financial_instruments.status in ('Issued', 'Submitted')`,
+      pbg: sql<boolean>`tender_financial_instruments.instrument_type = 'PBG'`,
+      all: sql<boolean>`true`,
+    };
+    // Refund aging clock, as `days_pending` below: from the declared result, else from when the EMD was logged (IST day).
+    const dueSince = sql`coalesce(tenders.result_date, (tender_financial_instruments.created_at at time zone 'Asia/Kolkata')::date)`;
+    const countWhere = (cond: RawBuilder<boolean>) => sql<number>`count(case when ${cond} then 1 end)::int`;
+    const sumWhere = (cond: RawBuilder<boolean>) =>
+      sql<number>`coalesce(sum(case when ${cond} then tender_financial_instruments.amount end), 0)::float8`;
 
-    const totalRefundDue = instruments
-      .filter((i) => i.instrument_type === 'EMD' && i.status === 'Refund Due')
-      .reduce((sum, i) => sum + Number(i.amount || 0), 0);
+    const [totals, rows] = await Promise.all([
+      base
+        .select([
+          sumWhere(views.blocked).as('total_emd_blocked'),
+          sumWhere(views.refund_due).as('total_refund_due'),
+          countWhere(views.refund_due).as('refund_due'),
+          countWhere(sql<boolean>`${views.refund_due} and ${dueSince} < ${today}::date - 30`).as('refund_aging_over_30'),
+          countWhere(sql<boolean>`tender_financial_instruments.instrument_type = 'PBG' and coalesce(tender_financial_instruments.status, '') <> 'Released'`).as(
+            'active_pbg',
+          ),
+          countWhere(views.blocked).as('blocked'),
+          countWhere(views.pbg).as('pbg'),
+          sql<number>`count(tender_financial_instruments.id)::int`.as('all'),
+        ])
+        .executeTakeFirst(),
+      base
+        .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
+        .select([
+          'tender_financial_instruments.id',
+          'tender_financial_instruments.tender_id',
+          'tender_financial_instruments.instrument_type',
+          'tender_financial_instruments.amount',
+          'tender_financial_instruments.mode',
+          'tender_financial_instruments.status',
+          'tender_financial_instruments.reference_number',
+          'tender_financial_instruments.bank',
+          'tender_financial_instruments.issue_date',
+          'tender_financial_instruments.expiry_date',
+          'tender_financial_instruments.remarks',
+          'tender_financial_instruments.created_at',
+          'tender_financial_instruments.updated_at',
+          'tenders.tender_number',
+          'tenders.tender_no',
+          'tenders.status as tender_status',
+          'tenders.submission_deadline',
+          'tenders.result_date',
+          'organisations.name as organisation_name',
+        ])
+        .where(views[filter])
+        .orderBy('tender_financial_instruments.created_at', 'desc')
+        .orderBy('tender_financial_instruments.id', 'desc')
+        .limit(limit)
+        .offset(offset)
+        .execute(),
+    ]);
 
-    const refundDueItems = instruments
-      .filter((i) => i.instrument_type === 'EMD' && i.status === 'Refund Due')
-      .map((i) => {
-        // An EMD falls due for refund when the result is declared (a lost bid moves it to Refund Due); one with no
-        // recorded result counts from when it was logged. Editing the instrument later never restarts the clock.
-        const dueSince = calendarDay(i.result_date as any) || istDateOf(i.created_at);
-        const daysPending = Math.max(0, isoDaysBetween(dueSince, todayInKolkata()));
-        return {
-          ...i,
-          days_pending: daysPending,
-          aging_bucket: daysPending > 30 ? '> 30 days' : '< 30 days',
-        };
-      });
+    const data = rows.map((i) => {
+      if (i.instrument_type !== 'EMD' || i.status !== 'Refund Due') return i;
+      // An EMD falls due for refund when the result is declared (a lost bid moves it to Refund Due); one with no
+      // recorded result counts from when it was logged. Editing the instrument later never restarts the clock.
+      const dueSinceDay = calendarDay(i.result_date as any) || istDateOf(i.created_at);
+      const daysPending = Math.max(0, isoDaysBetween(dueSinceDay, todayInKolkata()));
+      return {
+        ...i,
+        days_pending: daysPending,
+        aging_bucket: daysPending > 30 ? '> 30 days' : '< 30 days',
+      };
+    });
+
+    const counts = {
+      refund_due: totals?.refund_due || 0,
+      blocked: totals?.blocked || 0,
+      pbg: totals?.pbg || 0,
+      all: totals?.all || 0,
+    };
 
     return {
-      total_emd_blocked: totalEmdBlocked,
-      total_refund_due: totalRefundDue,
-      refund_due_count: refundDueItems.length,
-      refund_due_items: refundDueItems,
-      all_instruments: instruments,
-      instruments: instruments,
+      ...buildPaginatedResult(data, counts[filter], page, limit),
+      filter,
+      total_emd_blocked: totals?.total_emd_blocked || 0,
+      total_refund_due: totals?.total_refund_due || 0,
+      refund_due_count: counts.refund_due,
+      refund_aging_over_30_count: totals?.refund_aging_over_30 || 0,
+      active_pbg_count: totals?.active_pbg || 0,
+      counts,
     };
   }
 
@@ -5454,8 +5574,16 @@ export class TendersService {
   // Deadline Centre & Calendar
   // =========================================================================
 
+  /**
+   * §24 Deadline Centre. The deadline groups (7 days / 72h / 48h / 24h) read only the pre-submission bids closing in the
+   * next 7 days. The groups that are not bounded by a window — overdue, incomplete preparation, result follow-ups and
+   * pending approvals — return at most DEADLINE_CENTRE_LIST_CAP rows each; `counts` always holds every group's full
+   * total (SQL), so a capped list is never mistaken for the whole group.
+   */
   async getDeadlineCentre(user: AuthUser) {
+    const DEADLINE_CENTRE_LIST_CAP = 50;
     const now = new Date();
+    const nowIso = now.toISOString();
     const in7Days = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
     const in48Hours = new Date(now.getTime() + 48 * 3600 * 1000);
     const in24Hours = new Date(now.getTime() + 24 * 3600 * 1000);
@@ -5471,24 +5599,15 @@ export class TendersService {
       'commercial_eval',
     ];
 
-    let baseQuery = this.db
+    let scoped = this.db
       .selectFrom('tenders')
-      .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
-      .leftJoin('users as assignee', 'tenders.assigned_to', 'assignee.id')
-      // Full tender rows so the Deadline Centre cards can open the dossier / outcome form directly.
-      .selectAll('tenders')
-      .select([
-        'organisations.name as organisation_name',
-        'assignee.full_name as assigned_to_name',
-        'assignee.full_name as assigned_person_name',
-      ])
       .where('tenders.is_deleted', '=', false)
       .where('tenders.status', 'in', nonTerminalStatuses as any);
 
     if (user.role === 'regional_manager') {
-      baseQuery = baseQuery.where(rmTenderScope(user));
+      scoped = scoped.where(rmTenderScope(user));
     } else if (user.role === 'sales') {
-      baseQuery = baseQuery.where((eb) =>
+      scoped = scoped.where((eb) =>
         eb.or([
           eb('tenders.assigned_to', '=', user.id),
           eb('tenders.owner', '=', user.id),
@@ -5498,52 +5617,62 @@ export class TendersService {
       );
     }
 
-    const allActive = await baseQuery.execute();
+    const rowsOf = (cond: RawBuilder<boolean>) =>
+      scoped
+        .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
+        .leftJoin('users as assignee', 'tenders.assigned_to', 'assignee.id')
+        // Full tender rows so the Deadline Centre cards can open the dossier / outcome form directly.
+        .selectAll('tenders')
+        .select([
+          'organisations.name as organisation_name',
+          'assignee.full_name as assigned_to_name',
+          'assignee.full_name as assigned_person_name',
+        ])
+        .where(cond);
+
     // B2/B3: only pre-submission bids can approach or miss their submission deadline; a submitted / evaluated bid
     // is never "overdue" (it shows under result follow-ups instead).
-    const preSubmission = allActive.filter((t) => TENDER_PRE_SUBMISSION_STATUSES.includes(String(t.status).toLowerCase()));
+    const preSubmission = sql<boolean>`tenders.status in ${PRE_SUBMISSION_SQL}`;
+    const overdueCond = sql<boolean>`${preSubmission} and tenders.submission_deadline < ${nowIso}`;
+    const incompleteCond = sql<boolean>`tenders.status = 'under_preparation'`;
+    const followUpCond = sql<boolean>`tenders.status in ('submitted', 'technical_eval', 'commercial_eval')`;
+    const countWhere = (cond: RawBuilder<boolean>) => sql<number>`count(case when ${cond} then 1 end)::int`;
 
-    const upcoming7d = preSubmission.filter((t) => {
-      if (!t.submission_deadline) return false;
-      const d = new Date(t.submission_deadline);
-      return d >= now && d <= in7Days;
-    });
+    const [closingSoon, overdue, incompletePrep, resultFollowUps, totals, approvals] = await Promise.all([
+      rowsOf(sql<boolean>`${preSubmission} and tenders.submission_deadline >= ${nowIso} and tenders.submission_deadline <= ${in7Days.toISOString()}`)
+        .orderBy('tenders.submission_deadline', 'asc')
+        .orderBy('tenders.id', 'asc')
+        .execute(),
+      // Most recently missed first.
+      rowsOf(overdueCond)
+        .orderBy('tenders.submission_deadline', 'desc')
+        .orderBy('tenders.id', 'asc')
+        .limit(DEADLINE_CENTRE_LIST_CAP)
+        .execute(),
+      rowsOf(incompleteCond)
+        .orderBy(sql`tenders.submission_deadline asc nulls last`)
+        .orderBy('tenders.id', 'asc')
+        .limit(DEADLINE_CENTRE_LIST_CAP)
+        .execute(),
+      // Longest-closed first: the bids that have waited longest for a verdict.
+      rowsOf(followUpCond)
+        .orderBy(sql`tenders.submission_deadline asc nulls last`)
+        .orderBy('tenders.id', 'asc')
+        .limit(DEADLINE_CENTRE_LIST_CAP)
+        .execute(),
+      scoped
+        .select([countWhere(overdueCond).as('overdue'), countWhere(incompleteCond).as('incomplete'), countWhere(followUpCond).as('follow_ups')])
+        .executeTakeFirst(),
+      // Same source as the Approvals Inbox / "Pending Approvals" KPI (its first page; `total` counts them all).
+      this.getApprovalsInbox(user, now, { page: 1, limit: DEADLINE_CENTRE_LIST_CAP }),
+    ]);
 
-    const in72Hours = new Date(now.getTime() + 72 * 3600 * 1000);
-    const approaching72h = preSubmission.filter((t) => {
-      if (!t.submission_deadline) return false;
-      const d = new Date(t.submission_deadline);
-      return d >= now && d <= in72Hours;
-    });
-
-    const approaching48h = preSubmission.filter((t) => {
-      if (!t.submission_deadline) return false;
-      const d = new Date(t.submission_deadline);
-      return d >= now && d <= in48Hours;
-    });
-
-    const urgent24h = preSubmission.filter((t) => {
-      if (!t.submission_deadline) return false;
-      const d = new Date(t.submission_deadline);
-      return d >= now && d <= in24Hours;
-    });
-
-    const overdue = preSubmission.filter((t) => {
-      if (!t.submission_deadline) return false;
-      const d = new Date(t.submission_deadline);
-      return d < now;
-    });
-
-    // Same source as the Approvals Inbox / "Pending Approvals" KPI.
-    const pendingApprovals = (await this.getApprovalsInbox(user, now)).data;
-
-    const incompletePrep = allActive.filter((t) =>
-      ['under_preparation', 'UNDER_PREPARATION'].includes(t.status),
-    );
-
-    const resultFollowUps = allActive.filter((t) =>
-      ['submitted', 'TENDER_SUBMITTED', 'technical_eval', 'commercial_eval'].includes(t.status),
-    );
+    const closingBy = (until: Date) => closingSoon.filter((t) => new Date(t.submission_deadline as any) <= until);
+    const upcoming7d = closingSoon;
+    const approaching72h = closingBy(new Date(now.getTime() + 72 * 3600 * 1000));
+    const approaching48h = closingBy(in48Hours);
+    const urgent24h = closingBy(in24Hours);
+    const pendingApprovals = approvals.data;
 
     return {
       upcoming_submissions_7d: upcoming7d,
@@ -5557,6 +5686,7 @@ export class TendersService {
       result_follow_ups: resultFollowUps,
       pending_internal_approvals: pendingApprovals,
       pending_approvals: pendingApprovals,
+      list_cap: DEADLINE_CENTRE_LIST_CAP,
       counts: {
         upcoming_submissions_7d: upcoming7d.length,
         upcoming_7d: upcoming7d.length,
@@ -5564,16 +5694,49 @@ export class TendersService {
         approaching_48h: approaching48h.length,
         urgent_deadlines_24h: urgent24h.length,
         urgent_24h: urgent24h.length,
-        incomplete_preparation: incompletePrep.length,
-        result_follow_ups: resultFollowUps.length,
-        overdue: overdue.length,
-        pending_internal_approvals: pendingApprovals.length,
-        pending_approvals: pendingApprovals.length,
+        incomplete_preparation: totals?.incomplete || 0,
+        result_follow_ups: totals?.follow_ups || 0,
+        overdue: totals?.overdue || 0,
+        pending_internal_approvals: approvals.total,
+        pending_approvals: approvals.total,
       },
     };
   }
 
-  async getCalendarEvents(user: AuthUser, query: any) {
+  /**
+   * Shared tender calendar: the milestones (submission, pre-bid, query deadline, technical / commercial opening) on the
+   * IST days `from`..`to`, both inclusive. With no window it is the current IST month; one end alone means that end's
+   * month. Only tenders with a milestone in the window are read, and only the milestones inside it are returned.
+   */
+  async getCalendarEvents(user: AuthUser, query: TenderCalendarQueryDto = {}) {
+    const CALENDAR_MAX_DAYS = 92;
+    const monthEnd = (day: string) => {
+      const [y, m] = day.split('-').map(Number);
+      return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    };
+    const fromDay = query.from || `${(query.to || todayInKolkata()).slice(0, 7)}-01`;
+    const toDay = query.to || monthEnd(fromDay);
+    if (!calendarDay(fromDay) || !calendarDay(toDay)) throw new BadRequestException('from / to must be real calendar dates (YYYY-MM-DD).');
+    if (toDay < fromDay) throw new BadRequestException('to must not be before from.');
+    if (isoDaysBetween(fromDay, toDay) >= CALENDAR_MAX_DAYS) {
+      throw new BadRequestException(`The calendar window can span at most ${CALENDAR_MAX_DAYS} days.`);
+    }
+    // IST midnight that opens `from` up to (not including) IST midnight after `to`.
+    const windowStart = istDateTime(fromDay, '00:00:00');
+    const windowEnd = istDateTime(addIsoDays(toDay, 1), '00:00:00');
+    const inWindow = (v: unknown) => {
+      if (!v) return false;
+      const t = new Date(v as any).getTime();
+      return t >= windowStart.getTime() && t < windowEnd.getTime();
+    };
+    const milestones = [
+      'tenders.submission_deadline',
+      'tenders.pre_bid_meeting_date',
+      'tenders.query_submission_deadline',
+      'tenders.technical_opening_date',
+      'tenders.commercial_opening_date',
+    ] as const;
+
     let q = this.db
       .selectFrom('tenders')
       .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
@@ -5594,7 +5757,14 @@ export class TendersService {
         'tenders.region_id',
         'tenders.zone_id',
       ])
-      .where('tenders.is_deleted', '=', false);
+      .where('tenders.is_deleted', '=', false)
+      .where((eb) =>
+        eb.or(
+          milestones.map((col) =>
+            eb.and([eb(col, '>=', windowStart.toISOString() as any), eb(col, '<', windowEnd.toISOString() as any)]),
+          ),
+        ),
+      );
 
     if (user.role === 'regional_manager') {
       q = q.where(rmTenderScope(user));
@@ -5616,7 +5786,7 @@ export class TendersService {
       const org = t.organisation || t.organisation_name || 'Customer';
       const no = t.tender_number || t.tender_no || 'Tender';
 
-      if (t.submission_deadline) {
+      if (inWindow(t.submission_deadline)) {
         events.push({
           id: `${t.id}-sub`,
           tender_id: t.id,
@@ -5627,7 +5797,7 @@ export class TendersService {
           status: t.status,
         });
       }
-      if (t.pre_bid_meeting_date) {
+      if (inWindow(t.pre_bid_meeting_date)) {
         events.push({
           id: `${t.id}-prebid`,
           tender_id: t.id,
@@ -5638,7 +5808,7 @@ export class TendersService {
           status: t.status,
         });
       }
-      if (t.query_submission_deadline) {
+      if (inWindow(t.query_submission_deadline)) {
         events.push({
           id: `${t.id}-query`,
           tender_id: t.id,
@@ -5649,7 +5819,7 @@ export class TendersService {
           status: t.status,
         });
       }
-      if (t.technical_opening_date) {
+      if (inWindow(t.technical_opening_date)) {
         events.push({
           id: `${t.id}-techopen`,
           tender_id: t.id,
@@ -5660,7 +5830,7 @@ export class TendersService {
           status: t.status,
         });
       }
-      if (t.commercial_opening_date) {
+      if (inWindow(t.commercial_opening_date)) {
         events.push({
           id: `${t.id}-commopen`,
           tender_id: t.id,

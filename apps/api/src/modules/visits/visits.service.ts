@@ -47,6 +47,30 @@ export type VisitListFilters = {
 /** Visit statuses that still expect the field report (the meeting has not been reported or called off). */
 const REPORT_PENDING_STATUSES = ['planned', 'modified', 'rescheduled'] as const;
 
+/** The team board's filters (query string of GET /visits/upcoming and GET /visits/manager/field-activity). */
+export type FieldActivityFilters = {
+  assigned_to?: string;
+  organisation_id?: string;
+  location?: string;
+  /** A visit status, or the pseudo-statuses 'open' / 'overdue'. */
+  status?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  travel_required?: boolean | string;
+  demo_required?: boolean | string;
+};
+
+/**
+ * The team board's groups. today / tomorrow / next_7_days are fixed day slices and come back whole; later, past,
+ * overdue and reported span a range the caller sizes (overdue: every report still owed), so they come back a page
+ * at a time.
+ */
+const FIELD_ACTIVITY_GROUPS = ['today', 'tomorrow', 'next_7_days', 'later', 'past', 'overdue', 'reported'] as const;
+type FieldActivityGroup = (typeof FIELD_ACTIVITY_GROUPS)[number];
+const PAGED_FIELD_ACTIVITY_GROUPS: readonly FieldActivityGroup[] = ['later', 'past', 'overdue', 'reported'];
+/** Days either side of today the team board covers when the caller sends no dates. */
+const FIELD_ACTIVITY_WINDOW_DAYS = 30;
+
 /** A calendar value (DATE column, ISO instant or 'YYYY-MM-DD') as DD/MM/YYYY for user-facing messages. */
 function dmy(value: unknown): string {
   const day = calendarDay(value as any);
@@ -1720,27 +1744,153 @@ export class VisitsService {
 
   // -------------------------------------------------------------
   // MANAGER DASHBOARD: Upcoming Field Activity with Groupings
-  // (Today, Tomorrow, Next 7 Days, Later)
+  // (Today, Tomorrow, Next 7 Days, Later + Past, Overdue, Reported)
   // -------------------------------------------------------------
+  /**
+   * The team board, bounded in SQL. It covers dateFrom..dateTo, by default FIELD_ACTIVITY_WINDOW_DAYS either side
+   * of today (see fieldActivityWindow). The day slices come back whole; later / past / overdue / reported come back
+   * as their first page (`limit`), with every group's full count in `summary`. With `group` the answer is that
+   * group's `page` alone ({ data, total, page, limit, totalPages }): how the board loads more of a group.
+   * Overdue is every report still owed in scope (only dates the caller sent narrow it), not just the window's.
+   */
   async getManagerFieldActivity(
-    query: {
-      assigned_to?: string;
-      organisation_id?: string;
-      location?: string;
-      status?: string;
-      dateFrom?: string;
-      dateTo?: string;
-      travel_required?: boolean | string;
-      demo_required?: boolean | string;
-    },
+    query: FieldActivityFilters & { group?: string; page?: number; limit?: number },
     user: AuthUser,
   ) {
+    if (query.group && !(FIELD_ACTIVITY_GROUPS as readonly string[]).includes(query.group)) {
+      throw new BadRequestException({
+        code: 'INVALID_GROUP',
+        message: `Unknown group "${query.group}". Use one of: ${FIELD_ACTIVITY_GROUPS.join(', ')}.`,
+      });
+    }
+
     // IST calendar days — "Today's visits" must follow the Indian date, not the UTC server clock.
     const today = todayInKolkata();
     const tomorrowDate = addIsoDays(today, 1);
     const next7DaysDate = addIsoDays(today, 7);
+    const { from, to, dateFrom, dateTo } = this.fieldActivityWindow(query, today);
 
-    // Fetch team visits within scope
+    const inWindow = sql<SqlBool>`visits.planned_date between ${from}::date and ${to}::date`;
+    const pending = sql.join([...REPORT_PENDING_STATUSES]);
+    const where: Record<FieldActivityGroup, Expression<SqlBool>> = {
+      today: sql<SqlBool>`(${inWindow} and visits.planned_date = ${today}::date)`,
+      tomorrow: sql<SqlBool>`(${inWindow} and visits.planned_date = ${tomorrowDate}::date)`,
+      next_7_days: sql<SqlBool>`(${inWindow} and visits.planned_date > ${tomorrowDate}::date and visits.planned_date <= ${next7DaysDate}::date)`,
+      later: sql<SqlBool>`(${inWindow} and visits.planned_date > ${next7DaysDate}::date)`,
+      past: sql<SqlBool>`(${inWindow} and visits.planned_date < ${today}::date)`,
+      // Visit day passed (IST) with the report still pending
+      overdue: sql<SqlBool>`(visits.status in (${pending}) and visits.planned_date < ${today}::date
+        and visits.planned_date >= ${dateFrom ?? '-infinity'}::date and visits.planned_date <= ${dateTo ?? 'infinity'}::date)`,
+      // Past and today's visits the team has filed a post-visit report for
+      reported: sql<SqlBool>`(${inWindow} and visits.planned_date <= ${today}::date
+        and exists (select 1 from visit_updates vu where vu.visit_id = visits.id))`,
+    };
+
+    const rows = this.fieldActivityQuery(query, user, today).select([
+      'visits.id',
+      'visits.trip_id',
+      'visits.organisation_id',
+      'visits.contact_id',
+      'visits.product_id',
+      'visits.assigned_to',
+      'visits.assigned_by_manager',
+      'visits.manager_assigned',
+      'visits.location',
+      'visits.latitude',
+      'visits.longitude',
+      'visits.planned_date',
+      'visits.start_time',
+      'visits.end_time',
+      'visits.purpose',
+      'visits.demo_required',
+      'visits.travel_required',
+      'visits.expected_outcome',
+      'visits.status',
+      'visits.change_reason',
+      'visits.remarks',
+      'organisations.name as organisation_name',
+      'organisations.city as city',
+      'products.name as product_name',
+      sql<string | null>`coalesce(contacts.full_name, visits.contact_person)`.as('contact_name'),
+      'visits.contact_person',
+      'assignee.full_name as assignee_name',
+      'manager.full_name as manager_name',
+      'trips.base_location as trip_base_location',
+    ]);
+    // A group's visits: past newest first, reported by newest report, overdue most overdue first, the rest soonest first
+    const listGroup = (group: FieldActivityGroup, limit?: number, offset = 0) => {
+      let q = rows.where(where[group]);
+      if (group === 'past') {
+        q = q.orderBy('visits.planned_date', 'desc').orderBy('visits.start_time', 'desc');
+      } else if (group === 'reported') {
+        q = q.orderBy(sql`(select max(vu.created_at) from visit_updates vu where vu.visit_id = visits.id)`, 'desc');
+      } else {
+        q = q.orderBy('visits.planned_date', 'asc').orderBy('visits.start_time', 'asc');
+      }
+      q = q.orderBy('visits.id', 'asc');
+      return (limit ? q.limit(limit).offset(offset) : q).execute();
+    };
+    const flagged = async (visits: Awaited<ReturnType<typeof listGroup>>) =>
+      (await this.attachReports(visits)).map((v) => ({ ...v, report_overdue: this.isReportOverdue(v) }));
+
+    // One group, one page (the board's "load more")
+    if (query.group) {
+      const group = query.group as FieldActivityGroup;
+      const { page, limit, offset } = getPaginationParams(query);
+      const [countRow, visits] = await Promise.all([
+        this.fieldActivityQuery(query, user, today)
+          .where(where[group])
+          .select(sql<number>`count(distinct visits.id)::int`.as('total'))
+          .executeTakeFirst(),
+        listGroup(group, limit, offset),
+      ]);
+      return buildPaginatedResult(await flagged(visits), countRow?.total || 0, page, limit);
+    }
+
+    // The whole board: the day slices, the first page of each paged group and every group's count
+    const { limit } = getPaginationParams(query);
+    const [counts, lists] = await Promise.all([
+      this.fieldActivityQuery(query, user, today)
+        .where(sql<SqlBool>`(${inWindow} or ${where.overdue})`)
+        .select([
+          sql<number>`count(distinct visits.id) filter (where ${inWindow})::int`.as('total'),
+          sql<number>`count(distinct visits.id) filter (where ${where.today})::int`.as('today'),
+          sql<number>`count(distinct visits.id) filter (where ${where.tomorrow})::int`.as('tomorrow'),
+          sql<number>`count(distinct visits.id) filter (where ${where.next_7_days})::int`.as('next_7_days'),
+          sql<number>`count(distinct visits.id) filter (where ${where.later})::int`.as('later'),
+          sql<number>`count(distinct visits.id) filter (where ${where.past})::int`.as('past'),
+          sql<number>`count(distinct visits.id) filter (where ${where.overdue})::int`.as('overdue'),
+          sql<number>`count(distinct visits.id) filter (where ${where.reported})::int`.as('reported'),
+        ])
+        .executeTakeFirstOrThrow(),
+      Promise.all(FIELD_ACTIVITY_GROUPS.map((g) => listGroup(g, PAGED_FIELD_ACTIVITY_GROUPS.includes(g) ? limit : undefined))),
+    ]);
+
+    // Reports for the returned visits only, in one query (overdue visits are also in past)
+    const byId = new Map((await flagged(lists.flat())).map((v) => [v.id, v]));
+    const grouped = Object.fromEntries(
+      FIELD_ACTIVITY_GROUPS.map((g, i) => [g, lists[i].map((v) => byId.get(v.id)!)]),
+    ) as Record<FieldActivityGroup, Awaited<ReturnType<typeof flagged>>>;
+
+    return {
+      summary: {
+        total: counts.total,
+        todayCount: counts.today,
+        tomorrowCount: counts.tomorrow,
+        next7DaysCount: counts.next_7_days,
+        laterCount: counts.later,
+        pastCount: counts.past,
+        overdueCount: counts.overdue,
+        reportedCount: counts.reported,
+      },
+      // The dates the board covers (the default window when none were sent)
+      window: { dateFrom: from, dateTo: to },
+      grouped,
+    };
+  }
+
+  /** The team board's role scope plus its filters other than dates (each group applies its own date range). */
+  private fieldActivityQuery(query: FieldActivityFilters, user: AuthUser, today: string) {
     let baseQuery = this.db
       .selectFrom('visits')
       .innerJoin('organisations', 'visits.organisation_id', 'organisations.id')
@@ -1780,12 +1930,6 @@ export class VisitsService {
     } else if (query.status) {
       baseQuery = baseQuery.where('visits.status', '=', query.status as any);
     }
-    if (query.dateFrom) {
-      baseQuery = baseQuery.where('visits.planned_date', '>=', query.dateFrom);
-    }
-    if (query.dateTo) {
-      baseQuery = baseQuery.where('visits.planned_date', '<=', query.dateTo);
-    }
     if (query.travel_required !== undefined) {
       baseQuery = baseQuery.where('visits.travel_required', '=', String(query.travel_required) === 'true');
     }
@@ -1793,83 +1937,28 @@ export class VisitsService {
       baseQuery = baseQuery.where('visits.demo_required', '=', String(query.demo_required) === 'true');
     }
 
-    const allVisits = await baseQuery
-      .select([
-        'visits.id',
-        'visits.trip_id',
-        'visits.organisation_id',
-        'visits.contact_id',
-        'visits.product_id',
-        'visits.assigned_to',
-        'visits.assigned_by_manager',
-        'visits.manager_assigned',
-        'visits.location',
-        'visits.latitude',
-        'visits.longitude',
-        'visits.planned_date',
-        'visits.start_time',
-        'visits.end_time',
-        'visits.purpose',
-        'visits.demo_required',
-        'visits.travel_required',
-        'visits.expected_outcome',
-        'visits.status',
-        'visits.change_reason',
-        'visits.remarks',
-        'organisations.name as organisation_name',
-        'organisations.city as city',
-        'products.name as product_name',
-        sql<string | null>`coalesce(contacts.full_name, visits.contact_person)`.as('contact_name'),
-        'visits.contact_person',
-        'assignee.full_name as assignee_name',
-        'manager.full_name as manager_name',
-        'trips.base_location as trip_base_location',
-      ])
-      .orderBy('visits.planned_date', 'asc')
-      .orderBy('visits.start_time', 'asc')
-      .execute();
+    return baseQuery;
+  }
 
-    // Group visits into Today, Tomorrow, Next 7 Days, Later (+ past, and the past ones still awaiting a report)
-    const grouped = {
-      today: [] as any[],
-      tomorrow: [] as any[],
-      next_7_days: [] as any[],
-      later: [] as any[],
-      past: [] as any[],
-      overdue: [] as any[],
-    };
-
-    for (const raw of await this.attachReports(allVisits)) {
-      const v = { ...raw, report_overdue: this.isReportOverdue(raw) };
-      // planned_date is a DATE column (a Date object here): compare as an IST 'YYYY-MM-DD' string.
-      const vDate = calendarDay(v.planned_date as any) || '';
-      if (vDate === today) {
-        grouped.today.push(v);
-      } else if (vDate === tomorrowDate) {
-        grouped.tomorrow.push(v);
-      } else if (vDate > tomorrowDate && vDate <= next7DaysDate) {
-        grouped.next_7_days.push(v);
-      } else if (vDate > next7DaysDate) {
-        grouped.later.push(v);
-      } else {
-        grouped.past.push(v);
-        if (v.report_overdue) grouped.overdue.push(v);
+  /**
+   * The dates the team board covers, always a finite range. A missing dateFrom is FIELD_ACTIVITY_WINDOW_DAYS before
+   * dateTo or today (the earlier); a missing dateTo is as many days after dateFrom or today (the later). No dates:
+   * 30 days back to 30 days ahead.
+   */
+  private fieldActivityWindow(query: { dateFrom?: string; dateTo?: string }, today: string) {
+    const day = (value: string | undefined, name: string) => {
+      if (!value) return null;
+      const d = calendarDay(value);
+      if (!d) {
+        throw new BadRequestException({ code: 'INVALID_DATE', message: `${name} "${value}" is not a valid date (YYYY-MM-DD).` });
       }
-    }
-    // Most overdue first.
-    grouped.overdue.sort((a, b) => (calendarDay(a.planned_date as any) || '').localeCompare(calendarDay(b.planned_date as any) || ''));
-
-    return {
-      summary: {
-        total: allVisits.length,
-        todayCount: grouped.today.length,
-        tomorrowCount: grouped.tomorrow.length,
-        next7DaysCount: grouped.next_7_days.length,
-        laterCount: grouped.later.length,
-        overdueCount: grouped.overdue.length,
-      },
-      grouped,
+      return d;
     };
+    const dateFrom = day(query.dateFrom, 'dateFrom');
+    const dateTo = day(query.dateTo, 'dateTo');
+    const from = dateFrom ?? addIsoDays(dateTo && dateTo < today ? dateTo : today, -FIELD_ACTIVITY_WINDOW_DAYS);
+    const to = dateTo ?? addIsoDays(dateFrom && dateFrom > today ? dateFrom : today, FIELD_ACTIVITY_WINDOW_DAYS);
+    return { from, to, dateFrom, dateTo };
   }
 
   // -------------------------------------------------------------
@@ -1905,9 +1994,14 @@ export class VisitsService {
   }
 
   // -------------------------------------------------------------
-  // TRIPS: Find All Trips with Nested Visits
+  // TRIPS: Find All Trips with Nested Visits (Paginated)
   // -------------------------------------------------------------
-  async findAllTrips(query: { employee_id?: string; dateFrom?: string; dateTo?: string }, user: AuthUser) {
+  async findAllTrips(
+    query: { employee_id?: string; dateFrom?: string; dateTo?: string; page?: number; limit?: number },
+    user: AuthUser,
+  ): Promise<PaginatedResult<any>> {
+    const { page, limit, offset } = getPaginationParams(query);
+
     let baseQuery = this.db
       .selectFrom('trips')
       .innerJoin('users as emp', 'trips.employee_id', 'emp.id')
@@ -1926,27 +2020,32 @@ export class VisitsService {
       baseQuery = baseQuery.where('trips.trip_date', '<=', query.dateTo);
     }
 
-    const trips = await baseQuery
-      .select([
-        'trips.id',
-        'trips.employee_id',
-        'trips.trip_date',
-        'trips.base_location',
-        'trips.status',
-        'trips.notes',
-        'trips.created_by',
-        'trips.created_at',
-        'trips.updated_at',
-        'emp.full_name as employee_name',
-        'creator.full_name as creator_name',
-      ])
-      .orderBy('trips.trip_date', 'desc')
-      .execute();
+    const [countRow, trips] = await Promise.all([
+      baseQuery.select(sql<number>`count(distinct trips.id)::int`.as('total')).executeTakeFirst(),
+      baseQuery
+        .select([
+          'trips.id',
+          'trips.employee_id',
+          'trips.trip_date',
+          'trips.base_location',
+          'trips.status',
+          'trips.notes',
+          'trips.created_by',
+          'trips.created_at',
+          'trips.updated_at',
+          'emp.full_name as employee_name',
+          'creator.full_name as creator_name',
+        ])
+        .orderBy('trips.trip_date', 'desc')
+        .orderBy('trips.id', 'asc')
+        .limit(limit)
+        .offset(offset)
+        .execute(),
+    ]);
 
-    // Fetch visits for each trip
-    const tripsWithVisits = await Promise.all(
-      trips.map(async (trip) => {
-        const visits = await this.db
+    // The page's stops in one query (not one per trip), each trip's in time order
+    const visits = trips.length
+      ? await this.db
           .selectFrom('visits')
           .innerJoin('organisations', 'visits.organisation_id', 'organisations.id')
           .leftJoin('products', 'visits.product_id', 'products.id')
@@ -1955,18 +2054,20 @@ export class VisitsService {
             'organisations.name as organisation_name',
             'products.name as product_name',
           ])
-          .where('visits.trip_id', '=', trip.id)
+          .where('visits.trip_id', 'in', trips.map((t) => t.id))
           .orderBy('visits.start_time', 'asc')
-          .execute();
+          .orderBy('visits.id', 'asc')
+          .execute()
+      : [];
+    const byTrip = new Map<string, typeof visits>();
+    for (const v of visits) byTrip.set(v.trip_id!, [...(byTrip.get(v.trip_id!) ?? []), v]);
 
-        return {
-          ...trip,
-          visits,
-        };
-      }),
+    return buildPaginatedResult(
+      trips.map((trip) => ({ ...trip, visits: byTrip.get(trip.id) ?? [] })),
+      countRow?.total || 0,
+      page,
+      limit,
     );
-
-    return tripsWithVisits;
   }
 
   // -------------------------------------------------------------
@@ -2166,75 +2267,112 @@ export class VisitsService {
   }
 
   // -------------------------------------------------------------
-  // CUSTOMER HISTORY (Chronological visits & interactions)
+  // CUSTOMER HISTORY (Chronological visits & interactions, Paginated)
   // -------------------------------------------------------------
-  async getCustomerVisitHistory(organisationId: string, user: AuthUser) {
+  async getCustomerVisitHistory(
+    organisationId: string,
+    user: AuthUser,
+    query: { page?: number; limit?: number } = {},
+  ): Promise<PaginatedResult<any>> {
     await assertOrganisationInScope(this.db, organisationId, user);
+    const { page, limit, offset } = getPaginationParams(query);
 
-    const visits = await this.db
+    const baseQuery = this.db
       .selectFrom('visits')
       .leftJoin('products', 'visits.product_id', 'products.id')
       .leftJoin('contacts', 'visits.contact_id', 'contacts.id')
       .leftJoin('users as emp', 'visits.assigned_to', 'emp.id')
       .leftJoin('visit_updates as vu', 'visits.id', 'vu.visit_id')
-      .selectAll('visits')
-      .select([
-        'products.name as product_name',
-        'contacts.full_name as contact_name',
-        'emp.full_name as employee_name',
-        'vu.person_met',
-        'vu.discussion',
-        'vu.outcome as post_visit_outcome',
-        'vu.next_action',
-        'vu.followup_date',
-      ])
-      .where('visits.organisation_id', '=', organisationId)
-      .orderBy('visits.planned_date', 'desc')
-      .execute();
+      .where('visits.organisation_id', '=', organisationId);
 
-    return visits;
+    const [countRow, visits] = await Promise.all([
+      baseQuery.select(sql<number>`count(distinct visits.id)::int`.as('total')).executeTakeFirst(),
+      baseQuery
+        .selectAll('visits')
+        .select([
+          'products.name as product_name',
+          'contacts.full_name as contact_name',
+          'emp.full_name as employee_name',
+          'vu.person_met',
+          'vu.discussion',
+          'vu.outcome as post_visit_outcome',
+          'vu.next_action',
+          'vu.followup_date',
+        ])
+        .orderBy('visits.planned_date', 'desc')
+        .orderBy('visits.id', 'asc')
+        .limit(limit)
+        .offset(offset)
+        .execute(),
+    ]);
+
+    return buildPaginatedResult(visits, countRow?.total || 0, page, limit);
   }
 
   // -------------------------------------------------------------
-  // EMPLOYEE ACTIVITY DOSSIER (Chronological activity log)
+  // EMPLOYEE ACTIVITY DOSSIER (Chronological activity log, Paginated)
   // -------------------------------------------------------------
-  async getEmployeeActivities(employeeId: string, user: AuthUser) {
+  async getEmployeeActivities(
+    employeeId: string,
+    user: AuthUser,
+    query: { page?: number; limit?: number } = {},
+  ): Promise<PaginatedResult<any>> {
     if (user.role === 'sales' && user.id !== employeeId) {
       throw new ForbiddenException('You cannot access other employees’ private activity logs.');
     }
+    const { page, limit, offset } = getPaginationParams(query);
 
-    const activities = await this.db
-      .selectFrom('employee_activities')
-      .selectAll('employee_activities')
-      .where('employee_id', '=', employeeId)
-      .orderBy('activity_date', 'desc')
-      .orderBy('created_at', 'desc')
-      .execute();
+    const baseQuery = this.db.selectFrom('employee_activities').where('employee_id', '=', employeeId);
 
-    return activities;
+    const [countRow, activities] = await Promise.all([
+      baseQuery.select(sql<number>`count(*)::int`.as('total')).executeTakeFirst(),
+      baseQuery
+        .selectAll('employee_activities')
+        .orderBy('activity_date', 'desc')
+        .orderBy('created_at', 'desc')
+        .orderBy('id', 'asc')
+        .limit(limit)
+        .offset(offset)
+        .execute(),
+    ]);
+
+    return buildPaginatedResult(activities, countRow?.total || 0, page, limit);
   }
 
   // -------------------------------------------------------------
-  // VISIT AUDIT TRAIL (Append-only history of changes)
+  // VISIT AUDIT TRAIL (Append-only history of changes, Paginated)
   // -------------------------------------------------------------
-  async getVisitAudit(visitId: string, user: AuthUser) {
+  async getVisitAudit(
+    visitId: string,
+    user: AuthUser,
+    query: { page?: number; limit?: number } = {},
+  ): Promise<PaginatedResult<any>> {
     // Same single-visit scope as GET /visits/:id
     await this.findOne(visitId, user);
+    const { page, limit, offset } = getPaginationParams(query);
 
-    const logs = await this.db
+    const baseQuery = this.db
       .selectFrom('audit_log')
       .leftJoin('users as actor', 'audit_log.actor_id', 'actor.id')
-      .selectAll('audit_log')
-      .select([
-        'actor.full_name as actor_name',
-        'actor.email as actor_email',
-        'actor.role as actor_role',
-      ])
       .where('audit_log.entity_type', '=', 'visit')
-      .where('audit_log.entity_id', '=', visitId)
-      .orderBy('audit_log.created_at', 'desc')
-      .execute();
+      .where('audit_log.entity_id', '=', visitId);
 
-    return logs;
+    const [countRow, logs] = await Promise.all([
+      baseQuery.select(sql<number>`count(*)::int`.as('total')).executeTakeFirst(),
+      baseQuery
+        .selectAll('audit_log')
+        .select([
+          'actor.full_name as actor_name',
+          'actor.email as actor_email',
+          'actor.role as actor_role',
+        ])
+        .orderBy('audit_log.created_at', 'desc')
+        .orderBy('audit_log.id', 'asc')
+        .limit(limit)
+        .offset(offset)
+        .execute(),
+    ]);
+
+    return buildPaginatedResult(logs, countRow?.total || 0, page, limit);
   }
 }

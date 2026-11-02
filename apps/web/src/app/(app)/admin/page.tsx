@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Settings,
   Users,
@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import {
   Button,
   Badge,
@@ -58,6 +59,7 @@ import {
   FilterMenu,
   InfoCallout,
   EmptyState, StatGrid, StatCard, RowMenu,
+  Spinner,
 } from '@/components/ui';
 import { ROLE_PROFILES, USER_ROLES, isLockedModule, type UserRole, type RolePermissionProfile } from '@arihant/shared';
 import { roleCanReach } from '@/lib/route-access';
@@ -79,6 +81,8 @@ import {
 
 const ADMIN_TABS = ['permissions', 'users', 'departments', 'products', 'zones', 'audit'] as const;
 const AUDIT_PAGE = 50;
+/** People per Personnel directory page (infinite scroll). */
+const USERS_PAGE_SIZE = 25;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/;
 /** 'manager_manager_approved' → 'Manager approved'; 'tender_stage_changed' → 'Tender stage changed'. */
@@ -213,6 +217,48 @@ export default function AdminPage() {
   const [failed, setFailed] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // Personnel directory (Users tab): one page per request, appended as the table scrolls, with the search
+  // (300 ms after typing stops) and the role applied by the API. `usersList` stays the name lookup for the
+  // forms, the audit log and the zone head-counts. Until the tab opens its first page is held (never
+  // answered), so opening it shows the loader, not an empty directory for a frame.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const directoryOpen = activeTab === 'users' && hasRole(['management', 'admin']);
+  const fetchDirectoryPage = useCallback(
+    (page: number) =>
+      directoryOpen
+        ? api.get('/users', {
+            page,
+            limit: USERS_PAGE_SIZE,
+            search: debouncedSearch || undefined,
+            role: selectedDept !== 'all' ? selectedDept : undefined,
+          })
+        : new Promise<never>(() => {}),
+    [directoryOpen, debouncedSearch, selectedDept],
+  );
+  const {
+    rows: directoryUsers,
+    total: directoryTotal,
+    loading: directoryLoading,
+    loadingMore: directoryLoadingMore,
+    hasMore: directoryHasMore,
+    loadMore: loadMoreUsers,
+    refresh: refreshDirectory,
+  } = useInfiniteList<any>(fetchDirectoryPage);
+
+  // Read the next directory page when the end of the table scrolls into view
+  const directoryEnd = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = directoryEnd.current;
+    if (!el || !directoryHasMore || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((entries) => entries[0]?.isIntersecting && loadMoreUsers(), { rootMargin: '200px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [directoryHasMore, loadMoreUsers, directoryUsers.length]);
+
   const fetchAdminData = async () => {
     setIsLoading(true);
     const bad: string[] = [];
@@ -275,7 +321,7 @@ export default function AdminPage() {
   };
 
   const reloadUsers = async () => {
-    const res = await api.get('/users', { limit: 100 }).catch(() => null);
+    const [res] = await Promise.all([api.get('/users', { limit: 100 }).catch(() => null), refreshDirectory()]);
     if (res) setUsersList(asRows(res));
   };
 
@@ -412,6 +458,7 @@ export default function AdminPage() {
     setActionError(null);
     await api.patch(`/users/${target.id}`, { is_active: active });
     setUsersList((prev) => prev.map((u) => (u.id === target.id ? { ...u, is_active: active } : u)));
+    refreshDirectory();
     setNotice(`${target.full_name} ${active ? 're-activated' : 'deactivated'}.`);
   };
 
@@ -421,15 +468,6 @@ export default function AdminPage() {
   void saveFeedback;
   void setSaveFeedback;
 
-  const filteredUsers = usersList.filter((u) => {
-    const matchesSearch =
-      !search ||
-      (u.full_name || '').toLowerCase().includes(search.toLowerCase()) ||
-      (u.email || '').toLowerCase().includes(search.toLowerCase()) ||
-      (u.role || '').toLowerCase().includes(search.toLowerCase());
-    const matchesDept = selectedDept === 'all' || u.role === selectedDept;
-    return matchesSearch && matchesDept;
-  });
 
 
 
@@ -499,7 +537,7 @@ export default function AdminPage() {
                 <input
                   type="search"
                   aria-label="Search personnel"
-                  placeholder="Search by name, email, role…"
+                  placeholder="Search by name, email, phone…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
@@ -512,11 +550,10 @@ export default function AdminPage() {
                   align="right"
                   className="flex-1 lg:flex-none [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
                   options={[
-                    { key: 'all', label: 'All roles', count: usersList.length, active: selectedDept === 'all', onSelect: () => setSelectedDept('all') },
+                    { key: 'all', label: 'All roles', active: selectedDept === 'all', onSelect: () => setSelectedDept('all') },
                     ...USER_ROLES.map((r) => ({
                       key: r,
                       label: ROLE_PROFILES[r].title,
-                      count: usersList.filter((u) => u.role === r).length,
                       active: selectedDept === r,
                       onSelect: () => setSelectedDept(r),
                     })),
@@ -905,7 +942,7 @@ export default function AdminPage() {
             <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
               <h2 className="font-serif text-sm font-bold text-[#14213D]">Personnel directory</h2>
               <span className="font-mono text-xs text-[#4A5568]">
-                {filteredUsers.length} of {usersList.length}
+                {directoryUsers.length} of {directoryTotal}
               </span>
             </div>
 
@@ -920,14 +957,22 @@ export default function AdminPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredUsers.length === 0 && (
+                {directoryLoading ? (
                   <TableRow>
                     <TableCell colSpan={5} className="py-10 text-center text-xs text-[#4A5568]">
-                      {usersList.length === 0 ? 'No personnel records were returned.' : 'No personnel match this filter.'}
+                      <span className="inline-flex items-center gap-2">
+                        <Spinner size="sm" /> Loading personnel…
+                      </span>
                     </TableCell>
                   </TableRow>
-                )}
-                {filteredUsers.map((u) => (
+                ) : directoryUsers.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-10 text-center text-xs text-[#4A5568]">
+                      {debouncedSearch || selectedDept !== 'all' ? 'No personnel match this filter.' : 'No personnel records were returned.'}
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+                {!directoryLoading && directoryUsers.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell className="font-bold text-[#14213D]">
                       <div className="max-w-[280px] truncate" title={show(u.full_name)}>{show(u.full_name)}</div>
@@ -983,6 +1028,14 @@ export default function AdminPage() {
                 ))}
               </TableBody>
             </Table>
+            <div ref={directoryEnd} />
+            {directoryHasMore && !directoryLoading && (
+              <div className="flex justify-center border-t border-[#ECE9E2] px-4 py-3">
+                <Button variant="secondary" size="sm" isLoading={directoryLoadingMore} onClick={loadMoreUsers}>
+                  Load more
+                </Button>
+              </div>
+            )}
           </Card>
         </div>
       )}

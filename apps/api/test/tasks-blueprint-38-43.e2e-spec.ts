@@ -349,7 +349,8 @@ describe('Blueprint §38–43 — Task & Productivity Management, spec walk-thro
       expect(e.status).toBe(200);
       expect(e.body).toMatchObject({ status: 'blocked', open_blocker: expect.objectContaining({ id: blockerId, status: 'pending_review' }) });
       expect(e.body.escalations[0]).toMatchObject({ blocker_id: blockerId, escalated_to: u.mgmt.id });
-      const queue = (await http().get('/api/task-blockers/pending').set(bearer(u.mgmt))).body;
+      // mgmt@ is a shared seeded user with a long queue (oldest first): look for this task's blocker by its number.
+      const queue = (await http().get('/api/task-blockers/pending').query({ search: (await get(u.e1, id)).body.task_number }).set(bearer(u.mgmt))).body.data;
       expect(queue.some((b: any) => b.id === blockerId)).toBe(true);
       expect((await decide(u.mgmt, id, 'accept', { mode: 'pause', comment: 'Discount approved by national head' })).body.open_blocker.status).toBe('accepted');
     });

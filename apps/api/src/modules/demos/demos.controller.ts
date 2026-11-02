@@ -138,10 +138,16 @@ export class DemosController {
     return this.demosService.findOneDemo(id, user);
   }
 
+  /** Paged: the demo's audit events newest first ({ data, total, page, limit, totalPages }) plus its reschedule history. */
   @Get(':id/audit')
   @Roles('management', 'regional_manager', 'sales', 'demo_team', 'admin')
-  async getAuditTrail(@Param('id', DemoIdPipe) id: string, @CurrentUser() user: AuthUser) {
-    return this.demosService.getAuditTrail(id, user);
+  async getAuditTrail(
+    @Param('id', DemoIdPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.demosService.getAuditTrail(id, user, { page: Number(page), limit: Number(limit) });
   }
 
   @Post()

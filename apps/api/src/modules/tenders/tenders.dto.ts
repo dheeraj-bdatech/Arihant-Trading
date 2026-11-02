@@ -859,6 +859,37 @@ export class TenderQueryDto {
   date_field?: string;
 }
 
+/**
+ * One page of a tenders list that is read page by page (Approvals Inbox, portal issues). Every param must be declared
+ * here: the global ValidationPipe whitelists query DTOs, so an undeclared one is dropped.
+ */
+export class TenderPageQueryDto {
+  @IsOptional()
+  page?: number | string;
+
+  @IsOptional()
+  limit?: number | string;
+}
+
+/** GET /tenders/finance/emd-tracking: one page of the instruments in the picked view. */
+export class TenderEmdTrackingQueryDto extends TenderPageQueryDto {
+  /** refund_due = EMDs awaiting refund, blocked = EMDs issued / submitted, pbg = every PBG, all = every EMD and PBG. */
+  @IsOptional()
+  @IsIn(['refund_due', 'blocked', 'pbg', 'all'])
+  filter?: 'refund_due' | 'blocked' | 'pbg' | 'all';
+}
+
+/** GET /tenders/calendar: the IST calendar days the calendar shows (both ends inclusive; default the current IST month). */
+export class TenderCalendarQueryDto {
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from must be a date (YYYY-MM-DD)' })
+  from?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to must be a date (YYYY-MM-DD)' })
+  to?: string;
+}
+
 export class TransitionTenderDto {
   @IsString()
   @IsOptional()

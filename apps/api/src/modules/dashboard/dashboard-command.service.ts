@@ -63,20 +63,20 @@ interface Ctx {
   performance: () => Promise<SalesPerformanceDto>;
 }
 
-const num = (v: unknown) => {
+export const num = (v: unknown) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
-const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : null);
-const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString('en-IN')} ${n === 1 ? one : many}`;
-const rupees = (n: number) => formatIndianCurrency(n, true);
-const iso = (v: unknown): string | null => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
-const day = (v: unknown): string | null => (v == null ? null : v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
-const shortDay = (d: string) =>
+export const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : null);
+export const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString('en-IN')} ${n === 1 ? one : many}`;
+export const rupees = (n: number) => formatIndianCurrency(n, true);
+export const iso = (v: unknown): string | null => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
+export const day = (v: unknown): string | null => (v == null ? null : v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
+export const shortDay = (d: string) =>
   new Date(`${d.slice(0, 10)}T00:00:00+05:30`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
-const human = (s: unknown) => String(s ?? '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+export const human = (s: unknown) => String(s ?? '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 /** A link with only the parameters that are set. */
-const href = (path: string, params: Record<string, string | null | undefined> = {}) => {
+export const href = (path: string, params: Record<string, string | null | undefined> = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => !!e[1])).toString();
   return q ? `${path}?${q}` : path;
 };
@@ -89,35 +89,84 @@ const countAndAmount = (n: number, amount: number) => (n ? `${n} · ${rupees(amo
 
 const LEAD_CLOSED = [...CLOSED_LEAD_STATUSES];
 /** Leads page rules (LeadsService: LEAD_IS_OPEN, leadFollowupIs) — the table is referenced as `leads`. */
-const LEAD_OPEN = sql`lower(coalesce(leads.lead_status, leads.status, 'new')) <> all(${LEAD_CLOSED}::text[])`;
-const leadFollowup = (op: '<' | '=', today: string) =>
+export const LEAD_OPEN = sql`lower(coalesce(leads.lead_status, leads.status, 'new')) <> all(${LEAD_CLOSED}::text[])`;
+export const leadFollowup = (op: '<' | '=', today: string) =>
   sql`(${LEAD_OPEN} and exists (select 1 from follow_ups fu where fu.lead_id = leads.id and fu.status = 'pending' and fu.due_date ${sql.raw(op)} ${today}::date))`;
 
 /** Tender register stage groups (TendersService.tenderStageMatch): every stage leaves held bids out. */
-const NOT_HELD = sql`coalesce(t.on_hold, false) = false`;
-const TENDER_LIVE_STAGES: { label: string; statuses: string[]; filter: string }[] = [
+export const NOT_HELD = sql`coalesce(t.on_hold, false) = false`;
+export const TENDER_LIVE_STAGES: { label: string; statuses: string[]; filter: string }[] = [
   { label: 'Identified', statuses: ['identified'], filter: 'identified' },
   { label: 'Awaiting approval', statuses: ['awaiting_approval'], filter: 'awaiting_approval' },
   { label: 'Preparing', statuses: ['under_preparation', 'pq_submitted', 'pq_qualified'], filter: 'under_preparation' },
   { label: 'Submitted / evaluation', statuses: ['submitted', 'technical_eval', 'commercial_eval'], filter: 'submitted,technical_eval,commercial_eval' },
 ];
-const TENDER_LIVE_STATUSES = TENDER_LIVE_STAGES.flatMap((s) => s.statuses);
+export const TENDER_LIVE_STATUSES = TENDER_LIVE_STAGES.flatMap((s) => s.statuses);
 const TENDER_TERMINAL = ['won', 'lost', 'cancelled', 'rejected_internally'];
 
 /** Reservation clash rule of DemosService.findReservationConflict. */
-const RESERVATION_HELD = ['approved', 'requested'];
-const DEMO_CLOSED = ['cancelled', 'completed'];
+export const RESERVATION_HELD = ['approved', 'requested'];
+export const DEMO_CLOSED = ['cancelled', 'completed'];
 
 /** Service list rule for `overdue=true` (ServiceService.applyTicketFilters). */
-const SERVICE_DONE = ['resolved', 'report_submitted', 'closed', 'cancelled'];
-const SERVICE_PAUSED = ['awaiting_part', 'awaiting_customer', 'on_hold'];
+export const SERVICE_DONE = ['resolved', 'report_submitted', 'closed', 'cancelled'];
+export const SERVICE_PAUSED = ['awaiting_part', 'awaiting_customer', 'on_hold'];
 
 /** Expenses page stage groups (apps/web expenses/page.tsx STAGES). */
-const EXPENSE_STAGE1 = ['submitted'];
-const EXPENSE_ACCOUNTS = ['manager_approved', 'accounts_review', 'accounts_approved'];
-const DRAFT_STALE_DAYS = 7;
+export const EXPENSE_STAGE1 = ['submitted'];
+export const EXPENSE_ACCOUNTS = ['manager_approved', 'accounts_review', 'accounts_approved'];
+export const DRAFT_STALE_DAYS = 7;
 
-const FAILURE_LABEL: Record<string, string> = {
+/* ------------------------------------------------------------------------------------------------------------------
+ * Rules the figures and their record lists (DashboardCommandRecordsService) both use, so a list always holds exactly
+ * the records its figure counts.
+ * ------------------------------------------------------------------------------------------------------------------ */
+/** A visit still to be made (alias v). */
+export const VISIT_IS_OPEN = sql`v.status = any(${VISIT_OPEN}::text[])`;
+/** Cities with open visits in [today, end] that could share a trip: two visits within 3 days, not one trip yet. */
+export const visitClusters = (today: string, end: string) => sql`
+            with v as (
+              select v.id, v.planned_date, v.assigned_to, v.trip_id, lower(trim(o.city)) as city_key, trim(o.city) as city
+              from visits v join organisations o on o.id = v.organisation_id
+              where ${VISIT_IS_OPEN} and v.planned_date between ${today}::date and ${end}::date and coalesce(trim(o.city), '') <> ''
+            ), pairs as (
+              -- two visits in one city within 3 days that are not already one trip (one person, one day, or one trip)
+              select a.city_key, a.id as a_id, b.id as b_id
+              from v a join v b on a.city_key = b.city_key and a.id < b.id
+               and abs(a.planned_date - b.planned_date) <= 3
+               and (a.assigned_to is distinct from b.assigned_to or a.planned_date <> b.planned_date)
+               and (a.trip_id is null or b.trip_id is null or a.trip_id <> b.trip_id)
+            ), involved as (
+              select city_key, a_id as id from pairs union select city_key, b_id from pairs
+            )
+            select min(v.city) as city, count(*)::int as visits, count(distinct v.assigned_to)::int as people,
+                   min(v.planned_date)::text as first_day, max(v.planned_date)::text as last_day
+            from involved i join v on v.id = i.id
+            group by i.city_key order by visits desc, city asc`;
+/** The Demos register's date: confirmed date, else requested date (table referenced as `demos`). */
+export const DEMO_REGISTER_DATE = sql`coalesce(demos.confirmed_date, demos.requested_date)`;
+/** Two held bookings of one demo unit that overlap from today on: `from … where …` of every clashing pair (a, b). */
+export const demoClash = (today: string) => sql`
+      from demo_reservations a
+      join demo_reservations b on b.equipment_id = a.equipment_id and a.id < b.id
+      join demos da on da.id = a.demo_id join demos db on db.id = b.demo_id
+      left join demo_equipment e on e.id = a.equipment_id
+      where a.status = any(${RESERVATION_HELD}::text[]) and b.status = any(${RESERVATION_HELD}::text[])
+        and coalesce(da.status, '') <> all(${DEMO_CLOSED}::text[]) and coalesce(db.status, '') <> all(${DEMO_CLOSED}::text[])
+        and a.reserved_from <= coalesce(b.reserved_to, b.reserved_from) and coalesce(a.reserved_to, a.reserved_from) >= b.reserved_from
+        and coalesce(a.reserved_to, a.reserved_from) >= ${today}::date and coalesce(b.reserved_to, b.reserved_from) >= ${today}::date`;
+/** A tender of a register category, by enum or category code (aliases t, tc = tender_categories). */
+export const tenderInCategory = (category: string) => sql`(t.category::text = ${category} or lower(tc.code) = ${category})`;
+/** Proposals with the customer: sent, or waiting on a follow-up (alias p). */
+export const PROPOSAL_DISPATCHED = ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'SENT', 'FOLLOWUP_REQUIRED'];
+export const PROPOSAL_NEXT_FOLLOW_UP = sql`coalesce(p.next_follow_up_date, p.next_followup)`;
+/** Service list rule for `overdue=true` (ServiceService.applyTicketFilters), alias s. */
+export const serviceOverdue = (today: string) => sql`s.status <> all(${SERVICE_DONE}::text[]) and s.status <> all(${SERVICE_PAUSED}::text[])
+      and ((s.planned_visit_date < ${today}::date and s.status <> 'in_progress') or s.sla_resolution_due_at < now())`;
+/** IST day a claim was rejected: when accounts acted, else the manager, else its last update (alias c). */
+export const EXPENSE_REJECTED_DAY = istDay(sql`coalesce(c.accounts_actioned_at, c.manager_actioned_at, c.updated_at)`);
+
+export const FAILURE_LABEL: Record<string, string> = {
   PRODUCT_LIMITATION: 'Product limitation',
   EQUIPMENT_ISSUE: 'Equipment issue',
   TECHNICAL_FAILURE: 'Technical failure',
@@ -140,7 +189,12 @@ export class DashboardCommandService {
     private readonly access: ModuleAccessService,
   ) {}
 
-  async getCommand(user: AuthUser, layout: CommandLayout): Promise<CommandDashboardDto> {
+  /**
+   * The board, or one page of it. `sections` names the cards to work out (the board loads them a row at a time as it is
+   * scrolled); `only: 'action'` works out just the figures that need action, across every card, for the attention list.
+   * `order` always lists every card the board shows, so the caller knows what is left to load.
+   */
+  async getCommand(user: AuthUser, layout: CommandLayout, opts: { sections?: CommandSectionKey[]; only?: 'action' } = {}): Promise<CommandDashboardDto> {
     const today = todayInKolkata();
     const days = layout.period;
     const from = addIsoDays(today, -(days - 1));
@@ -166,21 +220,36 @@ export class DashboardCommandService {
       expenses: (c, w) => this.expenses(c, w),
     };
 
+    // every card the board shows, in layout order, with the figures the layout keeps
+    const shown = layout.sections
+      .filter((ls) => !ls.hidden && !unavailable.includes(ls.key))
+      .map((ls) => {
+        const def = COMMAND_SECTIONS.find((d) => d.key === ls.key)!;
+        return { key: ls.key, items: def.items.filter((i) => !ls.hidden_items.includes(i.key)) };
+      })
+      .filter((s) => s.items.length > 0);
+    const asked = opts.sections ? shown.filter((s) => opts.sections!.includes(s.key)) : shown;
+
     const sections: CommandSection[] = [];
     const built = await Promise.all(
-      layout.sections.map(async (ls) => {
-        if (ls.hidden || unavailable.includes(ls.key)) return null;
-        const def = COMMAND_SECTIONS.find((d) => d.key === ls.key)!;
-        const keys = def.items.map((i) => i.key).filter((k) => !ls.hidden_items.includes(k));
+      asked.map(async (s) => {
+        const keys = s.items.filter((i) => !opts.only || i.kind === opts.only).map((i) => i.key);
         if (!keys.length) return null;
-        const metrics = await build[ls.key](ctx, new Set(keys));
+        const metrics = await build[s.key](ctx, new Set(keys));
         // catalogue order, only what the layout shows
-        return { key: ls.key, metrics: keys.map((k) => metrics.find((m) => m.key === k)).filter((m): m is CommandMetric => !!m) };
+        return { key: s.key, metrics: keys.map((k) => metrics.find((m) => m.key === k)).filter((m): m is CommandMetric => !!m) };
       }),
     );
     for (const s of built) if (s) sections.push(s);
 
-    return { generatedAt: new Date().toISOString(), period: { days, from, to: today }, layout, sections, unavailable };
+    return {
+      generatedAt: new Date().toISOString(),
+      period: { days, from, to: today },
+      layout,
+      order: shown.map((s) => s.key),
+      sections,
+      unavailable,
+    };
   }
 
   private async rows(query: RawBuilder<unknown>): Promise<Row[]> {
@@ -295,7 +364,7 @@ export class DashboardCommandService {
   private async visits(c: Ctx, want: Set<string>): Promise<CommandMetric[]> {
     const weekEnd = addIsoDays(c.today, 6);
     const combineEnd = addIsoDays(c.today, 13);
-    const open = sql`v.status = any(${VISIT_OPEN}::text[])`;
+    const open = VISIT_IS_OPEN;
     const [counts, upcoming, people, clusters] = await Promise.all([
       this.one(sql`
         select count(*) filter (where ${open} and v.planned_date between ${c.today}::date and ${weekEnd}::date)::int as upcoming,
@@ -320,27 +389,7 @@ export class DashboardCommandService {
             where ${open} and v.planned_date = ${c.today}::date
             group by u.id, u.full_name order by n desc, u.full_name asc limit 6`)
         : Promise.resolve([]),
-      want.has('combine')
-        ? this.rows(sql`
-            with v as (
-              select v.id, v.planned_date, v.assigned_to, v.trip_id, lower(trim(o.city)) as city_key, trim(o.city) as city
-              from visits v join organisations o on o.id = v.organisation_id
-              where ${open} and v.planned_date between ${c.today}::date and ${combineEnd}::date and coalesce(trim(o.city), '') <> ''
-            ), pairs as (
-              -- two visits in one city within 3 days that are not already one trip (one person, one day, or one trip)
-              select a.city_key, a.id as a_id, b.id as b_id
-              from v a join v b on a.city_key = b.city_key and a.id < b.id
-               and abs(a.planned_date - b.planned_date) <= 3
-               and (a.assigned_to is distinct from b.assigned_to or a.planned_date <> b.planned_date)
-               and (a.trip_id is null or b.trip_id is null or a.trip_id <> b.trip_id)
-            ), involved as (
-              select city_key, a_id as id from pairs union select city_key, b_id from pairs
-            )
-            select min(v.city) as city, count(*)::int as visits, count(distinct v.assigned_to)::int as people,
-                   min(v.planned_date)::text as first_day, max(v.planned_date)::text as last_day
-            from involved i join v on v.id = i.id
-            group by i.city_key order by visits desc, city asc`)
-        : Promise.resolve([]),
+      want.has('combine') ? this.rows(visitClusters(c.today, combineEnd)) : Promise.resolve([]),
     ]);
 
     const out: CommandMetric[] = [];
@@ -420,21 +469,12 @@ export class DashboardCommandService {
   /* ------------------------------------------------------------------- demos -- */
   private async demos(c: Ctx, want: Set<string>): Promise<CommandMetric[]> {
     const weekEnd = addIsoDays(c.today, 6);
-    // the Demos register's date filter: confirmed date, else requested date
-    const demoDate = sql`coalesce(demos.confirmed_date, demos.requested_date)`;
+    const demoDate = DEMO_REGISTER_DATE;
     const inPeriod = sql`${demoDate} between ${c.from}::date and ${c.to}::date`;
     const outcome = (cond: RawBuilder<unknown>) => sql`exists (select 1 from demo_outcomes x where x.demo_id = demos.id and ${cond})`;
     const active = [...DEMO_ACTIVE_STATUSES] as string[];
     const pending = [...DEMO_PENDING_STATUSES] as string[];
-    const clash = sql`
-      from demo_reservations a
-      join demo_reservations b on b.equipment_id = a.equipment_id and a.id < b.id
-      join demos da on da.id = a.demo_id join demos db on db.id = b.demo_id
-      left join demo_equipment e on e.id = a.equipment_id
-      where a.status = any(${RESERVATION_HELD}::text[]) and b.status = any(${RESERVATION_HELD}::text[])
-        and coalesce(da.status, '') <> all(${DEMO_CLOSED}::text[]) and coalesce(db.status, '') <> all(${DEMO_CLOSED}::text[])
-        and a.reserved_from <= coalesce(b.reserved_to, b.reserved_from) and coalesce(a.reserved_to, a.reserved_from) >= b.reserved_from
-        and coalesce(a.reserved_to, a.reserved_from) >= ${c.today}::date and coalesce(b.reserved_to, b.reserved_from) >= ${c.today}::date`;
+    const clash = demoClash(c.today);
 
     const [counts, upcoming, clashes, waiting, reasons] = await Promise.all([
       this.one(sql`
@@ -573,7 +613,7 @@ export class DashboardCommandService {
         )},
                count(*) filter (where coalesce(t.on_hold, false) and t.status::text <> all(${TENDER_TERMINAL}::text[]))::int as held
         from tenders t left join tender_categories tc on tc.id = t.category_id
-        where ${TENDER_ROW} and (t.category::text = ${category} or lower(tc.code) = ${category})`);
+        where ${TENDER_ROW} and ${tenderInCategory(category)}`);
 
     const [counts, closing, approvals, pq, general] = await Promise.all([
       this.one(sql`
@@ -682,8 +722,8 @@ export class DashboardCommandService {
 
   /* --------------------------------------------------------------- proposals -- */
   private async proposalSection(c: Ctx, want: Set<string>): Promise<CommandMetric[]> {
-    const dispatched = ['SENT_TO_CUSTOMER', 'FOLLOW_UP_REQUIRED', 'SENT', 'FOLLOWUP_REQUIRED'];
-    const nextFollowUp = sql`coalesce(p.next_follow_up_date, p.next_followup)`;
+    const dispatched = PROPOSAL_DISPATCHED;
+    const nextFollowUp = PROPOSAL_NEXT_FOLLOW_UP;
     const [stats, late, outcomes] = await Promise.all([
       want.has('pending') || want.has('followups_overdue') ? this.proposals.getDashboardStats(c.user, {}) : Promise.resolve({} as Row),
       want.has('followups_overdue')
@@ -767,8 +807,7 @@ export class DashboardCommandService {
 
   /* ----------------------------------------------------------------- service -- */
   private async serviceSection(c: Ctx, want: Set<string>): Promise<CommandMetric[]> {
-    const overdueRule = sql`s.status <> all(${SERVICE_DONE}::text[]) and s.status <> all(${SERVICE_PAUSED}::text[])
-      and ((s.planned_visit_date < ${c.today}::date and s.status <> 'in_progress') or s.sla_resolution_due_at < now())`;
+    const overdueRule = serviceOverdue(c.today);
     const [stats, overdue, parts] = await Promise.all([
       this.service.getDashboardStats(c.user, {}),
       want.has('overdue')
@@ -922,7 +961,7 @@ export class DashboardCommandService {
 
   /* ---------------------------------------------------------------- expenses -- */
   private async expenses(c: Ctx, want: Set<string>): Promise<CommandMetric[]> {
-    const rejectedDay = istDay(sql`coalesce(c.accounts_actioned_at, c.manager_actioned_at, c.updated_at)`);
+    const rejectedDay = EXPENSE_REJECTED_DAY;
     const r = await this.one(sql`
       select count(*) filter (where c.status = any(${EXPENSE_STAGE1}::text[]))::int as stage1,
              coalesce(sum(c.total_claimed) filter (where c.status = any(${EXPENSE_STAGE1}::text[])), 0)::float as stage1_amt,

@@ -9,13 +9,14 @@ import { DashboardWorkspaceService } from './dashboard-workspace.service.js';
 import { DashboardMetricsService } from './dashboard-metrics.js';
 import { DashboardPerformanceService } from './dashboard-performance.service.js';
 import { DashboardCommandService } from './dashboard-command.service.js';
+import { DashboardCommandRecordsService } from './dashboard-command-records.service.js';
 import { DashboardLayoutService } from './dashboard-layout.service.js';
 
 @Module({
   // Module 10 counts service and proposal figures with those modules' own KPI methods
   imports: [ServiceModule, ProposalsModule, ReportsModule, TasksModule],
   controllers: [DashboardController],
-  providers: [DashboardService, DashboardWorkspaceService, DashboardMetricsService, DashboardPerformanceService, DashboardCommandService, DashboardLayoutService],
+  providers: [DashboardService, DashboardWorkspaceService, DashboardMetricsService, DashboardPerformanceService, DashboardCommandService, DashboardCommandRecordsService, DashboardLayoutService],
   exports: [DashboardService, DashboardMetricsService],
 })
 export class DashboardModule {}

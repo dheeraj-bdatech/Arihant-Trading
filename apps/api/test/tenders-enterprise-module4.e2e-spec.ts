@@ -438,8 +438,11 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.total_emd_blocked).toBeGreaterThanOrEqual(900000);
-      expect(Array.isArray(res.body.instruments)).toBe(true);
-      expect(res.body.instruments.length).toBeGreaterThanOrEqual(1);
+      // One page of instruments (default view: all) plus SQL totals over every instrument in scope.
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.data.length).toBeGreaterThanOrEqual(1);
+      expect(res.body.total).toBe(res.body.counts.all);
+      expect(res.body.data.length).toBeLessThanOrEqual(res.body.limit);
     });
   });
 

@@ -498,9 +498,13 @@ describe('Module 4: Tender Management E2E Test Suite', () => {
         .set('Authorization', `Bearer ${mgmtToken}`);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.length).toBeGreaterThanOrEqual(1);
-      const found = res.body.find((i: any) => i.tender_id === createdTenderId);
+      // One page (newest first) plus the hub counts over every issue in scope.
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.total).toBeGreaterThanOrEqual(1);
+      expect(res.body.page).toBe(1);
+      expect(res.body.counts.total).toBe(res.body.total);
+      expect(res.body.counts.open + res.body.counts.resolved).toBe(res.body.total);
+      const found = res.body.data.find((i: any) => i.tender_id === createdTenderId);
       expect(found).toBeDefined();
       expect(found.tender_no).toBeDefined();
     });

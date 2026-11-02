@@ -12,6 +12,7 @@ import { openTaskPeek } from './TaskPeek';
 import { ArrowDown, ArrowUp, ArrowUpDown, BadgeCheck, ChevronDown, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import { Button, Card, Checkbox, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
 import { api } from '@/lib/api';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import {
   TASK_OVERDUE_CAPABLE_STATUSES,
   TASK_PRIORITY_LABELS,
@@ -64,6 +65,44 @@ export function useTaskList(query: Record<string, string | number | boolean | un
   }, [load]);
   return { data: state && state.key === key ? state.data : null, loading, error, reload: load };
 }
+
+/**
+ * GET /tasks read a page at a time (useInfiniteList) for lists that grow as they scroll — the board's lanes and the
+ * decided columns of the review boards. Filters, search and sort are query params, so every page comes from the
+ * database in order. A new `query` starts again from page 1, and `ready` stays false until that first page arrives
+ * (a filter change shows the loader, not the previous filter's cards). `refresh()` re-reads the pages loaded so far.
+ * Pass `null` to skip loading.
+ */
+export function useTaskPages(query: Record<string, string | number | boolean | undefined> | null, pageSize: number) {
+  const key = query ? JSON.stringify(query) : '';
+  const latest = useRef(key);
+  latest.current = key;
+  const [readyKey, setReadyKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!key) setReadyKey(null);
+  }, [key]);
+  // The hook swallows fetch errors, so page 1 reports its own (as the expenses list does).
+  const fetchPage = useCallback(
+    async (page: number) => {
+      try {
+        const res = await api.get<Paged<TaskRow>>('/tasks', { ...JSON.parse(key), page, page_size: pageSize });
+        if (page === 1 && key === latest.current) setError(null);
+        return res;
+      } catch (e) {
+        if (page === 1 && key === latest.current) setError(errorMessage(e));
+        throw e;
+      } finally {
+        if (page === 1 && key === latest.current) setReadyKey(key);
+      }
+    },
+    [key, pageSize],
+  );
+  const list = useInfiniteList<TaskRow>(fetchPage, { enabled: Boolean(key) });
+  return { ...list, error, ready: Boolean(key) && readyKey === key && !list.loading };
+}
+
+export type TaskPages = ReturnType<typeof useTaskPages>;
 
 // ------------------------------------------------------------------ helpers
 /** Work the assignee still owes (the deadline countdown matters). */
