@@ -19,6 +19,7 @@ import {
   territoryVisits,
 } from './dashboard-metrics.js';
 import { TICKET_CLOSURE_SECONDS } from '../service/service.core.js';
+import { TaskBlockersService } from '../tasks/task-blockers.service.js';
 
 /**
  * GET /dashboard/workspace — each role's own home screen (Blueprint §5 role matrix, §34 service KPIs,
@@ -82,6 +83,7 @@ export class DashboardWorkspaceService {
   constructor(
     @Inject(KYSELY_DB) private readonly db: Kysely<Database>,
     private readonly metrics: DashboardMetricsService,
+    private readonly taskBlockers: TaskBlockersService,
   ) {}
 
   async getWorkspace(user: AuthUser): Promise<DashboardWorkspaceDto> {
@@ -245,11 +247,13 @@ export class DashboardWorkspaceService {
     const territory = { zoneId: zone, managerId: user.id };
     const leadScope = territoryLeads(territory);
     const visitScope = territoryVisits(territory);
-    const myClaims = sql`c.deleted_at is null and c.status = 'submitted' and (c.manager_id = ${user.id} or emp.reporting_manager_id = ${user.id})`;
+    // Claims only this manager can approve (they are the claim's approver), as the Expenses list's approver=me shows them
+    const myClaims = sql`c.deleted_at is null and c.status = 'submitted' and c.manager_id = ${user.id}`;
 
-    const [stage1, blockers, visits, leads, tenders, approvals, blockerList, agenda, team, zoneLabel] = await Promise.all([
+    const [stage1, blockerQueue, visits, leads, tenders, approvals, agenda, team, zoneLabel] = await Promise.all([
       this.one(sql`select count(*)::int as c, coalesce(sum(c.total_claimed), 0)::float as amt from expense_claims c join users emp on emp.id = c.employee_id where ${myClaims}`),
-      this.one(sql`select count(*)::int as c from task_blockers b join tasks k on k.id = b.task_id where b.status = 'pending_review' and (k.reporting_manager_id = ${user.id} or k.assigned_by = ${user.id})`),
+      // the Blocker reviews queue itself (/tasks/blockers), so the figure and the list it opens always agree
+      this.taskBlockers.pendingQueue({ page_size: 5 }, user),
       this.metrics.visitSummary(visitScope, today),
       this.metrics.leadPipeline(leadScope, today),
       this.metrics.tenderSummary(tenderScopeFor(user)),
@@ -257,7 +261,6 @@ export class DashboardWorkspaceService {
         select c.id, c.claim_number, c.title, c.total_claimed, c.submitted_at, emp.full_name
         from expense_claims c join users emp on emp.id = c.employee_id where ${myClaims}
         order by c.submitted_at asc nulls last limit 6`),
-      this.blockers(sql`(k.reporting_manager_id = ${user.id} or k.assigned_by = ${user.id})`, 5),
       this.rows(sql`
         select v.id, v.organisation_id, v.planned_date::text as day, v.start_time, v.purpose, v.status, o.name as org, rep.full_name as rep
         from visits v left join organisations o on o.id = v.organisation_id left join users rep on rep.id = v.assigned_to
@@ -273,7 +276,7 @@ export class DashboardWorkspaceService {
       numbers: {
         stage1Pending: num(stage1.c),
         stage1Amount: num(stage1.amt),
-        blockersToReview: num(blockers.c),
+        blockersToReview: blockerQueue.total,
         visitsToday: visits.today,
         visitsWeek: visits.week,
         visitsDone30d: visits.completed30d,
@@ -299,7 +302,15 @@ export class DashboardWorkspaceService {
           tone: 'warning',
           href: `/expenses/${r.id}`,
         })),
-        blockers: blockerList,
+        blockers: blockerQueue.data.map((b: any) => ({
+          id: b.id,
+          title: b.task_title,
+          subtitle: `${human(b.blocker_type)}${b.description ? ` — ${b.description}` : ''}`,
+          date: iso(b.created_at),
+          tone: 'warning',
+          meta: b.assignee_name,
+          href: `/tasks/${b.task_id}`,
+        })),
         agenda: agenda.map((r) => ({
           id: r.id,
           title: r.org,
@@ -387,7 +398,8 @@ export class DashboardWorkspaceService {
         pipelineLakh: leads.lakh,
         openLeads: leads.active,
         totalLeads: leads.total,
-        tasksOpen: tasks.open,
+        // as the Tasks "All open" tab the tile opens: open work plus tasks waiting for sign-off
+        tasksOpen: tasks.open + tasks.awaiting,
         tasksOverdue: tasks.overdue,
         tasksBlocked: tasks.blocked,
         tendersWon: tenders.won,

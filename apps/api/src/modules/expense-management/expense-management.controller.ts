@@ -99,6 +99,8 @@ export class ExpenseClaimsController {
   list(@Query() query: Record<string, unknown>, @CurrentUser() user: AuthUser) {
     return this.claims.list(query, user, {
       mineOnly: query.mine === 'true',
+      // approver=me: the claims this user is the approver of (only they can give the stage-1 decision)
+      approverOnly: query.approver === 'me',
       // The Expenses list: every member's claims for management / admin only; everyone else, the claims that concern them
       extra: query.relevant_only === 'true' ? relevantClaimsFilter(user) : undefined,
     });

@@ -77,7 +77,10 @@ export interface PerformanceFigures {
 }
 
 export interface SalesPerformanceRow extends PerformanceFigures {
-  /** User id (group_by=rep), region id (group_by=region) or 'none' for records with no region. */
+  /**
+   * User id (group_by=rep), region id (group_by=region), 'none' for records with no region, or 'other' for records no
+   * listed rep owns (management's unfiltered rep view).
+   */
   key: string;
   label: string;
   /** Role of the rep (group_by=rep only). */

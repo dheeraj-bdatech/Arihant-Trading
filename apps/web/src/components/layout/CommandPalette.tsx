@@ -43,6 +43,7 @@ export const CommandPalette: React.FC<{
   const [isLoading, setIsLoading] = useState(false);
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const { user } = useAuth();
 
@@ -181,9 +182,12 @@ export const CommandPalette: React.FC<{
   useEffect(() => {
     if (!query.trim()) {
       setResults(allowedStaticItems);
+      setIsLoading(false);
       return;
     }
 
+    // A slower reply for an older query must not overwrite the newer one's results.
+    let stale = false;
     const timer = setTimeout(async () => {
       setIsLoading(true);
       try {
@@ -201,6 +205,7 @@ export const CommandPalette: React.FC<{
             ? api.get('/service/tickets', { search: q, limit: 5 }).catch(() => ({ data: [] }))
             : none,
         ]);
+        if (stale) return;
 
         const tenderItems: SearchResult[] = rowsOf(tenderRes).map((t: any) => {
           const buyer = t.organisation_name || t.organisation || t.buyer_name || t.department || 'Government buyer';
@@ -251,22 +256,24 @@ export const CommandPalette: React.FC<{
 
         setResults([...tenderItems, ...orgItems, ...leadItems, ...ticketItems, ...filteredStatic]);
       } catch {
-        setResults(allowedStaticItems);
+        if (!stale) setResults(allowedStaticItems);
       } finally {
-        setIsLoading(false);
+        if (!stale) setIsLoading(false);
       }
     }, 200);
 
-    return () => clearTimeout(timer);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
   }, [query, user?.role]);
 
   // New result set → highlight the top result, so Enter opens it.
   useEffect(() => setActive(0), [results]);
+  // Reopening keeps the last search and its results; the text comes back selected so typing starts a new one.
   useEffect(() => {
-    if (!isOpen) {
-      setQuery('');
-      setActive(0);
-    }
+    if (isOpen) inputRef.current?.select();
+    else setActive(0);
   }, [isOpen]);
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' });
@@ -312,6 +319,7 @@ export const CommandPalette: React.FC<{
         <div className="flex items-center px-4 py-3.5 border-b border-[#ECE9E2] bg-[#FBFAF7]">
           <Search className="h-5 w-5 text-[#0F5E63] mr-3 shrink-0" />
           <input
+            ref={inputRef}
             type="text"
             role="combobox"
             aria-expanded

@@ -35,6 +35,8 @@ const num = (v: unknown) => {
 const rate = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 1000) / 10 : null);
 const TOTAL = '__total__';
 const NO_REGION = 'none';
+/** Rep view row for records no listed salesperson owns (owned by other roles, or by nobody). */
+const OTHER_STAFF = 'other';
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** People evaluated per salesperson (Blueprint §44: "sales reps and regional managers"). */
@@ -60,6 +62,8 @@ export interface SalesPerformanceQuery {
  *    the same set the rep's own "my bids" scope uses; contacts → contacts at organisations the rep holds a lead at or created.
  *  - Region: the record's own territory (customer organisation region, tender region), falling back to the owner's
  *    home region; records with neither land in a "No region" row (management, unfiltered only).
+ *  - Records no listed rep is credited with (owned by tender / demo / management staff, or by nobody) land in an
+ *    "Other staff" row (management, unfiltered only), so both groupings of the whole company add up to the same totals.
  *
  * Period (IST calendar days, default: current month)
  *  - leads: created_at; follow-ups done: completed_at (else due date); pending: open and due by the period end;
@@ -111,6 +115,7 @@ export class DashboardPerformanceService {
         from users u left join regions r on r.id = u.region_id left join zones z on z.id = coalesce(u.zone_id, r.zone_id)
         where ${people} order by u.full_name asc`.execute(this.db);
       rows = res.rows.map((r) => ({ key: r.id, label: r.full_name, role: r.role, region_name: r.region_name ?? null, zone_name: r.zone_name ?? null, inactive: !r.is_active }));
+      if (isAll && !zoneId && !regionId) rows.push({ key: OTHER_STAFF, label: 'Other staff', role: null, region_name: null, zone_name: null, inactive: false });
     } else {
       rows = regions
         .filter((r) => !regionId || r.id === regionId)
@@ -122,8 +127,8 @@ export class DashboardPerformanceService {
     const figures = keys.length ? await this.figures(groupBy, keys, from, to) : new Map<string, PerformanceFigures>();
     const blank = this.blank();
     const out: SalesPerformanceRow[] = rows.map((r) => ({ ...r, ...(figures.get(r.key) ?? this.blank()) }));
-    // the "No region" row and a deactivated rep only earn their place when something landed there
-    const shown = out.filter((r) => (r.key === NO_REGION ? this.hasData(r) : !r.inactive || this.hasData(r, true)));
+    // the "No region" / "Other staff" rows and a deactivated rep only earn their place when something landed there
+    const shown = out.filter((r) => (r.key === NO_REGION || r.key === OTHER_STAFF ? this.hasData(r) : !r.inactive || this.hasData(r, true)));
 
     return {
       group_by: groupBy,
@@ -195,9 +200,17 @@ export class DashboardPerformanceService {
 
   private async figures(groupBy: PerformanceGroupBy, keys: string[], from: string, to: string) {
     const inP = (day: Cond) => sql`${day} between ${from}::date and ${to}::date`;
-    /** Group key of a record: its owner (rep), or its territory falling back to the owner's home region (ow). */
+    /**
+     * Group key of a record: its owner when that is a listed rep, else "Other staff" (kept only when that row is
+     * listed); or its territory falling back to the owner's home region (ow).
+     */
     const key = (owner: Cond, region: Cond) =>
-      groupBy === 'rep' ? sql`${owner}::text` : sql`coalesce(${region}::text, ow.region_id::text, ${NO_REGION})`;
+      groupBy === 'rep'
+        ? sql`case when ${owner}::text = any(${keys}::text[]) then ${owner}::text else ${OTHER_STAFF} end`
+        : sql`coalesce(${region}::text, ow.region_id::text, ${NO_REGION})`;
+    /** Several people per record (contacts, tenders): one row per listed rep, else one "Other staff" row. */
+    const repOf = (uid: Cond) => sql`coalesce(${uid}, ${OTHER_STAFF})`;
+    const listed = (uid: Cond) => sql`${uid}::text = any(${keys}::text[])`;
 
     const proposalOwner = PROPOSAL_OWNER;
     const proposalOrg = PROPOSAL_ORG;
@@ -230,9 +243,10 @@ export class DashboardPerformanceService {
       ),
       this.agg(
         groupBy === 'rep'
-          ? sql`select k.uid::text as key, c.id from contacts c join organisations o on o.id = c.organisation_id
-                cross join lateral (select l.assigned_to as uid from leads l where l.organisation_id = o.id
-                                    union select o.created_by) k`
+          ? sql`select ${repOf(sql`k.uid`)} as key, c.id from contacts c join organisations o on o.id = c.organisation_id
+                left join lateral (select x.uid::text as uid
+                                   from (select l.assigned_to as uid from leads l where l.organisation_id = o.id union select o.created_by) x
+                                   where ${listed(sql`x.uid`)}) k on true`
           : sql`select ${key(sql`null::uuid`, sql`o.region_id`)} as key, c.id from contacts c
                 join organisations o on o.id = c.organisation_id left join users ow on ow.id = o.created_by`,
         keys,
@@ -291,13 +305,13 @@ export class DashboardPerformanceService {
         sql`count(distinct s.id)::int as followups`,
       ),
       this.agg(
-        sql`select ${groupBy === 'rep' ? sql`k.uid::text` : key(sql`null::uuid`, sql`t.region_id`)} as key, t.id,
+        sql`select ${groupBy === 'rep' ? repOf(sql`k.uid`) : key(sql`null::uuid`, sql`t.region_id`)} as key, t.id,
                    ${inP(istDay(sql`t.created_at`))} as created, t.category::text as category,
                    t.status = any(${TENDER_SUBMITTED}::text[])
                      and ${inP(TENDER_SUBMITTED_DAY)} as submitted,
                    ${inP(TENDER_RESULT_DAY)} as decided, t.status
             from tenders t left join users ow on ow.id = ${tenderOwner}
-            ${groupBy === 'rep' ? sql`cross join lateral (select distinct x as uid from unnest(${tenderPeople}) x where x is not null) k` : sql``}
+            ${groupBy === 'rep' ? sql`left join lateral (select distinct x::text as uid from unnest(${tenderPeople}) x where ${listed(sql`x`)}) k on true` : sql``}
             where ${TENDER_ROW}`,
         keys,
         sql`count(distinct s.id) filter (where s.created and s.category = 'pq')::int as pq,

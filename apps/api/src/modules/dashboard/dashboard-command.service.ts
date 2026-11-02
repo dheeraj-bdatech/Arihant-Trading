@@ -25,9 +25,9 @@ import {
   TENDER_AWAITING_APPROVAL,
   TENDER_ROW,
   VISIT_OPEN,
-  istDay,
   tenderClosingWithin,
 } from './dashboard-metrics.js';
+import { decidedDateIst } from '../expense-management/expense-filters.js';
 import { DashboardPerformanceService } from './dashboard-performance.service.js';
 import { ServiceService } from '../service/service.service.js';
 import { ProposalsService } from '../proposals/proposals.service.js';
@@ -112,10 +112,13 @@ export const DEMO_CLOSED = ['cancelled', 'completed'];
 export const SERVICE_DONE = ['resolved', 'report_submitted', 'closed', 'cancelled'];
 export const SERVICE_PAUSED = ['awaiting_part', 'awaiting_customer', 'on_hold'];
 
-/** Expenses page stage groups (apps/web expenses/page.tsx STAGES). */
+/** Waiting on a manager (stage 1) / with Accounts (stage 2). Links pass the exact statuses (`statuses=`), not the
+ * Expenses page's stage groups: its "Awaiting approval" also holds claims sent back for clarification. */
 export const EXPENSE_STAGE1 = ['submitted'];
 export const EXPENSE_ACCOUNTS = ['manager_approved', 'accounts_review', 'accounts_approved'];
 export const DRAFT_STALE_DAYS = 7;
+/** The Expenses list holding exactly the claims a figure counts. */
+const claimsHref = (statuses: readonly string[], params: Record<string, string> = {}) => href('/expenses', { statuses: statuses.join(','), ...params });
 
 /* ------------------------------------------------------------------------------------------------------------------
  * Rules the figures and their record lists (DashboardCommandRecordsService) both use, so a list always holds exactly
@@ -163,8 +166,9 @@ export const PROPOSAL_NEXT_FOLLOW_UP = sql`coalesce(p.next_follow_up_date, p.nex
 /** Service list rule for `overdue=true` (ServiceService.applyTicketFilters), alias s. */
 export const serviceOverdue = (today: string) => sql`s.status <> all(${SERVICE_DONE}::text[]) and s.status <> all(${SERVICE_PAUSED}::text[])
       and ((s.planned_visit_date < ${today}::date and s.status <> 'in_progress') or s.sla_resolution_due_at < now())`;
-/** IST day a claim was rejected: when accounts acted, else the manager, else its last update (alias c). */
-export const EXPENSE_REJECTED_DAY = istDay(sql`coalesce(c.accounts_actioned_at, c.manager_actioned_at, c.updated_at)`);
+/** IST day a claim was rejected: when accounts acted, else the manager, else its last update (alias c). The Expenses
+ * list's `date_field=decided_at` filter, so the Rejected figure's link lists the same claims. */
+export const EXPENSE_REJECTED_DAY = decidedDateIst;
 
 export const FAILURE_LABEL: Record<string, string> = {
   PRODUCT_LIMITATION: 'Product limitation',
@@ -989,10 +993,10 @@ export class DashboardCommandService {
               ? `${rupees(num(r.stage1_amt) + num(r.stage2_amt))} claimed`
               : null,
           tone: actionTone(stage1 + stage2, orphaned > 0),
-          href: null,
+          href: claimsHref([...EXPENSE_STAGE1, ...EXPENSE_ACCOUNTS]),
           breakdown: [
-            { label: 'With managers', value: stage1, display: countAndAmount(stage1, num(r.stage1_amt)) },
-            { label: 'With accounts', value: stage2, display: countAndAmount(stage2, num(r.stage2_amt)), href: href('/expenses', { stage: 'accounts' }) },
+            { label: 'With managers', value: stage1, display: countAndAmount(stage1, num(r.stage1_amt)), href: claimsHref(EXPENSE_STAGE1) },
+            { label: 'With accounts', value: stage2, display: countAndAmount(stage2, num(r.stage2_amt)), href: claimsHref(EXPENSE_ACCOUNTS) },
           ],
         }),
       );
@@ -1005,7 +1009,7 @@ export class DashboardCommandService {
           value: n,
           detail: n ? `${rupees(num(r.rejected_amt))} claimed` : null,
           tone: 'neutral',
-          href: null,
+          href: claimsHref(['rejected'], { date_field: 'decided_at', date_from: c.from, date_to: c.to }),
           breakdown: n
             ? [
                 { label: 'By managers', value: n - byAccounts },
@@ -1022,10 +1026,10 @@ export class DashboardCommandService {
         metric('outstanding', {
           value: clarify + drafts,
           tone: actionTone(clarify + drafts),
-          href: null,
+          href: claimsHref(['clarification_required', 'draft'], { draft_idle_days: String(DRAFT_STALE_DAYS) }),
           breakdown: [
-            { label: 'Sent back for clarification', value: clarify },
-            { label: `Drafts untouched ${DRAFT_STALE_DAYS}+ days`, value: drafts },
+            { label: 'Sent back for clarification', value: clarify, href: claimsHref(['clarification_required']) },
+            { label: `Drafts untouched ${DRAFT_STALE_DAYS}+ days`, value: drafts, href: claimsHref(['draft'], { draft_idle_days: String(DRAFT_STALE_DAYS) }) },
           ],
         }),
       );

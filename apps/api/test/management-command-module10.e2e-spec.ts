@@ -191,13 +191,20 @@ describe('Module 10 — Management Command dashboard', () => {
       expect(fig(body, 'team', 'productivity').value).toBe(report.totals.tasks.on_time_pct);
     });
 
-    it('expenses: the Expenses page stage groups', async () => {
+    it('expenses: each figure opens the Expenses list on exactly the claims it counts', async () => {
       const pending = fig(body, 'expenses', 'pending_approvals');
       expect(chip(pending, 'With managers').value).toBe(await total('expense-claims', { statuses: 'submitted', relevant_only: 'true' }));
       expect(chip(pending, 'With accounts').value).toBe(
         await total('expense-claims', { statuses: 'manager_approved,accounts_review,accounts_approved', relevant_only: 'true' }),
       );
-      expect(chip(pending, 'With accounts').href).toBe('/expenses?stage=accounts');
+      expect(chip(pending, 'With accounts').href).toBe('/expenses?statuses=manager_approved%2Caccounts_review%2Caccounts_approved');
+      // the page sends a link's own filters (exact statuses, no relevant_only), so the list total is the figure
+      const opens = (href: string) => total('expense-claims', Object.fromEntries(new URLSearchParams(href.split('?')[1])));
+      for (const key of ['pending_approvals', 'rejected', 'outstanding']) {
+        const m = fig(body, 'expenses', key);
+        expect(await opens(m.href)).toBe(m.value);
+      }
+      for (const b of pending.breakdown) expect(await opens(b.href)).toBe(b.value);
     });
 
     it('results match Module 9 for the same period', async () => {

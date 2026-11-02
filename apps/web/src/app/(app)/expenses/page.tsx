@@ -42,7 +42,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { useInfiniteList } from '@/lib/use-infinite-list';
 import { useOpenParam } from '@/lib/use-open-param';
-import type { ExpenseStageBucket } from '@arihant/shared';
+import { EXPENSE_STATUS_LABELS, type ExpenseClaimStatus, type ExpenseStageBucket } from '@arihant/shared';
 import { MANAGEMENT_ROLES, errorMessage, fieldErrors, notifyExpensesChanged, saveBlob, useBadgeCounts, type ExpenseClaim, type Paged } from './_lib/expense-lib';
 import { AnomalyChips, DateText, Money, PaymentInfo, StatusBadge, useToaster } from './_lib/expense-ui';
 import { useUrlFilters } from './_lib/use-url-filters';
@@ -55,7 +55,12 @@ import { ClaimDetail } from './_lib/ClaimDetail';
  * have already acted on. A click on any claim opens it in a popup with its lines, receipts, history and the actions
  * this user may take (approve, pay, edit, respond…).
  */
-const FILTER_KEYS = ['stage', 'date_from', 'date_to', 'region_ids', 'search'] as const;
+// `statuses` (exact statuses, in place of a stage), `date_field`, `draft_idle_days`, `mine=true` (own claims) and
+// `approver=me` (claims this user approves) come from dashboard links, so the list holds exactly the claims the
+// figure counted.
+const FILTER_KEYS = ['stage', 'statuses', 'date_field', 'draft_idle_days', 'mine', 'approver', 'date_from', 'date_to', 'region_ids', 'search'] as const;
+const LINK_ONLY_KEYS = { statuses: null, draft_idle_days: null, mine: null, approver: null };
+const DATE_FIELD_LABEL: Record<string, string> = { submitted_at: 'Submitted on', decided_at: 'Approved / rejected on', processed_at: 'Paid on' };
 // The status filter in plain stages (the same groups as the KPI cards) instead of every workflow state
 const STAGES: { key: string; label: string; statuses: string[] }[] = [
   { key: 'draft', label: 'Draft', statuses: ['draft'] },
@@ -64,6 +69,7 @@ const STAGES: { key: string; label: string; statuses: string[] }[] = [
   { key: 'paid', label: 'Paid', statuses: ['processed'] },
   { key: 'closed', label: 'Rejected / withdrawn', statuses: ['rejected', 'withdrawn'] },
 ];
+const ACCOUNTS_STAGE_STATUSES = STAGES.find((s) => s.key === 'accounts')!.statuses;
 // Actions that mean the claim is waiting on this user
 const REVIEW_ACTIONS = ['manager_approve', 'accounts_approve', 'process'];
 const PAGE_SIZE = 20;
@@ -120,8 +126,12 @@ function ExpensesHub() {
   // member's claims, so only they get the region filter
   const isManagement = MANAGEMENT_ROLES.includes(role);
   const mine = !(isManagement || ['regional_manager', 'accounts'].includes(role) || Boolean(counts?.has_team));
-  // Tally export: Accounts ticks verified claims once the list is filtered to "With Accounts"
-  const bulkExport = (role === 'accounts' || isManagement) && values.stage === 'accounts';
+  // Tally export: Accounts ticks verified claims once the list holds only "With Accounts" claims — the stage, or a
+  // dashboard link's exact statuses inside it (Stage-2 review, Approved to pay)
+  const withAccountsOnly =
+    values.stage === 'accounts' ||
+    (!!values.statuses && values.statuses.split(',').every((s) => ACCOUNTS_STAGE_STATUSES.includes(s)));
+  const bulkExport = (role === 'accounts' || isManagement) && withAccountsOnly;
   const yourAction = (c: ExpenseClaim) =>
     c.allowed_actions.some((a) => REVIEW_ACTIONS.includes(a)) || (c.status === 'clarification_required' && c.allowed_actions.includes('edit'));
 
@@ -144,11 +154,25 @@ function ExpensesHub() {
       .catch(() => setRegions([]));
   }, [isManagement, regions.length]);
 
-  // The claims that concern this user (every member's for management / admin), with the filters
+  // The claims that concern this user (every member's for management / admin), with the filters. A dashboard link
+  // (exact statuses) lists every claim this user may read that matches, as its figure counts them: the
+  // concern-you list would leave out e.g. other members' drafts for management, or claims another accountant handled.
   const request = useMemo(() => {
-    const { stage, ...filters } = values;
-    return { ...filters, statuses: STAGES.find((s) => s.key === stage)?.statuses.join(','), relevant_only: true };
+    const { stage, statuses, ...filters } = values;
+    return {
+      ...filters,
+      statuses: statuses || STAGES.find((s) => s.key === stage)?.statuses.join(','),
+      relevant_only: statuses ? undefined : true,
+    };
   }, [values]);
+  // The exact statuses from a dashboard link, named for the Status menu
+  const exactStatuses = values.statuses
+    ? (values.approver === 'me' ? 'Waiting on you: ' : values.mine === 'true' ? 'Yours: ' : '') +
+      values.statuses
+        .split(',')
+        .map((s) => (s === 'draft' && values.draft_idle_days ? `Draft untouched ${values.draft_idle_days}+ days` : EXPENSE_STATUS_LABELS[s as ExpenseClaimStatus] || s))
+        .join(' + ')
+    : null;
 
   // Infinite scroll: page 1 also carries the filter totals for the stat cards. The hook swallows fetch
   // errors, so page 1 reports its own here.
@@ -486,12 +510,15 @@ function ExpensesHub() {
             <FilterMenu
               label="Status"
               icon={<Layers />}
-              options={[{ key: 'all', label: 'All claims' }, ...STAGES].map((o) => ({
-                key: o.key,
-                label: o.label,
-                active: (values.stage || 'all') === o.key,
-                onSelect: () => set({ stage: o.key === 'all' ? null : o.key }),
-              }))}
+              options={[
+                ...(exactStatuses ? [{ key: 'exact', label: exactStatuses, active: true, onSelect: () => undefined }] : []),
+                ...[{ key: 'all', label: 'All claims' }, ...STAGES].map((o) => ({
+                  key: o.key,
+                  label: o.label,
+                  active: !exactStatuses && (values.stage || 'all') === o.key,
+                  onSelect: () => set({ stage: o.key === 'all' ? null : o.key, ...LINK_ONLY_KEYS }),
+                })),
+              ]}
             />
             {isManagement && (
               <FilterMenu
@@ -527,7 +554,7 @@ function ExpensesHub() {
         {/* Phones: heading, then From / To as two equal columns (labels above the pickers); from sm one row. */}
         {datesOpen && (
           <div className="grid grid-cols-2 gap-2 border-t border-[#ECE9E2] pt-2.5 text-xs sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-            <span className="col-span-2 font-semibold text-[#4A5568]">Expense date</span>
+            <span className="col-span-2 font-semibold text-[#4A5568]">{DATE_FIELD_LABEL[values.date_field] || 'Expense date'}</span>
             <label className="flex min-w-0 flex-col gap-1 text-[#4A5568] sm:flex-row sm:items-center sm:gap-1.5">
               From
               <input type="date" value={values.date_from} onChange={(e) => set({ date_from: e.target.value })} className={DATE_INPUT} />
@@ -537,7 +564,7 @@ function ExpensesHub() {
               <input type="date" value={values.date_to} min={values.date_from || undefined} onChange={(e) => set({ date_to: e.target.value })} className={DATE_INPUT} />
             </label>
             {(values.date_from || values.date_to) && (
-              <Button variant="ghost" size="xs" onClick={() => set({ date_from: null, date_to: null })} className="col-span-2 justify-self-start text-xs text-[#4A5568] hover:text-[#881337]">
+              <Button variant="ghost" size="xs" onClick={() => set({ date_from: null, date_to: null, date_field: null })} className="col-span-2 justify-self-start text-xs text-[#4A5568] hover:text-[#881337]">
                 Reset dates
               </Button>
             )}

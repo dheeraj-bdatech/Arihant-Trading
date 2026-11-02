@@ -67,6 +67,6 @@ import {
     TaskNotificationsListener,
     TaskJobsService,
   ],
-  exports: [TasksService, TaskStore, TaskGeneratorService, TaskJobsService, TaskAccountabilityService],
+  exports: [TasksService, TaskStore, TaskBlockersService, TaskGeneratorService, TaskJobsService, TaskAccountabilityService],
 })
 export class TasksModule {}

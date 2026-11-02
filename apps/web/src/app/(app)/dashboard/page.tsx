@@ -53,6 +53,7 @@ import {
   type QuickAction,
 } from '@/components/dashboard/command/CommandDeck';
 import { formatINR, formatIndianCurrency, type DashboardWorkspaceDto, type UserRole } from '@arihant/shared';
+import { istToday } from '@/lib/ist-date';
 
 type W = DashboardWorkspaceDto;
 
@@ -84,6 +85,23 @@ const Kpis: React.FC<{ items: KpiProps[]; cols?: keyof typeof KPI_COLS }> = ({ i
 
 const A = (label: string, hint: string, href: string, icon: React.ReactNode): QuickAction => ({ label, hint, href, icon });
 
+/**
+ * Lists holding exactly what a figure counts (GET /dashboard/workspace), so a click never lands on a wider list.
+ * Expenses take the exact statuses (`statuses=`), not the page's stage groups.
+ */
+const LINK = {
+  /** Stage 1: claims this manager is the approver of */
+  toApprove: '/expenses?approver=me&statuses=submitted',
+  /** Own claims in approval: submitted, with Accounts or sent back */
+  myLiveClaims: '/expenses?mine=true&statuses=submitted,manager_approved,accounts_review,accounts_approved,clarification_required',
+  stage2: '/expenses?statuses=manager_approved,accounts_review',
+  toPay: '/expenses?statuses=accounts_approved',
+  /** Paid since the 1st of this month (IST) */
+  paidThisMonth: () => `/expenses?statuses=processed&date_field=processed_at&date_from=${istToday().slice(0, 8)}01`,
+  /** My Tasks "All open" tab: open work plus tasks waiting for sign-off */
+  myOpenTasks: '/tasks?mode=list&tab=open',
+};
+
 interface DeskView {
   stats: HeroStat[];
   cta: { href: string; label: string };
@@ -98,14 +116,14 @@ function regional(w: W): DeskView {
       { label: 'Blockers', value: num(w, 'blockersToReview'), tone: 'red' },
       { label: 'Overdue follow-ups', value: num(w, 'followupsOverdue'), tone: 'teal' },
     ],
-    cta: { href: '/expenses/approvals', label: 'Review approvals' },
+    cta: { href: LINK.toApprove, label: 'Review approvals' },
     body: (
       <>
         <Kpis
           items={[
             { label: 'Zone pipeline', value: lakh(num(w, 'pipelineLakh')), sub: `${num(w, 'openLeads')} open leads`, chip: num(w, 'followupsOverdue') ? `${num(w, 'followupsOverdue')} overdue` : undefined, href: '/leads', icon: <Target size={15} />, tone: 'teal' },
             { label: 'Team visits this week', value: num(w, 'visitsWeek'), sub: `${num(w, 'visitsToday')} today · ${num(w, 'visitsCompleted')} completed of ${num(w, 'visitsTotal')}`, href: '/visits', icon: <MapPin size={15} />, tone: 'teal' },
-            { label: 'Stage-1 approvals', value: num(w, 'stage1Pending'), sub: inr(num(w, 'stage1Amount')), href: '/expenses/approvals', icon: <Receipt size={15} />, tone: num(w, 'stage1Pending') ? 'ochre' : 'green' },
+            { label: 'Stage-1 approvals', value: num(w, 'stage1Pending'), sub: inr(num(w, 'stage1Amount')), href: LINK.toApprove, icon: <Receipt size={15} />, tone: num(w, 'stage1Pending') ? 'ochre' : 'green' },
             { label: 'Zone bids closing', value: num(w, 'tendersClosing7d'), sub: `Within 7 days · ${num(w, 'tendersLive')} live`, href: '/tenders', icon: <FileText size={15} />, tone: num(w, 'tendersClosing7d') ? 'red' : 'teal' },
           ]}
         />
@@ -121,7 +139,7 @@ function regional(w: W): DeskView {
               ]}
             />
           </Panel>
-          <Panel title="Waiting for your approval" icon={<Receipt size={15} />} tone="ochre" href="/expenses/approvals" hrefLabel="Approve">
+          <Panel title="Waiting for your approval" icon={<Receipt size={15} />} tone="ochre" href={LINK.toApprove} hrefLabel="Approve">
             <ItemList items={list(w, 'approvals')} dateMode="ago" money={formatINR} empty="No claims waiting for stage-1 approval" />
           </Panel>
         </Grid>
@@ -136,7 +154,7 @@ function regional(w: W): DeskView {
             <QuickActions
               actions={[
                 A('Territory command', 'Zones, reps and tours', '/regional', <Compass size={16} />),
-                A('Approve expenses', 'Stage-1 endorsements', '/expenses/approvals', <Receipt size={16} />),
+                A('Approve expenses', 'Stage-1 endorsements', LINK.toApprove, <Receipt size={16} />),
                 A('Team tasks', 'Assign and follow up', '/tasks/team', <ListChecks size={16} />),
                 A('Leads', 'Pipeline and follow-ups', '/leads', <Target size={16} />),
               ]}
@@ -171,10 +189,10 @@ function sales(w: W): DeskView {
           cols="five"
           items={[
             { label: 'My pipeline', value: lakh(num(w, 'pipelineLakh')), sub: `${num(w, 'openLeads')} active of ${num(w, 'totalLeads')} leads`, href: '/leads', icon: <Target size={15} />, tone: 'teal' },
-            { label: 'My open tasks', value: num(w, 'tasksOpen'), sub: `${num(w, 'tasksOverdue')} overdue · ${num(w, 'tasksBlocked')} blocked`, href: '/tasks', icon: <ListChecks size={15} />, tone: num(w, 'tasksOverdue') ? 'red' : 'teal' },
+            { label: 'My open tasks', value: num(w, 'tasksOpen'), sub: `${num(w, 'tasksOverdue')} overdue · ${num(w, 'tasksBlocked')} blocked`, href: LINK.myOpenTasks, icon: <ListChecks size={15} />, tone: num(w, 'tasksOverdue') ? 'red' : 'teal' },
             { label: 'Proposals requested', value: num(w, 'proposalsRequested'), sub: 'Waiting to be prepared', href: '/proposals?status=PROPOSAL_REQUESTED', icon: <Layers size={15} />, tone: 'ink' },
             { label: 'Demos in progress', value: num(w, 'demosOpen'), sub: 'Requested by you', href: '/demos', icon: <Box size={15} />, tone: 'teal' },
-            { label: 'My expense claims', value: num(w, 'claimsLive'), sub: `${inr(num(w, 'claimsAmount'))} in approval`, chip: num(w, 'claimsDraft') ? `${num(w, 'claimsDraft')} draft` : undefined, href: '/expenses', icon: <Wallet size={15} />, tone: num(w, 'claimsClarify') ? 'red' : 'ochre' },
+            { label: 'My expense claims', value: num(w, 'claimsLive'), sub: `${inr(num(w, 'claimsAmount'))} in approval`, chip: num(w, 'claimsDraft') ? `${num(w, 'claimsDraft')} draft` : undefined, href: LINK.myLiveClaims, icon: <Wallet size={15} />, tone: num(w, 'claimsClarify') ? 'red' : 'ochre' },
           ]}
         />
         <Grid className="md:grid-cols-2 xl:grid-cols-3">
@@ -378,19 +396,20 @@ function accounts(w: W): DeskView {
       { label: 'To pay', value: num(w, 'awaitingPayment'), tone: 'ochre' },
       { label: 'Clarification', value: num(w, 'clarification'), tone: 'teal' },
     ],
-    cta: { href: '/expenses/accounts', label: 'Open settlement queue' },
+    cta: { href: LINK.stage2, label: 'Open settlement queue' },
     body: (
       <>
         <Kpis
           items={[
-            { label: 'Stage-2 review', value: inr(num(w, 'stage2Amount')), sub: plural(num(w, 'stage2Pending'), 'claim'), href: '/expenses/accounts', icon: <Receipt size={15} />, tone: num(w, 'stage2Pending') ? 'red' : 'green' },
-            { label: 'Approved, to pay', value: inr(num(w, 'awaitingPaymentAmount')), sub: plural(num(w, 'awaitingPayment'), 'claim'), href: '/expenses/accounts', icon: <Wallet size={15} />, tone: 'ochre' },
-            { label: 'Settled this month', value: inr(num(w, 'settledThisMonthAmount')), sub: `${plural(num(w, 'settledThisMonth'), 'claim')} into Tally`, href: '/expenses/reports', icon: <Award size={15} />, tone: 'green' },
-            { label: 'With managers', value: num(w, 'withManagers'), sub: 'Stage 1, coming your way', href: '/expenses', icon: <Users size={15} />, tone: 'ink' },
+            { label: 'Stage-2 review', value: inr(num(w, 'stage2Amount')), sub: plural(num(w, 'stage2Pending'), 'claim'), href: LINK.stage2, icon: <Receipt size={15} />, tone: num(w, 'stage2Pending') ? 'red' : 'green' },
+            { label: 'Approved, to pay', value: inr(num(w, 'awaitingPaymentAmount')), sub: plural(num(w, 'awaitingPayment'), 'claim'), href: LINK.toPay, icon: <Wallet size={15} />, tone: 'ochre' },
+            { label: 'Settled this month', value: inr(num(w, 'settledThisMonthAmount')), sub: `${plural(num(w, 'settledThisMonth'), 'claim')} into Tally`, href: LINK.paidThisMonth(), icon: <Award size={15} />, tone: 'green' },
+            // stage-1 claims are outside what Accounts may open, so this figure has no list to show
+            { label: 'With managers', value: num(w, 'withManagers'), sub: 'Stage 1, coming your way', icon: <Users size={15} />, tone: 'ink' },
           ]}
         />
         <Grid className="lg:grid-cols-3">
-          <Panel className="lg:col-span-2" title="Settlement queue · oldest first" icon={<ListChecks size={15} />} tone="red" href="/expenses/accounts" hrefLabel="All claims">
+          <Panel className="lg:col-span-2" title="Settlement queue · oldest first" icon={<ListChecks size={15} />} tone="red" href={LINK.stage2} hrefLabel="All claims">
             <ItemList
               items={list(w, 'queue')}
               right={(it) => {

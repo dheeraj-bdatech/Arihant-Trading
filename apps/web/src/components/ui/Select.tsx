@@ -13,6 +13,12 @@ export interface SelectOption {
   hintTone?: 'success' | 'warning' | 'danger' | 'neutral';
 }
 
+/** The text of an <option>'s children: `{z.name} Zone ({z.code})` is several pieces, and toString() would join them with commas. */
+const textOf = (node: React.ReactNode): string =>
+  React.Children.toArray(node)
+    .map((c) => (typeof c === 'string' || typeof c === 'number' ? String(c) : React.isValidElement(c) ? textOf((c.props as any).children) : ''))
+    .join('');
+
 const HINT_TONES: Record<NonNullable<SelectOption['hintTone']>, string> = {
   success: 'bg-[#E3EFEE] text-[#0F5E63] border-[#D0E5E3]',
   warning: 'bg-[#FBEBDD] text-[#9A3412] border-[#E9C9B4]',
@@ -89,7 +95,8 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       React.Children.forEach(children, (child) => {
         if (React.isValidElement(child) && child.type === 'option') {
           const optValue = (child.props as any).value ?? '';
-          const optLabel = (child.props as any).children?.toString() ?? String(optValue);
+          const optChildren = (child.props as any).children;
+          const optLabel = optChildren == null ? String(optValue) : textOf(optChildren);
           extracted.push({ value: String(optValue), label: optLabel });
         }
       });

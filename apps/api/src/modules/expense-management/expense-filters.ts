@@ -20,12 +20,15 @@ export interface ExpenseFilters {
   claim_ids: string[];
   date_from: string | null;
   date_to: string | null;
-  date_field: 'expense_date' | 'submitted_at';
+  /** `decided_at`: the day a manager or Accounts last acted on the claim (approved, rejected…); `processed_at`: paid. */
+  date_field: 'expense_date' | 'submitted_at' | 'decided_at' | 'processed_at';
   amount_min: number | null;
   amount_max: number | null;
   search: string | null;
   approved_only: boolean;
   approver_inactive: boolean;
+  /** Drafts only when untouched for this many days or more; other statuses are unaffected. */
+  draft_idle_days: number | null;
   page: number;
   page_size: number;
   sort_by: string;
@@ -69,9 +72,17 @@ export function parseExpenseFilters(
   if (date_from && date_to && !errors.date_from && !errors.date_to && date_from > date_to) {
     errors.date_to = '"To" date must be on or after the "From" date.';
   }
-  const date_field = q.date_field === 'submitted_at' ? 'submitted_at' : 'expense_date';
-  if (q.date_field && q.date_field !== 'submitted_at' && q.date_field !== 'expense_date') {
-    errors.date_field = 'date_field must be expense_date or submitted_at.';
+  const date_field = q.date_field === 'submitted_at' || q.date_field === 'decided_at' || q.date_field === 'processed_at' ? q.date_field : 'expense_date';
+  if (q.date_field && !['expense_date', 'submitted_at', 'decided_at', 'processed_at'].includes(String(q.date_field))) {
+    errors.date_field = 'date_field must be expense_date, submitted_at, decided_at or processed_at.';
+  }
+  let draft_idle_days: number | null = null;
+  if (q.draft_idle_days !== undefined && q.draft_idle_days !== null && q.draft_idle_days !== '') {
+    draft_idle_days = Number(q.draft_idle_days);
+    if (!Number.isInteger(draft_idle_days) || draft_idle_days < 1 || draft_idle_days > 365) {
+      errors.draft_idle_days = 'draft_idle_days must be a whole number of days from 1 to 365.';
+      draft_idle_days = null;
+    }
   }
 
   const statuses = list(q.statuses ?? q.status);
@@ -111,6 +122,7 @@ export function parseExpenseFilters(
     search: q.search ? String(q.search).trim().slice(0, 100) || null : null,
     approved_only: q.approved_only === 'true' || q.approved_only === true,
     approver_inactive: q.approver_inactive === 'true' || q.approver_inactive === true,
+    draft_idle_days,
     page: Math.max(1, Math.floor(Number(q.page)) || 1),
     page_size: Math.min(maxPage, Math.max(1, Math.floor(Number(q.page_size ?? q.limit)) || 20)),
     sort_by,
@@ -122,6 +134,10 @@ export function parseExpenseFilters(
 
 /** Submitted date in the business timezone, for inclusive DATE comparisons. */
 export const submittedDateIst = sql<string>`((c.submitted_at at time zone 'Asia/Kolkata')::date)`;
+/** Day of the last manager / Accounts decision in the business timezone (the command dashboard's "rejected in the period"). */
+export const decidedDateIst = sql<string>`((coalesce(c.accounts_actioned_at, c.manager_actioned_at, c.updated_at) at time zone 'Asia/Kolkata')::date)`;
+/** Day the claim was paid (processed) in the business timezone. */
+export const processedDateIst = sql<string>`((c.processed_at at time zone 'Asia/Kolkata')::date)`;
 
 /** Claim-level conditions (alias `c`, owner `emp`). Item-level ones are applied via EXISTS. */
 export function claimFilterExpressions(f: ExpenseFilters, eb: ExpressionBuilder<any, any>, itemLevel: boolean) {
@@ -142,9 +158,13 @@ export function claimFilterExpressions(f: ExpenseFilters, eb: ExpressionBuilder<
       sql<boolean>`(lower(c.claim_number) like ${s} or lower(c.title) like ${s} or lower(emp.full_name) like ${s})`,
     );
   }
-  if (f.date_field === 'submitted_at') {
-    if (f.date_from) conds.push(sql<boolean>`${submittedDateIst} >= ${f.date_from}::date`);
-    if (f.date_to) conds.push(sql<boolean>`${submittedDateIst} <= ${f.date_to}::date`);
+  if (f.date_field !== 'expense_date') {
+    const day = f.date_field === 'submitted_at' ? submittedDateIst : f.date_field === 'decided_at' ? decidedDateIst : processedDateIst;
+    if (f.date_from) conds.push(sql<boolean>`${day} >= ${f.date_from}::date`);
+    if (f.date_to) conds.push(sql<boolean>`${day} <= ${f.date_to}::date`);
+  }
+  if (f.draft_idle_days !== null) {
+    conds.push(sql<boolean>`(c.status <> 'draft' or c.updated_at < now() - make_interval(days => ${f.draft_idle_days}))`);
   }
   if (!itemLevel) {
     if (f.amount_min !== null) conds.push(eb('c.total_claimed', '>=', f.amount_min));

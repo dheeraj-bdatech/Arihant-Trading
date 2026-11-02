@@ -1149,7 +1149,8 @@ function DemosPageContent() {
   const handleOpenAudit = async (demo: any) => {
     setSelectedDemo(demo);
     try {
-      const res = await api.get(`/demos/${demo.id}/audit`);
+      // paged ({ data, total, … }, newest first): the latest 100 events, the most one page holds
+      const res = await api.get(`/demos/${demo.id}/audit`, { limit: 100 });
       setSelectedDemoAudit(res);
       setIsAuditOpen(true);
     } catch (err) {
@@ -4291,7 +4292,12 @@ function DemosPageContent() {
 
           <div className="space-y-2">
             <h5 className="font-semibold text-[#14213D] text-xs">System Events:</h5>
-            {selectedDemoAudit?.audit_logs?.map((log: any) => (
+            {selectedDemoAudit?.total > (selectedDemoAudit?.data?.length ?? 0) && (
+              <p className="text-[11px] text-[#4A5568]">
+                Showing the latest {selectedDemoAudit.data.length} of {selectedDemoAudit.total} events.
+              </p>
+            )}
+            {selectedDemoAudit?.data?.map((log: any) => (
               <div key={log.id} className="p-2 rounded bg-[#FBFAF7] border border-[#DCD8CE]">
                 <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
                   <span className="min-w-0 font-mono font-semibold text-[#0F5E63]">{log.action}</span>

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Award, Calendar, Compass, Download, MapPin, Presentation, Target, Users } from 'lucide-react';
 import type { PerformanceFigures, SalesPerformanceDto } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
@@ -35,6 +36,8 @@ import {
 /** Module 9 — Salesperson & Regional Performance (Scope Blueprint §44). */
 
 const monthStart = (today: string) => `${today.slice(0, 7)}-01`;
+/** Rep view row for records no listed salesperson owns (SalesPerformanceRow.key). */
+const OTHER_STAFF = 'other';
 const pct = (rate: number | null) => (rate === null ? '—' : `${rate}%`);
 const ratio = (part: number, whole: number) => (whole > 0 ? `${part} / ${whole}` : '—');
 const reasonLabel = (code: string) => {
@@ -143,8 +146,10 @@ export default function SalesPerformancePage() {
   const [data, setData] = useState<SalesPerformanceDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // a link from the command dashboard opens the same period and grouping (?from=&to=&group_by=region)
+  // The view lives in the link (?from=&to=&group_by=region&zone_id=&region_id=): a refresh or a shared link opens the
+  // same figures, and the command dashboard links straight to a period and grouping.
   const [urlRead, setUrlRead] = useState(false);
+  const router = useRouter();
 
   const allowed = hasRole(['sales', 'regional_manager', 'management', 'admin']);
 
@@ -154,8 +159,19 @@ export default function SalesPerformancePage() {
     if (day.test(q.get('from') || '')) setFrom(q.get('from')!);
     if (day.test(q.get('to') || '')) setTo(q.get('to')!);
     if (q.get('group_by') === 'region') setGroupBy('region');
+    setZoneId(q.get('zone_id') || '');
+    setRegionId(q.get('region_id') || '');
     setUrlRead(true);
   }, []);
+
+  useEffect(() => {
+    if (!urlRead) return;
+    const q = new URLSearchParams({ from, to });
+    if (groupBy === 'region') q.set('group_by', 'region');
+    if (zoneId) q.set('zone_id', zoneId);
+    if (regionId) q.set('region_id', regionId);
+    if (`?${q}` !== window.location.search) router.replace(`${window.location.pathname}?${q}`, { scroll: false });
+  }, [urlRead, from, to, groupBy, zoneId, regionId, router]);
 
   useEffect(() => {
     if (!allowed || !urlRead) return;
@@ -169,7 +185,13 @@ export default function SalesPerformancePage() {
     setError(null);
     api
       .get<SalesPerformanceDto>('/dashboard/sales-performance', { from, to, group_by: groupBy, zone_id: zoneId, region_id: regionId })
-      .then((res) => !cancelled && setData(res))
+      .then((res) => {
+        if (cancelled) return;
+        setData(res);
+        // a zone / region from the link this user may not pick (or that no longer exists) was ignored by the server
+        if (zoneId && res.filters.zone_id !== zoneId) setZoneId(res.filters.can_pick_zone ? res.filters.zone_id ?? '' : '');
+        if (regionId && res.filters.region_id !== regionId) setRegionId(res.filters.region_id ?? '');
+      })
       .catch((err: any) => !cancelled && setError(err?.message || 'Failed to load performance figures.'))
       .finally(() => !cancelled && setIsLoading(false));
     return () => {
@@ -374,7 +396,11 @@ export default function SalesPerformancePage() {
                         {r.inactive && <span className="ml-1.5 rounded-full bg-[#ECE9E2] px-1.5 py-0.5 text-[10px] font-semibold text-[#4A5568]">Inactive</span>}
                       </div>
                       <div className="text-[10px] text-[#4A5568]">
-                        {byRegion ? r.zone_name || '—' : [r.role?.replace(/_/g, ' '), r.region_name || '—'].filter(Boolean).join(' · ')}
+                        {byRegion
+                          ? r.zone_name || '—'
+                          : r.key === OTHER_STAFF
+                            ? 'Tender, demo, service, accounts & management'
+                            : [r.role?.replace(/_/g, ' '), r.region_name || '—'].filter(Boolean).join(' · ')}
                       </div>
                     </TableCell>
                     {GROUPS.flatMap((g) =>
@@ -429,8 +455,9 @@ export default function SalesPerformancePage() {
           <p className="text-[11px] text-[#6B7280]">
             Period {data?.period.from} → {data?.period.to} (IST). Contacts and active leads are current snapshots. Proposals count
             under the responsible person; tenders under everyone involved (salesperson, owner, assignee, creator), so the total counts
-            each tender once. A deactivated rep is listed only when they have figures in the period. Rates show “—” when there is
-            nothing to divide by.
+            each tender once. A deactivated rep is listed only when they have figures in the period. Records no salesperson owns
+            sit under “Other staff”, so both groupings add up to the same company totals. Rates show “—” when there is nothing to
+            divide by.
           </p>
         </div>
       ) : null}

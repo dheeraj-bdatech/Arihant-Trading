@@ -310,8 +310,9 @@ describe('Module 3: Demo Management E2E Test Suite', () => {
         .set('Authorization', `Bearer ${salesToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.audit_logs).toBeDefined();
-      const actions = res.body.audit_logs.map((l: any) => l.action);
+      // paged since the list-pagination change: { data, total, page, limit, totalPages, reschedule_events }
+      expect(res.body.data).toBeDefined();
+      const actions = res.body.data.map((l: any) => l.action);
       expect(actions).toContain('DEMO_CREATED');
       expect(actions).toContain('TEAM_MEMBER_ASSIGNED');
       expect(actions).toContain('EQUIPMENT_RESERVED');

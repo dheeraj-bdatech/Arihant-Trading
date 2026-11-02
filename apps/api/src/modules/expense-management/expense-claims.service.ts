@@ -634,7 +634,7 @@ export class ExpenseClaimsService {
     };
   }
 
-  async list(query: Record<string, unknown>, user: AuthUser, opts: { mineOnly?: boolean; extra?: (eb: any) => any } = {}) {
+  async list(query: Record<string, unknown>, user: AuthUser, opts: { mineOnly?: boolean; approverOnly?: boolean; extra?: (eb: any) => any } = {}) {
     const f = parseExpenseFilters(query, {
       sortable: ['submitted_at', 'created_at', 'updated_at', 'total_claimed', 'claim_number', 'period_from'],
       defaultSort: 'updated_at',
@@ -647,6 +647,7 @@ export class ExpenseClaimsService {
       .leftJoin('organisations as vo', 'vo.id', 'v.organisation_id')
       .where((eb) => eb.and(claimFilterExpressions(f, eb, false)));
     if (opts.mineOnly) base = base.where('c.employee_id', '=', user.id);
+    if (opts.approverOnly) base = base.where('c.manager_id', '=', user.id);
     if (opts.extra) base = base.where(opts.extra);
     if (hasItemLevelFilter(f)) {
       base = base.where((eb) =>

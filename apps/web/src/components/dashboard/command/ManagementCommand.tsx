@@ -222,8 +222,10 @@ const SectionCard: React.FC<{ section: CommandSection; days: CommandPeriod; stam
     document.getElementById(`${uid}-${s.metrics[to].key}`)?.focus();
   };
 
+  // "Open …" lands on the list behind the chosen figure (Overdue → every overdue task, not the manager's own board);
+  // a figure without one opens the module
   return (
-    <Panel className="dx-cmd-card" title={def.label} icon={ICONS[s.key]} tone={hot ? 'red' : warm ? 'ochre' : 'teal'} href={def.href} hrefLabel={`Open ${def.label.toLowerCase()}`}>
+    <Panel className="dx-cmd-card" title={def.label} icon={ICONS[s.key]} tone={hot ? 'red' : warm ? 'ochre' : 'teal'} href={current.href || def.href} hrefLabel={`Open ${def.label.toLowerCase()}`}>
       <ScrollStrip activeKey={current.key} className="dx-tabs dx-tabs--strip" role="tablist" aria-label={`${def.label} figures`} onKeyDown={onKeyDown}>
         {s.metrics.map((m) => {
           const d = itemDef(s.key, m.key);

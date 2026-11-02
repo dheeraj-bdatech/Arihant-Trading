@@ -265,17 +265,21 @@ describe('Module 9 — Salesperson & Regional Performance', () => {
       const keys = all.body.rows.map((r: any) => r.key);
       expect(keys).toEqual(expect.arrayContaining([uid.repA, uid.repB, uid.repC, uid.repD]));
       expect(keys).not.toContain(uid.repE);
-      expect(all.body.totals.lead.new).toBe(6); // A 4 + B 1 + C 1 (the ownerless lead has no rep)
+      expect(all.body.totals.lead.new).toBe(7); // A 4 + B 1 + C 1 + the ownerless lead
+      expect(all.body.rows.find((r: any) => r.key === 'other')?.lead.new).toBe(1); // ...under "Other staff"
       expect(all.body.totals.tender.general_mha).toBe(2); // the shared tender counts once
       expect(row(all.body, 'repB').tender.general_mha).toBe(1);
 
       const north = await perf('mgmt', { zone_id: region['Delhi NCR'].zone_id });
       expect(north.body.rows.map((r: any) => r.key)).not.toContain(uid.repB);
+      expect(north.body.rows.map((r: any) => r.key)).not.toContain('other'); // whole-company view only
       expect(north.body.filters.can_pick_zone).toBe(true);
 
       const byRegion = await perf('mgmt', { group_by: 'region' });
       const none = byRegion.body.rows.find((r: any) => r.key === 'none');
       expect(none?.lead.new).toBe(1); // the ownerless lead at a customer with no region
+      // the whole company grouped either way adds up to the same figures
+      expect(byRegion.body.totals).toEqual(all.body.totals);
       const onlyDelhi = await perf('mgmt', { group_by: 'region', region_id: region['Delhi NCR'].id });
       expect(onlyDelhi.body.rows.map((r: any) => r.key)).toEqual([region['Delhi NCR'].id]);
 

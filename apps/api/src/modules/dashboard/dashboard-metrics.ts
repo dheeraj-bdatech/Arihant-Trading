@@ -224,6 +224,8 @@ export interface TaskFigures {
   total: number;
   /** not_started / in_progress / blocked — always ≥ overdue. */
   open: number;
+  /** Finished, waiting for sign-off (the Tasks "All open" tab counts these with `open`). */
+  awaiting: number;
   blocked: number;
   overdue: number;
   completed: number;
@@ -344,6 +346,7 @@ export class DashboardMetricsService {
     const r = await this.one(sql`
       select count(*) filter (where k.status <> 'cancelled')::int as total,
              count(*) filter (where k.status = any(${TASK_OPEN}::text[]))::int as open,
+             count(*) filter (where k.status = 'awaiting_approval')::int as awaiting,
              count(*) filter (where k.status = 'blocked')::int as blocked,
              count(*) filter (where ${TASK_OVERDUE})::int as overdue,
              count(*) filter (where k.status = 'completed')::int as completed
@@ -351,6 +354,7 @@ export class DashboardMetricsService {
     return {
       total: num(r.total),
       open: num(r.open),
+      awaiting: num(r.awaiting),
       blocked: num(r.blocked),
       overdue: num(r.overdue),
       completed: num(r.completed),

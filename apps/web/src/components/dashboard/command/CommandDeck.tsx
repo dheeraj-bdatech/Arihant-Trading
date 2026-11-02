@@ -128,7 +128,8 @@ export interface KpiProps {
   label: string;
   value: string | number;
   sub?: string;
-  href: string;
+  /** Left out for a figure with no list the viewer can open (the tile is then not a link). */
+  href?: string;
   icon: React.ReactNode;
   tone?: Tone;
   chip?: string;
@@ -138,29 +139,34 @@ export interface KpiProps {
 
 export const KpiTile: React.FC<KpiProps> = ({ label, value, sub, href, icon, tone = 'teal', chip, progress }) => {
   const mounted = useMounted(220);
-  return (
-    <Link href={href} className="block h-full">
-      <div className="dx-kpi" data-tone={tone}>
-        <div className="dx-kpi__top">
-          <span className="dx-kpi__label line-clamp-2">{label}</span>
-          <span className="dx-kpi__icon">{icon}</span>
-        </div>
-        <div>
-          <CountUp as="div" className="dx-kpi__val">
-            {String(value)}
-          </CountUp>
-          <span className="dx-kpi__foot">
-            <span className="truncate">{sub}</span>
-            {chip && <span className="dx-kpi__chip">{chip}</span>}
-          </span>
-        </div>
-        {typeof progress === 'number' && (
-          <div className="dx-kpi__bar" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
-            <i style={{ width: mounted ? `${Math.min(100, Math.max(0, progress))}%` : '0%' }} />
-          </div>
-        )}
+  const tile = (
+    <div className="dx-kpi" data-tone={tone}>
+      <div className="dx-kpi__top">
+        <span className="dx-kpi__label line-clamp-2">{label}</span>
+        <span className="dx-kpi__icon">{icon}</span>
       </div>
+      <div>
+        <CountUp as="div" className="dx-kpi__val">
+          {String(value)}
+        </CountUp>
+        <span className="dx-kpi__foot">
+          <span className="truncate">{sub}</span>
+          {chip && <span className="dx-kpi__chip">{chip}</span>}
+        </span>
+      </div>
+      {typeof progress === 'number' && (
+        <div className="dx-kpi__bar" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
+          <i style={{ width: mounted ? `${Math.min(100, Math.max(0, progress))}%` : '0%' }} />
+        </div>
+      )}
+    </div>
+  );
+  return href ? (
+    <Link href={href} className="block h-full">
+      {tile}
     </Link>
+  ) : (
+    <div className="h-full">{tile}</div>
   );
 };
 
