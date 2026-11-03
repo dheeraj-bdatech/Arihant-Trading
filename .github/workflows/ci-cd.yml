@@ -1,0 +1,272 @@
+# Arihant BOS — CI/CD pipeline.
+#
+#   every push / pull request   checks ──► image (built; not pushed)
+#   push to main                checks ──► image (pushed to GHCR) ──► deploy (production, SSH + docker compose)
+#   Actions → CI/CD → Run       the same as a push, plus the API e2e suites when "e2e" is ticked
+#
+# CI mirrors the verification protocol in AGENTS.md §3 (both apps typecheck with 0 errors), then lint, tests, builds.
+# Deploy needs one-time setup in GitHub (Settings → Environments / Secrets and variables), see the deploy job.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      e2e:
+        description: Run the API e2e suites (needs `pnpm seed` to build an empty database)
+        type: boolean
+        default: false
+
+# a newer push to a pull request cancels its run still in progress; runs on main queue instead, so a release that
+# has started deploying is never cut half-way
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24'
+  PNPM_VERSION: '12.4.2'
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────────────────────────── CI ──
+  checks:
+    name: Typecheck · lint · unit tests · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # the apps import @arihant/shared from its built dist/
+      - name: Build shared package
+        run: pnpm --filter @arihant/shared build
+
+      - name: Typecheck web
+        run: pnpm --filter @arihant/web exec tsc --noEmit
+
+      - name: Typecheck API
+        run: pnpm --filter @arihant/api exec tsc --noEmit
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: API unit tests
+        run: pnpm --filter @arihant/api test:unit
+
+      - name: Build API
+        run: pnpm --filter @arihant/api build
+
+      - name: Build web
+        run: pnpm --filter @arihant/web build
+
+  e2e:
+    name: API e2e tests
+    # On request only (Run workflow → tick "e2e") until `pnpm seed` builds an empty database again: db/seed/seed.ts
+    # still looks products up by names the catalogue no longer has ("Door Frame Metal Detector (Q2)", …). Once the
+    # seed passes, delete this `if:` line and the suites run on every push and pull request.
+    if: github.event_name == 'workflow_dispatch' && inputs.e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: arihant_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d arihant_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Always explicit: db/migrate.ts stops when DATABASE_URL is missing, and the e2e suites wipe tables
+      # (test/helpers/e2e-db-guard.ts only allows a database named *e2e* / *test*).
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/arihant_e2e
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/arihant_e2e
+      E2E_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/arihant_e2e
+      NODE_ENV: test
+    steps:
+      - name: Refuse any database but the CI service
+        run: |
+          for url in "$DATABASE_URL" "$DIRECT_URL" "$E2E_DATABASE_URL"; do
+            case "$url" in
+              postgresql://postgres:postgres@localhost:5432/arihant_e2e) ;;
+              *) echo "::error::database URLs must point at the CI Postgres service"; exit 1 ;;
+            esac
+          done
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared package
+        run: pnpm --filter @arihant/shared build
+
+      # schema.sql, every db/migrations/*.sql, zones / regions and the role accounts the suites sign in with
+      - name: Migrate the test database
+        run: pnpm --filter @arihant/api migrate
+
+      # the customers, products, demo fleet, tenders and people the suites expect
+      - name: Seed the test database
+        run: pnpm --filter @arihant/api seed
+
+      - name: API e2e tests
+        run: pnpm --filter @arihant/api test:e2e
+
+  # ───────────────────────────────────────────────────────────────────────────────────────────────── CD ──
+  image:
+    name: Docker image
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # pushed for main only; pull requests just prove the Dockerfile still builds
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      tag: ${{ steps.name.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR names must be lower-case (the repository is Arihant-Trading)
+      - name: Image name
+        id: name
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build${{ env.PUBLISH == 'true' && ' and push' || '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ env.PUBLISH == 'true' }}
+          # sha-<commit> is what deploys (and what a rollback re-deploys); latest follows main
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
+            ${{ steps.name.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to production
+    needs: image
+    # Runs once the server is configured (repository variable DEPLOY_HOST); until then the pipeline stops at the image.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    # Settings → Environments → production: add required reviewers there to approve each release.
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+    # one deploy at a time; a newer one waits instead of cancelling a release half-way
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      # Settings → Secrets and variables → Actions
+      #   variables: DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH (folder holding apps/api/.env on the server), APP_URL (optional)
+      #   secrets:   DEPLOY_SSH_KEY (private key of DEPLOY_USER), DEPLOY_KNOWN_HOSTS (`ssh-keyscan -H <host>` output)
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_PATH }}
+      GHCR_USER: ${{ github.actor }}
+      IMAGE: ${{ needs.image.outputs.image }}:${{ needs.image.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: docker-compose.prod.yml
+          sparse-checkout-cone-mode: false
+
+      - name: SSH key and pinned host key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [ -n "$DEPLOY_HOST" ] && [ -n "$DEPLOY_USER" ] && [ -n "$DEPLOY_DIR" ] || { echo "::error::set DEPLOY_HOST, DEPLOY_USER and DEPLOY_PATH"; exit 1; }
+          [ -n "$SSH_KEY" ] && [ -n "$KNOWN_HOSTS" ] || { echo "::error::set the DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS secrets"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host prod\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n  StrictHostKeyChecking yes\n' "$DEPLOY_HOST" "$DEPLOY_USER" > ~/.ssh/config
+
+      - name: Ship the compose file
+        run: scp docker-compose.prod.yml "prod:$DEPLOY_DIR/docker-compose.prod.yml"
+
+      # the token only lives for this job; it goes over stdin, never on a command line
+      - name: Pull the image on the server
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | ssh prod "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
+          ssh prod "cd '$DEPLOY_DIR' && test -f apps/api/.env && ARIHANT_IMAGE='$IMAGE' docker compose -f docker-compose.prod.yml pull app"
+          ssh prod "docker logout ghcr.io"
+
+      # the container runs db/migrate.ts on start (scripts/start-all.sh), against the DATABASE_URL in apps/api/.env
+      - name: Start the new release
+        run: ssh prod "cd '$DEPLOY_DIR' && ARIHANT_IMAGE='$IMAGE' docker compose -f docker-compose.prod.yml up -d --no-build app"
+
+      # /login answers 200 when the web app is up; /api/auth/me answers 401 when the API behind it is up
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            codes=$(ssh prod "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/login; printf ' '; curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/auth/me" || true)
+            echo "web · api: $codes"
+            if [ "$codes" = "200 401" ]; then echo "✅ $IMAGE is live"; exit 0; fi
+            sleep 5
+          done
+          echo "::error::the new release did not come up — logs below; re-run the deploy job of the last good run to roll back"
+          ssh prod "cd '$DEPLOY_DIR' && docker compose -f docker-compose.prod.yml logs --tail 80 app"
+          exit 1
+
+      - name: Remove old images
+        if: success()
+        run: ssh prod "docker image prune -f"

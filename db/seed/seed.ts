@@ -354,6 +354,9 @@ async function runSeed() {
       }
 
       const assignedUser = i % 2 === 0 ? sureshId : '44444444-4444-4444-4444-444444444442';
+      // The sheet's dates are fixed (Sep 2026): once they have passed, the tenders go in as historical imports, which
+      // the tender trigger allows (it refuses a new tender whose deadline is already past) — as seed_module4 does.
+      const closed = Boolean(closeDate) && new Date(String(closeDate).replace(' ', 'T')).getTime() < Date.now();
 
       const tRes = await client.query(`
         INSERT INTO tenders (
@@ -361,13 +364,13 @@ async function runSeed() {
           city, state, zone_id, region_id, category, quantity,
           bidder_turnover, oem_turnover, emd_fee, publish_date,
           bid_start_date, bid_closing_date, prebid_date, corrigendum_date,
-          participated_date, assigned_to, tender_owner_id, status, remarks
+          participated_date, assigned_to, tender_owner_id, status, remarks, extra_fields
         ) VALUES (
           $1, $2, $3, $4, $5,
           $6, $7, $8, $9, $10, $11,
           $12, $13, $14, $15,
           $16, $17, $18, $19,
-          $20, $21, $22, $23, $24
+          $20, $21, $22, $23, $24, $25
         ) RETURNING id;
       `, [
         rt.tender_no, orgId, rt.organisation_name, productId, rt.product_requirement,
@@ -384,7 +387,8 @@ async function runSeed() {
         assignedUser,
         sureshId,
         st,
-        rt.remarks || `Imported GeM tender #${rt.tender_no}`
+        rt.remarks || `Imported GeM tender #${rt.tender_no}`,
+        JSON.stringify(closed ? { is_historical: true } : {}),
       ]);
 
       const tenderId = tRes.rows[0].id;

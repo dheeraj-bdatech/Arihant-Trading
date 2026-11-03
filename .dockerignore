@@ -5,6 +5,12 @@ node_modules
 dist
 **/dist
 .git
+# secrets never go into an image: the container reads apps/api/.env at run time (docker-compose env_file)
+.env
+**/.env
 .env*.local
+**/.env*.local
+!**/*.env.example
+!**/.env.example
 *.log
 .DS_Store

@@ -277,10 +277,12 @@ export const CommandPalette: React.FC<{
 
   // New result set → highlight the top result, so Enter opens it.
   useEffect(() => setActive(0), [results]);
-  // Reopening keeps the last search and its results; the text comes back selected so typing starts a new one.
+  // Reopening keeps the last search and its results, with the cursor after the text: typing carries the search on
+  // (selected text would be replaced by the first key, wiping the search). The × clears it for a new one.
   useEffect(() => {
-    if (isOpen) inputRef.current?.select();
-    else setActive(0);
+    const el = inputRef.current;
+    if (isOpen && el) el.setSelectionRange(el.value.length, el.value.length);
+    else if (!isOpen) setActive(0);
   }, [isOpen]);
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' });

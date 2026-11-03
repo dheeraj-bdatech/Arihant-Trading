@@ -14,22 +14,19 @@ const rootDir = path.resolve(__dirname, '..');
 // Support --prod flag to target production database directly
 const isProdTarget = process.argv.includes('--prod') || process.env.MIGRATE_PROD === 'true';
 
-const prodConnectionString =
-  process.env.PROD_DATABASE_URL ||
-  'postgresql://postgres.eolmveanrgghqzayqtby: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@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres';
-
-let connectionString: string;
-
-if (isProdTarget) {
-  connectionString = prodConnectionString;
-} else if (process.env.DATABASE_URL) {
-  connectionString = process.env.DATABASE_URL;
-} else {
+// The database comes only from the environment (or apps/api/.env): no address or password lives in this file, and a
+// missing setting stops the run instead of falling back to another database. --prod reads PROD_DATABASE_URL.
+const urlVar = isProdTarget ? 'PROD_DATABASE_URL' : 'DATABASE_URL';
+if (!process.env[urlVar]) {
   const envPath = path.join(rootDir, 'apps/api/.env');
   if (fs.existsSync(envPath)) {
     dotenv.config({ path: envPath });
   }
-  connectionString = process.env.DATABASE_URL || prodConnectionString;
+}
+const connectionString = process.env[urlVar] || '';
+if (!connectionString) {
+  console.error(`❌ ${urlVar} is not set (environment or apps/api/.env). Refusing to guess which database to migrate.`);
+  process.exit(1);
 }
 
 const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');

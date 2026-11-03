@@ -167,6 +167,23 @@ const INTERACTION_TYPE_OPTIONS = [
   { value: 'other', label: 'Other Touchpoint' },
 ];
 
+/**
+ * Meeting formats of a scheduled discussion / follow-up. `where` is what the location field asks for: a place, a
+ * joining link or a phone number — its label, placeholder and the name it is saved under.
+ */
+type MeetingWhere = { kind: 'place' | 'link' | 'phone'; label: string; placeholder: string; saved: string };
+const MEETING_FORMATS: { value: string; label: string; where: MeetingWhere }[] = [
+  { value: 'in_person', label: 'In-Person Executive Meeting', where: { kind: 'place', label: 'Meeting Venue', placeholder: 'e.g. Conference Room B, BSF HQ, New Delhi', saved: 'Venue' } },
+  { value: 'tender_committee', label: 'Tender Committee Session', where: { kind: 'place', label: 'Meeting Venue / Committee Location', placeholder: 'e.g. Tender Committee Hall, CISF HQ, Saket', saved: 'Committee location' } },
+  { value: 'video_call', label: 'Video Conference (VC / Teams / Meet)', where: { kind: 'link', label: 'Meeting Link', placeholder: 'e.g. https://meet.google.com/abc-defg-hij', saved: 'Meeting link' } },
+  { value: 'telephonic', label: 'Telephonic Briefing', where: { kind: 'phone', label: 'Contact Number', placeholder: 'e.g. +91 98765 43210', saved: 'Contact number' } },
+  { value: 'site_visit', label: 'Site / Facility Inspection', where: { kind: 'place', label: 'Site / Facility Location', placeholder: 'e.g. Terminal 3 security gate, IGI Airport, New Delhi', saved: 'Site' } },
+];
+const meetingFormat = (mode: string) => MEETING_FORMATS.find((f) => f.value === mode) ?? MEETING_FORMATS[0];
+/** The customer's place, offered as the location of an in-person format. */
+const leadVenue = (lead: { organisation_name?: string | null; city?: string | null }) =>
+  lead.city ? `${lead.organisation_name}, ${lead.city}` : '';
+
 // Specific Demo Kit standard accessories mapping
 /** Leads fetched per request while the register scrolls. */
 const LEADS_PAGE_SIZE = 25;
@@ -1369,13 +1386,12 @@ export default function LeadsPage() {
     if (!selectedLead) return;
     setDiscussionStage(stage);
     const defaultUser = selectedLead.assigned_to || usersList.find((u) => u.role === (stage === 'tender_discussion' ? 'tender_team' : 'sales'))?.id || user?.id || '';
-    const venue = selectedLead.city ? `${selectedLead.organisation_name}, ${selectedLead.city}` : 'Client HQ / Virtual Conference';
 
     setDiscussionForm({
       discussion_date: addIsoDays(istToday(), 1),
       discussion_time: '14:30',
       mode: stage === 'tender_discussion' ? 'tender_committee' : 'in_person',
-      venue: venue,
+      venue: leadVenue(selectedLead),
       assigned_to: defaultUser,
       agenda: stage === 'tender_discussion'
         ? 'Clause-by-clause tender terms review, RFP alignment, commercial pricing schedule, and earnest money deposit.'
@@ -1580,12 +1596,15 @@ export default function LeadsPage() {
 
     const stageLabel = discussionStage === 'tender_discussion' ? 'TENDER DISCUSSION' : 'FOLLOW UP';
     const assignedMember = usersList.find((u) => u.id === discussionForm.assigned_to);
+    // "Meeting link: https://…" / "Contact number: +91 …" — the location under the name its format asks for
+    const format = meetingFormat(discussionForm.mode);
+    const where = `${format.where.saved}: ${discussionForm.venue}`;
 
     try {
       // 1. Advance Lead Lifecycle
       await api.patch(`/leads/${selectedLead.id}/status`, {
         status: discussionStage,
-        remarks: `${stageLabel} scheduled for ${discussionForm.discussion_date} at ${discussionForm.discussion_time} (${discussionForm.mode}). Venue: ${discussionForm.venue}. Assigned: ${assignedMember?.full_name || 'Team'}.`,
+        remarks: `${stageLabel} scheduled for ${discussionForm.discussion_date} at ${discussionForm.discussion_time} (${format.label}). ${where}. Assigned: ${assignedMember?.full_name || 'Team'}.`,
       });
 
       // 2. Log Interaction / Touchpoint
@@ -1595,7 +1614,7 @@ export default function LeadsPage() {
         contact_id: selectedLead.primary_contact_id || undefined,
         type: discussionStage,
         occurred_on: discussionForm.discussion_date,
-        remarks: `[${stageLabel}] Scheduled at ${discussionForm.discussion_time} (${discussionForm.mode}). Venue: ${discussionForm.venue}. Agenda: ${discussionForm.agenda}`,
+        remarks: `[${stageLabel}] Scheduled at ${discussionForm.discussion_time} (${format.label}). ${where}. Agenda: ${discussionForm.agenda}`,
         outcome: `${stageLabel} Touchpoint Scheduled`,
         next_followup_date: discussionForm.discussion_date,
       });
@@ -1603,8 +1622,8 @@ export default function LeadsPage() {
       // 3. Auto-remind: Create calendar task for assigned member
       if (discussionForm.auto_remind && discussionForm.assigned_to) {
         await api.post('/tasks', {
-          title: `${stageLabel}: ${selectedLead.organisation_name} (${discussionForm.mode.toUpperCase()})`,
-          description: `When: ${discussionForm.discussion_date} at ${discussionForm.discussion_time}\nVenue / Link: ${discussionForm.venue}\nAgenda: ${discussionForm.agenda}`,
+          title: `${stageLabel}: ${selectedLead.organisation_name} (${format.label})`,
+          description: `When: ${discussionForm.discussion_date} at ${discussionForm.discussion_time}\n${where}\nAgenda: ${discussionForm.agenda}`,
           assigned_to: discussionForm.assigned_to,
           department: discussionStage === 'tender_discussion' ? 'Tender Team' : 'Sales',
           priority: 'urgent',
@@ -1620,7 +1639,7 @@ export default function LeadsPage() {
           userId: discussionForm.assigned_to,
           type: 'meeting_scheduled',
           title: `🤝 Discussion Scheduled: ${selectedLead.organisation_name}`,
-          body: `You are scheduled for a discussion on ${discussionForm.discussion_date} at ${discussionForm.discussion_time} (${discussionForm.venue}).`,
+          body: `You are scheduled for a discussion on ${discussionForm.discussion_date} at ${discussionForm.discussion_time} (${format.label} · ${where}).`,
           entityType: 'lead',
           entityId: selectedLead.id,
         });
@@ -4865,32 +4884,44 @@ export default function LeadsPage() {
                 label="Meeting Format / Mode *"
                 required
                 value={discussionForm.mode}
-                onChange={(e) => setDiscussionForm((prev) => ({ ...prev, mode: e.target.value }))}
-                options={[
-                  { value: 'in_person', label: 'In-Person Executive Meeting' },
-                  { value: 'tender_committee', label: 'Tender Committee Session' },
-                  { value: 'video_call', label: 'Video Conference (VC / Teams / Meet)' },
-                  { value: 'telephonic', label: 'Telephonic Briefing' },
-                  { value: 'site_visit', label: 'Site / Facility Inspection' },
-                ]}
+                onChange={(e) => {
+                  const next = meetingFormat(e.target.value);
+                  // a venue is no link or phone number: changing what the field asks for starts it afresh (a place gets
+                  // the customer's address again); between the place formats the typed place stays
+                  setDiscussionForm((prev) => ({
+                    ...prev,
+                    mode: next.value,
+                    venue:
+                      meetingFormat(prev.mode).where.kind === next.where.kind
+                        ? prev.venue
+                        : next.where.kind === 'place' && selectedLead
+                          ? leadVenue(selectedLead)
+                          : '',
+                  }));
+                }}
+                options={MEETING_FORMATS.map(({ value, label }) => ({ value, label }))}
               />
               {(() => {
-                const isLink = discussionForm.mode === 'video_call';
-                const isPhone = discussionForm.mode === 'telephonic';
+                const where = meetingFormat(discussionForm.mode).where;
                 return (
                   <Input
-                    label={isLink ? 'Meeting Link *' : isPhone ? 'Dial-in Number / Bridge *' : 'Meeting Venue *'}
+                    key={where.kind}
+                    label={`${where.label} *`}
                     required
-                    type={isLink ? 'url' : 'text'}
+                    type={where.kind === 'link' ? 'url' : where.kind === 'phone' ? 'tel' : 'text'}
+                    inputMode={where.kind === 'link' ? 'url' : where.kind === 'phone' ? 'tel' : undefined}
+                    pattern={where.kind === 'phone' ? '\\+?\\(?[0-9][0-9 \\(\\)\\-]{6,19}' : undefined}
+                    title={
+                      where.kind === 'link'
+                        ? 'The full meeting link, starting with https://'
+                        : where.kind === 'phone'
+                          ? 'A phone number of 7–20 digits, e.g. +91 98765 43210'
+                          : undefined
+                    }
+                    autoComplete={where.kind === 'phone' ? 'tel' : 'off'}
                     value={discussionForm.venue}
                     onChange={(e) => setDiscussionForm((prev) => ({ ...prev, venue: e.target.value }))}
-                    placeholder={
-                      isLink
-                        ? 'e.g. https://meet.google.com/xyz'
-                        : isPhone
-                        ? 'e.g. +91 98765 43210 or conference bridge ID'
-                        : 'e.g. Conference Room B, HQ Jodhpur'
-                    }
+                    placeholder={where.placeholder}
                   />
                 );
               })()}

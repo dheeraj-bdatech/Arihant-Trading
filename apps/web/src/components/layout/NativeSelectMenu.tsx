@@ -52,6 +52,10 @@ export function NativeSelectMenu() {
     const onDoc = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest('.mt-select-panel--native')) close();
     };
+    // the page scrolling away closes the list; the list's own scrolling (wheel, scrollbar) must not
+    const onScroll = (e: Event) => {
+      if (!(e.target instanceof Element && e.target.closest('.mt-select-panel--native'))) close();
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); close(); }
       else if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(open.opts.length - 1, h + 1)); }
@@ -61,12 +65,12 @@ export function NativeSelectMenu() {
     document.addEventListener('mousedown', onDoc, true);
     document.addEventListener('keydown', onKey, true);
     window.addEventListener('resize', close);
-    document.addEventListener('scroll', close, true);
+    document.addEventListener('scroll', onScroll, true);
     return () => {
       document.removeEventListener('mousedown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', close);
-      document.removeEventListener('scroll', close, true);
+      document.removeEventListener('scroll', onScroll, true);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, hi]);

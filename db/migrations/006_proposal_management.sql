@@ -108,8 +108,12 @@ declare
 begin
   select count(*) into prop_count from proposals;
 
-  -- Only seed if we currently have the initial baseline (<= 2 proposals)
-  if prop_count <= 2 then
+  -- Only seed if we currently have the initial baseline (<= 2 proposals) and the customers / products / users the
+  -- demo proposals point at (an empty database, e.g. CI building from scratch, has none: the seed script adds them)
+  if prop_count <= 2
+     and exists (select 1 from organisations)
+     and exists (select 1 from products)
+     and exists (select 1 from users) then
     -- Retrieve reference organisations
     select id into org_bsf from organisations where name ilike '%BSF%' limit 1;
     select id into org_cisf from organisations where name ilike '%CISF%' limit 1;

@@ -32,14 +32,18 @@ export const RowMenu: React.FC<{ items: RowMenuItem[]; label?: string; buttonLab
       e.preventDefault(); // closes only this menu, not an enclosing Modal
       close();
     };
+    // the page scrolling away closes the menu; scrolling inside the menu itself must not
+    const onScroll = (e: Event) => {
+      if (!(e.target instanceof Element && e.target.closest('.row-menu__panel'))) close();
+    };
     document.addEventListener('mousedown', onDoc, true);
     document.addEventListener('keydown', onKey, true);
-    document.addEventListener('scroll', close, true);
+    document.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', close);
     return () => {
       document.removeEventListener('mousedown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('scroll', close, true);
+      document.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', close);
     };
   }, [open]);

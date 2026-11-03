@@ -2,6 +2,9 @@ version: '3.8'
 
 services:
   app:
+    # the CI/CD pipeline pulls and runs a released image (ARIHANT_IMAGE=ghcr.io/…:sha-<commit>); `docker compose build`
+    # on a machine still builds it from this checkout
+    image: ${ARIHANT_IMAGE:-ghcr.io/dheeraj-bdatech/arihant-trading:latest}
     build:
       context: .
       dockerfile: Dockerfile
