@@ -12,6 +12,7 @@ import { calendarDay } from '../src/common/utils/ist-date.util';
 import { assertNotSelfApproval, assertRegionScope, checkRegionScope } from '../src/common/utils/scope.util';
 import { getJwtSecret } from '../src/common/auth/jwt-secret';
 import { RolesGuard } from '../src/common/auth/roles.guard';
+import { ADMIN_ONLY_KEY, ROLES_KEY } from '../src/common/auth/roles.decorator';
 import { JwtAuthGuard } from '../src/common/auth/jwt.guard';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { CloudinaryService } from '../src/common/cloudinary/cloudinary.service';
@@ -122,7 +123,9 @@ describe('getJwtSecret', () => {
 
 // ---------------------------------------------------------------- roles guard
 describe('RolesGuard', () => {
-  const guard = (roles?: string[]) => new RolesGuard({ getAllAndOverride: () => roles } as any);
+  // Key-aware Reflector stub: the guard reads ADMIN_ONLY_KEY and ROLES_KEY separately.
+  const guard = (roles?: string[], adminOnly = false) =>
+    new RolesGuard({ getAllAndOverride: (key: string) => ({ [ROLES_KEY]: roles, [ADMIN_ONLY_KEY]: adminOnly })[key] } as any);
   it('allows when no roles are declared', () => expect(guard(undefined).canActivate(httpCtx({ user: user() }))).toBe(true));
   it('allows a listed role', () => expect(guard(['sales']).canActivate(httpCtx({ user: user() }))).toBe(true));
   it('rejects an unlisted role with 403', () => {
@@ -133,6 +136,12 @@ describe('RolesGuard', () => {
   });
   it.each(['admin', 'management'] as const)('%s passes any role list', (role) => {
     expect(guard(['accounts']).canActivate(httpCtx({ user: user({ role }) }))).toBe(true);
+  });
+  it('@AdminOnly lets admin through', () => {
+    expect(guard(undefined, true).canActivate(httpCtx({ user: user({ role: 'admin' }) }))).toBe(true);
+  });
+  it.each(['management', 'sales'] as const)('@AdminOnly rejects %s with 403', (role) => {
+    expect(() => guard(undefined, true).canActivate(httpCtx({ user: user({ role }) }))).toThrow(ForbiddenException);
   });
 });
 
