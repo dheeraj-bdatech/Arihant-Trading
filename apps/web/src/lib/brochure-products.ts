@@ -44,7 +44,7 @@ export const BROCHURE_PRODUCTS: ProductSpecItem[] = [
     make: 'Arihant Robotics',
     specRef: 'MHA-QR-UGV-EOD',
     isMhaQr: true,
-    image: '/products/unmanned_ground_vehicle_ugv.png',
+    image: '/products/anti_drone_tunnel.png',
     description: 'Remotely operated all-terrain robotic vehicle designed for safe standoff inspection, reconnaissance, and manipulation of high-risk explosive and hazardous CBRN threats.',
     features: [
       'Remote-Controlled Standoff Operation',
@@ -78,7 +78,7 @@ export const BROCHURE_PRODUCTS: ProductSpecItem[] = [
     make: 'Arihant / Rapiscan',
     specRef: 'MHA-QR-FBS-2026',
     isMhaQr: true,
-    image: '/products/full_body_scanner.png',
+    image: '/products/handheld_backscatter.png',
     description: 'Ultra-high-throughput walk-through screening portal designed for fast, non-contact detection of metallic, ceramic, liquid, and concealed contraband threats inside individuals.',
     features: [
       'Fast & Non-Contact Walk-Through Scan (3.5s)',
@@ -109,7 +109,7 @@ export const BROCHURE_PRODUCTS: ProductSpecItem[] = [
     make: 'Arihant Tactical',
     specRef: 'NIJ-0108.01-IV',
     isMhaQr: true,
-    image: '/products/nij4_shield_system.png',
+    image: '/products/first_responder_system.png',
     description: 'High-level ballistic assault protection system featuring an ultra-mobile trolley carry rig, high-transmittance ballistic glass viewport, and multi-hit AP projectile stoppage.',
     features: [
       'Certified NIJ Level IV Multi-Hit Ballistic Protection',
@@ -320,7 +320,7 @@ export const BROCHURE_PRODUCTS: ProductSpecItem[] = [
     make: 'Arihant Surveillance',
     specRef: 'MHA-QR-NLJD-2025',
     isMhaQr: true,
-    image: '/products/non_linear_junction_evaluator.png',
+    image: '/products/image_pending.svg',
     description: 'Counter-surveillance inspection system detecting semiconductor junctions in electronic listening bugs, hidden cameras, and radio detonators, even when powered off.',
     features: [
       'Detects Semiconductor Silicon Diodes in Active & Inactive Devices',
@@ -378,7 +378,7 @@ export const BROCHURE_PRODUCTS: ProductSpecItem[] = [
     make: 'Arihant Defence',
     specRef: 'MHA-QR-BPM-2025',
     isMhaQr: true,
-    image: '/products/bp_morcha.png',
+    image: '/products/pole_detector.png',
     description: 'Armoured mobile defensive post providing 360-degree ballistic shelter and sniper-resistant observation ports for sentries at critical forward installations.',
     features: [
       'Multi-Hit Level IV Ballistic Steel & Ceramic Armour Panels',

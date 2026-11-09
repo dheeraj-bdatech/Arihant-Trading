@@ -104,10 +104,10 @@ const SECTIONS: Record<RelatedSection, SectionDef> = {
     load: (to) => {
       const org = customerOf(to);
       if (!org) return null;
-      return api.get(`/visits/organisations/${org}/history`).then((res: any) => {
+      return api.get(`/visits/organisations/${org}/history`, { limit: LIMIT }).then((res: any) => {
         const r = rowsOf(res);
         return {
-          total: r.length,
+          total: totalOf(res, r),
           viewAll: `/visits?customer=${org}`,
           rows: r.slice(0, LIMIT).map((v) => ({
             id: v.id,

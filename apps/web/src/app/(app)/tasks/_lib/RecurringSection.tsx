@@ -3,9 +3,10 @@
 /**
  * Recurring (a tab on /tasks, Blueprint §38 daily / weekly / monthly / recurring tasks): every series you can see,
  * kept minimal — two charts (by frequency, what needs attention), then one short table. A row opens the series
- * (/tasks/templates/:id) where it is edited, paused or ended.
+ * (/tasks/templates/:id) where it is edited, paused or ended. The table is read a page at a time with the status tab and
+ * search applied in the database, and loads more as you scroll; the charts and status counts come from the API's totals.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Layers, Plus, Repeat, Search, X } from 'lucide-react';
@@ -28,9 +29,10 @@ import {
   type BarListItem,
 } from '@/components/ui';
 import { api } from '@/lib/api';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { TASK_RECURRENCE_LABELS, TASK_RECURRENCE_TYPES, type TaskTemplateStatus } from '@arihant/shared';
-import { errorMessage } from './task-lib';
-import { DueText, FlagChip, useUrlFilters } from './task-ui';
+import { errorMessage, type Paged } from './task-lib';
+import { DueText, FlagChip, LoadMoreRow, useDebouncedValue, useUrlFilters } from './task-ui';
 import { TemplateStatusBadge, describeDue } from './TaskForm';
 import { NewTaskButton } from './NewTaskModal';
 import { TaskToolbar } from './TaskSections';
@@ -52,54 +54,76 @@ interface TemplateRow {
   due_time: string;
 }
 
+/** GET /task-templates totals: every series in scope, whatever the status tab or search. */
+interface TemplateTotals {
+  all: number;
+  active: number;
+  paused: number;
+  ended: number;
+  needs_reassignment: number;
+  with_overdue: number;
+  active_by_frequency: Record<string, number>;
+}
+
 const FILTER_KEYS = ['status', 'search'] as const;
 type StatusTab = 'active' | 'paused' | 'ended' | 'all';
 const STATUS_LABELS: Record<StatusTab, string> = { active: 'Active', paused: 'Paused', ended: 'Ended', all: 'All statuses' };
+const PAGE_SIZE = 50;
 
 export function RecurringSection() {
   const router = useRouter();
   const { values, set } = useUrlFilters(FILTER_KEYS);
   const tab: StatusTab = (['active', 'paused', 'ended', 'all'] as StatusTab[]).includes(values.status as StatusTab) ? (values.status as StatusTab) : 'active';
-  const [rows, setRows] = useState<TemplateRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [totals, setTotals] = useState<TemplateTotals | null>(null);
   const [search, setSearch] = useState('');
+  // Typing settles for 300 ms before the list is searched again (from page 1).
+  const q = useDebouncedValue(search.trim());
 
+  // One page per request, appended as the table scrolls. Page 1 also carries the totals for the charts and the status
+  // menu; the hook swallows fetch errors, so page 1 reports its own. A late answer for an old tab or search is ignored.
+  const key = `${tab}|${q}`;
+  const latest = useRef(key);
+  latest.current = key;
+  const fetchPage = useCallback(
+    async (page: number) => {
+      try {
+        const res = await api.get<Paged<TemplateRow> & { totals: TemplateTotals }>('/task-templates', {
+          status: tab === 'all' ? undefined : tab,
+          search: q || undefined,
+          page,
+          page_size: PAGE_SIZE,
+        });
+        if (page === 1 && key === latest.current) {
+          setTotals(res.totals);
+          setError(null);
+        }
+        return res;
+      } catch (e) {
+        if (page === 1 && key === latest.current) setError(errorMessage(e, 'Could not load recurring tasks.'));
+        throw e;
+      }
+    },
+    [tab, q, key],
+  );
+  const list = useInfiniteList<TemplateRow>(fetchPage);
+  const { rows, refresh } = list;
+
+  // A series changed anywhere (new, edited, paused): re-read the pages already loaded, in place.
   useEffect(() => {
-    let live = true;
-    const load = () =>
-      api
-        .get<any>('/task-templates', { page_size: 100 })
-        .then((r) => live && setRows(Array.isArray(r) ? r : r?.data || []))
-        .catch((e) => live && setError(errorMessage(e, 'Could not load recurring tasks.')));
-    load();
-    window.addEventListener('tasks:changed', load);
-    return () => {
-      live = false;
-      window.removeEventListener('tasks:changed', load);
-    };
-  }, []);
+    window.addEventListener('tasks:changed', refresh);
+    return () => window.removeEventListener('tasks:changed', refresh);
+  }, [refresh]);
 
-  const counts = useMemo(() => {
-    const c: Record<StatusTab, number> = { active: 0, paused: 0, ended: 0, all: 0 };
-    for (const r of rows || []) {
-      c[r.status as StatusTab] = (c[r.status as StatusTab] || 0) + 1;
-      c.all += 1;
-    }
-    return c;
-  }, [rows]);
-  const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (rows || []).filter((r) => (tab === 'all' || r.status === tab) && (!q || r.title.toLowerCase().includes(q) || (r.assignee_name || '').toLowerCase().includes(q)));
-  }, [rows, tab, search]);
-
+  const counts: Record<StatusTab, number> = { active: totals?.active ?? 0, paused: totals?.paused ?? 0, ended: totals?.ended ?? 0, all: totals?.all ?? 0 };
   const byFrequency: BarListItem[] = TASK_RECURRENCE_TYPES.filter((k) => k !== 'one_time').map((k) => ({
     key: k,
     label: TASK_RECURRENCE_LABELS[k],
-    value: (rows || []).filter((r) => r.status === 'active' && r.recurrence_type === k).length,
+    value: totals?.active_by_frequency[k] ?? 0,
   }));
   const attention: BarListItem[] = [
-    { key: 'reassign', label: 'Needs a new assignee', value: (rows || []).filter((r) => r.needs_reassignment || r.assignee_active === false).length, detail: 'Paused when its assignee was deactivated' },
-    { key: 'overdue', label: 'Has overdue tasks', value: (rows || []).filter((r) => r.open_overdue_count > 0).length },
+    { key: 'reassign', label: 'Needs a new assignee', value: totals?.needs_reassignment ?? 0, detail: 'Paused when its assignee was deactivated' },
+    { key: 'overdue', label: 'Has overdue tasks', value: totals?.with_overdue ?? 0 },
     { key: 'paused', label: 'Paused', value: counts.paused },
   ];
 
@@ -136,7 +160,7 @@ export function RecurringSection() {
           options={(['active', 'paused', 'ended', 'all'] as StatusTab[]).map((k) => ({
             key: k,
             label: STATUS_LABELS[k],
-            count: rows ? counts[k] : undefined,
+            count: totals ? counts[k] : undefined,
             active: tab === k,
             onSelect: () => set({ status: k === 'active' ? null : k }),
           }))}
@@ -145,7 +169,7 @@ export function RecurringSection() {
 
       {error && <InfoCallout variant="danger" title="Could not load recurring tasks">{error}</InfoCallout>}
 
-      {!rows ? (
+      {!totals ? (
         !error && <PageLoader rows={4} label="Loading recurring tasks" />
       ) : (
         <>
@@ -160,15 +184,17 @@ export function RecurringSection() {
             </Card>
           </div>
 
-          {visible.length === 0 ? (
+          {rows.length === 0 && list.loading ? (
+            <PageLoader rows={3} label="Loading recurring tasks" />
+          ) : rows.length === 0 ? (
             <EmptyState
               icon={Repeat}
-              title={search.trim() ? 'No recurring tasks match' : tab === 'all' ? 'No recurring tasks yet' : `No ${STATUS_LABELS[tab].toLowerCase()} recurring tasks`}
+              title={q ? 'No recurring tasks match' : tab === 'all' ? 'No recurring tasks yet' : `No ${STATUS_LABELS[tab].toLowerCase()} recurring tasks`}
               description="A recurring task creates a fresh task every day, week or month — weekly reports, monthly stock checks, daily follow-ups."
               action={<NewTaskButton prefill={{ frequency: 'weekly' }} leftIcon={<Plus className="h-4 w-4" />}>New recurring task</NewTaskButton>}
             />
           ) : (
-            <Card className="overflow-hidden p-0">
+            <Card className={`overflow-hidden p-0 transition-opacity ${list.loading ? 'opacity-60' : ''}`}>
               <div className="hidden md:block">
                 <Table>
                   <TableHeader>
@@ -182,7 +208,7 @@ export function RecurringSection() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {visible.map((t) => (
+                    {rows.map((t) => (
                       <TableRow key={t.id} className="cursor-pointer" onClick={() => router.push(`/tasks/templates/${t.id}`)}>
                         <TableCell className="max-w-[280px]">
                           <Link href={`/tasks/templates/${t.id}`} onClick={(e) => e.stopPropagation()} className="block truncate font-semibold text-[#14213D] hover:text-[#0F5E63] hover:underline">
@@ -212,7 +238,7 @@ export function RecurringSection() {
                 </Table>
               </div>
               <ul className="divide-y divide-[#ECE9E2] md:hidden">
-                {visible.map((t) => (
+                {rows.map((t) => (
                   <li key={t.id}>
                     <Link href={`/tasks/templates/${t.id}`} className="block space-y-1 px-4 py-3">
                       <div className="flex items-start justify-between gap-2">
@@ -227,6 +253,7 @@ export function RecurringSection() {
                   </li>
                 ))}
               </ul>
+              <LoadMoreRow hasMore={list.hasMore} loading={list.loadingMore} onLoadMore={list.loadMore} count={rows.length} />
             </Card>
           )}
         </>

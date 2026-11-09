@@ -1,5 +1,14 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { REPORT_ROLES, type AuthUser, type SalesPipelineReportDto, type ServiceReportDto, type ExpenseReportDto, type ProductivityReportDto } from '@arihant/shared';
+import {
+  REPORT_ROLES,
+  type AuthUser,
+  type SalesPipelineReportDto,
+  type ServiceReportDto,
+  type ExpenseReportDto,
+  type ProductivityReportDto,
+  type MisReportDto,
+  type SecurityRegisterDto,
+} from '@arihant/shared';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -8,6 +17,8 @@ import { PipelineReportService } from './pipeline-report.service.js';
 import { ServiceReportService } from './service-report.service.js';
 import { ExpenseReportService } from './expense-report.service.js';
 import { ProductivityReportService } from './productivity-report.service.js';
+import { MisReportService } from './mis-report.service.js';
+import { SecurityRegisterService } from './security-register.service.js';
 
 /**
  * Cross-module management reports. Each report is computed from the records the modules already hold and scoped to
@@ -21,6 +32,8 @@ export class ReportsController {
     private readonly service: ServiceReportService,
     private readonly expenses: ExpenseReportService,
     private readonly productivity: ProductivityReportService,
+    private readonly mis: MisReportService,
+    private readonly securities: SecurityRegisterService,
   ) {}
 
   /** Report 1 — lead / visit / demo / proposal / tender pipeline, conversion, win rate, zone / region / salesperson. */
@@ -49,5 +62,19 @@ export class ReportsController {
   @Roles(...REPORT_ROLES.productivity)
   productivityReport(@CurrentUser() user: AuthUser, @Query() query: Record<string, unknown>): Promise<ProductivityReportDto> {
     return this.productivity.report(user, query);
+  }
+
+  /** Report 5 — Business MIS: tenders, orders, deliveries, service cases and money held by zone / person / state / product. */
+  @Get('mis')
+  @Roles(...REPORT_ROLES.mis)
+  misReport(@CurrentUser() user: AuthUser, @Query() query: Record<string, unknown>): Promise<MisReportDto> {
+    return this.mis.report(user, query);
+  }
+
+  /** Report 6 — EMD & performance security register (paged; limit up to 2000 for export). */
+  @Get('securities')
+  @Roles(...REPORT_ROLES.securities)
+  securityRegister(@CurrentUser() user: AuthUser, @Query() query: Record<string, unknown>): Promise<SecurityRegisterDto> {
+    return this.securities.report(user, query);
   }
 }

@@ -25,7 +25,7 @@ import {
   type ExpenseStageBucket,
 } from '@arihant/shared';
 import { EXPENSE_CONFIG, type ExpenseConfig } from './expense.config.js';
-import { claimScopeFilter, isAdminLike } from './expense-scope.js';
+import { canReviewAnyClaim, claimScopeFilter, isAdminLike } from './expense-scope.js';
 import {
   claimFilterExpressions,
   hasItemLevelFilter,
@@ -320,7 +320,7 @@ export class ExpenseClaimsService {
       if (can('withdraw')) out.push('withdraw');
       if (['rejected', 'withdrawn'].includes(claim.status)) out.push('copy');
     }
-    if (!own && (claim.manager_id === user.id || isAdminLike(user)) && claim.status === 'submitted') {
+    if (!own && (claim.manager_id === user.id || canReviewAnyClaim(user)) && claim.status === 'submitted') {
       out.push('manager_approve', 'manager_reject', 'request_clarification');
     }
     if (!own && user.role === 'accounts') {
@@ -761,11 +761,11 @@ export class ExpenseClaimsService {
     };
   }
 
-  /** Stage-1 queue: claims assigned to this approver; management / admin see every team's (never their own). */
+  /** Stage-1 queue: claims assigned to this approver; management sees every team's (never its own). */
   managerQueue(query: Record<string, unknown>, user: AuthUser) {
     return this.list({ sort_by: 'submitted_at', sort_dir: 'asc', ...query, statuses: 'submitted' }, user, {
       extra: (eb: any) =>
-        isAdminLike(user)
+        canReviewAnyClaim(user)
           ? eb('c.employee_id', '<>', user.id)
           : eb.and([eb('c.manager_id', '=', user.id), eb('c.employee_id', '<>', user.id)]),
     });
@@ -788,7 +788,7 @@ export class ExpenseClaimsService {
     const [manager_pending, accounts_pending, accounts_ready, my_clarifications, my_drafts, approver_inactive] = await Promise.all([
       count((q) => {
         const pending = q.where('c.status', '=', 'submitted').where('c.employee_id', '<>', user.id);
-        return isAdminLike(user) ? pending : pending.where('c.manager_id', '=', user.id);
+        return canReviewAnyClaim(user) ? pending : pending.where('c.manager_id', '=', user.id);
       }),
       user.role === 'accounts' ? count((q) => q.where('c.status', '=', 'accounts_review').where('c.employee_id', '<>', user.id)) : 0,
       user.role === 'accounts' ? count((q) => q.where('c.status', '=', 'accounts_approved').where('c.employee_id', '<>', user.id)) : 0,

@@ -1,8 +1,23 @@
 import { BadRequestException, ConflictException, Injectable, Inject, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Kysely, sql } from 'kysely';
+import { Kysely, sql, type SelectQueryBuilder } from 'kysely';
 import { KYSELY_DB } from '../../common/database/database.module.js';
-import type { Database } from '@arihant/shared';
+import { buildPaginatedResult, getPaginationParams } from '../../common/utils/pagination.js';
+import type { Database, PaginatedResult } from '@arihant/shared';
+
+/** `page` turns a master list into one page of `limit` rows; `search` matches the row's name or code. */
+export interface MasterListQuery {
+  page?: string | number;
+  limit?: string | number;
+  search?: string;
+  /** client categories: 'true' lists deactivated ones too (the admin's list; pickers get active ones only) */
+  include_inactive?: string;
+}
+
+const likeTerm = (q?: MasterListQuery) => {
+  const s = typeof q?.search === 'string' ? q.search.trim().toLowerCase() : '';
+  return s ? `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
+};
 
 @Injectable()
 export class MastersService {
@@ -31,12 +46,29 @@ export class MastersService {
     return v || null;
   }
 
-  async getZones() {
-    return this.db.selectFrom('zones').selectAll().orderBy('code', 'asc').execute();
+  /** The whole list, or one page of it with the total when the caller asked for a page. */
+  private async listOrPage<DB, TB extends keyof DB, O>(
+    query: SelectQueryBuilder<DB, TB, O>,
+    q?: MasterListQuery,
+  ): Promise<O[] | PaginatedResult<O>> {
+    if (q?.page === undefined || q.page === '') return query.execute();
+    const { page, limit, offset } = getPaginationParams({ page: Number(q.page), limit: Number(q.limit) });
+    const [rows, count] = await Promise.all([
+      query.limit(limit).offset(offset).execute(),
+      sql<{ total: number }>`select count(*)::int as total from (${query.clearOrderBy()}) as list`.execute(this.db),
+    ]);
+    return buildPaginatedResult(rows, Number(count.rows[0]?.total ?? 0), page, limit);
   }
 
-  async getRegions(zoneId?: string) {
-    let q = this.db
+  async getZones(q?: MasterListQuery) {
+    let query = this.db.selectFrom('zones').selectAll();
+    const term = likeTerm(q);
+    if (term) query = query.where((eb) => eb.or([sql<boolean>`lower(zones.name) like ${term}`, sql<boolean>`lower(zones.code) like ${term}`]));
+    return this.listOrPage(query.orderBy('code', 'asc'), q);
+  }
+
+  async getRegions(zoneId?: string, q?: MasterListQuery) {
+    let query = this.db
       .selectFrom('regions')
       .leftJoin('zones', 'regions.zone_id', 'zones.id')
       .select([
@@ -48,18 +80,27 @@ export class MastersService {
       ]);
 
     if (zoneId) {
-      q = q.where('regions.zone_id', '=', zoneId);
+      query = query.where('regions.zone_id', '=', zoneId);
     }
+    const term = likeTerm(q);
+    if (term) query = query.where((eb) => eb.or([sql<boolean>`lower(regions.name) like ${term}`, sql<boolean>`lower(zones.name) like ${term}`]));
 
-    return q.orderBy('regions.name', 'asc').execute();
+    return this.listOrPage(query.orderBy('regions.name', 'asc'), q);
   }
 
-  async getProducts() {
-    return this.db
-      .selectFrom('products')
-      .selectAll()
-      .orderBy('name', 'asc')
-      .execute();
+  async getProducts(q?: MasterListQuery) {
+    let query = this.db.selectFrom('products').selectAll();
+    const term = likeTerm(q);
+    if (term) {
+      query = query.where((eb) =>
+        eb.or([
+          sql<boolean>`lower(products.name) like ${term}`,
+          sql<boolean>`lower(coalesce(products.category, '')) like ${term}`,
+          sql<boolean>`lower(coalesce(products.make, '')) like ${term}`,
+        ]),
+      );
+    }
+    return this.listOrPage(query.orderBy('name', 'asc'), q);
   }
 
   async createProduct(
@@ -137,17 +178,20 @@ export class MastersService {
 
   // --- Departments CRUD (§5) ---
   /** Departments with their head and how many active people belong to them. */
-  async getDepartments() {
-    return this.db
+  async getDepartments(q?: MasterListQuery) {
+    let query = this.db
       .selectFrom('departments')
       .leftJoin('users as head', 'head.id', 'departments.head_user_id')
       .selectAll('departments')
       .select('head.full_name as head_name')
       .select(
         sql<number>`(select count(*)::int from users u where u.department_id = departments.id and u.is_active)`.as('member_count'),
-      )
-      .orderBy('departments.name', 'asc')
-      .execute();
+      );
+    const term = likeTerm(q);
+    if (term) {
+      query = query.where((eb) => eb.or([sql<boolean>`lower(departments.name) like ${term}`, sql<boolean>`lower(departments.code) like ${term}`]));
+    }
+    return this.listOrPage(query.orderBy('departments.name', 'asc'), q);
   }
 
   /** The department head must be an active user (or none). */
@@ -329,6 +373,97 @@ export class MastersService {
   }
 
   // --- Role Permissions Matrix (§5) ---
+  /* ------------------------------------------------------------ client categories -- */
+
+  /** Client categories (the values of organisations.sector) with how many customers use each; active ones by default. */
+  async getClientCategories(q?: MasterListQuery) {
+    let query = this.db
+      .selectFrom('client_categories')
+      .selectAll('client_categories')
+      .select(sql<number>`(select count(*)::int from organisations o where o.sector = client_categories.name)`.as('customer_count'));
+    if (q?.include_inactive !== 'true') query = query.where('client_categories.is_active', '=', true);
+    const term = likeTerm(q);
+    if (term) {
+      query = query.where((eb) =>
+        eb.or([sql<boolean>`lower(client_categories.name) like ${term}`, sql<boolean>`lower(coalesce(client_categories.label, '')) like ${term}`]),
+      );
+    }
+    return this.listOrPage(query.orderBy('client_categories.sort_order', 'asc').orderBy('client_categories.name', 'asc'), q);
+  }
+
+  private sortOrder(value: unknown): number {
+    if (value === undefined || value === null || value === '') return 0;
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 0 || n > 10000) throw new BadRequestException('Sort order must be a whole number from 0 to 10000');
+    return n;
+  }
+
+  private async assertClientCategoryFree(name: string, exceptId?: string) {
+    let q = this.db.selectFrom('client_categories').select('id').where(sql<boolean>`lower(name) = ${name.toLowerCase()}`);
+    if (exceptId) q = q.where('id', '<>', exceptId);
+    if (await q.executeTakeFirst()) throw new ConflictException(`A client category named "${name}" already exists`);
+  }
+
+  async createClientCategory(data: { name?: string; label?: string; sort_order?: number }, actorId?: string) {
+    const name = this.required(data.name, 'Category name', 80);
+    await this.assertClientCategoryFree(name);
+    const row = await this.db
+      .insertInto('client_categories')
+      .values({ name, label: this.optional(data.label, 160), sort_order: this.sortOrder(data.sort_order) })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    this.audit(actorId, 'client_category', row.id, 'master_client_category_created', null, { name, label: row.label });
+    return row;
+  }
+
+  /** Renaming a category renames it on every customer that has it, in the same transaction. */
+  async updateClientCategory(id: string, data: { name?: string; label?: string; sort_order?: number; is_active?: boolean }, actorId?: string) {
+    const existing = await this.db.selectFrom('client_categories').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!existing) throw new NotFoundException('Client category not found');
+    const set: Record<string, unknown> = { updated_at: new Date() };
+    if (data.name !== undefined) {
+      const name = this.required(data.name, 'Category name', 80);
+      if (name !== existing.name) await this.assertClientCategoryFree(name, id);
+      set.name = name;
+    }
+    if (data.label !== undefined) set.label = this.optional(data.label, 160);
+    if (data.sort_order !== undefined) set.sort_order = this.sortOrder(data.sort_order);
+    if (data.is_active !== undefined) {
+      if (typeof data.is_active !== 'boolean') throw new BadRequestException('Active must be true or false');
+      set.is_active = data.is_active;
+    }
+    const row = await this.db.transaction().execute(async (trx) => {
+      const updated = await trx.updateTable('client_categories').set(set).where('id', '=', id).returningAll().executeTakeFirstOrThrow();
+      if (updated.name !== existing.name) {
+        await trx.updateTable('organisations').set({ sector: updated.name, updated_at: new Date() }).where('sector', '=', existing.name).execute();
+      }
+      return updated;
+    });
+    this.audit(
+      actorId,
+      'client_category',
+      id,
+      'master_client_category_updated',
+      { name: existing.name, label: existing.label, is_active: existing.is_active },
+      { name: row.name, label: row.label, is_active: row.is_active },
+    );
+    return row;
+  }
+
+  async deleteClientCategory(id: string, actorId?: string) {
+    const existing = await this.db.selectFrom('client_categories').selectAll().where('id', '=', id).executeTakeFirst();
+    if (!existing) throw new NotFoundException('Client category not found');
+    const used = await this.db.selectFrom('organisations').select(sql<number>`count(*)::int`.as('n')).where('sector', '=', existing.name).executeTakeFirst();
+    if ((used?.n || 0) > 0) {
+      throw new ConflictException(
+        `${used!.n} ${used!.n === 1 ? 'customer is' : 'customers are'} in ${existing.name} — deactivate it instead, or move them to another category first`,
+      );
+    }
+    await this.db.deleteFrom('client_categories').where('id', '=', id).execute();
+    this.audit(actorId, 'client_category', id, 'master_client_category_deleted', { name: existing.name, label: existing.label }, null);
+    return { success: true };
+  }
+
   async getRolePermissions(role?: string) {
     let q = this.db.selectFrom('role_permissions').selectAll();
     if (role) {

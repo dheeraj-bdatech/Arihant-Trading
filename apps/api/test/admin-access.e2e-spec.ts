@@ -62,6 +62,8 @@ describe('Admin — module access, departments, invitations', () => {
     await sql1(`delete from departments where code like '${STAMP}%'`);
     await sql1(`delete from regions where name like '${STAMP}%'`);
     await sql1(`delete from zones where code like 'ZQ%' and name like '${STAMP}%'`);
+    await sql1(`delete from organisations where name like '${STAMP}%'`);
+    await sql1(`delete from client_categories where name like '${STAMP}%'`);
     await app.close();
   });
 
@@ -104,13 +106,17 @@ describe('Admin — module access, departments, invitations', () => {
       expect((await setModule('management', 'admin', { blocked: false })).status).toBe(200);
     });
 
-    it('nobody can lock the administrator out, and only admin / management change switches', async () => {
+    it('nobody can lock the administrator out, and only management and the administrator change switches', async () => {
       const lock = await setModule('admin', 'admin', { blocked: true, reason: 'Trying to lock everyone out' });
       expect(lock.status).toBe(400);
       expect((await setModule('sales', 'nope', { blocked: true, reason: 'Unknown module here' })).status).toBe(400);
       expect((await setModule('wizard', 'leads', { blocked: true, reason: 'Unknown role here' })).status).toBe(400);
       expect((await setModule('sales', 'tenders', { blocked: true, reason: 'Sales asking for itself' }, 'sales')).status).toBe(403);
       expect((await setModule('sales', 'tenders', { blocked: true, reason: 'Regional manager trying' }, 'rmN')).status).toBe(403);
+      // management governs module access (RBAC spec §6): it can switch a module off for a role and back on
+      expect((await setModule('sales', 'tenders', { blocked: true, reason: 'Tender data frozen by the MD' }, 'mgmt')).status).toBe(200);
+      expect((await setModule('sales', 'tenders', { blocked: false }, 'mgmt')).status).toBe(200);
+      expect((await setModule('admin', 'admin', { blocked: true, reason: 'Management trying to lock IT out' }, 'mgmt')).status).toBe(400);
     });
   });
 
@@ -184,6 +190,78 @@ describe('Admin — module access, departments, invitations', () => {
     it('refuses an empty list, and invitations are admin-only', async () => {
       expect((await api().post('/api/users/bulk-invite').set(auth('admin')).send({ users: [] })).status).toBe(400);
       expect((await api().post('/api/users/bulk-invite').set(auth('rmN')).send({ users: [{ full_name: 'X Y', email: `${STAMP}.x@arihant.com`, role: 'sales' }] })).status).toBe(403);
+    });
+
+    it('management reads the admin panel but every account and master change is admin-only (403)', async () => {
+      const invite = { users: [{ full_name: 'X Y', email: `${STAMP}.m@arihant.com`, role: 'accounts', manager_email: 'accounts@arihant.com' }] };
+      expect((await api().post('/api/users/bulk-invite').set(auth('mgmt')).send(invite)).status).toBe(403);
+      expect((await api().post('/api/users').set(auth('mgmt')).send({ full_name: 'X Y', email: `${STAMP}.m@arihant.com`, role: 'accounts' })).status).toBe(403);
+      expect((await api().patch(`/api/users/${uid.sales}`).set(auth('mgmt')).send({ is_active: false })).status).toBe(403);
+      expect((await api().post('/api/masters/zones').set(auth('mgmt')).send({ code: 'ZQ2', name: `${STAMP} zone` })).status).toBe(403);
+      expect((await api().post('/api/masters/departments').set(auth('mgmt')).send({ code: `${STAMP}_m`, name: 'X' })).status).toBe(403);
+      expect((await api().get('/api/users').set(auth('mgmt'))).status).toBe(200);
+      expect((await api().get('/api/masters/departments').set(auth('mgmt'))).status).toBe(200);
+    });
+  });
+
+  describe('password reset', () => {
+    it('the administrator resets a forgotten password: the old one stops working, the one-time one signs in, and it is audited', async () => {
+      const email = `${STAMP}.reset@arihant.com`;
+      const created = await api().post('/api/users').set(auth('admin')).send({ full_name: 'Reset Tester', email, role: 'accounts' });
+      expect(created.status).toBe(201);
+      const firstPassword = created.body.temporary_password;
+
+      expect((await api().post(`/api/users/${created.body.id}/reset-password`).set(auth('mgmt'))).status).toBe(403);
+      const reset = await api().post(`/api/users/${created.body.id}/reset-password`).set(auth('admin'));
+      expect(reset.status).toBe(201);
+      expect(reset.body.email).toBe(email);
+      expect(reset.body.temporary_password).toBeTruthy();
+      expect(reset.body.temporary_password).not.toBe(firstPassword);
+
+      expect((await api().post('/api/auth/login').send({ email, password: firstPassword })).status).toBe(401);
+      expect((await api().post('/api/auth/login').send({ email, password: reset.body.temporary_password })).status).toBe(200);
+
+      const entry = await waitFor(async () => (await sql1(`select new_value from audit_log where entity_id = '${created.body.id}' and action = 'password_reset'`))[0]);
+      expect(JSON.stringify(entry)).not.toContain(reset.body.temporary_password);
+      expect((await api().post('/api/users/00000000-0000-4000-8000-000000000000/reset-password').set(auth('admin'))).status).toBe(404);
+    });
+  });
+
+  describe('client categories', () => {
+    it('the administrator keeps the list: pickers see active ones, a rename follows its customers, one in use cannot be deleted', async () => {
+      const name = `${STAMP} Coast Guard`;
+      const path = '/api/masters/client-categories';
+      expect((await api().post(path).set(auth('mgmt')).send({ name })).status).toBe(403);
+      const created = await api().post(path).set(auth('admin')).send({ name, label: 'Coast Guard & Maritime Security', sort_order: 5 });
+      expect(created.status).toBe(201);
+      expect((await api().post(path).set(auth('admin')).send({ name: name.toUpperCase() })).status).toBe(409);
+      expect((await api().get(path).set(auth('sales'))).body.map((c: any) => c.name)).toContain(name);
+
+      const [org] = await sql1(`insert into organisations (name, sector) values ('${STAMP} Org', '${name}') returning id`);
+      const renamed = `${name} HQ`;
+      expect((await api().patch(`${path}/${created.body.id}`).set(auth('admin')).send({ name: renamed })).status).toBe(200);
+      expect((await sql1(`select sector from organisations where id = '${org.id}'`))[0].sector).toBe(renamed);
+      expect((await api().delete(`${path}/${created.body.id}`).set(auth('admin'))).status).toBe(409);
+
+      expect((await api().patch(`${path}/${created.body.id}`).set(auth('admin')).send({ is_active: false })).status).toBe(200);
+      expect((await api().get(path).set(auth('sales'))).body.map((c: any) => c.name)).not.toContain(renamed);
+      const all = (await api().get(path).query({ include_inactive: 'true' }).set(auth('admin'))).body;
+      expect(all.find((c: any) => c.name === renamed)).toEqual(expect.objectContaining({ is_active: false, customer_count: 1 }));
+
+      await sql1(`delete from organisations where id = '${org.id}'`);
+      expect((await api().delete(`${path}/${created.body.id}`).set(auth('admin'))).status).toBe(200);
+    });
+  });
+
+  describe('paged master lists', () => {
+    it('answer the whole array without page, and one page with its total when asked', async () => {
+      const all = (await api().get('/api/masters/regions').set(auth('admin'))).body;
+      expect(Array.isArray(all)).toBe(true);
+      const paged = (await api().get('/api/masters/regions').query({ page: 1, limit: 2 }).set(auth('admin'))).body;
+      expect(paged).toEqual(expect.objectContaining({ page: 1, limit: 2, total: all.length }));
+      expect(paged.data).toHaveLength(Math.min(2, all.length));
+      const found = (await api().get('/api/masters/regions').query({ page: 1, search: all[0].name }).set(auth('admin'))).body;
+      expect(found.data.map((r: any) => r.id)).toContain(all[0].id);
     });
   });
 

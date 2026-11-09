@@ -105,6 +105,15 @@ describe('state machine', () => {
     expect(statusOf(() => resolveTransition(claim('accounts_review'), director, 'accounts_approve'))).toBe(403);
   });
 
+  it('never lets the administrator approve money unless the claim names them as its approver', () => {
+    const itAdmin = { id: 'adm-1', role: 'admin' };
+    expect(statusOf(() => resolveTransition(claim('submitted'), itAdmin, 'manager_approve'))).toBe(403);
+    expect(statusOf(() => resolveTransition(claim('submitted'), itAdmin, 'manager_reject'))).toBe(403);
+    expect(statusOf(() => resolveTransition(claim('accounts_review'), itAdmin, 'accounts_approve'))).toBe(403);
+    const assignedToAdmin = { employee_id: EMP, manager_id: itAdmin.id, status: 'submitted' };
+    expect(resolveTransition(assignedToAdmin, itAdmin, 'manager_approve').to).toBe('manager_approved');
+  });
+
   it('checks permission before status (403 beats 409)', () => {
     expect(statusOf(() => resolveTransition(claim('processed'), outsider, 'manager_approve'))).toBe(403);
     expect(statusOf(() => resolveTransition(claim('draft'), manager, 'submit'))).toBe(403);

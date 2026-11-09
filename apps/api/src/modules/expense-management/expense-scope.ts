@@ -17,6 +17,14 @@ export function isAdminLike(user: { role: string }): boolean {
   return user.role === 'admin' || user.role === 'management';
 }
 
+/**
+ * Stage-1 review of any team's claim, beyond the claim's own approver: management only. The administrator sees every
+ * claim and can reassign the approver (Module 9), but never approves money.
+ */
+export function canReviewAnyClaim(user: { role: string }): boolean {
+  return user.role === 'management';
+}
+
 export function claimScopeFilter(user: AuthUser) {
   return (eb: ExpressionBuilder<any, any>) => {
     if (isAdminLike(user)) return sql<boolean>`true`;

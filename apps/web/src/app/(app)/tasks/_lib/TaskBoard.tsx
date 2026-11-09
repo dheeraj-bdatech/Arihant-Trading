@@ -4,8 +4,10 @@
  * Module 8 Kanban board (the Tasks page). Columns follow the stored status. A card is dragged on
  * desktop or moved from its ⋮ menu on touch / keyboard; only moves planKanbanMove allows for this viewer
  * are offered, and the API re-checks permission, status and version on every call.
- * The page owns the toolbar: BoardFilterMenu / BoardSortMenu feed `filter` and `sort`, which work on the
- * loaded rows. Sort (useBoardSort) and collapsed columns are remembered per browser.
+ * Each column (lane) reads its own pages of GET /tasks (useBoardLanes): the board's view, search and quick filter, the
+ * lane's status and the sort all go to the API, and a lane loads its next page as it is scrolled to the end.
+ * The page owns the toolbar: BoardFilterMenu / BoardSortMenu feed `filter` and `sort` into the lane queries.
+ * Sort (useBoardSort) and collapsed columns are remembered per browser.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -34,9 +36,9 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatTaskDate, formatTaskDateTime, isTaskClockPaused, relativeDue, type TaskActorKind, type TaskPriority, type TaskStatus } from '@arihant/shared';
 import { errorMessage, isConflict, notifyTasksChanged, type TaskRow } from './task-lib';
-import { BlockerBadge, DelayBadge, PriorityBadge, StatusBadge, TaskConflictCallout } from './task-ui';
+import { BlockerBadge, DelayBadge, LoadMoreRow, PriorityBadge, StatusBadge, TaskConflictCallout } from './task-ui';
 import { TaskActionDialog, type TaskDialogAction } from './TaskActions';
-import { KANBAN_COLUMNS, TaskFlags, countsDown, planKanbanMove, rowActorKinds } from './TaskList';
+import { KANBAN_COLUMNS, TaskFlags, countsDown, planKanbanMove, rowActorKinds, useTaskPages, type TaskPages } from './TaskList';
 
 // ------------------------------------------------------------------ board config
 const COLUMN_META: Record<string, { icon: LucideIcon; accent: string; empty: string }> = {
@@ -47,25 +49,17 @@ const COLUMN_META: Record<string, { icon: LucideIcon; accent: string; empty: str
   completed: { icon: CircleCheck, accent: '#1F7A55', empty: 'Drop a card here to complete it.' },
 };
 
-const PRIORITY_RANK: Record<TaskPriority, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 export const PRIORITY_STRIPE: Record<TaskPriority, string> = { critical: '#9A3412', high: '#D97706', medium: '#0F5E63', low: '#C9C4B8' };
 
 export type QuickFilter = 'all' | 'overdue' | 'due_week' | 'high' | 'no_update';
-const WEEK_MS = 7 * 86400000;
-export const QUICK_FILTERS: { id: QuickFilter; label: string; test: (t: TaskRow, now: number) => boolean }[] = [
-  { id: 'all', label: 'All', test: () => true },
-  { id: 'overdue', label: 'Overdue', test: (t) => t.is_overdue },
-  {
-    id: 'due_week',
-    label: 'Due in 7 days',
-    test: (t, now) => {
-      if (!t.deadline || !countsDown(t) || t.is_overdue) return false;
-      const d = new Date(t.deadline).getTime();
-      return d >= now && d - now <= WEEK_MS;
-    },
-  },
-  { id: 'high', label: 'High & critical', test: (t) => t.priority === 'high' || t.priority === 'critical' },
-  { id: 'no_update', label: 'No update', test: (t) => t.no_update },
+/** Quick filters as GET /tasks params: the database applies the same rules as the cards' flags (is_overdue, no_update). */
+export const QUICK_FILTERS: { id: QuickFilter; label: string; params: Record<string, string | number> }[] = [
+  { id: 'all', label: 'All', params: {} },
+  { id: 'overdue', label: 'Overdue', params: { delay_class: 'open_overdue' } },
+  // Still counting down and due within the next 7 days (never already late).
+  { id: 'due_week', label: 'Due in 7 days', params: { due_within_days: 7 } },
+  { id: 'high', label: 'High & critical', params: { priority: 'high,critical' } },
+  { id: 'no_update', label: 'No update', params: { no_update: 'true' } },
 ];
 
 export type SortKey = 'deadline' | 'priority' | 'updated';
@@ -75,16 +69,53 @@ const SORT_OPTIONS: { id: SortKey; label: string }[] = [
   { id: 'updated', label: 'Updated' },
 ];
 
-const time = (v: string | null | undefined, fallback: number) => (v ? new Date(v).getTime() : fallback);
+/** GET /tasks sort of one lane: priority (critical first, then the nearest deadline), last updated, or by deadline — where
+ * finished work reads newest first and open work by the nearest deadline. The API breaks ties on the task number. */
+function laneSort(by: SortKey, lane: TaskStatus): { sort_by: string; sort_dir: 'asc' | 'desc' } {
+  if (by === 'updated') return { sort_by: 'updated_at', sort_dir: 'desc' };
+  if (by === 'priority') return { sort_by: 'priority', sort_dir: 'desc' };
+  return lane === 'completed' ? { sort_by: 'completed_at', sort_dir: 'desc' } : { sort_by: 'deadline', sort_dir: 'asc' };
+}
 
-function sortColumn(rows: TaskRow[], by: SortKey, column: TaskStatus): TaskRow[] {
-  const byDeadline = (a: TaskRow, b: TaskRow) => time(a.deadline, Infinity) - time(b.deadline, Infinity);
-  const list = [...rows];
-  if (by === 'updated') return list.sort((a, b) => time(b.updated_at, 0) - time(a.updated_at, 0));
-  if (by === 'priority') return list.sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || byDeadline(a, b));
-  // Finished work reads newest first; open work by the nearest deadline.
-  if (column === 'completed') return list.sort((a, b) => time(b.completed_at || b.updated_at, 0) - time(a.completed_at || a.updated_at, 0));
-  return list.sort(byDeadline);
+/** Cards a lane reads per page. */
+const LANE_PAGE_SIZE = 25;
+
+/** The board's GET /tasks params shared by every lane: view, search and the quick filter's params. */
+export type BoardQuery = Record<string, string | number | undefined>;
+
+/** One lane per status column, keyed by its status. */
+export type BoardLanes = Record<string, TaskPages>;
+
+/**
+ * The status board's data. Every lane (status column) pages GET /tasks on its own — the board's query plus
+ * `statuses=<lane>` and the lane's sort — so a long column never holds the others back, and each loads its next page
+ * when it is scrolled to the end (LoadMoreRow inside the lane). `query` null skips loading.
+ */
+export function useBoardLanes(query: BoardQuery | null, sort: SortKey) {
+  const lane = (status: TaskStatus) => (query ? { ...query, statuses: status, ...laneSort(sort, status) } : null);
+  const lanes: BoardLanes = {
+    not_started: useTaskPages(lane('not_started'), LANE_PAGE_SIZE),
+    in_progress: useTaskPages(lane('in_progress'), LANE_PAGE_SIZE),
+    blocked: useTaskPages(lane('blocked'), LANE_PAGE_SIZE),
+    awaiting_approval: useTaskPages(lane('awaiting_approval'), LANE_PAGE_SIZE),
+    completed: useTaskPages(lane('completed'), LANE_PAGE_SIZE),
+  };
+  const all = KANBAN_COLUMNS.map((c) => lanes[c.id]);
+  return {
+    lanes,
+    /** Every lane has its first page for the current query. */
+    ready: all.every((l) => l.ready),
+    error: all.find((l) => l.error)?.error ?? null,
+    /** Cards loaded so far across the lanes. */
+    rows: all.flatMap((l) => l.rows),
+    /** Tasks per lane in the database (not just the loaded cards), and their sum. */
+    totals: Object.fromEntries(KANBAN_COLUMNS.map((c) => [c.id, lanes[c.id].total])) as Record<string, number>,
+    total: all.reduce((n, l) => n + l.total, 0),
+    /** Some lane has cards it has not loaded yet. */
+    partial: all.some((l) => l.hasMore),
+    /** Re-read the pages each lane has loaded, in place (after a move or an edit). */
+    refresh: () => Promise.all(all.map((l) => l.refresh())),
+  };
 }
 
 const SORT_KEY = 'bos.tasks.board.sort';
@@ -116,19 +147,20 @@ export function useBoardSort(): [SortKey, (s: SortKey) => void] {
   return [sort, update];
 }
 
-/** "Filter" dropdown for the board toolbar, with live counts over the loaded rows. */
-export const BoardFilterMenu: React.FC<{ rows: TaskRow[]; value: QuickFilter; onChange: (f: QuickFilter) => void }> = ({ rows, value, onChange }) => {
-  const options = useMemo(() => {
-    const now = Date.now();
-    return QUICK_FILTERS.map((f) => ({
-      key: f.id,
-      label: f.label,
-      count: rows.filter((r) => f.test(r, now)).length,
-      urgent: f.id === 'overdue',
-      active: value === f.id,
-      onSelect: () => onChange(f.id),
-    }));
-  }, [rows, value, onChange]);
+/** "Filter" dropdown for the board toolbar; the active filter shows how many tasks match it on the board (`total`). */
+export const BoardFilterMenu: React.FC<{ value: QuickFilter; onChange: (f: QuickFilter) => void; total?: number }> = ({ value, onChange, total }) => {
+  const options = useMemo(
+    () =>
+      QUICK_FILTERS.map((f) => ({
+        key: f.id,
+        label: f.label,
+        count: value === f.id ? total : undefined,
+        urgent: f.id === 'overdue',
+        active: value === f.id,
+        onSelect: () => onChange(f.id),
+      })),
+    [value, onChange, total],
+  );
   return <FilterMenu label="Filter" icon={<Filter />} options={options} />;
 };
 
@@ -153,27 +185,28 @@ export const initials = (name: string | null) =>
 
 // ------------------------------------------------------------------ board
 export const TaskBoard: React.FC<{
-  rows: TaskRow[];
+  /** One paged GET /tasks per column (useBoardLanes). */
+  lanes: BoardLanes;
   /** Viewer has a team or can view all (manager actions are offered on others' tasks). */
   isManager: boolean;
   showAssignee?: boolean;
-  /** Footnote per column, e.g. "Latest 25 shown". */
-  notes?: Partial<Record<TaskStatus, string>>;
-  filter: QuickFilter;
-  sort: SortKey;
-  /** Reload the board after a move. */
-  onChanged: () => void;
+  /** A quick filter narrows the lanes (an empty lane says so). */
+  filtered: boolean;
+  /** Re-read the lanes after a move; the optimistic column of a started card is dropped once this settles. */
+  onChanged: () => Promise<unknown> | void;
   notify: (kind: 'success' | 'error', text: string) => void;
-}> = ({ rows, isManager, showAssignee, notes, filter: quick, sort, onChanged, notify }) => {
+}> = ({ lanes, isManager, showAssignee, filtered, onChanged, notify }) => {
   const [collapsed, setCollapsed] = useState<TaskStatus[]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<TaskStatus | null>(null);
-  /** Optimistic column for a card whose move is in flight; cleared when fresh rows arrive. */
+  /** Optimistic column for a card whose move is in flight; cleared once the lanes have re-read. */
   const [moved, setMoved] = useState<Record<string, TaskStatus>>({});
   const { kindsOf, move, busyId, dialogs } = useTaskMover({
     isManager,
     notify,
-    onChanged,
+    onChanged: () => {
+      Promise.resolve(onChanged()).finally(() => setMoved({}));
+    },
     onOptimistic: (id, to) =>
       setMoved((m) => {
         const next = { ...m };
@@ -187,7 +220,6 @@ export const TaskBoard: React.FC<{
     const saved = readPref<TaskStatus[]>(COLLAPSED_KEY);
     if (Array.isArray(saved)) setCollapsed(saved.filter((c) => KANBAN_COLUMNS.some((k) => k.id === c)));
   }, []);
-  useEffect(() => setMoved({}), [rows]);
 
   const toggleCollapsed = (id: TaskStatus) => {
     const next = collapsed.includes(id) ? collapsed.filter((c) => c !== id) : [...collapsed, id];
@@ -195,20 +227,35 @@ export const TaskBoard: React.FC<{
     writePref(COLLAPSED_KEY, next);
   };
 
-  /** Reference time for the quick filters; moves with each reload. */
-  const now = useMemo(() => Date.now(), [rows]);
   const statusOf = (r: TaskRow) => moved[r.id] || r.status;
+
+  // Every loaded card once: while lanes re-read one by one a moved card can sit in two of them for a moment, so the
+  // newest version (highest `version`) wins. Lane order is the API's (filtered and sorted in the database).
+  const rows = useMemo(() => {
+    const byId = new Map<string, TaskRow>();
+    for (const c of KANBAN_COLUMNS) {
+      for (const r of lanes[c.id].rows) {
+        const had = byId.get(r.id);
+        if (!had || r.version > had.version) byId.set(r.id, r);
+      }
+    }
+    return Array.from(byId.values());
+  }, [lanes]);
 
   const columns = useMemo(() => {
     const all = new Map<TaskStatus, TaskRow[]>(KANBAN_COLUMNS.map((c) => [c.id, []]));
-    rows.forEach((r) => all.get(moved[r.id] || r.status)?.push(r));
-    const filter = QUICK_FILTERS.find((f) => f.id === quick) || QUICK_FILTERS[0];
+    // A started card waits at the top of its new column until the lanes re-read.
+    rows.filter((r) => moved[r.id]).forEach((r) => all.get(moved[r.id])?.push(r));
+    rows.filter((r) => !moved[r.id]).forEach((r) => all.get(r.status)?.push(r));
     return KANBAN_COLUMNS.map((c) => {
-      const items = all.get(c.id) || [];
-      const shown = sortColumn(items.filter((r) => filter.test(r, now)), sort, c.id);
-      return { ...c, total: items.length, overdue: items.filter((r) => r.is_overdue).length, shown };
+      const lane = lanes[c.id];
+      const shown = all.get(c.id) || [];
+      // The database total, adjusted for cards optimistically moved in or out of this column.
+      const shift = rows.reduce((n, r) => (!moved[r.id] || moved[r.id] === r.status ? n : moved[r.id] === c.id ? n + 1 : r.status === c.id ? n - 1 : n), 0);
+      const overdue = shown.filter((r) => r.is_overdue).length;
+      return { ...c, lane, shown, total: Math.max(0, lane.total + shift), overdue, overdueMore: lane.hasMore };
     });
-  }, [rows, moved, quick, sort, now]);
+  }, [rows, lanes, moved]);
 
   const dragRow = dragId ? rows.find((r) => r.id === dragId) || null : null;
 
@@ -252,7 +299,6 @@ export const TaskBoard: React.FC<{
             const isOver = overCol === col.id;
             const dropTone = !dragRow || !plan ? '' : plan.ok ? 'border-[#0F5E63] bg-[#E3EFEE]/40' : 'opacity-55';
             const isCollapsed = collapsed.includes(col.id);
-            const filtered = quick !== 'all' && col.shown.length !== col.total;
 
             if (isCollapsed) {
               return (
@@ -292,13 +338,17 @@ export const TaskBoard: React.FC<{
                   <h3 className="min-w-0 truncate font-serif text-[13px] font-bold text-[#14213D]" title={col.label}>
                     {col.label}
                   </h3>
-                  <span className="shrink-0 rounded-full border border-[#DCD8CE] bg-white px-1.5 py-px font-mono text-[10px] font-semibold text-[#4A5568]">
-                    {filtered ? `${col.shown.length}/${col.total}` : col.total}
-                  </span>
+                  <span className="shrink-0 rounded-full border border-[#DCD8CE] bg-white px-1.5 py-px font-mono text-[10px] font-semibold text-[#4A5568]">{col.total}</span>
+                  {/* Overdue among the cards loaded so far ("3+" while the lane has more to load) */}
                   {col.overdue > 0 && (
-                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[#FBEBDD] px-1.5 py-px font-mono text-[10px] font-bold text-[#9A3412]" title={`${col.overdue} overdue`} aria-label={`${col.overdue} overdue`}>
+                    <span
+                      className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[#FBEBDD] px-1.5 py-px font-mono text-[10px] font-bold text-[#9A3412]"
+                      title={col.overdueMore ? `${col.overdue} overdue among the cards loaded so far` : `${col.overdue} overdue`}
+                      aria-label={col.overdueMore ? `At least ${col.overdue} overdue` : `${col.overdue} overdue`}
+                    >
                       <AlertTriangle className="h-2.5 w-2.5" aria-hidden />
                       {col.overdue}
+                      {col.overdueMore ? '+' : ''}
                     </span>
                   )}
                   <button
@@ -312,7 +362,10 @@ export const TaskBoard: React.FC<{
                   </button>
                 </header>
 
-                <ul className="flex min-h-[160px] flex-1 flex-col gap-2 p-2 md:max-h-[calc(100dvh-240px)] md:overflow-y-auto custom-scrollbar">
+                <ul
+                  aria-busy={col.lane.loadingMore || undefined}
+                  className="flex min-h-[160px] flex-1 flex-col gap-2 p-2 md:max-h-[calc(100dvh-240px)] md:overflow-y-auto custom-scrollbar"
+                >
                   {dragRow && plan && (
                     <li
                       aria-hidden
@@ -347,8 +400,9 @@ export const TaskBoard: React.FC<{
                       onDragEnd={endDrag}
                     />
                   ))}
+                  {/* This lane's next page, read when the end of the lane scrolls into view */}
+                  <LoadMoreRow as="li" hasMore={col.lane.hasMore} loading={col.lane.loadingMore} onLoadMore={col.lane.loadMore} count={col.lane.rows.length} />
                 </ul>
-                {notes?.[col.id] && <p className="border-t border-[#ECE9E2] px-3 py-2 text-[11px] text-[#6B7280]">{notes[col.id]}</p>}
               </section>
             );
           })}

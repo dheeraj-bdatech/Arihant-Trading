@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -440,3 +440,62 @@ export const FlagChip: React.FC<{ children: React.ReactNode; tone?: 'warn' | 'da
     {children}
   </span>
 );
+
+// ------------------------------------------------------------------ paged lists
+/** `value` once it has stopped changing for 300 ms: a search box that queries the server sends one request, not one per key. */
+export function useDebouncedValue<T>(value: T, ms = 300): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return settled;
+}
+
+/**
+ * End-of-list marker for a list read a page at a time (useInfiniteList), like RecordViews' LoadMore: it reads the next
+ * page as it nears view, and keeps reading while it stays in view (a short page does not fill a lane). Inside a box that
+ * scrolls — a board lane on tablet / desktop — that box is the viewport, otherwise the page. The button is the fallback
+ * for keyboards and browsers without IntersectionObserver. Renders nothing once every page is loaded.
+ */
+export const LoadMoreRow: React.FC<{ hasMore: boolean; loading: boolean; onLoadMore: () => void; count: number; as?: 'div' | 'li' }> = ({
+  hasMore,
+  loading,
+  onLoadMore,
+  count,
+  as = 'div',
+}) => {
+  const marker = useRef<HTMLElement | null>(null);
+  const setMarker = useCallback((el: HTMLElement | null) => {
+    marker.current = el;
+  }, []);
+  useEffect(() => {
+    const el = marker.current;
+    if (!el || !hasMore || loading || typeof IntersectionObserver === 'undefined') return;
+    const box = el.parentElement;
+    const root = box && /(auto|scroll)/.test(getComputedStyle(box).overflowY) ? box : null;
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && onLoadMore(), { root, rootMargin: '0px 0px 320px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, loading, onLoadMore, count]);
+  if (!hasMore && !loading) return null;
+  const body = loading ? (
+    <span className="inline-flex items-center gap-2">
+      <Spinner size="xs" /> Loading more…
+    </span>
+  ) : (
+    <Button variant="secondary" size="sm" onClick={onLoadMore}>
+      Load more
+    </Button>
+  );
+  const className = 'flex min-h-[44px] shrink-0 items-center justify-center text-xs text-[#4A5568]';
+  return as === 'li' ? (
+    <li ref={setMarker} className={className} aria-live="polite">
+      {body}
+    </li>
+  ) : (
+    <div ref={setMarker} className={className} aria-live="polite">
+      {body}
+    </div>
+  );
+};

@@ -127,8 +127,8 @@ async function main() {
 
   const seeded = await call(mgmt, 'GET', `/tasks?search=${encodeURIComponent('[Seed]')}&include_cancelled=true&page_size=100`);
   const have = new Set<string>(seeded.data.map((t: any) => t.title));
-  const templates = await call(mgmt, 'GET', `/task-templates?search=${encodeURIComponent('[Seed]')}`);
-  const haveTpl = new Set<string>(templates.map((t: any) => t.title));
+  const templates = await call(mgmt, 'GET', `/task-templates?search=${encodeURIComponent('[Seed]')}&page_size=100`);
+  const haveTpl = new Set<string>(templates.data.map((t: any) => t.title));
 
   // ---------------------------------------------------------------- masters
   const holidays: [string, string][] = [

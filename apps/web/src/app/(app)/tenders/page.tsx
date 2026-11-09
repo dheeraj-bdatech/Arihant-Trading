@@ -122,6 +122,17 @@ type TenderView = 'pipeline' | 'approvals_inbox' | 'calendar' | 'finance_emd' | 
 
 /** Tenders fetched per request while the register scrolls. */
 const TENDERS_PAGE_SIZE = 25;
+/** Portal issues fetched per request while the §25 hub scrolls. */
+const PORTAL_ISSUES_PAGE_SIZE = 25;
+
+/** Board lanes of the portal issues hub: one per resolution status. */
+const PORTAL_ISSUE_LANES: BoardLane[] = [
+  { key: 'OPEN', label: 'Open', tone: 'warning' },
+  { key: 'IN_PROGRESS', label: 'In progress', tone: 'info' },
+  { key: 'ESCALATED', label: 'Escalated', tone: 'danger' },
+  { key: 'RESOLVED', label: 'Resolved', tone: 'success' },
+  { key: 'CLOSED', label: 'Closed', tone: 'success' },
+];
 
 // Dashboard deep links (/tenders?deadline=urgent_48h&status=…&category=pq): the register's first filters, read from
 // the URL before the first fetch. Unknown values (and every filter, for a role without the register) are ignored;
@@ -280,8 +291,24 @@ export default function TendersPage() {
   const [salespersonReport, setSalespersonReport] = useState<any[]>([]);
   const [pipelineReport, setPipelineReport] = useState<any>({ total: 0, stages: [], categories: [] });
   const [winLossReport, setWinLossReport] = useState<any>({ won: 0, lost: 0, win_rate: 0, loss_reasons: {}, competitors: {} });
-  const [globalPortalIssues, setGlobalPortalIssues] = useState<any[]>([]);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
+
+  // §25 portal issues hub (GET /tenders/portal-issues): one page per request, appended as the hub scrolls. Page 1 also
+  // carries the hub counts (total / open / escalated / resolved) over every issue in scope, so the cards and the
+  // View-menu badge never count only the rows loaded so far.
+  const [portalIssueCounts, setPortalIssueCounts] = useState<{ total: number; open: number; escalated: number; resolved: number } | null>(null);
+  const fetchPortalIssuesPage = useCallback(
+    async (page: number) => {
+      // Accounts may not read the portal issues: never ask.
+      if (isFinanceOnly) return [];
+      const res = await api.get('/tenders/portal-issues', { page, limit: PORTAL_ISSUES_PAGE_SIZE });
+      if (page === 1) setPortalIssueCounts(res?.counts ?? null);
+      return res;
+    },
+    [isFinanceOnly],
+  );
+  const portalIssuesList = useInfiniteList<any>(fetchPortalIssuesPage, { enabled: !isFinanceOnly });
+  const { rows: globalPortalIssues, refresh: refreshPortalIssues } = portalIssuesList;
 
   // Geographic Masters (§21 Zone & Region Structure)
   const [zonesMaster, setZonesMaster] = useState<any[]>([]);
@@ -446,26 +473,21 @@ export default function TendersPage() {
     }
   }, []);
 
-  // 3. Fetch Executive Reports (§21 Organisation, Zone, Region, Salesperson)
-  const fetchReports = async () => {
+  // 3. Fetch Executive Reports (§21 Organisation, Zone, Region, Salesperson). Sales has no reports view.
+  const loadReports = async () => {
     setIsLoadingReports(true);
     try {
-      if (user?.role === 'sales') {
-        const portalIssuesRes = await api.get('/tenders/portal-issues').catch(() => []);
-        setGlobalPortalIssues(Array.isArray(portalIssuesRes) ? portalIssuesRes : []);
-        return;
-      }
+      if (user?.role === 'sales') return;
 
       // Zone/region/salesperson/organisation breakdowns are management-level reports.
       const breakdown = (url: string) => (canRead(user?.role, 'tenderReports') ? api.get(url).catch(() => []) : Promise.resolve([]));
-      const [zonesRes, regionsRes, salesRes, orgsReportRes, pipelineRes, winLossRes, portalIssuesRes] = await Promise.all([
+      const [zonesRes, regionsRes, salesRes, orgsReportRes, pipelineRes, winLossRes] = await Promise.all([
         breakdown('/tenders/reports/by-zone'),
         breakdown('/tenders/reports/by-region'),
         breakdown('/tenders/reports/by-salesperson'),
         breakdown('/tenders/reports/by-organisation'),
         api.get('/tenders/reports/pipeline').catch(() => ({ total: 0, stages: [], categories: [] })),
         api.get('/tenders/reports/win-loss').catch(() => ({ won: 0, lost: 0, win_rate: 0, loss_reasons: {}, competitors: {} })),
-        api.get('/tenders/portal-issues').catch(() => []),
       ]);
 
       setZoneReport(Array.isArray(zonesRes) ? zonesRes : []);
@@ -474,12 +496,16 @@ export default function TendersPage() {
       setOrganisationReport(Array.isArray(orgsReportRes) ? orgsReportRes : []);
       setPipelineReport(pipelineRes || { total: 0, stages: [], categories: [] });
       setWinLossReport(winLossRes || { won: 0, lost: 0, win_rate: 0, loss_reasons: {}, competitors: {} });
-      setGlobalPortalIssues(Array.isArray(portalIssuesRes) ? portalIssuesRes : []);
     } catch (err) {
       console.error('Failed to load reports:', err);
     } finally {
       setIsLoadingReports(false);
     }
+  };
+  // After a change: the reports, and the portal issue pages already loaded (re-read in place).
+  const fetchReports = () => {
+    refreshPortalIssues();
+    return loadReports();
   };
 
   // View guard: a role only ever sits on a view it may use (deep links, tab selection, role switches).
@@ -542,11 +568,12 @@ export default function TendersPage() {
     });
   }, [highlightId, isLoading, tenders]);
 
-  // Initial load (Accounts: none of these endpoints are open to it, and the Finance view loads its own data)
+  // Initial load (Accounts: none of these endpoints are open to it, and the Finance view loads its own data).
+  // The portal issues list loads its own first page.
   useEffect(() => {
     if (isFinanceOnly) return;
     fetchMasters();
-    fetchReports();
+    loadReports();
   }, []);
 
   // KPI cards and menu counts follow the filters: refetch (debounced, so typing a search is one request) on every change.
@@ -1155,7 +1182,8 @@ export default function TendersPage() {
 
   // §24 Deadline Centre: groups come from the server (GET /tenders/deadline-centre) over every tender in scope,
   // not from the paginated list, and the endpoint takes no search or filters (so the view shows none).
-  // Only pre-submission bids can be urgent / upcoming / overdue (B2/B3).
+  // Only pre-submission bids can be urgent / upcoming / overdue (B2/B3). The groups without a time window (pending
+  // approvals, result follow-ups) list at most `list_cap` bids; their full totals are in `counts`.
   const [deadlineCentre, setDeadlineCentre] = useState<any>(null);
   const fetchDeadlineCentre = useCallback(async () => {
     try {
@@ -1176,15 +1204,23 @@ export default function TendersPage() {
 
   const categorizedDeadlines = useMemo(() => {
     const list = (v: any): any[] => (Array.isArray(v) ? v : []);
+    const counted = (key: string, rows: any[]) => {
+      const n = Number(deadlineCentre?.counts?.[key]);
+      return Number.isFinite(n) ? n : rows.length;
+    };
     const urgent = list(deadlineCentre?.approaching_48h);
     const urgentIds = new Set(urgent.map((t) => t.id));
+    const awaitingSignoff = list(deadlineCentre?.pending_approvals);
+    const resultFollowups = list(deadlineCentre?.result_follow_ups);
     return {
       urgent,
       upcoming: list(deadlineCentre?.upcoming_7d).filter((t) => !urgentIds.has(t.id)),
       overdue: list(deadlineCentre?.overdue),
       incompletePrep: list(deadlineCentre?.incomplete_preparation),
-      awaitingSignoff: list(deadlineCentre?.pending_approvals),
-      resultFollowups: list(deadlineCentre?.result_follow_ups),
+      awaitingSignoff,
+      awaitingSignoffCount: counted('pending_approvals', awaitingSignoff),
+      resultFollowups,
+      resultFollowupsCount: counted('result_follow_ups', resultFollowups),
     };
   }, [deadlineCentre]);
 
@@ -1325,7 +1361,8 @@ export default function TendersPage() {
   // Escalate / Resolve on portal issues: same roles as PATCH /tenders/:id/portal-issues/:issueId (not Sales).
   const canManagePortalIssues = hasRole(['management', 'regional_manager', 'tender_team', 'admin']);
   const isOpenIssue = (i: any) => !['RESOLVED', 'CLOSED'].includes(String(i?.resolution_status || 'OPEN').toUpperCase());
-  const openPortalIssueCount = globalPortalIssues.filter(isOpenIssue).length;
+  // Hub counts over every issue in scope (page 1 of GET /tenders/portal-issues), never over the rows loaded so far.
+  const openPortalIssueCount = portalIssueCounts?.open ?? 0;
   const nonZero = (v?: number) => (v && v > 0 ? v : undefined);
   // Analytics and Deadlines are whole-scope views (no register filter applies to them).
   const scopeStats = overallStats || dashboardStats;
@@ -1351,7 +1388,7 @@ export default function TendersPage() {
       label: isSales ? 'My portal issues' : 'GeM & portal issues',
       icon: <AlertTriangle />,
       // Always the number of unresolved issues (same rule as the API's open_portal_issues and the Open Issues card).
-      count: nonZero(globalPortalIssues.length ? openPortalIssueCount : dashboardStats.open_portal_issues),
+      count: nonZero(portalIssueCounts ? openPortalIssueCount : dashboardStats.open_portal_issues),
     },
     ...(!isSales ? [{ id: 'analytics' as const, label: 'Win/loss analytics', icon: <BarChart3 />, count: `${winRate}% win` }] : []),
   ];
@@ -1371,7 +1408,7 @@ export default function TendersPage() {
         active: activeTab === v.id,
         onSelect: () => {
           setActiveTab(v.id);
-          if (v.id === 'analytics') fetchReports();
+          if (v.id === 'analytics') loadReports();
         },
       }))}
     />
@@ -1606,6 +1643,134 @@ export default function TendersPage() {
     </RecordTable>
   ) : undefined;
 
+  // §25 portal issues hub as RecordViews: the loaded issues as records (phone list, Cards, Board) and as the table.
+  const portalIssueStatusById = new Map<string, string>(
+    globalPortalIssues.map((i) => [i.id, String(i.resolution_status || 'OPEN').toUpperCase()]),
+  );
+  const portalIssueRecords: RecordItem[] = globalPortalIssues.map((issue) => {
+    const statusLabel = String(issue.resolution_status || 'OPEN').toUpperCase().replace(/_/g, ' ');
+    const actionable = canManagePortalIssues && isOpenIssue(issue);
+    return {
+      key: issue.id,
+      code: issue.tender_no || 'Tender',
+      title: issue.issue,
+      subtitle: issue.tender_department || issue.organisation_name || issue.organisation || undefined,
+      status: { label: statusLabel, tone: toneFor(statusLabel) },
+      badges: issue.escalated_to ? [{ label: `Escalated to: ${issue.escalated_to}`, tone: 'warning' }] : undefined,
+      due: issue.reported_date ? { date: String(issue.reported_date).slice(0, 10), label: 'Reported', done: true } : undefined,
+      owner: issue.reported_by_name || 'Tender Team',
+      facts: [
+        { label: 'Portal', value: issue.tender_portal || 'GeM' },
+        { label: 'Resolution', value: issue.resolution || 'Pending resolution from portal desk.' },
+      ],
+      primary: actionable ? { label: 'Resolve', icon: <CheckCircle2 />, onClick: () => openResolveIssue(issue) } : undefined,
+      quick:
+        actionable && statusLabel !== 'ESCALATED'
+          ? [{ label: 'Escalate', icon: <AlertOctagon />, onClick: () => handleUpdateIssueStatus(issue.tender_id, issue.id, 'ESCALATED') }]
+          : undefined,
+    };
+  });
+  const portalIssueTable = (
+    <div className="overflow-x-auto rounded-[14px] border border-[#DCD8CE] bg-white">
+      <table className="w-full text-left text-xs border-collapse">
+        <thead>
+          <tr className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] font-semibold">
+            <th className="p-3.5">Issue Details</th>
+            <th className="p-3.5">Affected Tender & Buyer</th>
+            <th className="p-3.5">Portal</th>
+            <th className="p-3.5">Reported Date & Person</th>
+            <th className="p-3.5">Status</th>
+            <th className="p-3.5">Resolution Notes</th>
+            <th className="p-3.5 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[#ECE9E2]">
+          {globalPortalIssues.map((issue) => (
+            <tr key={issue.id} className="hover:bg-[#FBFAF7]">
+              <td className="p-3.5 max-w-[280px]">
+                <span className="font-bold text-xs text-[#14213D] block">{issue.issue}</span>
+                {issue.escalated_to && (
+                  <span className="text-[10px] text-[#7C2D12] bg-[#FFF8EB] px-1.5 py-0.5 rounded border border-[#E9C9B4] mt-1 inline-block">
+                    Escalated to: {issue.escalated_to}
+                  </span>
+                )}
+              </td>
+
+              <td className="p-3.5 whitespace-nowrap">
+                <span className="font-semibold text-xs text-[#14213D] block font-mono">{issue.tender_no || 'Tender'}</span>
+                <span className="text-[10px] text-[#4A5568] truncate block max-w-[180px]" title={issue.tender_department || issue.organisation_name || issue.organisation || undefined}>
+                  {issue.tender_department || issue.organisation_name || issue.organisation || '—'}
+                </span>
+              </td>
+
+              <td className="p-3.5 whitespace-nowrap">
+                <Badge variant="outline" size="sm">{issue.tender_portal || 'GeM'}</Badge>
+              </td>
+
+              <td className="p-3.5 whitespace-nowrap">
+                <span className="text-[#14213D] block">
+                  {issue.reported_date ? formatTaskDate(String(issue.reported_date).slice(0, 10)) : 'N/A'}
+                </span>
+                <span className="text-[10px] text-[#4A5568] block">
+                  By {issue.reported_by_name || 'Tender Team'}
+                </span>
+              </td>
+
+              <td className="p-3.5 whitespace-nowrap">
+                <Badge
+                  variant={
+                    ['resolved', 'closed'].includes(issue.resolution_status?.toLowerCase())
+                      ? 'success'
+                      : ['escalated'].includes(issue.resolution_status?.toLowerCase())
+                        ? 'danger'
+                        : 'warning'
+                  }
+                  size="sm"
+                >
+                  {String(issue.resolution_status || 'OPEN').toUpperCase().replace(/_/g, ' ')}
+                </Badge>
+              </td>
+
+              <td className="p-3.5 max-w-[240px]">
+                <span className="text-xs text-[#14213D] block truncate" title={issue.resolution}>
+                  {issue.resolution || 'Pending resolution from portal desk.'}
+                </span>
+              </td>
+
+              <td className="p-3.5 text-right whitespace-nowrap">
+                <div className="flex items-center justify-end gap-1.5">
+                  {!canManagePortalIssues && isOpenIssue(issue) && (
+                    <span className="text-[10px] text-[#4A5568]">Tender Team handles escalation</span>
+                  )}
+                  {canManagePortalIssues && isOpenIssue(issue) && (
+                    <>
+                      {!['escalated'].includes(issue.resolution_status?.toLowerCase()) && (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          onClick={() => handleUpdateIssueStatus(issue.tender_id, issue.id, 'ESCALATED')}
+                        >
+                          Escalate
+                        </Button>
+                      )}
+                      <Button
+                        size="xs"
+                        variant="secondary"
+                        onClick={() => openResolveIssue(issue)}
+                      >
+                        Resolve
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
   return (
     <PageContainer>
       {/* 1. Page Header */}
@@ -1701,7 +1866,7 @@ export default function TendersPage() {
         <StatGrid cols={4} className="gap-3">
           <StatCard
             label="Total Portal Issues"
-            value={globalPortalIssues.length}
+            value={portalIssueCounts?.total ?? 0}
             subtext="Logged on GeM & CPPP"
             icon={<AlertCircle className="h-4 w-4 text-[#0F5E63]" />}
           />
@@ -1714,14 +1879,14 @@ export default function TendersPage() {
           />
           <StatCard
             label="Escalated"
-            value={globalPortalIssues.filter((i) => String(i.resolution_status || '').toUpperCase() === 'ESCALATED').length}
+            value={portalIssueCounts?.escalated ?? 0}
             subtext="Awaiting GeM Desk / Mgmt"
             icon={<AlertOctagon className="h-4 w-4 text-[#881337]" />}
             valueColor="rose"
           />
           <StatCard
             label="Resolved / Closed"
-            value={globalPortalIssues.length - openPortalIssueCount}
+            value={portalIssueCounts?.resolved ?? 0}
             subtext="Workaround or fix applied"
             icon={<CheckCircle2 className="h-4 w-4 text-[#0F5E63]" />}
             valueColor="emerald"
@@ -2592,17 +2757,17 @@ export default function TendersPage() {
                 <h4 className="text-sm font-bold text-[#14213D]">Pending Internal Approvals</h4>
               </div>
               <Badge variant="warning" size="sm">
-                <span className="font-mono">{categorizedDeadlines.awaitingSignoff.length}</span>&nbsp;Pending
+                <span className="font-mono">{categorizedDeadlines.awaitingSignoffCount}</span>&nbsp;Pending
               </Badge>
             </div>
-            {categorizedDeadlines.awaitingSignoff.length === 0 ? (
+            {categorizedDeadlines.awaitingSignoffCount === 0 ? (
               <div className="p-4 rounded-lg bg-[#FBFAF7] border border-dashed border-[#DCD8CE] text-xs text-[#4A5568] text-center">
                 No tender is awaiting internal approval.
               </div>
             ) : (
               <div className="p-3.5 rounded-xl border border-[#DCD8CE] bg-[#FBFAF7] flex flex-wrap items-center justify-between gap-3 text-xs text-[#4A5568]">
                 <span>
-                  {categorizedDeadlines.awaitingSignoff.length} tender{categorizedDeadlines.awaitingSignoff.length === 1 ? ' is' : 's are'} waiting for a
+                  {categorizedDeadlines.awaitingSignoffCount} tender{categorizedDeadlines.awaitingSignoffCount === 1 ? ' is' : 's are'} waiting for a
                   Management decision.
                 </span>
                 {!isSales && (
@@ -2622,7 +2787,7 @@ export default function TendersPage() {
                 <h4 className="text-sm font-bold text-[#14213D]">Result Follow-Ups (Awaiting Award)</h4>
               </div>
               <Badge variant="info" size="sm">
-                <span className="font-mono">{categorizedDeadlines.resultFollowups.length}</span>&nbsp;Submitted
+                <span className="font-mono">{categorizedDeadlines.resultFollowupsCount}</span>&nbsp;Submitted
               </Badge>
             </div>
             {categorizedDeadlines.resultFollowups.length === 0 ? (
@@ -2658,6 +2823,12 @@ export default function TendersPage() {
                 ))}
               </div>
             )}
+            {categorizedDeadlines.resultFollowupsCount > categorizedDeadlines.resultFollowups.length && (
+              <p className="text-[11px] text-[#4A5568]">
+                Showing the <span className="font-mono">{categorizedDeadlines.resultFollowups.length}</span> bids closed longest ago of{' '}
+                <span className="font-mono">{categorizedDeadlines.resultFollowupsCount}</span>. Filter the Pipeline by stage to see the rest.
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -2672,116 +2843,37 @@ export default function TendersPage() {
             description="Tracking external portal glitches with escalation and resolution governance. Note: BOS records the issue only; portal functionality is outside BOS scope."
           />
 
-          {/* Global Portal Issues Table */}
-          <div className="bg-white rounded-xl border border-[#DCD8CE] overflow-hidden shadow-2xs">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-[#FBFAF7] border-b border-[#DCD8CE] text-[#4A5568] font-semibold">
-                    <th className="p-3.5">Issue Details</th>
-                    <th className="p-3.5">Affected Tender & Buyer</th>
-                    <th className="p-3.5">Portal</th>
-                    <th className="p-3.5">Reported Date & Person</th>
-                    <th className="p-3.5">Status</th>
-                    <th className="p-3.5">Resolution Notes</th>
-                    <th className="p-3.5 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#ECE9E2]">
-                  {globalPortalIssues.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="p-8 text-center text-xs text-[#4A5568]">
-                        <CheckCircle2 className="h-8 w-8 text-[#0F5E63] mx-auto mb-2" />
-                        Zero external portal issues recorded. GeM & CPPP submissions operating normally.
-                      </td>
-                    </tr>
-                  ) : (
-                    globalPortalIssues.map((issue) => (
-                      <tr key={issue.id} className="hover:bg-[#FBFAF7]">
-                        <td className="p-3.5 max-w-[280px]">
-                          <span className="font-bold text-xs text-[#14213D] block">{issue.issue}</span>
-                          {issue.escalated_to && (
-                            <span className="text-[10px] text-[#7C2D12] bg-[#FFF8EB] px-1.5 py-0.5 rounded border border-[#E9C9B4] mt-1 inline-block">
-                              Escalated to: {issue.escalated_to}
-                            </span>
-                          )}
-                        </td>
-
-                        <td className="p-3.5 whitespace-nowrap">
-                          <span className="font-semibold text-xs text-[#14213D] block font-mono">{issue.tender_no || 'Tender'}</span>
-                          <span className="text-[10px] text-[#4A5568] truncate block max-w-[180px]" title={issue.tender_department || issue.organisation_name || issue.organisation || undefined}>
-                            {issue.tender_department || issue.organisation_name || issue.organisation || '—'}
-                          </span>
-                        </td>
-
-                        <td className="p-3.5 whitespace-nowrap">
-                          <Badge variant="outline" size="sm">{issue.tender_portal || 'GeM'}</Badge>
-                        </td>
-
-                        <td className="p-3.5 whitespace-nowrap">
-                          <span className="text-[#14213D] block">
-                            {issue.reported_date ? formatTaskDate(String(issue.reported_date).slice(0, 10)) : 'N/A'}
-                          </span>
-                          <span className="text-[10px] text-[#4A5568] block">
-                            By {issue.reported_by_name || 'Tender Team'}
-                          </span>
-                        </td>
-
-                        <td className="p-3.5 whitespace-nowrap">
-                          <Badge
-                            variant={
-                              ['resolved', 'closed'].includes(issue.resolution_status?.toLowerCase())
-                                ? 'success'
-                                : ['escalated'].includes(issue.resolution_status?.toLowerCase())
-                                  ? 'danger'
-                                  : 'warning'
-                            }
-                            size="sm"
-                          >
-                            {String(issue.resolution_status || 'OPEN').toUpperCase().replace(/_/g, ' ')}
-                          </Badge>
-                        </td>
-
-                        <td className="p-3.5 max-w-[240px]">
-                          <span className="text-xs text-[#14213D] block truncate" title={issue.resolution}>
-                            {issue.resolution || 'Pending resolution from portal desk.'}
-                          </span>
-                        </td>
-
-                        <td className="p-3.5 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1.5">
-                            {!canManagePortalIssues && isOpenIssue(issue) && (
-                              <span className="text-[10px] text-[#4A5568]">Tender Team handles escalation</span>
-                            )}
-                            {canManagePortalIssues && isOpenIssue(issue) && (
-                              <>
-                                {!['escalated'].includes(issue.resolution_status?.toLowerCase()) && (
-                                  <Button
-                                    size="xs"
-                                    variant="outline"
-                                    onClick={() => handleUpdateIssueStatus(issue.tender_id, issue.id, 'ESCALATED')}
-                                  >
-                                    Escalate
-                                  </Button>
-                                )}
-                                <Button
-                                  size="xs"
-                                  variant="secondary"
-                                  onClick={() => openResolveIssue(issue)}
-                                >
-                                  Resolve
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          {/* Global portal issues: one page at a time, the next page loads as the list scrolls */}
+          {portalIssuesList.loading && globalPortalIssues.length === 0 ? (
+            <Card className="p-12 flex items-center justify-center gap-2 text-sm text-[#4A5568]">
+              <Spinner size="sm" />
+              Loading portal issues…
+            </Card>
+          ) : globalPortalIssues.length === 0 ? (
+            <Card className="p-8 text-center text-xs text-[#4A5568]">
+              <CheckCircle2 className="h-8 w-8 text-[#0F5E63] mx-auto mb-2" />
+              Zero external portal issues recorded. GeM & CPPP submissions operating normally.
+            </Card>
+          ) : (
+            <RecordViews
+              storageKey="tender-portal-issues"
+              defaultView="list"
+              items={portalIssueRecords}
+              lanes={PORTAL_ISSUE_LANES}
+              laneOf={(i) => portalIssueStatusById.get(i.key) || 'OPEN'}
+              list={<RecordTable items={portalIssueRecords}>{portalIssueTable}</RecordTable>}
+              summary={
+                <>
+                  <strong className="text-[#14213D]">{globalPortalIssues.length}</strong> of{' '}
+                  <strong className="text-[#14213D]">{portalIssuesList.total}</strong> issues
+                </>
+              }
+              empty="Zero external portal issues recorded."
+              onLoadMore={portalIssuesList.loadMore}
+              hasMore={portalIssuesList.hasMore}
+              loadingMore={portalIssuesList.loadingMore}
+            />
+          )}
         </div>
       )}
 

@@ -7,7 +7,7 @@
  */
 import React, { Suspense } from 'react';
 import Link from 'next/link';
-import { BadgeCheck, CalendarDays, Clock, Download, IndianRupee, ListChecks, RefreshCw, TableProperties, XCircle } from 'lucide-react';
+import { BadgeCheck, CalendarDays, Clock, Download, IndianRupee, ListChecks, RefreshCw, TableProperties } from 'lucide-react';
 import { EXPENSE_CLAIM_STATUSES, EXPENSE_STATUS_LABELS, formatINR, type ExpenseBreakdownRow, type ExpenseReportDto, type ExpenseReportGroupBy } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -22,8 +22,9 @@ import {
   PageContainer,
   PageHeader,
   PageLoader,
-  Select,
   StatCard,
+  StatGrid,
+  Select,
   Table,
   TableBody,
   TableCell,
@@ -32,7 +33,7 @@ import {
   TableRow,
   Tabs,
 } from '@/components/ui';
-import { ReportFilterBar, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, money, pctText, useReport, useReportFilters } from '../_lib/report-ui';
+import { ReportFilterBar, ReportNotes, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, money, pctText, useReport, useReportFilters } from '../_lib/report-ui';
 
 const GROUPS: { id: ExpenseReportGroupBy; label: string; head: string }[] = [
   { id: 'category', label: 'Category', head: 'Category' },
@@ -134,17 +135,28 @@ function ExpenseReport() {
         loading ? <PageLoader rows={5} label="Building the expense report" /> : null
       ) : (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <StatCard title="Claimed" value={money(t.claimed)} subtext={`${t.claims} claims · ${t.items} lines · ${t.employees} employees`} icon={<IndianRupee className="h-4 w-4" />} variant="primary" />
-            <StatCard title="Approved" value={money(t.approved)} subtext={t.approval_rate === null ? 'No claims fully reviewed yet' : `${pctText(t.approval_rate)} of reviewed claims approved`} icon={<BadgeCheck className="h-4 w-4" />} variant="emerald" />
+          <StatGrid cols={4} className="gap-3">
+            <StatCard
+              title="Claimed"
+              value={money(t.claimed)}
+              subtext={`${t.claims} claims · ${t.employees} people${t.avg_per_claim === null ? '' : ` · average ${formatINR(t.avg_per_claim)}`}`}
+              icon={<IndianRupee className="h-4 w-4" />}
+              variant="primary"
+            />
+            <StatCard
+              title="Approved"
+              value={money(t.approved)}
+              subtext={t.approval_rate === null ? 'No claims fully reviewed yet' : `${pctText(t.approval_rate)} of reviewed claims`}
+              icon={<BadgeCheck className="h-4 w-4" />}
+              variant="emerald"
+            />
             <StatCard title="Pending" value={money(t.pending)} subtext="In review, clarification or awaiting payment" icon={<Clock className="h-4 w-4" />} variant={t.pending > 0 ? 'amber' : 'default'} />
-            <StatCard title="Paid" value={money(t.paid)} subtext="Processed claims (approved amount)" icon={<ListChecks className="h-4 w-4" />} />
-            <StatCard title="Rejected / withdrawn" value={money(t.rejected)} subtext={t.avg_per_claim === null ? '—' : `Average claim ${formatINR(t.avg_per_claim)}`} icon={<XCircle className="h-4 w-4" />} variant={t.rejected > 0 ? 'rose' : 'default'} />
-          </div>
+            <StatCard title="Paid" value={money(t.paid)} subtext={`Rejected or withdrawn ${money(t.rejected)}`} icon={<ListChecks className="h-4 w-4" />} />
+          </StatGrid>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
-              <CardHeader>
+              <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Where the money sits</CardTitle>
                 <CardDescription>Claimed amount by approval stage — the stages add up to the total claimed.</CardDescription>
               </CardHeader>
@@ -158,7 +170,7 @@ function ExpenseReport() {
               </CardContent>
             </Card>
             <Card>
-              <CardHeader>
+              <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Category mix</CardTitle>
                 <CardDescription>Claimed amount per expense category.</CardDescription>
               </CardHeader>
@@ -236,11 +248,11 @@ function ExpenseReport() {
             </CardContent>
           </Card>
 
-          <p className="text-[11px] text-[#6B7280]">
+          <ReportNotes>
             Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST), by expense date; draft claims are never included. The same claim visibility
             as Expense Reports applies, so these totals match that register and its Tally export for the same dates and filters. Lines and claims are
             counted once each in the total even when a claim spans several groups.
-          </p>
+          </ReportNotes>
         </div>
       )}
     </>

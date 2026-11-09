@@ -5,18 +5,20 @@
  * What waits on me sits in the first column; dragging a card onto a decision column, or using its buttons,
  * opens the same dialog as the queue pages, and the API re-checks routing, status and version.
  * The decision columns also show what is already decided in my scope, so each board reads as a pipeline.
+ * Every column reads its rows a page at a time with the search applied in the database, and loads more as it scrolls.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ArrowRightLeft, Ban, CheckCircle2, CircleCheck, Clock, ExternalLink, Flag, Hourglass, Paperclip, PauseCircle, ShieldAlert, Undo2, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui';
 import { api } from '@/lib/api';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { formatTaskDate, formatTaskDateTime, istDateOf, type TaskPriority } from '@arihant/shared';
-import { errorMessage, istToday, notifyTasksChanged, type TaskAttachment, type TaskRow } from './task-lib';
-import { DelayBadge, FileViewer, FlagChip, PriorityBadge, TaskConflictCallout, blockerTypeLabel } from './task-ui';
+import { errorMessage, istToday, notifyTasksChanged, type Paged, type TaskAttachment, type TaskRow } from './task-lib';
+import { DelayBadge, FileViewer, FlagChip, LoadMoreRow, PriorityBadge, TaskConflictCallout, blockerTypeLabel } from './task-ui';
 import { TaskActionDialog, type ActionTask, type TaskDialogAction } from './TaskActions';
 import { DueChip, PRIORITY_STRIPE, initials } from './TaskBoard';
-import { useTaskList } from './TaskList';
+import { useTaskPages, type TaskPages } from './TaskList';
 
 // ------------------------------------------------------------------ queue rows
 export interface PendingBlocker {
@@ -103,11 +105,48 @@ export const blockerDecisions = (b: PendingBlocker) => {
   } satisfies Record<string, BlockerDecision>;
 };
 
-const matches = (q: string, ...fields: (string | null | undefined)[]) => !q || fields.some((f) => f?.toLowerCase().includes(q));
+// ------------------------------------------------------------------ paged queues
+/** Rows a review queue or a decided column reads per page (the API allows up to 100). */
+const QUEUE_PAGE_SIZE = 25;
+
+/** A page of GET /task-blockers/pending or /tasks/approvals/pending; `totals` counts the whole queue. */
+type QueuePage<T> = Paged<T> & { totals?: { sla_breached: number } };
+
+/**
+ * A review queue (GET /task-blockers/pending or /tasks/approvals/pending) read a page at a time (useInfiniteList), with
+ * the search applied in the database. `breached` counts the whole queue over its SLA (page 1 carries it, so a refresh
+ * updates it); `refresh()` re-reads the pages loaded so far in place, after a decision.
+ */
+export function usePendingQueue<T extends { id: string }>(path: string, scope: 'mine' | 'all', search: string) {
+  const q = search.trim();
+  const key = `${path}|${scope}|${q}`;
+  const latest = useRef(key);
+  latest.current = key;
+  const [error, setError] = useState<string | null>(null);
+  const [breached, setBreached] = useState(0);
+  // The hook swallows fetch errors, so page 1 reports its own (as the expenses list does); a late answer for an old search is ignored.
+  const fetchPage = useCallback(
+    async (page: number) => {
+      try {
+        const res = await api.get<QueuePage<T>>(path, { scope, search: q || undefined, page, page_size: QUEUE_PAGE_SIZE });
+        if (page === 1 && key === latest.current) {
+          setError(null);
+          setBreached(res.totals?.sla_breached ?? 0);
+        }
+        return res;
+      } catch (e) {
+        if (page === 1 && key === latest.current) setError(errorMessage(e));
+        throw e;
+      }
+    },
+    [path, scope, q, key],
+  );
+  return { ...useInfiniteList<T>(fetchPage), error, breached };
+}
 
 // ------------------------------------------------------------------ shared board pieces
 interface QueueBoardProps {
-  /** Committed search text (task number, title or assignee). */
+  /** Committed search text (task number, title or assignee), sent to every column's request. */
   search: string;
   /** 'all' shows every pending item (management / admin); 'mine' only what is routed to me. */
   scope: 'mine' | 'all';
@@ -138,8 +177,12 @@ const QueueColumn: React.FC<{
   onOver: (over: boolean) => void;
   onDrop: () => void;
   footnote?: string;
+  /** The column's paged rows: the list reads its next page as it scrolls to the end. */
+  pages?: { hasMore: boolean; loadingMore: boolean; loadMore: () => void; rows: unknown[] };
+  /** First page still loading: the column dims instead of showing the empty note. */
+  loading?: boolean;
   children: React.ReactNode;
-}> = ({ col, count, badge, dragging, isOver, onOver, onDrop, footnote, children }) => {
+}> = ({ col, count, badge, dragging, isOver, onOver, onDrop, footnote, pages, loading, children }) => {
   const Icon = col.icon;
   const target = dragging && Boolean(col.drop);
   return (
@@ -172,7 +215,10 @@ const QueueColumn: React.FC<{
         <span className="shrink-0 rounded-full border border-[#DCD8CE] bg-white px-1.5 py-px font-mono text-[10px] font-semibold text-[#4A5568]">{count}</span>
         {badge}
       </header>
-      <ul className="flex min-h-[180px] flex-1 flex-col gap-2 p-2 md:max-h-[calc(100dvh-240px)] md:overflow-y-auto custom-scrollbar">
+      <ul
+        aria-busy={loading || undefined}
+        className={`flex min-h-[180px] flex-1 flex-col gap-2 p-2 transition-opacity md:max-h-[calc(100dvh-240px)] md:overflow-y-auto custom-scrollbar ${loading ? 'opacity-60' : ''}`}
+      >
         {target && (
           <li
             aria-hidden
@@ -181,13 +227,14 @@ const QueueColumn: React.FC<{
             Drop to {col.drop!.label.toLowerCase()}
           </li>
         )}
-        {count === 0 && !target && (
+        {count === 0 && !target && !loading && (
           <li className="flex flex-1 flex-col items-center justify-center gap-1.5 rounded-[10px] border border-dashed border-[#DCD8CE] p-4 text-center">
             <Icon className="h-5 w-5 text-[#C9C4B8]" aria-hidden />
             <span className="text-[11px] text-[#6B7280]">{col.empty}</span>
           </li>
         )}
         {children}
+        {pages && <LoadMoreRow as="li" hasMore={pages.hasMore} loading={pages.loadingMore} onLoadMore={pages.loadMore} count={pages.rows.length} />}
       </ul>
       {footnote && <p className="border-t border-[#ECE9E2] px-3 py-2 text-[11px] text-[#6B7280]">{footnote}</p>}
     </section>
@@ -297,23 +344,12 @@ function useDecisionBoard(reloadAll: () => void, notify: QueueBoardProps['notify
   return { dragId, setDragId, overCol, setOverCol, endDrag, setDialog, dialogEl, conflictEl };
 }
 
-function usePending<T>(path: string, scope: 'mine' | 'all') {
-  const [rows, setRows] = useState<T[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await api.get<any>(path, { scope, page_size: 100 });
-      setRows(Array.isArray(res) ? res : res?.data || []);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }, [path, scope]);
-  useEffect(() => {
-    load();
-  }, [load]);
-  return { rows, error, reload: load };
-}
+/** A decided column: GET /tasks for the board's team view and search plus the column's own filters, a page at a time. */
+const useDecidedColumn = (teamView: 'team' | 'all', search: string, filters: Record<string, string>) =>
+  useTaskPages({ view: teamView, search: search.trim() || undefined, ...filters }, QUEUE_PAGE_SIZE);
+
+/** Rows of a decided column, empty until its first page for the current search is in. */
+const rowsOf = (col: TaskPages) => (col.ready ? col.rows : []);
 
 const BoardFrame: React.FC<{ hint: string; error: string | null; conflict: React.ReactNode; dialog: React.ReactNode; children: React.ReactNode; extra?: React.ReactNode }> = ({ hint, error, conflict, dialog, children, extra }) => (
   <div className="space-y-3">
@@ -337,21 +373,18 @@ const BLOCKER_COLUMNS: ColumnDef[] = [
 ];
 
 export const BlockerReviewBoard: React.FC<QueueBoardProps> = ({ search, scope, teamView, notify, onChanged }) => {
-  const pending = usePending<PendingBlocker>('/task-blockers/pending', scope);
-  const blocked = useTaskList({ view: teamView, statuses: 'blocked', sort_by: 'deadline', page_size: 100 });
+  const pending = usePendingQueue<PendingBlocker>('/task-blockers/pending', scope, search);
+  // Blocked tasks whose open blocker was accepted (the API filters on the blocker's state).
+  const blocked = useDecidedColumn(teamView, search, { statuses: 'blocked', open_blocker_status: 'accepted', sort_by: 'deadline' });
   const reloadAll = () => {
-    pending.reload();
-    blocked.reload();
+    pending.refresh();
+    blocked.refresh();
   };
   const b = useDecisionBoard(reloadAll, notify, onChanged);
-  const q = search.trim().toLowerCase();
 
-  const waiting = useMemo(() => (pending.rows || []).filter((r) => matches(q, r.task_number, r.task_title, r.assignee_name)), [pending.rows, q]);
-  const accepted = useMemo(
-    () => (blocked.data?.data || []).filter((t) => t.open_blocker?.status === 'accepted' && matches(q, t.task_number, t.title, t.assignee_name)),
-    [blocked.data, q],
-  );
-  const breached = waiting.filter((r) => r.sla_breached).length;
+  const waiting = pending.rows;
+  const accepted = rowsOf(blocked);
+  const breached = pending.breached;
   const dragRow = b.dragId ? waiting.find((r) => r.id === b.dragId) : undefined;
 
   const decide = (col: ColumnDef, row: PendingBlocker | undefined) => {
@@ -359,7 +392,7 @@ export const BlockerReviewBoard: React.FC<QueueBoardProps> = ({ search, scope, t
     if (row && col.drop) b.setDialog({ action: col.drop.action, task: blockerActionTask(row) });
   };
 
-  if (!pending.rows && !pending.error) return <BoardSkeleton />;
+  if (pending.loading && !waiting.length && !pending.error) return <BoardSkeleton />;
 
   return (
     <BoardFrame
@@ -369,7 +402,7 @@ export const BlockerReviewBoard: React.FC<QueueBoardProps> = ({ search, scope, t
       dialog={b.dialogEl}
     >
       {BLOCKER_COLUMNS.map((col) => {
-        const count = col.id === 'review' ? waiting.length : col.id === 'accepted' ? accepted.length : 0;
+        const count = col.id === 'review' ? pending.total : col.id === 'accepted' ? (blocked.ready ? blocked.total : 0) : 0;
         return (
           <QueueColumn
             key={col.id}
@@ -386,7 +419,8 @@ export const BlockerReviewBoard: React.FC<QueueBoardProps> = ({ search, scope, t
             isOver={b.overCol === col.id}
             onOver={(over) => b.setOverCol(over ? col.id : null)}
             onDrop={() => decide(col, dragRow)}
-            footnote={col.id === 'accepted' && blocked.data && blocked.data.total > blocked.data.data.length ? `Showing accepted blockers among the first ${blocked.data.data.length} blocked tasks.` : undefined}
+            pages={col.id === 'review' ? pending : col.id === 'accepted' ? blocked : undefined}
+            loading={col.id === 'review' ? pending.loading : col.id === 'accepted' ? !blocked.ready : false}
           >
             {col.id === 'review' &&
               waiting.map((r) => (
@@ -482,22 +516,22 @@ const APPROVAL_COLUMNS: ColumnDef[] = [
 ];
 
 export const ApprovalBoard: React.FC<QueueBoardProps> = ({ search, scope, teamView, notify, onChanged }) => {
-  const pending = usePending<ApprovalRow>('/tasks/approvals/pending', scope);
-  const completed = useTaskList({ view: teamView, statuses: 'completed', sort_by: 'updated_at', sort_dir: 'desc', page_size: 50 });
-  const working = useTaskList({ view: teamView, statuses: 'in_progress', sort_by: 'updated_at', sort_dir: 'desc', page_size: 100 });
+  const pending = usePendingQueue<ApprovalRow>('/tasks/approvals/pending', scope, search);
+  // Signed-off work, latest first, and work sent back for rework that is being redone (the API filters both).
+  const completed = useDecidedColumn(teamView, search, { statuses: 'completed', approved: 'true', sort_by: 'updated_at', sort_dir: 'desc' });
+  const working = useDecidedColumn(teamView, search, { statuses: 'in_progress', reworked: 'true', sort_by: 'updated_at', sort_dir: 'desc' });
   const [viewer, setViewer] = useState<TaskAttachment | null>(null);
   const reloadAll = () => {
-    pending.reload();
-    completed.reload();
-    working.reload();
+    pending.refresh();
+    completed.refresh();
+    working.refresh();
   };
   const b = useDecisionBoard(reloadAll, notify, onChanged);
-  const q = search.trim().toLowerCase();
 
-  const waiting = useMemo(() => (pending.rows || []).filter((r) => matches(q, r.task_number, r.title, r.assignee_name)), [pending.rows, q]);
-  const approved = useMemo(() => (completed.data?.data || []).filter((t) => t.approved_at && matches(q, t.task_number, t.title, t.assignee_name)), [completed.data, q]);
-  const sentBack = useMemo(() => (working.data?.data || []).filter((t) => t.rework_count > 0 && matches(q, t.task_number, t.title, t.assignee_name)), [working.data, q]);
-  const breached = waiting.filter((r) => r.sla_breached).length;
+  const waiting = pending.rows;
+  const approved = rowsOf(completed);
+  const sentBack = rowsOf(working);
+  const breached = pending.breached;
   const dragRow = b.dragId ? waiting.find((r) => r.id === b.dragId) : undefined;
 
   const decide = (col: ColumnDef, row: ApprovalRow | undefined) => {
@@ -505,7 +539,7 @@ export const ApprovalBoard: React.FC<QueueBoardProps> = ({ search, scope, teamVi
     if (row && col.drop) b.setDialog({ action: col.drop.action, task: row });
   };
 
-  if (!pending.rows && !pending.error) return <BoardSkeleton />;
+  if (pending.loading && !waiting.length && !pending.error) return <BoardSkeleton />;
 
   return (
     <BoardFrame
@@ -516,7 +550,8 @@ export const ApprovalBoard: React.FC<QueueBoardProps> = ({ search, scope, teamVi
       extra={<FileViewer file={viewer} onClose={() => setViewer(null)} />}
     >
       {APPROVAL_COLUMNS.map((col) => {
-        const count = col.id === 'review' ? waiting.length : col.id === 'approved' ? approved.length : sentBack.length;
+        const decided = col.id === 'approved' ? completed : col.id === 'sent_back' ? working : null;
+        const count = decided ? (decided.ready ? decided.total : 0) : pending.total;
         return (
           <QueueColumn
             key={col.id}
@@ -534,6 +569,8 @@ export const ApprovalBoard: React.FC<QueueBoardProps> = ({ search, scope, teamVi
             onOver={(over) => b.setOverCol(over ? col.id : null)}
             onDrop={() => decide(col, dragRow)}
             footnote={col.id === 'approved' && approved.length ? 'Latest approvals in your scope.' : undefined}
+            pages={decided ?? pending}
+            loading={decided ? !decided.ready : pending.loading}
           >
             {col.id === 'review' &&
               waiting.map((t) => (

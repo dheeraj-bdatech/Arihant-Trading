@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_db_migrations_001_local_auth_sql", "label": "001_local_auth.sql", "file_type": "code", "source_file": "db/migrations/001_local_auth.sql", "source_location": null}, {"id": "users", "label": "users", "file_type": "code", "source_file": "", "source_location": "", "origin_file": "$graphify-root$/db/migrations/001_local_auth.sql"}], "edges": []}

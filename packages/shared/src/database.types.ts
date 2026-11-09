@@ -1833,6 +1833,17 @@ export interface DepartmentsTable {
   updated_at: Generated<Date>;
 }
 
+/** Client categories master: `name` is the value stored on organisations.sector, `label` what pickers show. */
+export interface ClientCategoriesTable {
+  id: Generated<string>;
+  name: string;
+  label: string | null;
+  sort_order: Generated<number>;
+  is_active: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
 /** A module an administrator has switched off for a role (a row exists only while it is off). */
 export interface RoleModuleBlocksTable {
   role: UserRole;
@@ -1922,6 +1933,7 @@ export interface Database {
   departments: DepartmentsTable;
   role_permissions: RolePermissionsTable;
   role_module_blocks: RoleModuleBlocksTable;
+  client_categories: ClientCategoriesTable;
   dashboard_layouts: DashboardLayoutsTable;
   organisations: OrganisationsTable;
   contacts: ContactsTable;

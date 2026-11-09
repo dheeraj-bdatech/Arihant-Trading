@@ -1,55 +1,44 @@
 'use client';
 
-/** Approval Queue (§12.6): completed work waiting for my approval, with evidence preview, SLA and delay context. */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+/**
+ * Approval Queue (§12.6): completed work waiting for my approval, with evidence preview, SLA and delay context.
+ * The queue is read a page at a time (oldest hand-in first) and the search runs in the database; more loads as you scroll.
+ */
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { CheckCircle2, ClipboardCheck, ExternalLink, Eye, Search, Undo2 } from 'lucide-react';
 import { Badge, Button, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader } from '@/components/ui';
-import { api } from '@/lib/api';
 import { formatTaskDateTime } from '@arihant/shared';
-import { errorMessage, notifyTasksChanged, useTaskSummary, type TaskAttachment } from '../_lib/task-lib';
-import { DelayBadge, FileList, FileViewer, FlagChip, PriorityBadge, TaskConflictCallout, TaskViewMenu, useToaster } from '../_lib/task-ui';
+import { notifyTasksChanged, useTaskSummary, type TaskAttachment } from '../_lib/task-lib';
+import { DelayBadge, FileList, FileViewer, FlagChip, LoadMoreRow, PriorityBadge, TaskConflictCallout, TaskViewMenu, useDebouncedValue, useToaster } from '../_lib/task-ui';
 import { TaskActionDialog, type ActionTask, type TaskDialogAction } from '../_lib/TaskActions';
-import { waitingAge as age, type ApprovalRow } from '../_lib/QueueBoards';
+import { usePendingQueue, waitingAge as age, type ApprovalRow } from '../_lib/QueueBoards';
 
 export default function ApprovalQueuePage() {
   const { summary } = useTaskSummary();
   const { push, Toaster } = useToaster();
   const [scope, setScope] = useState<'mine' | 'all'>('mine');
   const [search, setSearch] = useState('');
-  const [rows, setRows] = useState<ApprovalRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [viewer, setViewer] = useState<TaskAttachment | null>(null);
   const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: ActionTask } | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await api.get<any>('/tasks/approvals/pending', { scope, page_size: 100 });
-      setRows(Array.isArray(res) ? res : res?.data || []);
-      setConflict(false);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }, [scope]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Typing settles for 300 ms before the queue is searched again (from page 1).
+  const q = useDebouncedValue(search.trim());
+  const queue = usePendingQueue<ApprovalRow>('/tasks/approvals/pending', scope, q);
+  const { rows, error, loading } = queue;
+  const reload = () => {
+    setConflict(false);
+    queue.refresh();
+  };
 
   const adminLike = Boolean(summary?.can_view_all);
-  const q = search.trim().toLowerCase();
-  const visible = useMemo(
-    () => (rows || []).filter((t) => !q || [t.task_number, t.title, t.assignee_name].some((f) => f?.toLowerCase().includes(q))),
-    [rows, q],
-  );
-  const hasActiveFilters = Boolean(q) || scope !== 'mine';
+  const hasActiveFilters = Boolean(search.trim()) || scope !== 'mine';
 
   return (
     <PageContainer>
       <PageHeader title="Approvals" icon={<ClipboardCheck className="h-5 w-5" />} />
-      {/* One filter row: View, search the loaded queue, plus scope for management/admin. */}
+      {/* One filter row: View, search the queue, plus scope for management/admin. */}
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <TaskViewMenu />
@@ -95,13 +84,13 @@ export default function ApprovalQueuePage() {
           )}
         </div>
       </Card>
-      {conflict && <TaskConflictCallout onRefresh={load} />}
+      {conflict && <TaskConflictCallout onRefresh={reload} />}
       {error && <InfoCallout variant="danger" title="Could not load approvals">{error}</InfoCallout>}
-      {!rows ? (
+      {loading && rows.length === 0 ? (
         <PageLoader rows={4} />
-      ) : rows.length === 0 ? (
+      ) : error && rows.length === 0 ? null : rows.length === 0 && !q ? (
         <EmptyState icon={CheckCircle2} title="Nothing to approve" description="Tasks that need your approval appear here once the assignee completes them." />
-      ) : visible.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState
           icon={Search}
           title="No approvals match your search"
@@ -113,8 +102,8 @@ export default function ApprovalQueuePage() {
           }
         />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {visible.map((t) => (
+        <div className={`grid grid-cols-1 lg:grid-cols-2 gap-3 transition-opacity ${loading ? 'opacity-60' : ''}`}>
+          {rows.map((t) => (
             <Card key={t.id} className={`p-4 space-y-3 ${t.sla_breached ? 'border-[#9A3412]/40' : ''}`}>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -155,6 +144,10 @@ export default function ApprovalQueuePage() {
               </div>
             </Card>
           ))}
+          {/* spans both columns so the marker sits under the last row */}
+          <div className="lg:col-span-2">
+            <LoadMoreRow hasMore={queue.hasMore} loading={queue.loadingMore} onLoadMore={queue.loadMore} count={rows.length} />
+          </div>
         </div>
       )}
       <TaskActionDialog
@@ -165,7 +158,7 @@ export default function ApprovalQueuePage() {
           setDialog(null);
           push('success', msg);
           notifyTasksChanged();
-          load();
+          queue.refresh();
         }}
         onConflict={() => setConflict(true)}
       />

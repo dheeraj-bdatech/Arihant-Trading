@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_db_migrations_down_045_role_module_blocks_down_sql", "label": "045_role_module_blocks.down.sql", "file_type": "code", "source_file": "db/migrations/down/045_role_module_blocks.down.sql", "source_location": null}], "edges": []}

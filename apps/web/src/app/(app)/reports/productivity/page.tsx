@@ -7,7 +7,7 @@
  */
 import React, { Suspense } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, CheckCircle2, Download, FileSearch, RefreshCw, ShieldCheck, Timer, Users } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, FileSearch, RefreshCw, Timer, Users } from 'lucide-react';
 import type { ProductivityReportDto, ProductivityRow } from '@arihant/shared';
 import { formatINR } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
@@ -23,8 +23,9 @@ import {
   PageContainer,
   PageHeader,
   PageLoader,
-  Select,
   StatCard,
+  StatGrid,
+  Select,
   Table,
   TableBody,
   TableCell,
@@ -32,7 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui';
-import { ReportFilterBar, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, money, pctText, useReport, useReportFilters } from '../_lib/report-ui';
+import { FactList, ReportFilterBar, ReportNotes, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, money, pctText, useReport, useReportFilters } from '../_lib/report-ui';
 
 const roleLabel = (r: string) => {
   const t = r.replace(/_/g, ' ');
@@ -146,46 +147,51 @@ function ProductivityReport() {
         loading ? <PageLoader rows={5} label="Building the productivity report" /> : null
       ) : (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <StatCard title={data.scope === 'all' ? 'Employees' : 'Your team'} value={t.employees} subtext={`${t.needing_attention} need attention`} icon={<Users className="h-4 w-4" />} variant="primary" />
+          <StatGrid cols={4} className="gap-3">
+            <StatCard
+              title={data.scope === 'all' ? 'Employees' : 'Your team'}
+              value={t.employees}
+              subtext={t.needing_attention ? `${t.needing_attention} need attention` : 'No one needs attention'}
+              icon={<Users className="h-4 w-4" />}
+              variant="primary"
+            />
             <StatCard title="On-time completion" value={pctText(t.tasks.on_time_pct)} subtext={`${t.tasks.completed} of ${t.tasks.assigned} tasks due were completed`} icon={<CheckCircle2 className="h-4 w-4" />} variant="emerald" />
             <StatCard title="Overdue now" value={t.tasks.overdue_now} subtext={`${t.tasks.no_update} open tasks without updates`} icon={<Timer className="h-4 w-4" />} variant={t.tasks.overdue_now > 0 ? 'rose' : 'default'} />
-            <StatCard title="Unapproved delays" value={t.tasks.unapproved_delays} subtext="No accepted blocker" icon={<AlertTriangle className="h-4 w-4" />} variant={t.tasks.unapproved_delays > 0 ? 'amber' : 'default'} />
-            <StatCard title="Excused (approved blockers)" value={t.tasks.approved_blockers} subtext="Delays the manager accepted" icon={<ShieldCheck className="h-4 w-4" />} />
-          </div>
+            <StatCard
+              title="Unapproved delays"
+              value={t.tasks.unapproved_delays}
+              subtext={`${t.tasks.approved_blockers} more excused by approved blockers`}
+              icon={<AlertTriangle className="h-4 w-4" />}
+              variant={t.tasks.unapproved_delays > 0 ? 'amber' : 'default'}
+            />
+          </StatGrid>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="flex-col items-start gap-0">
               <CardTitle>Work logged in the period</CardTitle>
               <CardDescription>Across everyone shown — counted from the records each module already holds.</CardDescription>
             </CardHeader>
             <CardContent>
-              <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-xs sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
-                {(
-                  [
-                    ['Visits completed', `${t.activity.visits_completed} / ${t.activity.visits_planned}`],
-                    ['Interactions', t.activity.interactions],
-                    ['Follow-ups done', t.activity.followups_done],
-                    ['Leads created', t.activity.leads_created],
-                    ['Proposals sent', t.activity.proposals_sent],
-                    ['Bids submitted', t.activity.tenders_submitted],
-                    ['Demos conducted', t.activity.demos_conducted],
-                    ['Tickets closed', t.activity.tickets_closed],
-                    ['Avg ticket closure', t.activity.avg_closure_days === null ? '—' : `${t.activity.avg_closure_days} d`],
-                    ['Expenses claimed', money(t.activity.expenses_claimed)],
-                  ] as const
-                ).map(([label, value]) => (
-                  <div key={label} className="flex items-baseline justify-between gap-2 border-b border-[#ECE9E2] py-1.5">
-                    <dt className="text-[#4A5568]">{label}</dt>
-                    <dd className="font-mono font-semibold text-[#14213D]">{value}</dd>
-                  </div>
-                ))}
-              </dl>
+              <FactList
+                className="xl:grid-cols-3 2xl:grid-cols-5"
+                items={[
+                  ['Visits completed', `${t.activity.visits_completed} / ${t.activity.visits_planned}`],
+                  ['Interactions', t.activity.interactions],
+                  ['Follow-ups done', t.activity.followups_done],
+                  ['Leads created', t.activity.leads_created],
+                  ['Proposals sent', t.activity.proposals_sent],
+                  ['Bids submitted', t.activity.tenders_submitted],
+                  ['Demos conducted', t.activity.demos_conducted],
+                  ['Tickets closed', t.activity.tickets_closed],
+                  ['Avg ticket closure', t.activity.avg_closure_days === null ? '—' : `${t.activity.avg_closure_days} d`],
+                  ['Expenses claimed', money(t.activity.expenses_claimed)],
+                ]}
+              />
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="flex-col items-start gap-0">
               <CardTitle>By employee</CardTitle>
               <CardDescription>People needing attention first. Task columns are the Team Performance figures for the same period.</CardDescription>
             </CardHeader>
@@ -267,12 +273,12 @@ function ProductivityReport() {
             </CardContent>
           </Card>
 
-          <p className="text-[11px] text-[#6B7280]">
+          <p className="text-xs text-[#4A5568]">This report is evidence for a manager’s review. It does not score people or recommend pay decisions.</p>
+          <ReportNotes>
             Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST). Task figures use Module 8’s delay rules (a repeated-delay flag means{' '}
             {data.settings.repeated_delay_threshold}+ unexcused late completions within {data.settings.repeated_delay_window_days} days). Activity counts each
-            record under the person who owns it, on the date its module reports by. This report is evidence for a manager’s review — it does not score
-            people or recommend pay decisions.
-          </p>
+            record under the person who owns it, on the date its module reports by.
+          </ReportNotes>
         </div>
       )}
     </>

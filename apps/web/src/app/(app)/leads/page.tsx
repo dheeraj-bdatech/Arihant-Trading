@@ -6,7 +6,7 @@ import { availableFirst, fleetHint, kitForProduct, kitValue, unitHint } from '@/
 import type { SelectOption } from '@/components/ui';
 import { addIsoDays, istToday } from '@/lib/ist-date';
 import { INDIAN_STATES, canonicalState, resolveLocation, stateOfCity } from './_lib/india-geo';
-import { SECTOR_OPTIONS } from './_lib/sectors';
+import { useSectorOptions, withSector } from './_lib/sectors';
 import { LeadConversation } from './_lib/LeadConversation';
 import { calendarDay } from '@/lib/calendar-day';
 import {
@@ -207,6 +207,7 @@ const leadUrlFilters = (q: UrlParams) => {
 
 export default function LeadsPage() {
   const { user, hasRole, switchRole } = useAuth();
+  const sectorOptions = useSectorOptions();
   const canReassign = hasRole(['management', 'regional_manager', 'admin']);
   const [isSwitchingPersona, setIsSwitchingPersona] = useState(false);
 
@@ -2446,7 +2447,7 @@ export default function LeadsPage() {
               label="Sector"
               icon={<Building />}
               className="[&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
-              options={[{ value: 'all', label: 'All sectors' }, ...SECTOR_OPTIONS.map((s) => ({ value: s.value, label: s.value }))].map((s) => ({
+              options={[{ value: 'all', label: 'All sectors' }, ...sectorOptions.map((s) => ({ value: s.value, label: s.value }))].map((s) => ({
                 key: s.value,
                 label: s.label,
                 active: (leadFilters.sector || 'all') === s.value,
@@ -3266,7 +3267,7 @@ export default function LeadsPage() {
                 onChange={(e) => setLeadForm({ ...leadForm, sector: e.target.value })}
                 options={[
                   { value: '', label: 'Select Sector...' },
-                  ...SECTOR_OPTIONS,
+                  ...withSector(sectorOptions, leadForm.sector),
                 ]}
               />
             </div>
@@ -3753,7 +3754,7 @@ export default function LeadsPage() {
               // Everything that is reference data rather than something to act on lives behind "Show all details"
               const moreDetails: [string, React.ReactNode][] = [
                 ['Department / Unit / Wing', selectedLead.department],
-                ['Sector', SECTOR_OPTIONS.find((s) => s.value === selectedLead.sector)?.label || selectedLead.sector],
+                ['Sector', sectorOptions.find((s) => s.value === selectedLead.sector)?.label || selectedLead.sector],
                 ['Zone', zoneName && (zoneName.toLowerCase().includes('zone') ? zoneName : `${zoneName} Zone`)],
                 ['Region Office', selectedLead.region_name || regionsList.find((r) => r.id === selectedLead.region_id)?.name],
                 ['Regional Manager', selectedLead.regional_manager_name],

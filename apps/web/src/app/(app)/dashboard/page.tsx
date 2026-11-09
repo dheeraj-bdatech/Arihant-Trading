@@ -465,12 +465,12 @@ function admin(w: W): DeskView {
             { label: 'User accounts', value: num(w, 'activeUsers'), sub: `${num(w, 'inactiveUsers')} deactivated`, href: '/admin?tab=users', icon: <Users size={15} />, tone: 'teal' },
             { label: 'Product masters', value: num(w, 'products'), sub: `${num(w, 'equipment')} demo units`, href: '/admin?tab=products', icon: <Database size={15} />, tone: 'ink' },
             { label: 'Territory structure', value: num(w, 'zones'), sub: `zones · ${num(w, 'regions')} regions`, href: '/admin?tab=zones', icon: <Compass size={15} />, tone: 'teal' },
-            { label: 'Audit trail', value: num(w, 'auditTotal').toLocaleString('en-IN'), sub: `${num(w, 'audit7d')} entries in 7 days`, href: '/admin?tab=audit', icon: <Key size={15} />, tone: 'ink' },
+            { label: 'Audit trail', value: num(w, 'auditTotal').toLocaleString('en-IN'), sub: `${num(w, 'audit7d')} entries in 7 days`, href: '/audit', icon: <Key size={15} />, tone: 'ink' },
             { label: 'Data hygiene', value: hygiene, sub: hygiene ? 'Users missing manager or zone' : 'Every field user is mapped', href: '/admin?tab=users', icon: <ShieldCheck size={15} />, tone: hygiene ? 'red' : 'green' },
           ]}
         />
         <Grid className="lg:grid-cols-3">
-          <Panel className="lg:col-span-2" title="Recent audit trail" icon={<Key size={15} />} tone="ink" href="/admin" hrefLabel="Full log">
+          <Panel className="lg:col-span-2" title="Recent audit trail" icon={<Key size={15} />} tone="ink" href="/audit" hrefLabel="Full log">
             <ItemList items={list(w, 'audit')} dateMode="ago" empty="No audit entries yet" />
             <p className="px-4 pb-3 text-[11px] text-[color:var(--th-mute)]">
               Latest {list(w, 'audit').length} of {num(w, 'auditTotal').toLocaleString('en-IN')} entries · {num(w, 'audit24h')} in the last 24 hours
@@ -488,7 +488,7 @@ function admin(w: W): DeskView {
             <QuickActions
               actions={[
                 A('Administration', 'Users, roles, masters', '/admin', <Settings size={16} />),
-                A('Audit trail', 'Security log', '/admin?tab=audit', <Key size={16} />),
+                A('Audit trail', 'Security log', '/audit', <Key size={16} />),
                 A('Reports', 'Consolidated records', '/reports', <TrendingUp size={16} />),
                 A('Notifications', 'Alerts and escalations', '/notifications', <Zap size={16} />),
               ]}

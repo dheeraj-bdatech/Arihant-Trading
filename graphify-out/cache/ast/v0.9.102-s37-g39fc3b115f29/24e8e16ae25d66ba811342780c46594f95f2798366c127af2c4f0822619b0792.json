@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_db_migrations_037_drop_tender_status_history_trigger_sql", "label": "037_drop_tender_status_history_trigger.sql", "file_type": "code", "source_file": "db/migrations/037_drop_tender_status_history_trigger.sql", "source_location": null}], "edges": []}

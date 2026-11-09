@@ -1,17 +1,19 @@
 'use client';
 
-/** Blocker Review Queue (§12.5): pending blockers routed to me with age, SLA indicator, flags and quick decisions. */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+/**
+ * Blocker Review Queue (§12.5): pending blockers routed to me with age, SLA indicator, flags and quick decisions.
+ * The queue is read a page at a time (oldest first) and the search runs in the database; more loads as you scroll.
+ */
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { ArrowRightLeft, Ban, CheckCircle2, Clock, ExternalLink, Eye, Flag, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { Badge, Button, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader } from '@/components/ui';
-import { api } from '@/lib/api';
 import { formatTaskDateTime } from '@arihant/shared';
-import { errorMessage, notifyTasksChanged, useTaskSummary } from '../_lib/task-lib';
-import { DueText, FlagChip, PriorityBadge, TaskConflictCallout, TaskViewMenu, blockerTypeLabel, useToaster } from '../_lib/task-ui';
+import { notifyTasksChanged, useTaskSummary } from '../_lib/task-lib';
+import { DueText, FlagChip, LoadMoreRow, PriorityBadge, TaskConflictCallout, TaskViewMenu, blockerTypeLabel, useDebouncedValue, useToaster } from '../_lib/task-ui';
 import { TaskActionDialog, type ActionTask, type TaskDialogAction } from '../_lib/TaskActions';
-import { blockerActionTask as toActionTask, blockerDecisions, waitingAge as age, type BlockerDecision, type PendingBlocker } from '../_lib/QueueBoards';
+import { blockerActionTask as toActionTask, blockerDecisions, usePendingQueue, waitingAge as age, type BlockerDecision, type PendingBlocker } from '../_lib/QueueBoards';
 
 export default function BlockerQueuePage() {
   const { summary } = useTaskSummary();
@@ -20,39 +22,26 @@ export default function BlockerQueuePage() {
   const searchParams = useSearchParams();
   const [scope, setScope] = useState<'mine' | 'all'>(() => (searchParams.get('scope') === 'all' ? 'all' : 'mine'));
   const [search, setSearch] = useState('');
-  const [rows, setRows] = useState<PendingBlocker[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [dialog, setDialog] = useState<{ action: TaskDialogAction; task: ActionTask; initial?: Record<string, unknown> } | null>(null);
   const decide = (b: PendingBlocker, d: BlockerDecision) => setDialog({ ...d, task: toActionTask(b) });
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await api.get<any>('/task-blockers/pending', { scope, page_size: 100 });
-      setRows(Array.isArray(res) ? res : res?.data || []);
-      setConflict(false);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }, [scope]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Typing settles for 300 ms before the queue is searched again (from page 1).
+  const q = useDebouncedValue(search.trim());
+  const queue = usePendingQueue<PendingBlocker>('/task-blockers/pending', scope, q);
+  const { rows, error, loading } = queue;
+  const reload = () => {
+    setConflict(false);
+    queue.refresh();
+  };
 
   const adminLike = Boolean(summary?.can_view_all);
-  const q = search.trim().toLowerCase();
-  const visible = useMemo(
-    () => (rows || []).filter((b) => !q || [b.task_number, b.task_title, b.assignee_name].some((f) => f?.toLowerCase().includes(q))),
-    [rows, q],
-  );
-  const hasActiveFilters = Boolean(q) || scope !== 'mine';
+  const hasActiveFilters = Boolean(search.trim()) || scope !== 'mine';
 
   return (
     <PageContainer>
       <PageHeader title="Blocker Reviews" icon={<ShieldCheck className="h-5 w-5" />} />
-      {/* One filter row: View, search the loaded queue, plus scope for management/admin. */}
+      {/* One filter row: View, search the queue, plus scope for management/admin. */}
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <TaskViewMenu />
@@ -101,13 +90,13 @@ export default function BlockerQueuePage() {
       <InfoCallout variant="info" title="Genuine dependency or poor execution?">
         Accept a genuine dependency (pause the clock until it is resolved, or extend the deadline now), or reject it — the task returns to its previous status and any delay counts as unapproved. If someone else should do the work, reassign it; if the decision is above you, escalate. Time a blocker waits for your review is never counted against the employee.
       </InfoCallout>
-      {conflict && <TaskConflictCallout onRefresh={load} />}
+      {conflict && <TaskConflictCallout onRefresh={reload} />}
       {error && <InfoCallout variant="danger" title="Could not load blockers">{error}</InfoCallout>}
-      {!rows ? (
+      {loading && rows.length === 0 ? (
         <PageLoader rows={4} />
-      ) : rows.length === 0 ? (
+      ) : error && rows.length === 0 ? null : rows.length === 0 && !q ? (
         <EmptyState icon={CheckCircle2} title="No blockers waiting for you" description="When someone in your team raises a blocker it appears here for a decision." />
-      ) : visible.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState
           icon={Search}
           title="No blockers match your search"
@@ -119,8 +108,8 @@ export default function BlockerQueuePage() {
           }
         />
       ) : (
-        <div className="space-y-3">
-          {visible.map((b) => (
+        <div className={`space-y-3 transition-opacity ${loading ? 'opacity-60' : ''}`}>
+          {rows.map((b) => (
             <Card key={b.id} className={`p-4 space-y-3 ${b.sla_breached ? 'border-[#9A3412]/40' : ''}`}>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -183,6 +172,7 @@ export default function BlockerQueuePage() {
               </div>
             </Card>
           ))}
+          <LoadMoreRow hasMore={queue.hasMore} loading={queue.loadingMore} onLoadMore={queue.loadMore} count={rows.length} />
         </div>
       )}
       <TaskActionDialog
@@ -194,7 +184,7 @@ export default function BlockerQueuePage() {
           setDialog(null);
           push('success', msg);
           notifyTasksChanged();
-          load();
+          queue.refresh();
         }}
         onConflict={() => setConflict(true)}
       />

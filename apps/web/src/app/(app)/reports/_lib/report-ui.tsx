@@ -110,14 +110,20 @@ export interface ReportFilterState {
   set: (patch: Partial<Record<(typeof BASE_KEYS)[number], string | null>>) => void;
 }
 
-/** Period presets + dates, then zone / region when the caller may pick them. `children` adds report-specific controls. */
+/** Period presets (dates only for a custom range), then zone / region when the caller may pick them. `children` adds report-specific controls. */
 export const ReportFilterBar: React.FC<{
   filters: ReportFilterState;
   territory?: ReportTerritoryFilters | null;
   children?: React.ReactNode;
 }> = ({ filters: f, territory, children }) => {
   const presets = periodPresets();
-  const preset = presets.find((p) => p.from === f.from && p.to === f.to)?.key ?? 'custom';
+  const matched = presets.find((p) => p.from === f.from && p.to === f.to)?.key;
+  // "Custom range" stays picked (and its dates shown) even when the dates happen to match a preset.
+  const [custom, setCustom] = useState(!matched);
+  useEffect(() => {
+    if (!matched) setCustom(true);
+  }, [matched]);
+  const preset = custom || !matched ? 'custom' : matched;
   const zoneId = territory?.zone_id ?? '';
   const regions = (territory?.regions ?? []).filter((r) => !zoneId || r.zone_id === zoneId);
   return (
@@ -127,9 +133,14 @@ export const ReportFilterBar: React.FC<{
           <Select
             label="Period"
             value={preset}
+            helperText={preset === 'custom' ? undefined : `${fmtDay(f.from)} – ${fmtDay(f.to)}`}
             onChange={(e) => {
+              if (e.target.value === 'custom') return setCustom(true);
               const p = presets.find((x) => x.key === e.target.value);
-              if (p) f.set({ from: p.from, to: p.to });
+              if (p) {
+                setCustom(false);
+                f.set({ from: p.from, to: p.to });
+              }
             }}
           >
             {presets.map((p) => (
@@ -137,15 +148,15 @@ export const ReportFilterBar: React.FC<{
                 {p.label}
               </option>
             ))}
-            <option value="custom" disabled>
-              Custom range
-            </option>
+            <option value="custom">Custom range</option>
           </Select>
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:col-span-2 lg:w-[300px]">
-          <Input label="From" type="date" value={f.from} max={f.to} onChange={(e) => e.target.value && f.set({ from: e.target.value })} />
-          <Input label="To" type="date" value={f.to} min={f.from} onChange={(e) => e.target.value && f.set({ to: e.target.value })} />
-        </div>
+        {preset === 'custom' && (
+          <div className="grid grid-cols-2 gap-2 sm:col-span-2 lg:w-[300px]">
+            <Input label="From" type="date" value={f.from} max={f.to} onChange={(e) => e.target.value && f.set({ from: e.target.value })} />
+            <Input label="To" type="date" value={f.to} min={f.from} onChange={(e) => e.target.value && f.set({ to: e.target.value })} />
+          </div>
+        )}
         {territory?.can_pick_zone && (
           <div className="lg:w-[190px]">
             <Select label="Zone" value={zoneId} onChange={(e) => f.set({ zone_id: e.target.value || null, region_id: null })}>
@@ -176,6 +187,36 @@ export const ReportFilterBar: React.FC<{
     </FilterBar>
   );
 };
+
+/* ------------------------------------------------------------------------------------------------ fact list -- */
+
+type FactTone = 'default' | 'good' | 'warn' | 'bad';
+const TONE: Record<FactTone, string> = {
+  default: 'text-[#14213D]',
+  good: 'text-[#0F5E63]',
+  warn: 'text-[#9A3412]',
+  bad: 'text-[#881337]',
+};
+
+/** Label / value pairs in a ruled list — secondary figures that do not need a card each. */
+export const FactList: React.FC<{ items: readonly (readonly [string, React.ReactNode, FactTone?])[]; className?: string }> = ({ items, className }) => (
+  <dl className={`grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2 ${className ?? ''}`}>
+    {items.map(([label, value, tone]) => (
+      <div key={label} className="flex items-baseline justify-between gap-2 border-b border-[#ECE9E2] py-1.5">
+        <dt className="text-[#4A5568]">{label}</dt>
+        <dd className={`font-mono font-semibold ${TONE[tone ?? 'default']}`}>{value}</dd>
+      </div>
+    ))}
+  </dl>
+);
+
+/** The counting rules under a report, folded away until someone asks. */
+export const ReportNotes: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <details className="text-[11px] text-[#6B7280]">
+    <summary className="cursor-pointer select-none font-medium text-[#4A5568]">How these numbers are counted</summary>
+    <p className="mt-1.5 max-w-4xl leading-relaxed">{children}</p>
+  </details>
+);
 
 /* ------------------------------------------------------------------------------------------------------ data -- */
 

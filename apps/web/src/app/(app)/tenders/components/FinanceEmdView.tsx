@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   Card,
   Button,
@@ -16,7 +16,13 @@ import {
   TableRow,
   TableCell,
   InfoCallout,
-  EmptyState, Spinner } from '@/components/ui';
+  Spinner,
+  RecordViews,
+  RecordTable,
+  type RecordItem,
+  type RecordTone,
+  type BoardLane,
+} from '@/components/ui';
 import {
   DollarSign,
   IndianRupee,
@@ -32,6 +38,7 @@ import {
   FileCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { formatTaskDate, TENDER_FINANCIAL_INSTRUMENT_STATUSES } from '@arihant/shared';
 
 interface FinanceEmdViewProps {
@@ -49,6 +56,35 @@ const STATUS_HINTS: Record<string, string> = {
   Released: 'Released (PBG returned)',
 };
 
+/** Instruments fetched per page while the list scrolls. */
+const EMD_PAGE_SIZE = 25;
+
+/** The view picked above the list; GET /tenders/finance/emd-tracking filters by it (`filter`). */
+type EmdFilter = 'refund_due' | 'blocked' | 'pbg' | 'all';
+
+/**
+ * Page 1 of GET /tenders/finance/emd-tracking also carries the KPI totals and each view's count, summed over every
+ * instrument in scope (never over the rows loaded so far).
+ */
+interface EmdSummary {
+  total_emd_blocked: number;
+  total_refund_due: number;
+  refund_due_count: number;
+  refund_aging_over_30_count: number;
+  active_pbg_count: number;
+  counts: Record<EmdFilter, number>;
+}
+
+/** Board lanes: one per instrument status. */
+const STATUS_LANES: BoardLane[] = TENDER_FINANCIAL_INSTRUMENT_STATUSES.map((s) => ({ key: s, label: s, tone: statusTone(s) }));
+
+function statusTone(status?: string | null): RecordTone {
+  if (status === 'Refund Due') return 'warning';
+  if (status === 'Refunded' || status === 'Released') return 'success';
+  if (status === 'Forfeited') return 'danger';
+  return 'neutral';
+}
+
 const errorText = (err: any, fallback: string) => {
   const m = err?.message ?? err?.data?.message;
   return Array.isArray(m) ? m.join(', ') : m || fallback;
@@ -58,20 +94,9 @@ export function FinanceEmdView({
   currentUser,
   onOpenDossier,
 }: FinanceEmdViewProps) {
-  const [data, setData] = useState<{
-    total_emd_blocked: number;
-    total_refund_due: number;
-    refund_due_count: number;
-    refund_due_items: any[];
-    all_instruments: any[];
-    instruments?: any[];
-  } | null>(null);
-
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<EmdSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [filterType, setFilterType] = useState<
-    'refund_due' | 'blocked' | 'pbg' | 'all'
-  >('refund_due');
+  const [filterType, setFilterType] = useState<EmdFilter>('refund_due');
 
   const canUpdate = INSTRUMENT_EDITOR_ROLES.includes(currentUser?.role);
   // Accounts can't load a tender (GET /tenders/:id), so the tender number is plain text for them.
@@ -85,24 +110,30 @@ export function FinanceEmdView({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
 
-  const loadData = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      // api.get returns the parsed body itself.
-      const res = await api.get('/tenders/finance/emd-tracking');
-      setData(res && typeof res === 'object' ? res : null);
-    } catch (err: any) {
-      console.error('Failed to load finance EMD tracking:', err);
-      setError(errorText(err, 'Could not load Finance EMD tracking.'));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  // The picked view's instruments, one page per request, appended as the list scrolls (the server filters by view).
+  // Page 1 also carries the KPI totals; the hook swallows fetch errors, so page 1 reports its own here. An answer for
+  // a view the user has already left must not overwrite the current view's totals or error.
+  const shownFilter = useRef(filterType);
+  shownFilter.current = filterType;
+  const fetchInstrumentsPage = useCallback(
+    async (page: number) => {
+      try {
+        const res = await api.get('/tenders/finance/emd-tracking', { page, limit: EMD_PAGE_SIZE, filter: filterType });
+        if (page === 1 && shownFilter.current === filterType) {
+          setData(res && typeof res === 'object' ? res : null);
+          setError(null);
+        }
+        return res;
+      } catch (err: any) {
+        console.error('Failed to load finance EMD tracking:', err);
+        if (page === 1 && shownFilter.current === filterType) setError(errorText(err, 'Could not load Finance EMD tracking.'));
+        throw err;
+      }
+    },
+    [filterType],
+  );
+  const instruments = useInfiniteList<any>(fetchInstrumentsPage);
+  const { rows: displayedList, total: displayedTotal, loading, refresh: loadData } = instruments;
 
   const handleOpenStatusModal = (inst: any) => {
     setSelectedInstrument(inst);
@@ -149,11 +180,6 @@ export function FinanceEmdView({
     }
   };
 
-  // Refund aging is computed by the server from when the instrument entered Refund Due.
-  const refundAgingById = new Map<string, { days_pending?: number; aging_bucket?: string }>(
-    (data?.refund_due_items || []).map((i: any) => [i.id, i]),
-  );
-
   const formatCurrency = (val: number | null | undefined) => {
     if (val === null || val === undefined || isNaN(val)) return '—';
     return new Intl.NumberFormat('en-IN', {
@@ -163,19 +189,192 @@ export function FinanceEmdView({
     }).format(val);
   };
 
-  const instrumentsList = data?.all_instruments || data?.instruments || [];
+  const counts = data?.counts;
+  const viewLabel: Record<EmdFilter, string> = {
+    refund_due: 'refunds due',
+    blocked: 'active EMDs',
+    pbg: 'PBGs',
+    all: 'instruments',
+  };
 
-  const displayedList = instrumentsList.filter((inst) => {
-    if (filterType === 'refund_due') return inst.status === 'Refund Due';
-    if (filterType === 'blocked')
-      return (
-        inst.instrument_type === 'EMD' &&
-        ['Issued', 'Submitted'].includes(inst.status)
-      );
-    if (filterType === 'pbg') return inst.instrument_type === 'PBG';
-    return true;
+  // The loaded instruments as RecordViews items (phone list, Cards, Board); the table below shows the same rows.
+  const instrumentRecords: RecordItem[] = displayedList.map((inst: any) => {
+    const refundDue = inst.status === 'Refund Due';
+    const daysPending = typeof inst.days_pending === 'number' ? inst.days_pending : null;
+    return {
+      key: inst.id,
+      code: inst.tender_number || inst.tender_no || 'Tender',
+      title: `${inst.instrument_type} · ${inst.organisation_name || 'Department'}`,
+      subtitle: [inst.mode || 'Online', inst.bank].filter(Boolean).join(' · '),
+      status: { label: inst.status, tone: statusTone(inst.status) },
+      badges:
+        refundDue && daysPending !== null
+          ? [{ label: `${daysPending} day${daysPending === 1 ? '' : 's'} pending`, tone: daysPending > 30 ? 'danger' : 'warning' }]
+          : undefined,
+      due:
+        !refundDue && inst.expiry_date
+          ? { date: inst.expiry_date, label: 'Expires', done: ['Refunded', 'Released', 'Forfeited', 'Expired'].includes(inst.status) }
+          : undefined,
+      value: formatCurrency(inst.amount),
+      facts: [
+        { label: 'Reference No.', value: inst.reference_number || '—' },
+        { label: 'Remarks', value: inst.remarks || '—' },
+      ],
+      primary: canUpdate ? { label: 'Update Status', onClick: () => handleOpenStatusModal(inst) } : undefined,
+      onOpen: canOpenDossier && inst.tender_id ? () => onOpenDossier(inst.tender_id) : undefined,
+    };
   });
+  const statusById = new Map<string, string>(displayedList.map((inst: any) => [inst.id, inst.status]));
 
+  const instrumentTable = (
+    <Table>
+      <TableHeader>
+        <TableRow className="bg-[#FBFAF7]">
+          <TableHead>Tender & Buyer</TableHead>
+          <TableHead>Type</TableHead>
+          <TableHead>Mode / Bank</TableHead>
+          <TableHead>Reference No.</TableHead>
+          <TableHead>Amount</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Aging / Expiry</TableHead>
+          <TableHead className="text-right">Action</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {displayedList.map((inst: any) => {
+          // Refund aging is computed by the server from when the instrument entered Refund Due.
+          const daysPending =
+            typeof inst.days_pending === 'number' ? inst.days_pending : null;
+
+          return (
+            <TableRow key={inst.id} className="hover:bg-[#FBFAF7]">
+              <TableCell>
+                <div className="space-y-0.5">
+                  {canOpenDossier && inst.tender_id ? (
+                    <button
+                      onClick={() => onOpenDossier(inst.tender_id)}
+                      className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline text-left"
+                    >
+                      {inst.tender_number || inst.tender_no || 'Tender'}
+                    </button>
+                  ) : (
+                    <span className="font-mono text-xs font-semibold text-[#14213D]">
+                      {inst.tender_number || inst.tender_no || 'Tender'}
+                    </span>
+                  )}
+                  <div className="text-[11px] text-[#4A5568] truncate max-w-[200px]">
+                    {inst.organisation_name || 'Department'}
+                  </div>
+                </div>
+              </TableCell>
+
+              <TableCell>
+                <Badge
+                  variant={
+                    inst.instrument_type === 'EMD'
+                      ? 'default'
+                      : inst.instrument_type === 'PBG'
+                        ? 'cyber'
+                        : 'outline'
+                  }
+                  size="sm"
+                >
+                  {inst.instrument_type}
+                </Badge>
+              </TableCell>
+
+              <TableCell className="text-xs">
+                <div className="font-medium text-[#14213D]">
+                  {inst.mode || 'Online'}
+                </div>
+                <div className="text-[10px] text-[#4A5568]">
+                  {inst.bank || '—'}
+                </div>
+              </TableCell>
+
+              <TableCell className="text-xs text-[#4A5568]">
+                <div className="font-mono">{inst.reference_number || '—'}</div>
+                {inst.remarks && (
+                  <div className="text-[10px] text-[#6B7280] truncate max-w-[180px]" title={inst.remarks}>
+                    {inst.remarks}
+                  </div>
+                )}
+              </TableCell>
+
+              <TableCell className="font-mono text-xs font-semibold text-[#14213D]">
+                {formatCurrency(inst.amount)}
+              </TableCell>
+
+              <TableCell>
+                <Badge
+                  variant={
+                    inst.status === 'Refund Due'
+                      ? 'warning'
+                      : inst.status === 'Refunded' ||
+                          inst.status === 'Released'
+                        ? 'success'
+                        : inst.status === 'Forfeited'
+                          ? 'danger'
+                          : 'default'
+                  }
+                  size="sm"
+                >
+                  {inst.status}
+                </Badge>
+              </TableCell>
+
+              <TableCell className="text-xs">
+                {inst.status === 'Refund Due' ? (
+                  daysPending !== null ? (
+                    <span
+                      className={`font-semibold ${
+                        daysPending > 30 ? 'text-[#700F2D]' : 'text-[#7C2D12]'
+                      }`}
+                      title={`Days since this instrument moved to Refund Due${inst.aging_bucket ? ` (${inst.aging_bucket})` : ''}`}
+                    >
+                      <span className="font-mono">{daysPending}</span> day{daysPending === 1 ? '' : 's'} pending
+                    </span>
+                  ) : (
+                    <span className="text-[#6B7280]">Refund due</span>
+                  )
+                ) : inst.expiry_date ? (
+                  <span className="font-mono text-[#4A5568]">
+                    Exp: {formatTaskDate(inst.expiry_date)}
+                  </span>
+                ) : (
+                  <span className="text-[#6B7280]">—</span>
+                )}
+              </TableCell>
+
+              <TableCell className="text-right">
+                <div className="flex items-center justify-end gap-1.5">
+                  {canUpdate && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => handleOpenStatusModal(inst)}
+                    >
+                      Update Status
+                    </Button>
+                  )}
+                  {canOpenDossier && inst.tender_id && (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => onOpenDossier(inst.tender_id)}
+                      aria-label="Open tender dossier"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
+                </div>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
 
   return (
     <div className="space-y-6">
@@ -243,12 +442,7 @@ export function FinanceEmdView({
             </span>
           </div>
           <div className="mt-2 text-2xl font-serif font-bold font-mono text-[#700F2D]">
-            {
-              (data?.refund_due_items || []).filter(
-                (i) => i.days_pending > 30,
-              ).length
-            }{' '}
-            Items
+            {data?.refund_aging_over_30_count || 0} Items
           </div>
           <p className="mt-1 text-[11px] text-[#881337] font-medium">
             Requires immediate buyer escalation
@@ -265,11 +459,7 @@ export function FinanceEmdView({
             </span>
           </div>
           <div className="mt-2 text-2xl font-serif font-bold font-mono text-[#14213D]">
-            {
-              instrumentsList.filter(
-                (i) => i.instrument_type === 'PBG' && i.status !== 'Released',
-              ).length
-            }
+            {data?.active_pbg_count || 0}
           </div>
           <p className="mt-1 text-[11px] text-[#4A5568]">
             Bank guarantees against won contracts
@@ -298,7 +488,7 @@ export function FinanceEmdView({
                 : 'text-[#4A5568] hover:text-[#14213D]'
             }`}
           >
-            Active EMDs (Blocked)
+            Active EMDs (Blocked){counts ? ` (${counts.blocked})` : ''}
           </button>
           <button
             onClick={() => setFilterType('pbg')}
@@ -308,7 +498,7 @@ export function FinanceEmdView({
                 : 'text-[#4A5568] hover:text-[#14213D]'
             }`}
           >
-            Performance Guarantees (PBG)
+            Performance Guarantees (PBG){counts ? ` (${counts.pbg})` : ''}
           </button>
           <button
             onClick={() => setFilterType('all')}
@@ -318,7 +508,7 @@ export function FinanceEmdView({
                 : 'text-[#4A5568] hover:text-[#14213D]'
             }`}
           >
-            All Instruments ({instrumentsList.length})
+            All Instruments ({counts?.all || 0})
           </button>
         </div>
       </div>
@@ -329,173 +519,41 @@ export function FinanceEmdView({
         </InfoCallout>
       )}
 
-      {/* Instruments Table */}
-      <Card className="p-0 overflow-hidden bg-white border-[#DCD8CE]">
-        {loading ? (
-          <div className="p-12 text-center text-sm text-[#4A5568] flex items-center justify-center gap-2">
-            <Spinner size="xs" />
-            Loading financial records...
-          </div>
-        ) : error ? (
-          <div className="p-6">
-            <InfoCallout variant="danger" title="Error">
-              {error}
-            </InfoCallout>
-          </div>
-        ) : displayedList.length === 0 ? (
-          <div className="p-12 text-center text-xs text-[#4A5568]">
-            No instruments found for this category filter.
-          </div>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-[#FBFAF7]">
-                <TableHead>Tender & Buyer</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Mode / Bank</TableHead>
-                <TableHead>Reference No.</TableHead>
-                <TableHead>Amount</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Aging / Expiry</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {displayedList.map((inst) => {
-                const aging = refundAgingById.get(inst.id);
-                const daysPending =
-                  typeof aging?.days_pending === 'number' ? aging.days_pending : null;
-
-                return (
-                  <TableRow key={inst.id} className="hover:bg-[#FBFAF7]">
-                    <TableCell>
-                      <div className="space-y-0.5">
-                        {canOpenDossier && inst.tender_id ? (
-                          <button
-                            onClick={() => onOpenDossier(inst.tender_id)}
-                            className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline text-left"
-                          >
-                            {inst.tender_number || inst.tender_no || 'Tender'}
-                          </button>
-                        ) : (
-                          <span className="font-mono text-xs font-semibold text-[#14213D]">
-                            {inst.tender_number || inst.tender_no || 'Tender'}
-                          </span>
-                        )}
-                        <div className="text-[11px] text-[#4A5568] truncate max-w-[200px]">
-                          {inst.organisation_name || 'Department'}
-                        </div>
-                      </div>
-                    </TableCell>
-
-                    <TableCell>
-                      <Badge
-                        variant={
-                          inst.instrument_type === 'EMD'
-                            ? 'default'
-                            : inst.instrument_type === 'PBG'
-                              ? 'cyber'
-                              : 'outline'
-                        }
-                        size="sm"
-                      >
-                        {inst.instrument_type}
-                      </Badge>
-                    </TableCell>
-
-                    <TableCell className="text-xs">
-                      <div className="font-medium text-[#14213D]">
-                        {inst.mode || 'Online'}
-                      </div>
-                      <div className="text-[10px] text-[#4A5568]">
-                        {inst.bank || '—'}
-                      </div>
-                    </TableCell>
-
-                    <TableCell className="text-xs text-[#4A5568]">
-                      <div className="font-mono">{inst.reference_number || '—'}</div>
-                      {inst.remarks && (
-                        <div className="text-[10px] text-[#6B7280] truncate max-w-[180px]" title={inst.remarks}>
-                          {inst.remarks}
-                        </div>
-                      )}
-                    </TableCell>
-
-                    <TableCell className="font-mono text-xs font-semibold text-[#14213D]">
-                      {formatCurrency(inst.amount)}
-                    </TableCell>
-
-                    <TableCell>
-                      <Badge
-                        variant={
-                          inst.status === 'Refund Due'
-                            ? 'warning'
-                            : inst.status === 'Refunded' ||
-                                inst.status === 'Released'
-                              ? 'success'
-                              : inst.status === 'Forfeited'
-                                ? 'danger'
-                                : 'default'
-                        }
-                        size="sm"
-                      >
-                        {inst.status}
-                      </Badge>
-                    </TableCell>
-
-                    <TableCell className="text-xs">
-                      {inst.status === 'Refund Due' ? (
-                        daysPending !== null ? (
-                          <span
-                            className={`font-semibold ${
-                              daysPending > 30 ? 'text-[#700F2D]' : 'text-[#7C2D12]'
-                            }`}
-                            title={`Days since this instrument moved to Refund Due${aging?.aging_bucket ? ` (${aging.aging_bucket})` : ''}`}
-                          >
-                            <span className="font-mono">{daysPending}</span> day{daysPending === 1 ? '' : 's'} pending
-                          </span>
-                        ) : (
-                          <span className="text-[#6B7280]">Refund due</span>
-                        )
-                      ) : inst.expiry_date ? (
-                        <span className="font-mono text-[#4A5568]">
-                          Exp: {formatTaskDate(inst.expiry_date)}
-                        </span>
-                      ) : (
-                        <span className="text-[#6B7280]">—</span>
-                      )}
-                    </TableCell>
-
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        {canUpdate && (
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            onClick={() => handleOpenStatusModal(inst)}
-                          >
-                            Update Status
-                          </Button>
-                        )}
-                        {canOpenDossier && inst.tender_id && (
-                          <Button
-                            size="xs"
-                            variant="ghost"
-                            onClick={() => onOpenDossier(inst.tender_id)}
-                            aria-label="Open tender dossier"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
-      </Card>
+      {/* Instruments: one page at a time, the next page loads as the list scrolls. A newly picked view shows the loader
+          rather than the previous view's rows until its first page arrives. */}
+      {loading ? (
+        <Card className="p-12 flex items-center justify-center gap-2 text-sm text-[#4A5568] bg-white border-[#DCD8CE]">
+          <Spinner size="xs" />
+          Loading financial records...
+        </Card>
+      ) : error ? (
+        <InfoCallout variant="danger" title="Error">
+          {error}
+        </InfoCallout>
+      ) : displayedList.length === 0 ? (
+        <Card className="p-12 text-center text-xs text-[#4A5568] bg-white border-[#DCD8CE]">
+          No instruments found for this category filter.
+        </Card>
+      ) : (
+        <RecordViews
+          storageKey="tender-finance-emd"
+          defaultView="list"
+          items={instrumentRecords}
+          lanes={STATUS_LANES}
+          laneOf={(i) => statusById.get(i.key) || 'Requested'}
+          list={<RecordTable items={instrumentRecords}>{instrumentTable}</RecordTable>}
+          summary={
+            <>
+              <strong className="text-[#14213D]">{displayedList.length}</strong> of{' '}
+              <strong className="text-[#14213D]">{displayedTotal}</strong> {viewLabel[filterType]}
+            </>
+          }
+          empty="No instruments found for this category filter."
+          onLoadMore={instruments.loadMore}
+          hasMore={instruments.hasMore}
+          loadingMore={instruments.loadingMore}
+        />
+      )}
 
       {/* Update Status Modal */}
       <Modal

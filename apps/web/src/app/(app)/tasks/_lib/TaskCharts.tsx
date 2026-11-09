@@ -1,8 +1,9 @@
 'use client';
 
 /**
- * Three bar lists above the task board, computed from the rows the board already shows (no extra request):
- * open tasks by status, by when they are due, and by priority.
+ * Three bar lists above the task board, from what the board already loaded (no extra request): open tasks by status —
+ * the lanes' database totals when given — and by when they are due and by priority, from the cards loaded so far
+ * (`partial` says the lanes hold more than that, and the descriptions say so).
  */
 import React from 'react';
 import { TASK_PRIORITIES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from '@arihant/shared';
@@ -12,12 +13,13 @@ import type { TaskRow } from './task-lib';
 const OPEN = ['not_started', 'in_progress', 'blocked', 'awaiting_approval'] as const;
 const WORKING = ['not_started', 'in_progress', 'blocked'];
 
-export const TaskCharts: React.FC<{ rows: TaskRow[] }> = ({ rows }) => {
+export const TaskCharts: React.FC<{ rows: TaskRow[]; totals?: Record<string, number>; partial?: boolean }> = ({ rows, totals, partial }) => {
   const open = rows.filter((r) => (OPEN as readonly string[]).includes(r.status));
   if (!open.length) return null;
   const count = (test: (r: TaskRow) => boolean, from: TaskRow[] = open) => from.filter(test).length;
 
-  const status: BarListItem[] = OPEN.map((s) => ({ key: s, label: TASK_STATUS_LABELS[s], value: count((r) => r.status === s) }));
+  const status: BarListItem[] = OPEN.map((s) => ({ key: s, label: TASK_STATUS_LABELS[s], value: totals?.[s] ?? count((r) => r.status === s) }));
+  const openTotal = status.reduce((n, b) => n + b.value, 0);
 
   // When the work is due: still-to-do tasks only (awaiting approval is already handed in).
   const working = open.filter((r) => WORKING.includes(r.status));
@@ -45,9 +47,9 @@ export const TaskCharts: React.FC<{ rows: TaskRow[] }> = ({ rows }) => {
   );
   return (
     <div className="grid gap-4 md:grid-cols-3">
-      {chart('Open by status', `${open.length} open on this board`, status)}
-      {chart('When it is due', 'Tasks still to do', due)}
-      {chart('By priority', 'Open tasks', priority)}
+      {chart('Open by status', `${openTotal} open on this board`, status)}
+      {chart('When it is due', partial ? `Tasks still to do, of the ${open.length} loaded` : 'Tasks still to do', due)}
+      {chart('By priority', partial ? `Of the ${open.length} open tasks loaded` : 'Open tasks', priority)}
     </div>
   );
 };

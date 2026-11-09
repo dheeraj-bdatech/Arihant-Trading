@@ -130,7 +130,7 @@ export const CommandPalette: React.FC<{
     {
       id: 'page-admin',
       title: 'Enterprise Administration & Access Controls',
-      subtitle: 'Users directory, department hierarchy, equipment masters & audit logs',
+      subtitle: 'People, departments, equipment, zones and role access',
       category: 'Page',
       href: '/admin',
     },

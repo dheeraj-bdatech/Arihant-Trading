@@ -74,6 +74,7 @@ import type { RowMenuItem } from '@/components/ui/RowMenu';
 import type { FilterMenuOption } from '@/components/ui/FilterMenu';
 import { NewClaimButton } from '../expenses/_lib/ClaimFormModal';
 import { VisitCalendar, type VisitTone } from './_lib/VisitCalendar';
+import { LoadMoreRow } from './_lib/LoadMoreRow';
 
 // Specific Demo Kit standard accessories mapping
 // Same rules the API enforces: a visit's time window must end after it starts; field plans cannot be made
@@ -95,6 +96,9 @@ const isReportOverdue = (v: any) =>
   v?.report_overdue ?? (REPORT_PENDING.includes(v?.status) && (calendarDay(v?.planned_date) || '') < istToday());
 // The visit register is read page by page (the API caps a page at 100).
 const VISITS_PAGE_SIZE = 50;
+// Tour programs, a customer's timeline, the activity dossier, a visit's audit trail and the team board's open-ended
+// groups are read the same way, a section's page at a time.
+const SECTION_PAGE_SIZE = 20;
 // Dashboard deep links (/visits?status=open&from=…&to=…): the list's first filters, read from the URL before the
 // first fetch. Unknown values are ignored; the effect in the page then drops these keys from the address bar.
 const VISIT_URL_KEYS = ['status', 'from', 'to'];
@@ -112,6 +116,17 @@ const fmtDay = (d: string) => {
   return `${dd}/${m}/${y}`;
 };
 
+/** The team board's filters (status, team member, planned dates) as the field-activity endpoint reads them. */
+type TeamFilters = { assigned_to?: string; status?: string; dateFrom?: string; dateTo?: string };
+/** One open-ended group of the team board (GET /visits/manager/field-activity?group=…), read page by page. */
+function useTeamGroup(group: 'overdue' | 'reported' | 'later', filters: TeamFilters, enabled: boolean) {
+  const fetchPage = useCallback(
+    (page: number) => api.get('/visits/manager/field-activity', { ...filters, group, page, limit: SECTION_PAGE_SIZE }),
+    [filters, group],
+  );
+  return useInfiniteList<any>(fetchPage, { enabled });
+}
+
 export default function VisitsPage() {
   const { user, hasRole } = useAuth();
   // Salespeople can only plan visits for themselves (enforced by the API too)
@@ -128,24 +143,16 @@ export default function VisitsPage() {
   const [openVisitId, setOpenVisitId] = useState<string | null>(null);
 
   // Core Data
-  const [trips, setTrips] = useState<any[]>([]);
   const [managerData, setManagerData] = useState<any | null>(null);
   const [organisations, setOrganisations] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
   const [demoEquipmentList, setDemoEquipmentList] = useState<any[]>([]);
-  const [selectedOrgHistory, setSelectedOrgHistory] = useState<any[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
-  const [employeeActivities, setEmployeeActivities] = useState<any[]>([]);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
-  const safeTrips: any[] = Array.isArray(trips) ? trips : (trips as any)?.data || [];
   const safeOrganisations: any[] = Array.isArray(organisations) ? organisations : (organisations as any)?.data || [];
   const safeProducts: any[] = Array.isArray(products) ? products : (products as any)?.data || [];
   const safeUsersList: any[] = Array.isArray(usersList) ? usersList : (usersList as any)?.data || [];
-  const safeSelectedOrgHistory: any[] = Array.isArray(selectedOrgHistory) ? selectedOrgHistory : (selectedOrgHistory as any)?.data || [];
-  const safeEmployeeActivities: any[] = Array.isArray(employeeActivities) ? employeeActivities : (employeeActivities as any)?.data || [];
-  const safeAuditLogs: any[] = Array.isArray(auditLogs) ? auditLogs : (auditLogs as any)?.data || [];
 
   // Filters
   const searchParams = useSearchParams();
@@ -197,6 +204,39 @@ export default function VisitsPage() {
     fetchStats();
   }, [fetchStats]);
 
+  // Tour programs (newest trip day first, each with its stops), this customer's visit timeline and the signed-in
+  // user's activity dossier: paged on the API and read page by page as the reader scrolls
+  const fetchTripsPage = useCallback((page: number) => api.get('/visits/trips', { page, limit: SECTION_PAGE_SIZE }), []);
+  const tripsList = useInfiniteList<any>(fetchTripsPage);
+  const trips = tripsList.rows;
+  const fetchOrgHistoryPage = useCallback(
+    (page: number) => api.get(`/visits/organisations/${selectedOrgId}/history`, { page, limit: SECTION_PAGE_SIZE }),
+    [selectedOrgId],
+  );
+  const orgHistory = useInfiniteList<any>(fetchOrgHistoryPage, { enabled: Boolean(selectedOrgId) });
+  const fetchActivitiesPage = useCallback(
+    (page: number) => api.get(`/visits/employees/${user?.id}/activities`, { page, limit: SECTION_PAGE_SIZE }),
+    [user?.id],
+  );
+  const activitiesList = useInfiniteList<any>(fetchActivitiesPage, { enabled: Boolean(user?.id) });
+
+  // Team activity board: the summary and the day slices come with the board (fetchData); its open-ended groups
+  // (overdue, reported, later) are read page by page while the tab is open. The API bounds the board to 30 days
+  // either side of today unless planned dates are set (overdue: every report still owed).
+  const teamFilters = useMemo<TeamFilters>(
+    () => ({
+      assigned_to: filterEmployee || undefined,
+      status: filterStatus || undefined,
+      dateFrom: filterDateFrom || undefined,
+      dateTo: filterDateTo || undefined,
+    }),
+    [filterEmployee, filterStatus, filterDateFrom, filterDateTo],
+  );
+  const teamBoardOpen = activeTab === 'manager_dashboard' && hasRole(['management', 'regional_manager', 'admin']);
+  const teamOverdue = useTeamGroup('overdue', teamFilters, teamBoardOpen);
+  const teamReported = useTeamGroup('reported', teamFilters, teamBoardOpen);
+  const teamLater = useTeamGroup('later', teamFilters, teamBoardOpen);
+
   // Modals
   const [isScheduleOpen, setIsScheduleOpen] = useState(false);
   const [isCreateTripOpen, setIsCreateTripOpen] = useState(false);
@@ -210,6 +250,14 @@ export default function VisitsPage() {
 
   const [selectedVisit, setSelectedVisit] = useState<any | null>(null);
   const [selectedTrip, setSelectedTrip] = useState<any | null>(null);
+
+  // The audit trail of the visit open in the audit popup, newest first, read page by page
+  const auditVisitId: string | null = isAuditOpen ? selectedVisit?.id ?? null : null;
+  const fetchAuditPage = useCallback(
+    (page: number) => api.get(`/visits/${auditVisitId}/audit`, { page, limit: SECTION_PAGE_SIZE }),
+    [auditVisitId],
+  );
+  const auditList = useInfiniteList<any>(fetchAuditPage, { enabled: Boolean(auditVisitId) });
 
   // Form States
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -374,7 +422,7 @@ export default function VisitsPage() {
   const effectiveDemoLocation = useMemo(() => {
     if (newVisit.location) return newVisit.location;
     if (newVisit.trip_id) {
-      const trip = safeTrips.find((t) => t.id === newVisit.trip_id);
+      const trip = trips.find((t) => t.id === newVisit.trip_id);
       if (trip?.base_location) return trip.base_location;
     }
     if (travelDetails.travel_to) return travelDetails.travel_to;
@@ -451,15 +499,13 @@ export default function VisitsPage() {
   // (the visit register itself is useInfiniteList above)
   const fetchData = async () => {
     try {
-      const [tripsRes, orgsRes, prodsRes, usersRes, demoEquipRes] = await Promise.all([
-        api.get('/visits/trips'),
+      const [orgsRes, prodsRes, usersRes, demoEquipRes] = await Promise.all([
         api.get('/organisations', { limit: 100 }),
         api.get('/products', { limit: 100 }).catch(() => api.get('/masters/products')).catch(() => []),
         api.get('/users', { limit: 100 }).catch(() => ({ data: [] })),
         api.get('/demos/equipment').catch(() => []),
       ]);
 
-      setTrips(Array.isArray(tripsRes) ? tripsRes : (tripsRes?.data || []));
       setOrganisations(orgsRes.data || []);
       setProducts(Array.isArray(prodsRes) ? prodsRes : (prodsRes?.data || []));
       setUsersList(usersRes.data || []);
@@ -469,28 +515,25 @@ export default function VisitsPage() {
         setSelectedOrgId(orgsRes.data[0].id);
       }
 
-      // Load manager field activity if user has manager or management role
+      // Load manager field activity (summary + day slices) if user has manager or management role
       if (hasRole(['management', 'regional_manager', 'admin'])) {
-        const mgrRes = await api.get('/visits/manager/field-activity', {
-          assigned_to: filterEmployee || undefined,
-          status: filterStatus || undefined,
-          dateFrom: filterDateFrom || undefined,
-          dateTo: filterDateTo || undefined,
-        }).catch(() => null);
+        const mgrRes = await api.get('/visits/manager/field-activity', teamFilters).catch(() => null);
         setManagerData(mgrRes);
-      }
-
-      // Load employee activity
-      if (user?.id) {
-        const actRes = await api.get(`/visits/employees/${user.id}/activities`, { limit: 100 }).catch(() => []);
-        setEmployeeActivities(Array.isArray(actRes) ? actRes : (actRes?.data || []));
       }
     } catch (err) {
       console.error('Failed to load visit planning data:', err);
     }
   };
-  // After an action: the page data, the visit register (pages loaded so far) and the KPI counts
-  const reloadAll = () => Promise.all([fetchData(), visitsList.refresh(), fetchStats()]);
+  // After an action: the page data, the paged lists (pages loaded so far) and the KPI counts
+  const reloadAll = () =>
+    Promise.all([
+      fetchData(),
+      visitsList.refresh(),
+      fetchStats(),
+      tripsList.refresh(),
+      ...(user?.id ? [activitiesList.refresh()] : []),
+      ...(teamBoardOpen ? [teamOverdue.refresh(), teamReported.refresh(), teamLater.refresh()] : []),
+    ]);
 
   useEffect(() => {
     fetchData();
@@ -525,15 +568,6 @@ export default function VisitsPage() {
     },
     organisations.length > 0,
   );
-
-  // Load customer history when selectedOrgId changes
-  useEffect(() => {
-    if (selectedOrgId) {
-      api.get(`/visits/organisations/${selectedOrgId}/history`, { limit: 100 })
-        .then((data) => setSelectedOrgHistory(Array.isArray(data) ? data : (data?.data || [])))
-        .catch(() => setSelectedOrgHistory([]));
-    }
-  }, [selectedOrgId]);
 
   // Sync visiting officer default when auth user loads
   useEffect(() => {
@@ -915,15 +949,10 @@ export default function VisitsPage() {
     }
   };
 
-  const handleOpenAudit = async (visit: any) => {
+  // Opening the popup loads the visit's audit trail (auditList above)
+  const handleOpenAudit = (visit: any) => {
     setSelectedVisit(visit);
     setIsAuditOpen(true);
-    try {
-      const logs = await api.get(`/visits/${visit.id}/audit`, { limit: 100 });
-      setAuditLogs(Array.isArray(logs) ? logs : (logs?.data || []));
-    } catch (err) {
-      setAuditLogs([]);
-    }
   };
 
   // Status badge styling helper
@@ -992,7 +1021,7 @@ export default function VisitsPage() {
       count: visitsTotal || undefined,
     },
     ...(canSeeTeamActivity ? [{ key: 'manager_dashboard', label: 'Team activity', icon: <Shield /> }] : []),
-    { key: 'trips', label: 'Trips & multi-stop plans', icon: <Route />, count: safeTrips.length || undefined },
+    { key: 'trips', label: 'Trips & multi-stop plans', icon: <Route />, count: tripsList.total || undefined },
     { key: 'customer_history', label: 'Customer timeline', icon: <Building /> },
     { key: 'employee_activity', label: 'Employee activity', icon: <History /> },
   ].map((o) => ({
@@ -1022,6 +1051,7 @@ export default function VisitsPage() {
   const openVisit = openVisitId
     ? visits.find((v) => v.id === openVisitId) ||
       Object.values(managerData?.grouped ?? {}).flat().find((v: any) => v.id === openVisitId) ||
+      [...teamOverdue.rows, ...teamReported.rows, ...teamLater.rows].find((v) => v.id === openVisitId) ||
       null
     : null;
   const visitToneById = useMemo(() => new Map(visits.map((v) => [v.id, visitTone(v)])), [visits]);
@@ -1811,7 +1841,16 @@ export default function VisitsPage() {
         <div className="space-y-6">
           {/* Summary counters banner - Light Executive */}
           <div className="p-4 bg-[#E3EFEE] border border-[#DCD8CE] rounded-xl shadow-xs">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-[#0F5E63]">Team Field Deployment Horizon</h2>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-[#0F5E63]">Team Field Deployment Horizon</h2>
+              {/* The API bounds the board: the planned dates set, else 30 days either side of today */}
+              {managerData.window && (
+                <span className="text-xs text-[#0B4A4E]">
+                  Planned <span className="font-mono">{fmtDay(managerData.window.dateFrom)} – {fmtDay(managerData.window.dateTo)}</span>
+                  {!datesActive && ' · 30 days either side of today (overdue reports: any date)'}
+                </span>
+              )}
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
               <div className="bg-white p-3 rounded-lg border border-[#DCD8CE]">
                 <CountUp as="span" className="text-2xl font-black text-[#14213D]">{managerData.summary?.todayCount || 0}</CountUp>
@@ -1832,42 +1871,39 @@ export default function VisitsPage() {
             </div>
           </div>
 
-          {/* Past visits still waiting for their report */}
-          {managerData.grouped?.overdue?.length > 0 && (
+          {/* Past visits still waiting for their report, most overdue first (paged) */}
+          {teamOverdue.total > 0 && (
             <div className="space-y-3">
               <h3 className="text-xs font-black uppercase tracking-wider text-[#7C2D12] bg-[#FBEBDD] px-3 py-1.5 rounded-lg border border-[#E9C9B4] flex items-center justify-between">
                 <span className="flex items-center gap-1.5">
                   <AlertCircle className="h-3.5 w-3.5" />
-                  <span>Report Overdue ({managerData.grouped.overdue.length})</span>
+                  <span>Report Overdue ({teamOverdue.total})</span>
                 </span>
                 <span className="text-xs font-medium text-[#7C2D12]">Visit day passed, no report</span>
               </h3>
-              {managerData.grouped.overdue.map((v: any) => renderManagerVisitCard(v))}
+              {teamOverdue.rows.map((v: any) => renderManagerVisitCard(v))}
+              <LoadMoreRow list={teamOverdue} />
             </div>
           )}
 
-          {/* Past visits the team has reported on, newest first */}
-          {(() => {
-            const reported = [...(managerData.grouped?.past ?? []), ...(managerData.grouped?.today ?? [])]
-              .filter((v: any) => v.updates?.length > 0)
-              .sort((a: any, b: any) => String(b.updates[0].created_at).localeCompare(String(a.updates[0].created_at)));
-            return (
-              <div className="space-y-3">
-                <h3 className="text-xs font-black uppercase tracking-wider text-[#0B4A4E] bg-[#E3EFEE] px-3 py-1.5 rounded-lg border border-[#D0E5E3] flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    <span>Reports Submitted by Team ({reported.length})</span>
-                  </span>
-                  <span className="text-xs font-medium text-[#0B4A4E]">Click a visit for the full report</span>
-                </h3>
-                {reported.length === 0 ? (
-                  <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No post-visit reports submitted yet.</p>
-                ) : (
-                  reported.map((v: any) => renderManagerVisitCard(v))
-                )}
-              </div>
-            );
-          })()}
+          {/* Past and today's visits the team has reported on, newest report first (filtered, sorted and paged on the API) */}
+          <div className="space-y-3">
+            <h3 className="text-xs font-black uppercase tracking-wider text-[#0B4A4E] bg-[#E3EFEE] px-3 py-1.5 rounded-lg border border-[#D0E5E3] flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                <span>Reports Submitted by Team ({teamReported.total})</span>
+              </span>
+              <span className="text-xs font-medium text-[#0B4A4E]">Click a visit for the full report</span>
+            </h3>
+            {teamReported.loading && teamReported.rows.length === 0 ? (
+              <PageLoader label="Loading team reports" rows={2} />
+            ) : teamReported.rows.length === 0 ? (
+              <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No post-visit reports submitted yet.</p>
+            ) : (
+              teamReported.rows.map((v: any) => renderManagerVisitCard(v))
+            )}
+            <LoadMoreRow list={teamReported} />
+          </div>
 
           {/* Group 1: Today */}
           <div className="space-y-3">
@@ -1922,15 +1958,19 @@ export default function VisitsPage() {
             <h3 className="text-xs font-black uppercase tracking-wider text-[#14213D] bg-[#EEF1F5] px-3 py-1.5 rounded-lg border border-[#DCD8CE] flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Route className="h-3.5 w-3.5" />
-                <span>Later & Long-Range Tour Programs ({managerData.grouped?.later?.length || 0})</span>
+                <span>Later & Long-Range Tour Programs ({managerData.summary?.laterCount ?? teamLater.total})</span>
               </span>
               <span className="text-xs font-medium text-[#14213D]">Future Calendar</span>
             </h3>
-            {(!managerData.grouped?.later || managerData.grouped?.later?.length === 0) ? (
+            {/* Soonest first, paged: the last section, so it reads on as the reader scrolls */}
+            {teamLater.loading && teamLater.rows.length === 0 ? (
+              <PageLoader label="Loading later visits" rows={2} />
+            ) : teamLater.rows.length === 0 ? (
               <p className="text-xs text-[#4A5568] italic p-3 bg-white rounded-lg border border-[#DCD8CE]">No long-range visits scheduled beyond 7 days.</p>
             ) : (
-              managerData.grouped?.later?.map((v: any) => renderManagerVisitCard(v))
+              teamLater.rows.map((v: any) => renderManagerVisitCard(v))
             )}
+            <LoadMoreRow list={teamLater} auto />
           </div>
         </div>
       )}
@@ -1948,12 +1988,14 @@ export default function VisitsPage() {
             </Button>
           </div>
 
-          {safeTrips.length === 0 ? (
+          {tripsList.loading && trips.length === 0 ? (
+            <PageLoader label="Loading tour programs" rows={3} />
+          ) : trips.length === 0 ? (
             <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
               No tour programs planned yet. Create one to organize multi-stop customer visits.
             </div>
           ) : (
-            safeTrips.map((t) => (
+            trips.map((t) => (
               <div key={t.id} className="p-5 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#ECE9E2] pb-3">
                   <div className="space-y-1">
@@ -2068,6 +2110,8 @@ export default function VisitsPage() {
               </div>
             ))
           )}
+          {/* Newest trip day first; the next page loads as the reader scrolls */}
+          <LoadMoreRow list={tripsList} auto />
         </div>
       )}
 
@@ -2075,12 +2119,14 @@ export default function VisitsPage() {
       {activeTab === 'customer_history' && (
         <div className="space-y-4">
           <div className="space-y-3">
-            {safeSelectedOrgHistory.length === 0 ? (
+            {orgHistory.loading && orgHistory.rows.length === 0 ? (
+              <PageLoader label="Loading customer timeline" rows={3} />
+            ) : orgHistory.rows.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
                 No past field visits or interactions recorded for this customer.
               </div>
             ) : (
-              safeSelectedOrgHistory.map((item) => (
+              orgHistory.rows.map((item) => (
                 <div
                   key={item.id}
                   className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-2"
@@ -2127,6 +2173,8 @@ export default function VisitsPage() {
                 </div>
               ))
             )}
+            {/* Newest visit first; the next page loads as the reader scrolls */}
+            <LoadMoreRow list={orgHistory} auto />
           </div>
         </div>
       )}
@@ -2140,12 +2188,14 @@ export default function VisitsPage() {
           </div>
 
           <div className="space-y-3">
-            {safeEmployeeActivities.length === 0 ? (
+            {activitiesList.loading && activitiesList.rows.length === 0 ? (
+              <PageLoader label="Loading activity log" rows={3} />
+            ) : activitiesList.rows.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl">
                 No activity records logged yet. Completing field visits will automatically populate this dossier.
               </div>
             ) : (
-              safeEmployeeActivities.map((act) => (
+              activitiesList.rows.map((act) => (
                 <div key={act.id} className="p-4 bg-white border border-[#DCD8CE] rounded-xl shadow-xs space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-sm text-[#14213D]">{act.title}</span>
@@ -2175,6 +2225,8 @@ export default function VisitsPage() {
                 </div>
               ))
             )}
+            {/* Newest activity first; the next page loads as the reader scrolls */}
+            <LoadMoreRow list={activitiesList} auto />
           </div>
         </div>
       )}
@@ -2513,14 +2565,14 @@ export default function VisitsPage() {
                       </label>
                     </div>
 
-                    {safeTrips.length > 0 && !newVisit.travel_required && (
+                    {trips.length > 0 && !newVisit.travel_required && (
                       <Select
                         label="Attach to Existing Tour Program (Optional)"
                         value={newVisit.trip_id}
                         onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
                         options={[
                           { value: '', label: '-- Standalone Field Visit --' },
-                          ...safeTrips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})` })),
+                          ...trips.map((t) => ({ value: t.id, label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})` })),
                         ]}
                       />
                     )}
@@ -2993,7 +3045,7 @@ export default function VisitsPage() {
                         onChange={(e) => setNewVisit({ ...newVisit, trip_id: e.target.value })}
                         options={[
                           { value: '', label: '-- Auto-Generate New Tour Program --' },
-                          ...safeTrips.map((t) => ({
+                          ...trips.map((t) => ({
                             value: t.id,
                             label: `${t.base_location} Tour (${formatDateIN(t.trip_date)})`,
                           })),
@@ -3791,10 +3843,12 @@ export default function VisitsPage() {
         maxWidth="md"
       >
         <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-          {safeAuditLogs.length === 0 ? (
+          {auditList.loading ? (
+            <PageLoader label="Loading audit trail" rows={2} />
+          ) : auditList.rows.length === 0 ? (
             <p className="text-xs text-[#4A5568] italic p-4 text-center">No audit records found.</p>
           ) : (
-            safeAuditLogs.map((log) => (
+            auditList.rows.map((log) => (
               <div key={log.id} className="p-3 bg-[#FBFAF7] border border-[#DCD8CE] rounded-lg text-xs space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-[#0F5E63]">{log.action}</span>
@@ -3813,6 +3867,8 @@ export default function VisitsPage() {
               </div>
             ))
           )}
+          {/* Newest change first; older entries load as the popup is scrolled */}
+          <LoadMoreRow list={auditList} auto />
         </div>
       </Modal>
     </PageContainer>

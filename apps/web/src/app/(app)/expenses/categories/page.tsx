@@ -32,6 +32,7 @@ import {
 } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import { errorMessage, fieldErrors, useBadgeCounts, useCategories, type ExpenseCategory, type ExpenseClaim, type Paged } from '../_lib/expense-lib';
 import { DateText, ExpenseViewMenu, ExpensesNav, Money, StatusBadge, useToaster } from '../_lib/expense-ui';
 
@@ -39,7 +40,8 @@ type Section = 'categories' | 'projects' | 'approvers';
 const SECTION_SEARCH: Record<Section, string> = {
   categories: 'Search category code or name…',
   projects: 'Search project code or name…',
-  approvers: 'Search claim no., employee or approver…',
+  // the API searches claim no., title and employee name (not the approver)
+  approvers: 'Search claim no. or employee…',
 };
 /** Case-insensitive match of `q` against any of the given fields. */
 const matches = (q: string, ...fields: (string | null | undefined)[]) => !q || fields.some((f) => (f || '').toLowerCase().includes(q));
@@ -381,45 +383,80 @@ const ProjectsPanel: React.FC<{ push: (k: 'success' | 'error', t: string) => voi
   );
 };
 
-/** Claims awaiting a manager who has since been deactivated (§5.17). */
+/** Stuck claims read per request; the next page as the list scrolls (infinite scroll). */
+const STUCK_PAGE_SIZE = 25;
+
+/** Claims awaiting a manager who has since been deactivated (§5.17), paged and searched by the API. */
 const StuckApprovals: React.FC<{ search: string; onClearSearch: () => void }> = ({ search, onClearSearch }) => {
-  const [result, setResult] = useState<Paged<ExpenseClaim> | null>(null);
+  // The search reaches the API 300 ms after typing stops (one request, not one per keystroke).
+  const [debounced, setDebounced] = useState(search);
   useEffect(() => {
-    const load = () => api.get('/expense-claims', { approver_inactive: true, page_size: 50 }).then(setResult).catch(() => setResult({ data: [], total: 0, page: 1, limit: 50, totalPages: 1 }));
-    load();
-    window.addEventListener('expenses:changed', load);
-    return () => window.removeEventListener('expenses:changed', load);
-  }, []);
-  if (!result) return <PageLoader rows={3} />;
-  if (!result.data.length) return <EmptyState icon={UserX} title="No stuck approvals" description="Claims waiting on a deactivated approver will appear here for reassignment." />;
-  const visible = result.data.filter((c) => matches(search, c.claim_number, c.employee_name, c.manager_name));
-  if (!visible.length) {
+    const timer = setTimeout(() => setDebounced(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const fetchPage = useCallback(
+    (page: number) =>
+      api.get<Paged<ExpenseClaim>>('/expense-claims', { approver_inactive: true, search: debounced || undefined, page, page_size: STUCK_PAGE_SIZE }),
+    [debounced],
+  );
+  const { rows, total, loading, loadingMore, hasMore, loadMore, refresh } = useInfiniteList<ExpenseClaim>(fetchPage);
+
+  // A claim reassigned (here or anywhere else) re-reads the pages already loaded.
+  useEffect(() => {
+    window.addEventListener('expenses:changed', refresh);
+    return () => window.removeEventListener('expenses:changed', refresh);
+  }, [refresh]);
+
+  // Read the next page when the end of the list scrolls into view
+  const sentinel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || !hasMore || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((entries) => entries[0]?.isIntersecting && loadMore(), { rootMargin: '200px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, loadMore, rows.length, loading]);
+
+  if (loading) return <PageLoader rows={3} />;
+  if (!rows.length && debounced) {
     return (
       <EmptyState
         icon={UserX}
         title="No stuck approvals match your search"
-        description="Try a different claim number or name."
+        description="Try a different claim number or employee name."
         action={<Button variant="secondary" onClick={onClearSearch}>Clear search</Button>}
       />
     );
   }
+  if (!rows.length) return <EmptyState icon={UserX} title="No stuck approvals" description="Claims waiting on a deactivated approver will appear here for reassignment." />;
   return (
-    <Card className="p-0 overflow-x-auto">
-      <Table>
-        <TableHeader><TableRow><TableHead>Claim</TableHead><TableHead>Employee</TableHead><TableHead>Inactive approver</TableHead><TableHead>Submitted</TableHead><TableHead className="text-right">Amount</TableHead><TableHead /></TableRow></TableHeader>
-        <TableBody>
-          {visible.map((c) => (
-            <TableRow key={c.id}>
-              <TableCell className="font-mono text-xs text-[#0F5E63]">{c.claim_number}</TableCell>
-              <TableCell>{c.employee_name}</TableCell>
-              <TableCell>{c.manager_name} <StatusBadge status={c.status} /></TableCell>
-              <TableCell className="text-xs"><DateText value={c.submitted_at} /></TableCell>
-              <TableCell className="text-right"><Money value={c.total_claimed} /></TableCell>
-              <TableCell className="text-right"><Link href={`/expenses/${c.id}`}><Button size="xs">Reassign</Button></Link></TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Card>
+    <div className="space-y-3">
+      <div className="font-mono text-xs text-[#4A5568]">
+        {rows.length} of {total} {total === 1 ? 'stuck claim' : 'stuck claims'}
+      </div>
+      <Card className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader><TableRow><TableHead>Claim</TableHead><TableHead>Employee</TableHead><TableHead>Inactive approver</TableHead><TableHead>Submitted</TableHead><TableHead className="text-right">Amount</TableHead><TableHead /></TableRow></TableHeader>
+          <TableBody>
+            {rows.map((c) => (
+              <TableRow key={c.id}>
+                <TableCell className="font-mono text-xs text-[#0F5E63]">{c.claim_number}</TableCell>
+                <TableCell>{c.employee_name}</TableCell>
+                <TableCell>{c.manager_name} <StatusBadge status={c.status} /></TableCell>
+                <TableCell className="text-xs"><DateText value={c.submitted_at} /></TableCell>
+                <TableCell className="text-right"><Money value={c.total_claimed} /></TableCell>
+                <TableCell className="text-right"><Link href={`/expenses/${c.id}`}><Button size="xs">Reassign</Button></Link></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Card>
+      <div ref={sentinel} />
+      {hasMore && (
+        <div className="flex justify-center">
+          <Button variant="secondary" size="sm" isLoading={loadingMore} onClick={loadMore}>Load more</Button>
+        </div>
+      )}
+    </div>
   );
 };

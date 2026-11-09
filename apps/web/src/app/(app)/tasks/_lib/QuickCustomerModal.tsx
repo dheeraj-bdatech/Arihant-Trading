@@ -9,7 +9,7 @@ import { Building2 } from 'lucide-react';
 import { INDIAN_STATES, stateOfCity } from '@arihant/shared';
 import { Button, Input, Modal, Select } from '@/components/ui';
 import { api } from '@/lib/api';
-import { SECTOR_OPTIONS } from '@/app/(app)/leads/_lib/sectors';
+import { useSectorOptions } from '@/app/(app)/leads/_lib/sectors';
 import { errorMessage } from './task-lib';
 
 export interface QuickCustomer {
@@ -27,6 +27,7 @@ export const QuickCustomerModal: React.FC<{
   onCreated: (org: QuickCustomer) => void;
 }> = ({ isOpen, onClose, onCreated }) => {
   const [form, setForm] = useState(EMPTY);
+  const sectorOptions = useSectorOptions();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -113,7 +114,7 @@ export const QuickCustomerModal: React.FC<{
           label="Sector / Department"
           value={form.sector}
           onChange={(e) => set({ sector: e.target.value })}
-          options={[{ value: '', label: 'Select Sector...' }, ...SECTOR_OPTIONS]}
+          options={[{ value: '', label: 'Select Sector...' }, ...sectorOptions]}
         />
         <div className="flex justify-end gap-2 border-t border-[#ECE9E2] pt-3">
           <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>

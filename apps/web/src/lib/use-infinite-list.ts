@@ -21,7 +21,14 @@ const mergeById = <T extends { id?: unknown }>(prev: T[], next: T[]): T[] => {
  *  - `refresh()` re-reads every page loaded so far in place (after an edit or a realtime event),
  *    so the reader is not dropped back to the top of the list.
  *  - Answers that arrive after the filters changed or a refresh started are discarded.
+ *  - While the first page of new filters is loading, `hasMore` is false and `loadMore()` does nothing, so a marker
+ *    still in view cannot ask for "page n+1" of filters that have only just been sent.
+ *  - After a page fails to load, `loadMore()` does nothing for a few seconds. A scroll marker re-arms each time
+ *    loading stops, so without this an offline or failing page would be requested again on every frame; now the
+ *    marker's next call is refused and it stays quiet until it scrolls back into view or the button is pressed.
  */
+const RETRY_AFTER_MS = 3000;
+
 export function useInfiniteList<T extends { id?: unknown }>(
   fetchPage: (page: number) => Promise<PageAnswer<T>>,
   { enabled = true }: { enabled?: boolean } = {},
@@ -35,6 +42,10 @@ export function useInfiniteList<T extends { id?: unknown }>(
   const gen = useRef(0);
   const pages = useRef(0);
   const busy = useRef(false);
+  /** The first page of new filters is in flight. */
+  const resetting = useRef(false);
+  /** No further page before this time (ms): set when a page fails to load. */
+  const retryAt = useRef(0);
 
   const take = (answers: PageAnswer<T>[], upTo: number) => {
     const last = answers[answers.length - 1];
@@ -50,6 +61,11 @@ export function useInfiniteList<T extends { id?: unknown }>(
   useEffect(() => {
     if (!enabled) return;
     const g = ++gen.current;
+    // the old filters' page count no longer applies
+    pages.current = 0;
+    setLoaded(0);
+    resetting.current = true;
+    retryAt.current = 0;
     setLoading(true);
     fetchPage(1)
       .then((res) => g === gen.current && take([res], 1))
@@ -57,7 +73,11 @@ export function useInfiniteList<T extends { id?: unknown }>(
         console.error('Failed to load list:', err);
         if (g === gen.current) take([[]], 1);
       })
-      .finally(() => g === gen.current && setLoading(false));
+      .finally(() => {
+        if (g !== gen.current) return;
+        resetting.current = false;
+        setLoading(false);
+      });
   }, [fetchPage, enabled]);
 
   const refresh = useCallback(async () => {
@@ -69,14 +89,18 @@ export function useInfiniteList<T extends { id?: unknown }>(
     } catch (err) {
       console.error('Failed to refresh list:', err);
     } finally {
-      if (g === gen.current) setLoading(false);
+      if (g === gen.current) {
+        // a refresh that overtook a reset re-read from page 1 itself
+        resetting.current = false;
+        setLoading(false);
+      }
     }
   }, [fetchPage]);
 
   const hasMore = loaded > 0 && loaded < totalPages;
 
   const loadMore = useCallback(async () => {
-    if (busy.current || pages.current >= totalPages) return;
+    if (busy.current || resetting.current || pages.current >= totalPages || Date.now() < retryAt.current) return;
     busy.current = true;
     setLoadingMore(true);
     const g = gen.current;
@@ -84,6 +108,7 @@ export function useInfiniteList<T extends { id?: unknown }>(
     try {
       const res = await fetchPage(next);
       if (g !== gen.current) return;
+      retryAt.current = 0;
       pages.current = next;
       setLoaded(next);
       setRows((prev) => mergeById(prev, rowsOf(res)));
@@ -93,6 +118,7 @@ export function useInfiniteList<T extends { id?: unknown }>(
       }
     } catch (err) {
       console.error('Failed to load more:', err);
+      retryAt.current = Date.now() + RETRY_AFTER_MS;
     } finally {
       busy.current = false;
       setLoadingMore(false);

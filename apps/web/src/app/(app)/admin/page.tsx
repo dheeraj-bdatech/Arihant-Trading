@@ -1,54 +1,47 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import {
-  Settings,
   Users,
-  Shield,
-  Layers,
-  Database,
   Search,
-  CheckCircle2,
-  XCircle,
-  ToggleLeft,
-  ToggleRight,
   ShieldAlert,
   UserPlus,
-  Key,
-  Sliders,
+  KeyRound,
   Check,
   Building2,
-  Eye,
-  FileText,
-  Calendar,
   Box,
-  Wrench,
-  Receipt,
-  CheckSquare,
   Lock,
-  Compass,
-  RefreshCw,
-  Database as DatabaseIcon,
   MapPin,
-  History,
-  LayoutList,
+  Map as MapIcon,
   Pencil,
   Plus,
   UserX,
   UserCheck,
   Trash2,
   Power,
+  Eye,
+  ListChecks,
+  LayoutList,
+  Settings,
+  Layers,
+  Tags,
 } from 'lucide-react';
-import { useAuth, PRESET_ROLE_USERS } from '@/lib/auth-context';
+import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import { useInfiniteList } from '@/lib/use-infinite-list';
+import { usePagedList } from '@/lib/use-paged-list';
 import {
   Button,
   Badge,
   Card,
-  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
   PageContainer,
   PageHeader,
+  SectionHeader,
+  StatGrid,
+  StatCard,
   Table,
   TableHeader,
   TableBody,
@@ -56,15 +49,20 @@ import {
   TableHead,
   TableCell,
   PageLoader,
-  FilterMenu,
   InfoCallout,
-  EmptyState, StatGrid, StatCard, RowMenu,
+  EmptyState,
+  RowMenu,
   Spinner,
+  FilterMenu,
+  Input,
+  Pagination,
 } from '@/components/ui';
 import { ROLE_PROFILES, USER_ROLES, isLockedModule, type UserRole, type RolePermissionProfile } from '@arihant/shared';
 import { roleCanReach } from '@/lib/route-access';
+import { clearSectorOptions } from '@/app/(app)/leads/_lib/sectors';
 import {
   BulkInviteModal,
+  ClientCategoryFormModal,
   ConfirmModal,
   DepartmentFormModal,
   ModuleSwitchOffModal,
@@ -72,6 +70,7 @@ import {
   TemporaryPasswordModal,
   TerritoryFormModal,
   UserFormModal,
+  type AdminClientCategory,
   type AdminDepartment,
   type AdminProduct,
   type AdminRegion,
@@ -79,81 +78,48 @@ import {
   type AdminZone,
 } from './_components/AdminForms';
 
-const ADMIN_TABS = ['permissions', 'users', 'departments', 'products', 'zones', 'audit'] as const;
-const AUDIT_PAGE = 50;
-/** People per Personnel directory page (infinite scroll). */
-const USERS_PAGE_SIZE = 25;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ISO_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/;
-/** 'manager_manager_approved' → 'Manager approved'; 'tender_stage_changed' → 'Tender stage changed'. */
-const humanAction = (a: unknown): string => {
-  const words = String(a ?? '')
-    .replace(/[._-]+/g, ' ')
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w, i, all) => w && w !== all[i - 1]);
-  const t = words.join(' ');
-  return t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Update';
-};
-/** Payload values for people: IST dates, names for user ids, no raw ids / hashes. */
-const AUDIT_HIDDEN_KEYS = new Set(['id', 'password_hash', 'created_at', 'updated_at', '_actorId', 'actorId']);
+/** The panel's views; the id is also the ?tab= deep link (dashboard cards link to users, products and zones). */
+const SECTIONS = ['users', 'departments', 'products', 'zones', 'regions', 'categories', 'permissions'] as const;
+type Section = (typeof SECTIONS)[number];
+/** Rows per page on every admin list (the API caps a page at 100). */
+const PAGE_SIZE = 20;
+/** A list card: the table runs edge to edge, the pager is its footer. */
+const LIST_CARD = 'overflow-hidden [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none';
+/** The last menu in the filter row opens to the left on wide screens, to the right where the row stacks. */
+const END_MENU = 'max-lg:[&_.filter-menu-panel]:left-0 max-lg:[&_.filter-menu-panel]:right-auto [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto';
 
-const DEPARTMENT_NAMES: Record<UserRole, string> = {
-  management: 'Executive Management',
-  regional_manager: 'Regional Operations & Sales',
-  sales: 'Field Sales & BD',
-  tender_team: 'GeM Tender Operations',
-  demo_team: 'Field Demonstrations & Fleet',
-  service_team: 'Service & Maintenance Depot',
-  accounts: 'Finance & Accounts',
-  admin: 'IT & System Administration',
+const SCOPE: Record<RolePermissionProfile['territorialScope'], { label: string; variant: 'info' | 'default' | 'outline' }> = {
+  all_india: { label: 'All India', variant: 'info' },
+  regional: { label: 'Own region', variant: 'default' },
+  assigned_accounts: { label: 'Assigned accounts', variant: 'outline' },
 };
 
 const CAPABILITY_LABELS: Record<keyof RolePermissionProfile['capabilities'], { label: string; desc: string }> = {
-  canViewAllIndia: {
-    label: 'All-India National Visibility',
-    desc: 'Unrestricted operational visibility across all zones and regions without regional boundary locking.',
-  },
-  canSwitchZones: {
-    label: 'Strategic Zone Switching',
-    desc: 'Ability to toggle between North, South, East, and West territorial command views.',
-  },
-  canApproveTenders: {
-    label: 'Tender Go/No-Go Approval',
-    desc: 'Authorisation to review internal risk notes and sign off on bidding participation.',
-  },
-  canSubmitTenderBids: {
-    label: 'Bid Envelope Submission',
-    desc: 'Direct submission of GeM bids, EMD fee processing, and commercial price uploads.',
-  },
-  canManageDemos: {
-    label: 'Demo Fleet Management',
-    desc: 'Reserve equipment from depot matrix, schedule trials, and issue security gate passes.',
-  },
-  canManageService: {
-    label: 'Breakdown Ticket Resolution',
-    desc: 'Assign engineers, update diagnostic logs, and officially issue ticket closure certificates.',
-  },
-  canEndorseExpensesStage1: {
-    label: 'Stage 1 Manager Expense Endorsement',
-    desc: 'First-level policy and receipt validation under corporate travel & reimbursement rules.',
-  },
-  canDisburseExpensesStage2: {
-    label: 'Stage 2 Finance Disbursement',
-    desc: 'Financial audit, GST verification, and payout authorization by corporate accounts.',
-  },
-  canUnblockTasks: {
-    label: 'Task & Blocker Clearance',
-    desc: 'Review and approve task blocker removal requests across team milestones.',
-  },
-  canManageUsersAndMasters: {
-    label: 'Master Records & RBAC Administration',
-    desc: 'Create and modify system accounts, zones, equipment MHA QRs, and role policies.',
-  },
+  canViewAllIndia: { label: 'See all of India', desc: 'Sees records from every zone and region, not only their own.' },
+  canSwitchZones: { label: 'Switch between zones', desc: 'Can change the view between the North, South, East and West zones.' },
+  canApproveTenders: { label: 'Approve tender bids', desc: 'Reviews the risk notes and decides go or no-go on a tender.' },
+  canSubmitTenderBids: { label: 'Submit bids on GeM', desc: 'Uploads bids and prices on GeM and handles EMD payments.' },
+  canManageDemos: { label: 'Run demos', desc: 'Books demo units, schedules trials and issues gate passes.' },
+  canManageService: { label: 'Resolve service tickets', desc: 'Assigns engineers, updates diagnostics and closes tickets.' },
+  canEndorseExpensesStage1: { label: 'Approve expenses (stage 1)', desc: 'Checks claims and receipts against the travel policy, as the manager.' },
+  canDisburseExpensesStage2: { label: 'Pay expenses (stage 2)', desc: 'Verifies GST and releases the payment, as Accounts.' },
+  canUnblockTasks: { label: 'Clear task blockers', desc: 'Approves requests to remove blockers on team tasks.' },
+  canManageUsersAndMasters: { label: 'Manage accounts and master lists', desc: 'Creates accounts and edits zones, equipment and role access.' },
 };
 
+const MATRIX_COLUMNS: { key: keyof RolePermissionProfile['capabilities']; label: string }[] = [
+  { key: 'canViewAllIndia', label: 'All India' },
+  { key: 'canApproveTenders', label: 'Tender approval' },
+  { key: 'canSubmitTenderBids', label: 'Bid submission' },
+  { key: 'canManageDemos', label: 'Demos' },
+  { key: 'canManageService', label: 'Service' },
+  { key: 'canEndorseExpensesStage1', label: 'Expenses stage 1' },
+  { key: 'canDisburseExpensesStage2', label: 'Expenses stage 2' },
+  { key: 'canManageUsersAndMasters', label: 'Admin' },
+];
+
 const asRows = (res: any): any[] => (Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : Array.isArray(res?.items) ? res.items : []);
+const totalOf = (res: any): number => Number(res?.total ?? res?.meta?.total ?? asRows(res).length) || 0;
 const show = (v: unknown, fallback = '—'): string =>
   v === undefined || v === null || v === '' || String(v) === 'undefined' || String(v) === 'null' ? fallback : String(v);
 const fmtStamp = (v: unknown): string => {
@@ -161,30 +127,104 @@ const fmtStamp = (v: unknown): string => {
   return d && !Number.isNaN(d.getTime()) ? d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }) : '—';
 };
 
+/** The value 300 ms after it stops changing (search boxes). */
+function useDebounced<T>(value: T, ms = 300): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return v;
+}
+
+function SearchBox({ value, onChange, label, placeholder }: { value: string; onChange: (v: string) => void; label: string; placeholder: string }) {
+  return (
+    <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
+      <Search className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
+      <Input type="search" aria-label={label} placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} className="h-9 pl-9 text-xs" />
+    </div>
+  );
+}
+
+/** Loading, failure and empty rows for a paged table body; renders nothing once rows are in. */
+function ListState({
+  loading,
+  error,
+  empty,
+  colSpan,
+  emptyText,
+  action,
+  onRetry,
+}: {
+  loading: boolean;
+  error: string | null;
+  empty: boolean;
+  colSpan: number;
+  emptyText: string;
+  action?: React.ReactNode;
+  onRetry: () => void;
+}) {
+  if (!loading && !error && !empty) return null;
+  return (
+    <TableRow>
+      <TableCell colSpan={colSpan} className="py-10 text-center text-xs text-[#4A5568]">
+        {loading ? (
+          <span className="inline-flex items-center gap-2">
+            <Spinner size="sm" /> Loading…
+          </span>
+        ) : error ? (
+          <div className="space-y-2">
+            <p className="text-[#881337]">This list didn&rsquo;t load. {error}</p>
+            <Button size="xs" variant="secondary" onClick={onRetry}>
+              Try again
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p>{emptyText}</p>
+            {action}
+          </div>
+        )}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/* ------------------------------------------------------------------ page -- */
+
 export default function AdminPage() {
+  const router = useRouter();
   const { user, hasRole } = useAuth();
-  const [activeTab, setActiveTabState] = useState<string>('permissions');
-  const setActiveTab = (tab: string) => {
-    setActiveTabState(tab);
+  const canView = hasRole(['management', 'admin']);
+  /** Blueprint §2: user onboarding, master data CRUD and role provisioning belong to the System Administrator alone. */
+  const isAdmin = hasRole('admin');
+  /** RBAC spec §6: management governs module access too (a switch never grants, and never locks the administrator out). */
+  const canSwitchModules = hasRole(['management', 'admin']);
+
+  const [section, setSectionState] = useState<Section>('users');
+  const setSection = (id: Section) => {
+    setSectionState(id);
     try {
       const url = new URL(window.location.href);
-      url.searchParams.set('tab', tab);
+      url.searchParams.set('tab', id);
+      url.searchParams.delete('open');
       window.history.replaceState(window.history.state, '', url.pathname + url.search);
     } catch {}
   };
   const [isLoading, setIsLoading] = useState(true);
 
-  // Data states
-  const [usersList, setUsersList] = useState<any[]>([]);
-  const [productsList, setProductsList] = useState<any[]>([]);
-  const [zonesList, setZonesList] = useState<any[]>([]);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
-  const [auditTotal, setAuditTotal] = useState(0);
-  const [auditPage, setAuditPage] = useState(1);
-  const [auditLoading, setAuditLoading] = useState(false);
+  // Lookups for the forms and the headline counts (not the lists on screen — those are paged).
+  const [usersList, setUsersList] = useState<AdminUser[]>([]);
+  const [zonesList, setZonesList] = useState<AdminZone[]>([]);
   const [regionsList, setRegionsList] = useState<AdminRegion[]>([]);
+  const [departmentsList, setDepartmentsList] = useState<AdminDepartment[]>([]);
+  const [counts, setCounts] = useState({ users: 0, activeUsers: 0, products: 0, categories: 0 });
+  const [access, setAccess] = useState<{ modules: { key: string; label: string; paths: string[] }[]; blocks: any[] } | null>(null);
+  const [failed, setFailed] = useState<string[]>([]);
+
   const [userForm, setUserForm] = useState<{ open: boolean; editing: AdminUser | null }>({ open: false, editing: null });
-  const [tempPassword, setTempPassword] = useState<{ email: string; password: string } | null>(null);
+  const [tempPassword, setTempPassword] = useState<{ email: string; password: string; title?: string } | null>(null);
+  const [confirmReset, setConfirmReset] = useState<AdminUser | null>(null);
   const [confirmUser, setConfirmUser] = useState<AdminUser | null>(null);
   const [productForm, setProductForm] = useState<{ open: boolean; editing: AdminProduct | null }>({ open: false, editing: null });
   const [territoryForm, setTerritoryForm] = useState<{ open: boolean; kind: 'zone' | 'region'; editing: AdminZone | AdminRegion | null; zoneId?: string }>({
@@ -192,75 +232,77 @@ export default function AdminPage() {
     kind: 'zone',
     editing: null,
   });
-  const [notice, setNotice] = useState<string | null>(null);
-  // module switches per role (Admin → Role Permissions): GET /admin/access
-  const [access, setAccess] = useState<{ modules: { key: string; label: string; paths: string[] }[]; blocks: any[] } | null>(null);
+  const [deptForm, setDeptForm] = useState<{ open: boolean; editing: AdminDepartment | null }>({ open: false, editing: null });
+  const [catForm, setCatForm] = useState<{ open: boolean; editing: AdminClientCategory | null }>({ open: false, editing: null });
+  const [confirmDelete, setConfirmDelete] = useState<{ kind: 'department' | 'zone' | 'region' | 'client category'; id: string; name: string } | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [switchOff, setSwitchOff] = useState<{ role: UserRole; module: string; label: string } | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
-  const [departmentsList, setDepartmentsList] = useState<AdminDepartment[]>([]);
-  const [deptForm, setDeptForm] = useState<{ open: boolean; editing: AdminDepartment | null }>({ open: false, editing: null });
-  const [confirmDelete, setConfirmDelete] = useState<{ kind: 'department' | 'zone' | 'region'; id: string; name: string } | null>(null);
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const [search, setSearch] = useState('');
-  const [selectedDept, setSelectedDept] = useState<string>('all');
-
-  // RBAC permissions state
-  const [selectedRoleForConfig, setSelectedRoleForConfig] = useState<UserRole>('regional_manager');
-  const [permissionsState, setPermissionsState] = useState<Record<UserRole, RolePermissionProfile['capabilities']>>(() => {
-    const initial: any = {};
-    for (const role of USER_ROLES) {
-      initial[role] = { ...ROLE_PROFILES[role].capabilities };
-    }
-    return initial;
-  });
-  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
-  const [failed, setFailed] = useState<string[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedRole, setSelectedRole] = useState<UserRole>('regional_manager');
+  const [compareOpen, setCompareOpen] = useState(false);
 
-  // Personnel directory (Users tab): one page per request, appended as the table scrolls, with the search
-  // (300 ms after typing stops) and the role applied by the API. `usersList` stays the name lookup for the
-  // forms, the audit log and the zone head-counts. Until the tab opens its first page is held (never
-  // answered), so opening it shows the loader, not an empty directory for a frame.
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
-    return () => clearTimeout(timer);
-  }, [search]);
-  const directoryOpen = activeTab === 'users' && hasRole(['management', 'admin']);
-  const fetchDirectoryPage = useCallback(
-    (page: number) =>
-      directoryOpen
-        ? api.get('/users', {
-            page,
-            limit: USERS_PAGE_SIZE,
-            search: debouncedSearch || undefined,
-            role: selectedDept !== 'all' ? selectedDept : undefined,
-          })
-        : new Promise<never>(() => {}),
-    [directoryOpen, debouncedSearch, selectedDept],
+  // Filters per list
+  const [userSearch, setUserSearch] = useState('');
+  const [userRole, setUserRole] = useState('');
+  const [userStatus, setUserStatus] = useState('');
+  const [deptSearch, setDeptSearch] = useState('');
+  const [productSearch, setProductSearch] = useState('');
+  const [zoneSearch, setZoneSearch] = useState('');
+  const [regionSearch, setRegionSearch] = useState('');
+  const [regionZone, setRegionZone] = useState('');
+  const [catSearch, setCatSearch] = useState('');
+  const dUserSearch = useDebounced(userSearch.trim());
+  const dDeptSearch = useDebounced(deptSearch.trim());
+  const dProductSearch = useDebounced(productSearch.trim());
+  const dZoneSearch = useDebounced(zoneSearch.trim());
+  const dRegionSearch = useDebounced(regionSearch.trim());
+  const dCatSearch = useDebounced(catSearch.trim());
+
+  // Paged lists: each reads its page only while its view is open.
+  const usersPage = usePagedList<AdminUser & Record<string, any>>(
+    useCallback(
+      (page: number) =>
+        api.get('/users', {
+          page,
+          limit: PAGE_SIZE,
+          search: dUserSearch || undefined,
+          role: userRole || undefined,
+          is_active: userStatus || undefined,
+        }),
+      [dUserSearch, userRole, userStatus],
+    ),
+    { enabled: canView && section === 'users' },
   );
-  const {
-    rows: directoryUsers,
-    total: directoryTotal,
-    loading: directoryLoading,
-    loadingMore: directoryLoadingMore,
-    hasMore: directoryHasMore,
-    loadMore: loadMoreUsers,
-    refresh: refreshDirectory,
-  } = useInfiniteList<any>(fetchDirectoryPage);
+  const deptPage = usePagedList<AdminDepartment>(
+    useCallback((page: number) => api.get('/masters/departments', { page, limit: PAGE_SIZE, search: dDeptSearch || undefined }), [dDeptSearch]),
+    { enabled: canView && section === 'departments' },
+  );
+  const productPage = usePagedList<AdminProduct>(
+    useCallback((page: number) => api.get('/masters/products', { page, limit: PAGE_SIZE, search: dProductSearch || undefined }), [dProductSearch]),
+    { enabled: canView && section === 'products' },
+  );
+  const zonePage = usePagedList<AdminZone>(
+    useCallback((page: number) => api.get('/masters/zones', { page, limit: PAGE_SIZE, search: dZoneSearch || undefined }), [dZoneSearch]),
+    { enabled: canView && section === 'zones' },
+  );
+  const regionPage = usePagedList<AdminRegion>(
+    useCallback(
+      (page: number) => api.get('/masters/regions', { page, limit: PAGE_SIZE, search: dRegionSearch || undefined, zone_id: regionZone || undefined }),
+      [dRegionSearch, regionZone],
+    ),
+    { enabled: canView && section === 'regions' },
+  );
+  const catPage = usePagedList<AdminClientCategory>(
+    useCallback(
+      (page: number) => api.get('/masters/client-categories', { page, limit: PAGE_SIZE, include_inactive: 'true', search: dCatSearch || undefined }),
+      [dCatSearch],
+    ),
+    { enabled: canView && section === 'categories' },
+  );
 
-  // Read the next directory page when the end of the table scrolls into view
-  const directoryEnd = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = directoryEnd.current;
-    if (!el || !directoryHasMore || typeof IntersectionObserver === 'undefined') return;
-    const io = new IntersectionObserver((entries) => entries[0]?.isIntersecting && loadMoreUsers(), { rootMargin: '200px' });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [directoryHasMore, loadMoreUsers, directoryUsers.length]);
-
-  const fetchAdminData = async () => {
-    setIsLoading(true);
+  const fetchLookups = async () => {
     const bad: string[] = [];
     const load = (label: string, call: Promise<any>) =>
       call.catch((err: any) => {
@@ -268,68 +310,63 @@ export default function AdminPage() {
         bad.push(label);
         return null;
       });
-    const [usersRes, productsRes, zonesRes, regionsRes, auditRes, departmentsRes, accessRes] = await Promise.all([
-      load('Users', api.get('/users', { limit: 100 })),
-      load('Equipment masters', api.get('/masters/products')),
+    const [usersRes, activeRes, productsRes, zonesRes, regionsRes, departmentsRes, accessRes, categoriesRes] = await Promise.all([
+      load('People', api.get('/users', { limit: 100 })),
+      load('People', api.get('/users', { limit: 1, is_active: 'true' })),
+      load('Equipment', api.get('/masters/products', { page: 1, limit: 1 })),
       load('Zones', api.get('/masters/zones')),
       load('Regions', api.get('/masters/regions')),
-      load('Audit log', api.get('/audit', { limit: AUDIT_PAGE, page: 1 })),
       load('Departments', api.get('/masters/departments')),
       load('Module access', api.get('/admin/access')),
+      load('Client categories', api.get('/masters/client-categories', { page: 1, limit: 1, include_inactive: 'true' })),
     ]);
-    setDepartmentsList(asRows(departmentsRes));
-    setAccess(accessRes);
     setUsersList(asRows(usersRes));
-    setProductsList(asRows(productsRes));
     setZonesList(asRows(zonesRes));
     setRegionsList(asRows(regionsRes));
-    setAuditLogs(asRows(auditRes));
-    setAuditTotal(Number(auditRes?.total ?? auditRes?.meta?.total ?? asRows(auditRes).length) || 0);
-    setAuditPage(1);
-    setFailed(bad);
-    setIsLoading(false);
+    setDepartmentsList(asRows(departmentsRes));
+    setAccess(accessRes);
+    setCounts({ users: totalOf(usersRes), activeUsers: totalOf(activeRes), products: totalOf(productsRes), categories: totalOf(categoriesRes) });
+    setFailed([...new Set(bad)]);
   };
 
-  const loadOlderAudit = async () => {
-    setAuditLoading(true);
-    try {
-      const next = auditPage + 1;
-      const res = await api.get('/audit', { limit: AUDIT_PAGE, page: next });
-      const rows = asRows(res);
-      setAuditLogs((prev) => {
-        const seen = new Set(prev.map((r) => r.id));
-        return [...prev, ...rows.filter((r) => !seen.has(r.id))];
-      });
-      setAuditTotal(Number(res?.total ?? res?.meta?.total ?? auditTotal) || auditTotal);
-      setAuditPage(next);
-    } catch (err: any) {
-      setActionError(err?.message || 'Could not load older audit entries');
-    } finally {
-      setAuditLoading(false);
+  useEffect(() => {
+    // deep links: /admin?tab=products, /admin?tab=users&open=<user id>; the audit log has its own page
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    if (tab === 'audit') {
+      router.replace('/audit');
+      return;
     }
-  };
+    if (tab && (SECTIONS as readonly string[]).includes(tab)) setSectionState(tab as Section);
+    if (!canView) return;
+    fetchLookups().finally(() => setIsLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const reloadMasters = async () => {
-    const [productsRes, zonesRes, regionsRes] = await Promise.all([
-      api.get('/masters/products').catch(() => null),
-      api.get('/masters/zones').catch(() => null),
-      api.get('/masters/regions').catch(() => null),
-    ]);
-    if (productsRes) setProductsList(asRows(productsRes));
-    if (zonesRes) setZonesList(asRows(zonesRes));
-    if (regionsRes) setRegionsList(asRows(regionsRes));
-  };
+  // ?open=<user id> opens that user's edit form (admin only — it is an edit form)
+  const openedFromLink = React.useRef(false);
+  useEffect(() => {
+    if (openedFromLink.current || isLoading || !isAdmin) return;
+    const id = new URLSearchParams(window.location.search).get('open');
+    if (!id) return;
+    openedFromLink.current = true;
+    const known = usersList.find((u) => u.id === id);
+    (known ? Promise.resolve(known) : api.get(`/users/${id}`))
+      .then((target: AdminUser) => {
+        if (!target) return;
+        setSectionState('users');
+        setUserForm({ open: true, editing: target });
+      })
+      .catch(() => setActionError('That person’s account could not be opened. It may have been removed.'));
+  }, [isLoading, isAdmin, usersList]);
 
   const reloadUsers = async () => {
-    const [res] = await Promise.all([api.get('/users', { limit: 100 }).catch(() => null), refreshDirectory()]);
-    if (res) setUsersList(asRows(res));
+    await Promise.all([usersPage.refresh(), fetchLookups()]);
   };
-
-  const reloadDepartments = async () => {
-    const res = await api.get('/masters/departments').catch(() => null);
-    if (res) setDepartmentsList(asRows(res));
+  const reloadMasters = async () => {
+    clearSectorOptions();
+    await Promise.all([productPage.refresh(), zonePage.refresh(), regionPage.refresh(), deptPage.refresh(), catPage.refresh(), fetchLookups()]);
   };
-
   const reloadAccess = async () => {
     const res = await api.get('/admin/access').catch(() => null);
     if (res) setAccess(res);
@@ -343,177 +380,200 @@ export default function AdminPage() {
     try {
       await api.patch(`/admin/access/${role}/${module}`, { blocked: false });
       await reloadAccess();
-      setNotice(`${label} switched back on for ${ROLE_PROFILES[role].title}.`);
+      setNotice(`${label} is back on for ${ROLE_PROFILES[role].title}.`);
     } catch (err: any) {
-      setActionError(err?.message || 'Could not switch the module back on');
+      setActionError(err?.message || `${label} could not be switched back on. Try again.`);
     } finally {
       setSwitching(null);
     }
   };
 
-  useEffect(() => {
-    // deep links: /admin?tab=audit, /admin?tab=users&open=<user id>
-    const params = new URLSearchParams(window.location.search);
-    const tab = params.get('tab');
-    if (tab && (ADMIN_TABS as readonly string[]).includes(tab)) setActiveTabState(tab);
-    if (hasRole(['management', 'admin'])) {
-      fetchAdminData();
+  /** Hidden categories stay on their customers but are no longer offered when a customer is added. */
+  const setCategoryActive = async (c: AdminClientCategory, active: boolean) => {
+    setActionError(null);
+    try {
+      await api.patch(`/masters/client-categories/${c.id}`, { is_active: active });
+      clearSectorOptions();
+      await catPage.refresh();
+      setNotice(active ? `${c.name} is offered in pickers again.` : `${c.name} is hidden from pickers. Its customers keep it.`);
+    } catch (err: any) {
+      setActionError(err?.message || `${c.name} could not be updated. Try again.`);
     }
-  }, []);
-
-  // ?open=<user id> opens that user's edit form once the directory is loaded
-  const openedFromLink = React.useRef(false);
-  useEffect(() => {
-    if (openedFromLink.current || usersList.length === 0) return;
-    const id = new URLSearchParams(window.location.search).get('open');
-    if (!id) return;
-    openedFromLink.current = true;
-    const target = usersList.find((u) => u.id === id);
-    if (target) {
-      setActiveTabState('users');
-      setUserForm({ open: true, editing: target });
-    }
-  }, [usersList]);
-
-  const userName = (id: unknown) => (typeof id === 'string' ? usersList.find((u) => u.id === id)?.full_name : undefined);
-  const formatAuditValue = (key: string, v: unknown): string | null => {
-    if (v === null || v === undefined || v === '') return null;
-    if (typeof v === 'boolean') return v ? 'yes' : 'no';
-    if (typeof v === 'object') return Array.isArray(v) ? `${v.length} item${v.length === 1 ? '' : 's'}` : null;
-    const str = String(v);
-    if (UUID_RE.test(str)) return userName(str) ?? null; // raw ids mean nothing to a reader
-    if (ISO_RE.test(str)) {
-      // calendar days ('2026-10-19' or midnight UTC) are dates, not instants — never show them as "5:30 am"
-      if (/^\d{4}-\d{2}-\d{2}(T00:00:00(\.0+)?(Z|\+00:?00)?)?$/.test(str)) {
-        return new Date(`${str.slice(0, 10)}T00:00:00+05:30`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
-      }
-      return fmtStamp(str);
-    }
-    if (/status|stage|role|action/i.test(key)) return humanAction(str);
-    return str.length > 80 ? `${str.slice(0, 77)}…` : str;
-  };
-  const getEntityLabel = (log: any) => {
-    const val = log.new_value || log.previous_value || log.details || {};
-    const name =
-      val.name ||
-      val.full_name ||
-      val.organisation_name ||
-      val.title ||
-      val.tender_no ||
-      val.quotation_no ||
-      val.ticket_no ||
-      val.remarks ||
-      val.product_name ||
-      val.file_name ||
-      val.purpose;
-
-    const entityTypeFormatted = (log.entity_type || 'Record').replace(/_/g, ' ').toUpperCase();
-    if (name) {
-      return (
-        <div className="max-w-[300px] truncate font-sans" title={`${entityTypeFormatted}: ${name}`}>
-          <span className="font-semibold text-[#14213D] capitalize">{entityTypeFormatted}: </span>
-          <span className="text-[#0F5E63] font-medium">{name}</span>
-        </div>
-      );
-    }
-    return (
-      <span className="font-sans font-semibold text-[#14213D] capitalize">
-        {entityTypeFormatted} Record
-      </span>
-    );
-  };
-
-  const getPayloadSummary = (log: any) => {
-    const val = log.new_value || log.details || log.previous_value;
-    if (!val || (typeof val === 'object' && Object.keys(val).length === 0)) {
-      return <span className="text-[#6B7280] font-sans italic">No payload parameters</span>;
-    }
-    if (typeof val === 'object') {
-      const prev = log.previous_value && typeof log.previous_value === 'object' ? log.previous_value : {};
-      const parts = Object.keys(val)
-        .filter((k) => !AUDIT_HIDDEN_KEYS.has(k))
-        .map((k) => {
-          const shown = formatAuditValue(k, val[k]);
-          if (shown === null) return null;
-          const label = k.replace(/_id$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').toLowerCase();
-          const before = k in prev && prev[k] !== val[k] ? formatAuditValue(k, prev[k]) : null;
-          return before ? `${label}: ${before} → ${shown}` : `${label}: ${shown}`;
-        })
-        .filter((x): x is string => !!x)
-        .slice(0, 4);
-      return (
-        <span
-          className="font-sans text-[11px] text-[#14213D] line-clamp-2 max-w-[280px] sm:line-clamp-none sm:truncate"
-          title={parts.join(' · ')}
-        >
-          {parts.join(' · ') || 'Updated record attributes'}
-        </span>
-      );
-    }
-    return <span className="font-sans text-[11px] text-[#14213D]">{String(val)}</span>;
   };
 
   /** Called after the confirmation dialog; the API also refuses self-deactivation and orphaning direct reports. */
   const setUserActive = async (target: AdminUser, active: boolean) => {
     setActionError(null);
     await api.patch(`/users/${target.id}`, { is_active: active });
-    setUsersList((prev) => prev.map((u) => (u.id === target.id ? { ...u, is_active: active } : u)));
-    refreshDirectory();
-    setNotice(`${target.full_name} ${active ? 're-activated' : 'deactivated'}.`);
+    await reloadUsers();
+    setNotice(`${target.full_name} ${active ? 'can sign in again' : 'is deactivated'}.`);
   };
 
-  // The capability matrix documents what the server enforces (ROLE_PROFILES + @Roles guards); it is read-only
-  // here because toggling it cannot change live access — that needs a code / policy change.
-  void setPermissionsState;
-  void saveFeedback;
-  void setSaveFeedback;
+  const regionCountByZone = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of regionsList) if (r.zone_id) m.set(r.zone_id, (m.get(r.zone_id) ?? 0) + 1);
+    return m;
+  }, [regionsList]);
+  const offByRole = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const b of access?.blocks || []) m.set(b.role, (m.get(b.role) ?? 0) + 1);
+    return m;
+  }, [access]);
 
-
-
-
-
-
-  if (!hasRole(['management', 'admin'])) {
-    return (
-      <div className="mx-auto my-12 max-w-xl p-6 text-center text-[#4A5568] bg-white border border-[#DCD8CE] rounded-xl space-y-3 shadow-xs sm:p-8">
-        <ShieldAlert className="h-12 w-12 text-[#9A3412] mx-auto" />
-        <h2 className="text-lg font-bold text-[#14213D]">Access Restricted</h2>
-        <p className="text-xs">
-          Only Top Management and System Administrators have permission to access master configurations, user administration, and role security policies.
-        </p>
-      </div>
-    );
-  }
-
-  const canManage = hasRole(['management', 'admin']);
-  const regionsByZone = (zoneId: string) => regionsList.filter((r) => r.zone_id === zoneId);
-  const activeRoleProfile = ROLE_PROFILES[selectedRoleForConfig];
-  const activeRoleCaps = permissionsState[selectedRoleForConfig];
-
-  if (isLoading && usersList.length === 0) {
+  if (!canView) {
     return (
       <PageContainer>
-        <PageLoader label="Loading administration data" rows={4} />
+        <EmptyState
+          icon={ShieldAlert}
+          title="You don’t have access to Administration"
+          description="Administration is open to management and the System Administrator. Ask the System Administrator if an account or master list needs changing."
+        />
       </PageContainer>
     );
   }
 
+  if (isLoading) {
+    return (
+      <PageContainer>
+        <PageLoader label="Loading administration" rows={4} />
+      </PageContainer>
+    );
+  }
+
+  const profile = ROLE_PROFILES[selectedRole];
+  const blockedCount = access?.blocks.length ?? 0;
+  const deactivated = Math.max(0, counts.users - counts.activeUsers);
+  const noHead = departmentsList.filter((d) => !d.head_user_id && !d.head_name).length;
+  const userFiltered = Boolean(userSearch || userRole || userStatus);
+  const clearUserFilters = () => {
+    setUserSearch('');
+    setUserRole('');
+    setUserStatus('');
+  };
+  const cols = (n: number) => n + (isAdmin ? 1 : 0);
+  const actionsHead = isAdmin && (
+    <TableHead className="w-12 text-right">
+      <span className="sr-only">Actions</span>
+    </TableHead>
+  );
+
+  // Headline cards: one per master list; a click opens that list (like the Leads cards).
+  const headline: { key: string; label: string; value: number; subtext: string; icon: React.ReactNode; variant: 'primary' | 'emerald' | 'amber' | 'default'; open: Section; active: boolean }[] = [
+    {
+      key: 'people',
+      label: 'People',
+      value: counts.users,
+      subtext: deactivated ? `${counts.activeUsers} active · ${deactivated} deactivated` : `${counts.activeUsers} active`,
+      icon: <Users size={16} />,
+      variant: 'primary',
+      open: 'users',
+      active: section === 'users',
+    },
+    {
+      key: 'departments',
+      label: 'Departments',
+      value: departmentsList.length,
+      subtext: noHead ? `${noHead} without a head` : 'Every department has a head',
+      icon: <Building2 size={16} />,
+      variant: noHead ? 'amber' : 'emerald',
+      open: 'departments',
+      active: section === 'departments',
+    },
+    {
+      key: 'equipment',
+      label: 'Equipment',
+      value: counts.products,
+      subtext: 'Used by tenders, demos and service',
+      icon: <Box size={16} />,
+      variant: 'default',
+      open: 'products',
+      active: section === 'products',
+    },
+    {
+      key: 'territory',
+      label: 'Zones',
+      value: zonesList.length,
+      subtext: `${regionsList.length} regions`,
+      icon: <MapPin size={16} />,
+      variant: 'default',
+      open: 'zones',
+      active: section === 'zones' || section === 'regions',
+    },
+  ];
+
+  const viewOptions: { key: Section; label: string; icon: React.ReactNode; count?: number | string; urgent?: boolean }[] = [
+    { key: 'users', label: 'People', icon: <Users className="h-4 w-4" />, count: counts.users },
+    { key: 'departments', label: 'Departments', icon: <Building2 className="h-4 w-4" />, count: departmentsList.length },
+    { key: 'products', label: 'Equipment', icon: <Box className="h-4 w-4" />, count: counts.products },
+    { key: 'zones', label: 'Zones', icon: <MapIcon className="h-4 w-4" />, count: zonesList.length },
+    { key: 'regions', label: 'Regions', icon: <MapPin className="h-4 w-4" />, count: regionsList.length },
+    { key: 'categories', label: 'Client categories', icon: <Tags className="h-4 w-4" />, count: counts.categories },
+    { key: 'permissions', label: 'Roles & access', icon: <KeyRound className="h-4 w-4" />, count: blockedCount ? `${blockedCount} off` : USER_ROLES.length, urgent: blockedCount > 0 },
+  ];
+
+  // Page actions dock beside the View menu, as on every other module page.
+  const actions: Partial<Record<Section, React.ReactNode>> = {
+    users: (
+      <>
+        <Button size="sm" variant="secondary" leftIcon={<Users className="h-4 w-4" />} onClick={() => setInviteOpen(true)}>
+          Invite people
+        </Button>
+        <Button size="sm" leftIcon={<UserPlus className="h-4 w-4" />} onClick={() => setUserForm({ open: true, editing: null })}>
+          Add person
+        </Button>
+      </>
+    ),
+    departments: (
+      <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setDeptForm({ open: true, editing: null })}>
+        Add department
+      </Button>
+    ),
+    products: (
+      <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setProductForm({ open: true, editing: null })}>
+        Add equipment
+      </Button>
+    ),
+    zones: (
+      <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setTerritoryForm({ open: true, kind: 'zone', editing: null })}>
+        Add zone
+      </Button>
+    ),
+    regions: (
+      <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setTerritoryForm({ open: true, kind: 'region', editing: null, zoneId: regionZone || undefined })}>
+        Add region
+      </Button>
+    ),
+    categories: (
+      <Button size="sm" leftIcon={<Plus className="h-4 w-4" />} onClick={() => setCatForm({ open: true, editing: null })}>
+        Add category
+      </Button>
+    ),
+  };
+
   return (
     <PageContainer>
-      {/* ── HEADER (title hidden by design; actions dock into the toolbar) ── */}
       <PageHeader
-        title="Enterprise Administration & System Masters"
-        icon={<Settings className="h-5 w-5 text-[#0F5E63]" />}
+        title="Administration"
+        icon={<Settings className="h-7 w-7 text-[#0F5E63]" />}
+        actions={isAdmin && actions[section] ? <div className="flex items-center gap-2">{actions[section]}</div> : undefined}
       />
 
       <StatGrid cols={4} className="gap-3">
-        <StatCard title="Personnel" value={usersList.length} icon={<Users size={16} />} variant="primary" subtext={`${usersList.filter((u) => u.is_active).length} active`} />
-        <StatCard title="Roles" value={USER_ROLES.length} icon={<Shield size={16} />} variant="emerald" subtext="RBAC personas" />
-        <StatCard title="Zones" value={zonesList.length} icon={<MapPin size={16} />} variant="amber" subtext={`${productsList.length} equipment masters`} />
-        <StatCard title="Audit Entries" value={auditTotal} icon={<History size={16} />} variant="rose" subtext={`${auditLogs.length} loaded · newest first`} />
+        {headline.map((c) => (
+          <StatCard
+            key={c.key}
+            label={c.label}
+            value={c.value}
+            subtext={c.subtext}
+            icon={c.icon}
+            variant={c.variant}
+            className={c.active ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
+            onClick={() => setSection(c.open)}
+          />
+        ))}
       </StatGrid>
 
-      {/* One filter row on every section: View first; the Users section adds its search + Department menu. */}
+      {/* One filter row: the View menu picks the list, then that list's search and dropdowns. */}
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
           <FilterMenu
@@ -521,465 +581,131 @@ export default function AdminPage() {
             icon={<LayoutList />}
             neutralKeys={[]}
             className="shrink-0"
-            options={[
-              { key: 'permissions', label: 'Role Permissions', icon: <Key /> },
-              { key: 'users', label: 'Users & Invitations', icon: <Users />, count: usersList.length },
-              { key: 'departments', label: 'Departments', icon: <Building2 />, count: departmentsList.length },
-              { key: 'products', label: 'Equipment & MHA QRs', icon: <Box />, count: productsList.length },
-              { key: 'zones', label: 'Zones & Regions', icon: <MapPin />, count: zonesList.length },
-              { key: 'audit', label: 'Security Audit Logs', icon: <History />, count: auditTotal },
-            ].map((v) => ({ ...v, active: activeTab === v.key, onSelect: () => setActiveTab(v.key) }))}
+            options={viewOptions.map((o) => ({ ...o, active: section === o.key, onSelect: () => setSection(o.key) }))}
           />
-          {activeTab === 'users' && (
+
+          {section === 'users' && (
             <>
-              <div className="relative w-full min-w-[200px] lg:w-auto lg:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B7280]" aria-hidden />
-                <input
-                  type="search"
-                  aria-label="Search personnel"
-                  placeholder="Search by name, email, phone…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="h-9 w-full rounded-lg border border-[#C9C4B8] bg-white pl-9 pr-3 text-xs text-[#14213D] placeholder:text-[#6B7280] focus:border-[#0F5E63] focus:outline-none focus:ring-2 focus:ring-[#0F5E63]/15"
-                />
-              </div>
+              <SearchBox value={userSearch} onChange={setUserSearch} label="Search people" placeholder="Search name, email or phone" />
               <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
                 <FilterMenu
                   label="Role"
-                  icon={<Shield />}
-                  align="right"
-                  className="flex-1 lg:flex-none [&_.filter-menu-panel]:max-h-[320px] [&_.filter-menu-panel]:overflow-y-auto"
+                  icon={<Layers />}
                   options={[
-                    { key: 'all', label: 'All roles', active: selectedDept === 'all', onSelect: () => setSelectedDept('all') },
-                    ...USER_ROLES.map((r) => ({
-                      key: r,
-                      label: ROLE_PROFILES[r].title,
-                      active: selectedDept === r,
-                      onSelect: () => setSelectedDept(r),
-                    })),
+                    { key: 'all', label: 'All roles', active: !userRole, onSelect: () => setUserRole('') },
+                    ...USER_ROLES.map((r) => ({ key: r, label: ROLE_PROFILES[r].title, active: userRole === r, onSelect: () => setUserRole(r) })),
                   ]}
                 />
-                {canManage && (
-                  <>
-                    <Button size="sm" variant="secondary" leftIcon={<Users className="h-3.5 w-3.5" />} onClick={() => setInviteOpen(true)} className="shrink-0">
-                      Invite people
-                    </Button>
-                    <Button size="sm" leftIcon={<UserPlus className="h-3.5 w-3.5" />} onClick={() => setUserForm({ open: true, editing: null })} className="shrink-0">
-                      Add user
-                    </Button>
-                  </>
-                )}
-                {(search || selectedDept !== 'all') && (
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => {
-                      setSearch('');
-                      setSelectedDept('all');
-                    }}
-                    className="text-xs text-[#4A5568] hover:text-[#881337]"
-                  >
+                <FilterMenu
+                  label="Status"
+                  icon={<UserCheck />}
+                  align="right"
+                  className={END_MENU}
+                  options={[
+                    { key: 'all', label: 'Any status', active: !userStatus, onSelect: () => setUserStatus('') },
+                    { key: 'true', label: 'Active', active: userStatus === 'true', onSelect: () => setUserStatus('true') },
+                    { key: 'false', label: 'Deactivated', active: userStatus === 'false', onSelect: () => setUserStatus('false') },
+                  ]}
+                />
+                {userFiltered && (
+                  <Button variant="ghost" size="xs" onClick={clearUserFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
                     Clear
                   </Button>
                 )}
               </div>
             </>
           )}
+          {section === 'departments' && <SearchBox value={deptSearch} onChange={setDeptSearch} label="Search departments" placeholder="Search name or code" />}
+          {section === 'products' && <SearchBox value={productSearch} onChange={setProductSearch} label="Search equipment" placeholder="Search name, category or make" />}
+          {section === 'zones' && <SearchBox value={zoneSearch} onChange={setZoneSearch} label="Search zones" placeholder="Search zone name or code" />}
+          {section === 'categories' && <SearchBox value={catSearch} onChange={setCatSearch} label="Search client categories" placeholder="Search category name" />}
+          {section === 'regions' && (
+            <>
+              <SearchBox value={regionSearch} onChange={setRegionSearch} label="Search regions" placeholder="Search region or zone" />
+              <FilterMenu
+                label="Zone"
+                icon={<MapIcon />}
+                align="right"
+                className={END_MENU}
+                options={[
+                  { key: 'all', label: 'All zones', active: !regionZone, onSelect: () => setRegionZone('') },
+                  ...zonesList.map((z) => ({ key: z.id, label: `${z.name} (${z.code})`, count: regionCountByZone.get(z.id) ?? 0, active: regionZone === z.id, onSelect: () => setRegionZone(z.id) })),
+                ]}
+              />
+            </>
+          )}
+          {section === 'permissions' && (
+            <FilterMenu
+              label="Role"
+              icon={<KeyRound />}
+              neutralKeys={[]}
+              options={USER_ROLES.map((r) => {
+                const off = offByRole.get(r);
+                return { key: r, label: ROLE_PROFILES[r].title, count: off ? `${off} off` : undefined, urgent: !!off, active: selectedRole === r, onSelect: () => setSelectedRole(r) };
+              })}
+            />
+          )}
         </div>
       </Card>
 
+      {!isAdmin && (
+        <InfoCallout variant="info" title="View only">
+          You can see everything here, and switch modules on or off for a role under Roles &amp; access. Only the System Administrator can invite people or change
+          accounts and master lists.
+        </InfoCallout>
+      )}
       {failed.length > 0 && (
-        <InfoCallout variant="danger" title="Some administration data could not be loaded">
-          {failed.join(', ')} did not respond. Your role may not be allowed to read them, or the API is unreachable. Use Reload to retry.
+        <InfoCallout variant="danger" title="Some admin data didn’t load">
+          {failed.join(', ')} didn’t respond, so some counts and form options may be missing. Reload the page to try again.
         </InfoCallout>
       )}
       {actionError && (
-        <InfoCallout variant="danger" title="Action failed" onClose={() => setActionError(null)}>
+        <InfoCallout variant="danger" title="That didn’t work" onClose={() => setActionError(null)}>
           {actionError}
         </InfoCallout>
       )}
       {notice && (
-        <InfoCallout variant="success" title="Saved" onClose={() => setNotice(null)}>
+        <InfoCallout variant="success" title="Done" onClose={() => setNotice(null)}>
           {notice}
         </InfoCallout>
       )}
 
-      {/* ── TAB 1: ROLE PERMISSIONS & SCOPE MATRIX ── */}
-      {activeTab === 'permissions' && (
-        <div className="space-y-6">
-          {/* Status Alert Banner */}
-          <div className="rounded-xl border border-[#0F5E63]/30 bg-gradient-to-r from-[#0F5E63]/5 via-white to-[#E3EFEE]/40 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs">
-            <div className="flex items-start sm:items-center gap-3.5">
-              <div className="w-10 h-10 rounded-xl bg-[#0F5E63] text-white flex items-center justify-center shrink-0 shadow-sm">
-                <Key className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <h3 className="text-sm font-bold text-[#14213D]">Enterprise Role & Access Control Policy</h3>
-                  <Badge variant="cyber" size="sm">Active Baseline</Badge>
-                </div>
-                <p className="text-xs text-[#4A5568] mt-0.5 max-w-3xl">
-                  <strong>Enterprise Security:</strong> Each role gets its modules from the RBAC policy. Switch a module off for a role (or back on)
-                  under Module access; it takes effect at once. Business rules such as approvals and sign-offs stay fixed in code.
-                </p>
-              </div>
-            </div>
-            {saveFeedback && (
-              <div className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3] animate-in fade-in">
-                {saveFeedback}
-              </div>
-            )}
-          </div>
-
-          {/* 8 Persona Selector Pills */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
-            {USER_ROLES.map((r) => {
-              const profile = ROLE_PROFILES[r];
-              const isSelected = selectedRoleForConfig === r;
-              return (
-                <Card
-                  key={r}
-                  variant="interactive"
-                  selected={isSelected}
-                  padding="xs"
-                  onClick={() => setSelectedRoleForConfig(r)}
-                  className="text-left flex flex-col justify-between cursor-pointer"
-                >
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568] line-clamp-2 sm:line-clamp-none sm:truncate">
-                    {DEPARTMENT_NAMES[r]}
-                  </div>
-                  <div className={`text-xs font-bold mt-1 truncate ${isSelected ? 'text-[#0F5E63]' : 'text-[#14213D]'}`}>
-                    {profile.title}
-                  </div>
-                  <div className="mt-2 flex items-center gap-1">
-                    <span
-                      className={`inline-block w-1.5 h-1.5 rounded-full ${
-                        profile.territorialScope === 'all_india'
-                          ? 'bg-[#0F5E63]'
-                          : profile.territorialScope === 'regional'
-                          ? 'bg-[#1F2E52]'
-                          : 'bg-[#0F5E63]'
-                      }`}
-                    />
-                    <span className="text-[9px] font-bold text-[#4A5568] uppercase">
-                      {profile.territorialScope.replace('_', ' ')}
-                    </span>
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
-
-          {/* Selected Role Detail & Interactive Permission Configuration */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left Col: Scope & Functional Responsibilities */}
-            <div className="lg:col-span-1 space-y-4">
-              <div className="rounded-xl border border-[#DCD8CE] bg-white p-4 shadow-xs space-y-4 sm:p-5">
-                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#DCD8CE]">
-                  <div className="min-w-0">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#4A5568]">
-                      Role Definition
-                    </span>
-                    <h3 className="text-base font-black text-[#14213D]">{activeRoleProfile.title}</h3>
-                  </div>
-                  <Badge variant="outline" size="sm" className="uppercase font-mono shrink-0">
-                    {activeRoleProfile.role}
-                  </Badge>
-                </div>
-
-                <div>
-                  <span className="text-[11px] font-bold uppercase text-[#4A5568]">Department</span>
-                  <div className="text-xs font-semibold text-[#14213D] mt-0.5">
-                    {activeRoleProfile.department}
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-[11px] font-bold uppercase text-[#4A5568]">Territorial Visibility Scope</span>
-                  <div className="mt-1">
-                    <Badge
-                      variant={
-                        activeRoleProfile.territorialScope === 'all_india'
-                          ? 'cyber'
-                          : activeRoleProfile.territorialScope === 'regional'
-                          ? 'urgent'
-                          : 'success'
-                      }
-                      size="sm"
-                    >
-                      {activeRoleProfile.territorialScope.toUpperCase().replace('_', ' ')}
-                    </Badge>
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-[11px] font-bold uppercase text-[#4A5568]">Mandated Scope Summary</span>
-                  <blockquote className="mt-1 p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-xs font-medium text-[#0F5E63] leading-relaxed italic">
-                    &ldquo;{activeRoleProfile.scopeSummary}&rdquo;
-                  </blockquote>
-                </div>
-
-                <div>
-                  <span className="text-[11px] font-bold uppercase text-[#4A5568]">Core Operational Responsibilities</span>
-                  <ul className="mt-2 space-y-1.5 text-xs text-[#14213D]">
-                    {activeRoleProfile.responsibilities.map((resp, idx) => (
-                      <li key={idx} className="flex items-start gap-2">
-                        <Check className="w-3.5 h-3.5 text-[#0F5E63] shrink-0 mt-0.5" />
-                        <span>{resp}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="pt-3 border-t border-[#DCD8CE]">
-                  <span className="text-[11px] font-bold uppercase text-[#4A5568]">Allowed Modules in Sidebar</span>
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    {activeRoleProfile.allowedModules.map((mod) => (
-                      <span
-                        key={mod}
-                        className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[#E3EFEE] text-[#0F5E63] border border-[#DCD8CE]"
-                      >
-                        /{mod}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Right 2 Cols: module switches, then the read-only capabilities */}
-            <div className="lg:col-span-2 space-y-4">
-              <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-                <div className="p-4 sm:p-5 border-b border-[#DCD8CE] bg-[#FBFAF7]">
-                  <h3 className="text-sm font-bold text-[#14213D] flex items-start gap-2 sm:items-center">
-                    <Power className="w-4 h-4 text-[#0F5E63] mt-0.5 shrink-0 sm:mt-0" />
-                    <span>Module access: {activeRoleProfile.title}</span>
-                  </h3>
-                  <p className="text-xs text-[#4A5568] mt-0.5">
-                    Switch a module off for everyone in this role, or back on. The API refuses it at once; the app hides it the next time they open or
-                    return to it. A module the role was never given cannot be switched on here.
-                  </p>
-                </div>
-                <div className="divide-y divide-[#ECE9E2]">
-                  {!access && <div className="p-4 text-xs text-[#4A5568]">Module access could not be loaded.</div>}
-                  {(access?.modules || []).map((m) => {
-                    const reach = roleCanReach(selectedRoleForConfig, m.paths[0]);
-                    const locked = isLockedModule(selectedRoleForConfig, m.key);
-                    const block = access?.blocks.find((b) => b.role === selectedRoleForConfig && b.module === m.key);
-                    const on = reach && !block;
-                    const busy = switching === `${selectedRoleForConfig}:${m.key}`;
-                    return (
-                      <div key={m.key} className={`flex items-start justify-between gap-4 p-4 ${reach ? '' : 'bg-[#FBFAF7]/60'}`}>
-                        <div className="min-w-0 space-y-0.5">
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="text-xs font-bold text-[#14213D]">{m.label}</span>
-                            <span className="font-mono text-[10px] text-[#4A5568]">{m.paths[0]}</span>
-                            {!reach ? (
-                              <Badge variant="outline" size="sm">Not part of this role</Badge>
-                            ) : locked ? (
-                              <Badge variant="info" size="sm">Always on</Badge>
-                            ) : block ? (
-                              <Badge variant="danger" size="sm">Switched off</Badge>
-                            ) : (
-                              <Badge variant="success" size="sm">On</Badge>
-                            )}
-                          </div>
-                          {block && (
-                            <p className="text-xs text-[#4A5568]">
-                              Off since {fmtStamp(block.blocked_at)}
-                              {block.blocked_by_name ? ` by ${block.blocked_by_name}` : ''}: {block.reason}
-                            </p>
-                          )}
-                          {locked && <p className="text-xs text-[#4A5568]">The administrator always keeps the administration panel, so nobody is locked out.</p>}
-                        </div>
-                        {reach && (
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={on}
-                            disabled={!canManage || locked || busy}
-                            aria-label={`${m.label} for ${activeRoleProfile.title}: ${on ? 'on' : 'off'}`}
-                            onClick={() => switchModule(selectedRoleForConfig, m.key, m.label, !on)}
-                            className={`relative inline-flex h-6 w-11 shrink-0 rounded-full max-sm:before:absolute max-sm:before:-inset-2.5 border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30 ${on ? 'bg-[#0F5E63]' : 'bg-[#C9C4B8]'} ${!canManage || locked ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
-                          >
-                            <span
-                              aria-hidden="true"
-                              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${on ? 'translate-x-5' : 'translate-x-0'}`}
-                            />
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-[#DCD8CE] bg-white overflow-hidden shadow-xs">
-                <div className="p-4 sm:p-5 border-b border-[#DCD8CE] bg-[#FBFAF7] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-[#14213D] flex items-start gap-2 sm:items-center">
-                      <Sliders className="w-4 h-4 text-[#0F5E63] mt-0.5 shrink-0 sm:mt-0" />
-                      <span>Capabilities (business rules): {activeRoleProfile.title}</span>
-                    </h3>
-                    <p className="text-xs text-[#4A5568] mt-0.5">
-                      What this role may approve, sign off or administer, as the server&apos;s RBAC guards enforce it. Read-only: these
-                      are business rules fixed in code and the RBAC specification; switch whole modules on or off under Module access.
-                    </p>
-                  </div>
-                  <Badge variant="outline" size="sm" className="shrink-0 gap-1">
-                    <Lock className="h-3 w-3" /> Read-only
-                  </Badge>
-                </div>
-
-                <div className="divide-y divide-[#DCD8CE]">
-                  {(Object.keys(CAPABILITY_LABELS) as Array<keyof RolePermissionProfile['capabilities']>).map((capKey) => {
-                    const isEnabled = activeRoleCaps[capKey];
-                    const info = CAPABILITY_LABELS[capKey];
-                    return (
-                      <div
-                        key={capKey}
-                        className={`p-4 flex items-start justify-between gap-4 transition-colors ${
-                          isEnabled ? 'bg-white' : 'bg-[#FBFAF7]/50'
-                        }`}
-                      >
-                        <div className="min-w-0 space-y-0.5">
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="text-xs font-bold text-[#14213D]">{info.label}</span>
-                            <span
-                              className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                                isEnabled
-                                  ? 'bg-[#E3EFEE] text-[#0B4A4E] border border-[#D0E5E3]'
-                                  : 'bg-[#ECE9E2] text-[#4A5568] border border-[#DCD8CE]'
-                              }`}
-                            >
-                              {isEnabled ? 'PERMITTED' : 'RESTRICTED'}
-                            </span>
-                          </div>
-                          <p className="text-xs text-[#4A5568] max-w-xl">{info.desc}</p>
-                        </div>
-
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={!!isEnabled}
-                          aria-readonly
-                          disabled
-                          title="Enforced by the server — read-only"
-                          aria-label={`${info.label}: ${isEnabled ? 'permitted' : 'restricted'} (read-only)`}
-                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed opacity-80 rounded-full max-sm:before:absolute max-sm:before:-inset-2.5 border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                            isEnabled ? 'bg-[#0F5E63]' : 'bg-[#C9C4B8]'
-                          }`}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                              isEnabled ? 'translate-x-5' : 'translate-x-0'
-                            }`}
-                          />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-            </div>
-          </div>
-
-          {/* Comparative Matrix Table across all 8 Roles */}
-          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
-            <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7]">
-              <h4 className="text-xs font-bold text-[#14213D] uppercase tracking-wider">
-                Enterprise Role Governance Matrix
-              </h4>
-            </div>
-            <Table className="table-fixed !min-w-0 max-sm:[&_tbody_tr]:!grid-cols-2 [&_td]:px-2.5 [&_th]:h-auto [&_th]:px-2.5 [&_th]:py-2.5 [&_th]:text-[10px] [&_th]:leading-tight">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[240px]">Enterprise Role</TableHead>
-                  <TableHead className="text-center">All-India</TableHead>
-                  <TableHead className="text-center">Tender Signoff</TableHead>
-                  <TableHead className="text-center">Bid Submit</TableHead>
-                  <TableHead className="text-center">Demos</TableHead>
-                  <TableHead className="text-center">Service</TableHead>
-                  <TableHead className="text-center">Stage 1 Exp</TableHead>
-                  <TableHead className="text-center">Stage 2 Payout</TableHead>
-                  <TableHead className="text-center">RBAC Admin</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {USER_ROLES.map((r) => {
-                  const caps = permissionsState[r];
-                  const prof = ROLE_PROFILES[r];
-                  return (
-                    <TableRow key={r}>
-                      <TableCell className="font-bold text-[#14213D]">
-                        <div className="truncate" title={prof.title}>{prof.title}</div>
-                        <div className="truncate text-[11px] text-[#4A5568] font-normal" title={DEPARTMENT_NAMES[r]}>{DEPARTMENT_NAMES[r]}</div>
-                        <div className="text-[10px] font-bold uppercase text-[#4A5568]">{prof.territorialScope.replace('_', ' ')}</div>
-                      </TableCell>
-                      <TableCell className="text-center">{caps.canViewAllIndia ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                      <TableCell className="text-center">{caps.canApproveTenders ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                      <TableCell className="text-center">{caps.canSubmitTenderBids ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                      <TableCell className="text-center">{caps.canManageDemos ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                      <TableCell className="text-center">{caps.canManageService ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                      <TableCell className="text-center">{caps.canEndorseExpensesStage1 ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                      <TableCell className="text-center">{caps.canDisburseExpensesStage2 ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                      <TableCell className="text-center">{caps.canManageUsersAndMasters ? <Check className="w-4 h-4 text-[#0F5E63] inline" /> : <span className="text-[#C9C4B8]">-</span>}</TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </Card>
-        </div>
-      )}
-
-      {/* ── TAB 2: USERS & DEPARTMENTS ── */}
-      {activeTab === 'users' && (
-        <div className="space-y-4">
-          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
-            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
-              <h2 className="font-serif text-sm font-bold text-[#14213D]">Personnel directory</h2>
-              <span className="font-mono text-xs text-[#4A5568]">
-                {directoryUsers.length} of {directoryTotal}
-              </span>
-            </div>
-
-            <Table className="[&_td]:px-3 [&_th]:px-3">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name & Contact</TableHead>
-                  <TableHead>Department & Role</TableHead>
-                  <TableHead>Territory & Manager</TableHead>
-                  <TableHead className="text-center">Status</TableHead>
-                  <TableHead className="text-right">Action</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {directoryLoading ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-10 text-center text-xs text-[#4A5568]">
-                      <span className="inline-flex items-center gap-2">
-                        <Spinner size="sm" /> Loading personnel…
-                      </span>
-                    </TableCell>
-                  </TableRow>
-                ) : directoryUsers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-10 text-center text-xs text-[#4A5568]">
-                      {debouncedSearch || selectedDept !== 'all' ? 'No personnel match this filter.' : 'No personnel records were returned.'}
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-                {!directoryLoading && directoryUsers.map((u) => (
+      {/* ── PEOPLE ── */}
+      {section === 'users' && (
+        <Card padding="none" className={LIST_CARD}>
+          <Table className="[&_td]:px-3 [&_th]:px-3">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Person</TableHead>
+                <TableHead>Role & department</TableHead>
+                <TableHead>Territory & manager</TableHead>
+                <TableHead className="text-center">Status</TableHead>
+                {actionsHead}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <ListState
+                loading={usersPage.loading}
+                error={usersPage.error}
+                empty={usersPage.rows.length === 0}
+                colSpan={cols(4)}
+                onRetry={usersPage.refresh}
+                emptyText={userFiltered ? 'No one matches these filters.' : isAdmin ? 'No people yet. Invite your team to get started.' : 'No people yet.'}
+                action={
+                  userFiltered && (
+                    <Button size="xs" variant="secondary" onClick={clearUserFilters}>
+                      Clear filters
+                    </Button>
+                  )
+                }
+              />
+              {!usersPage.loading &&
+                usersPage.rows.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell className="font-bold text-[#14213D]">
                       <div className="max-w-[280px] truncate" title={show(u.full_name)}>{show(u.full_name)}</div>
-                      <div className="max-w-[280px] truncate text-[11px] text-[#4A5568] font-mono font-normal" title={show(u.email)}>
-                        {show(u.email)}
-                      </div>
-                      {u.phone && <div className="text-[11px] text-[#4A5568] font-mono font-normal">{u.phone}</div>}
+                      <div className="max-w-[280px] truncate font-mono text-[11px] font-normal text-[#4A5568]" title={show(u.email)}>{show(u.email)}</div>
+                      {u.phone && <div className="font-mono text-[11px] font-normal text-[#4A5568]">{u.phone}</div>}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       <div className="font-medium text-[#14213D]">{ROLE_PROFILES[u.role as UserRole]?.title || show(u.role).replace(/_/g, ' ')}</div>
@@ -990,28 +716,26 @@ export default function AdminPage() {
                         {u.zone_name || 'All India'}
                         {u.region_name ? <span className="text-[#4A5568]"> · {u.region_name}</span> : null}
                       </div>
-                      <div className="max-w-[220px] truncate text-[11px] text-[#4A5568]" title={u.reporting_manager_name || 'No reporting manager'}>
-                        {u.reporting_manager_name ? `Reports to ${u.reporting_manager_name}` : 'No reporting manager'}
+                      <div className="max-w-[220px] truncate text-[11px] text-[#4A5568]" title={u.reporting_manager_name || 'No manager'}>
+                        {u.reporting_manager_name ? `Reports to ${u.reporting_manager_name}` : 'No manager'}
                       </div>
                     </TableCell>
-                    <TableCell className="text-center whitespace-nowrap">
-                      <Badge
-                        variant={u.is_active ? 'success' : 'danger'}
-                        size="sm"
-                      >
-                        {u.is_active ? 'ACTIVE' : 'DEACTIVATED'}
+                    <TableCell className="whitespace-nowrap text-center">
+                      <Badge variant={u.is_active ? 'success' : 'danger'} size="sm">
+                        {u.is_active ? 'Active' : 'Deactivated'}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-right whitespace-nowrap">
-                      {canManage ? (
+                    {isAdmin && (
+                      <TableCell className="whitespace-nowrap text-right">
                         <RowMenu
                           label={`Actions for ${u.full_name}`}
                           items={[
-                            { key: 'edit', label: 'Edit role, department, manager & territory', icon: <Pencil />, onSelect: () => setUserForm({ open: true, editing: u }) },
+                            { key: 'edit', label: 'Edit details', icon: <Pencil />, onSelect: () => setUserForm({ open: true, editing: u }) },
+                            { key: 'reset', label: 'Reset password…', icon: <KeyRound />, onSelect: () => setConfirmReset(u) },
                             u.is_active
                               ? {
                                   key: 'deactivate',
-                                  label: u.id === user?.id ? 'Deactivate (not allowed for your own account)' : 'Deactivate…',
+                                  label: u.id === user?.id ? 'You can’t deactivate yourself' : 'Deactivate…',
                                   icon: <UserX />,
                                   danger: true,
                                   disabled: u.id === user?.id,
@@ -1020,364 +744,593 @@ export default function AdminPage() {
                               : { key: 'activate', label: 'Re-activate…', icon: <UserCheck />, onSelect: () => setConfirmUser(u) },
                           ]}
                         />
-                      ) : (
-                        <span className="text-[11px] text-[#4A5568]">View only</span>
-                      )}
-                    </TableCell>
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))}
-              </TableBody>
-            </Table>
-            <div ref={directoryEnd} />
-            {directoryHasMore && !directoryLoading && (
-              <div className="flex justify-center border-t border-[#ECE9E2] px-4 py-3">
-                <Button variant="secondary" size="sm" isLoading={directoryLoadingMore} onClick={loadMoreUsers}>
-                  Load more
-                </Button>
-              </div>
-            )}
-          </Card>
-        </div>
-      )}
-
-      {/* ── DEPARTMENTS ── */}
-      {activeTab === 'departments' && (
-        <div className="space-y-4">
-          {canManage && (
-            <div className="flex justify-end">
-              <Button size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setDeptForm({ open: true, editing: null })}>
-                Add department
-              </Button>
-            </div>
-          )}
-          <Card padding="none" className="overflow-hidden border-[#DCD8CE] [&_.ui-table-wrap]:rounded-none [&_.ui-table-wrap]:border-0 [&_.ui-table-wrap]:shadow-none">
-            <div className="flex items-center justify-between gap-2 border-b border-[#ECE9E2] px-4 py-3">
-              <h2 className="font-serif text-sm font-bold text-[#14213D]">Departments</h2>
-              <span className="font-mono text-xs text-[#4A5568]">{departmentsList.length}</span>
-            </div>
-            {departmentsList.length === 0 ? (
-              <EmptyState icon={Building2} title="No departments yet" description="Departments group people; task blockers and escalations route to each department head." />
-            ) : (
-              <Table className="[&_td]:px-3 [&_th]:px-3">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Department</TableHead>
-                    <TableHead>Head</TableHead>
-                    <TableHead className="text-center">Active people</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead className="text-right">Action</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {departmentsList.map((d) => (
-                    <TableRow key={d.id}>
-                      <TableCell className="font-bold text-[#14213D]">
-                        <div className="max-w-[240px] truncate">{d.name}</div>
-                        <div className="font-mono text-[11px] font-normal text-[#4A5568]">{d.code}</div>
-                      </TableCell>
-                      <TableCell className="text-[#14213D]">{d.head_name || <span className="text-[#6B7280]">No head</span>}</TableCell>
-                      <TableCell className="text-center font-mono">{d.member_count ?? 0}</TableCell>
-                      <TableCell className="text-[#4A5568]">
-                        <div className="max-w-[320px] truncate" title={d.description || ''}>{d.description || '—'}</div>
-                      </TableCell>
-                      <TableCell className="text-right whitespace-nowrap">
-                        {canManage ? (
-                          <RowMenu
-                            label={`Actions for ${d.name}`}
-                            items={[
-                              { key: 'edit', label: 'Edit name, head & description', icon: <Pencil />, onSelect: () => setDeptForm({ open: true, editing: d }) },
-                              { key: 'delete', label: 'Delete…', icon: <Trash2 />, danger: true, onSelect: () => setConfirmDelete({ kind: 'department', id: d.id, name: d.name }) },
-                            ]}
-                          />
-                        ) : (
-                          <span className="text-[11px] text-[#4A5568]">View only</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </Card>
-        </div>
-      )}
-
-      {/* ── TAB 3: PRODUCTS & MHA QRs ── */}
-      {activeTab === 'products' && canManage && (
-        <div className="flex justify-end">
-          <Button size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setProductForm({ open: true, editing: null })}>
-            Add equipment
-          </Button>
-        </div>
-      )}
-      {activeTab === 'products' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {productsList.map((p) => (
-            <Card
-              key={p.id}
-              padding="md"
-              className="flex flex-col justify-between space-y-3"
-            >
-              <div>
-                <div className="flex items-start justify-between gap-2">
-                  <span className="font-bold text-[#14213D] text-xs leading-tight">
-                    {show(p.name)}
-                  </span>
-                  {p.is_mha_qr && (
-                    <Badge variant="urgent" size="sm" className="text-[10px] shrink-0">
-                      MHA QR
-                    </Badge>
-                  )}
-                </div>
-                <div className="mt-2 text-xs text-[#4A5568]">
-                  Category: <strong className="text-[#14213D]">{show(p.category)}</strong>
-                </div>
-                <div className="text-xs text-[#4A5568]">
-                  Make / OEM: <strong className="text-[#14213D]">{p.make || 'Arihant Partner'}</strong>
-                </div>
-              </div>
-
-              {p.spec_ref && (
-                <div className="pt-2 border-t border-[#DCD8CE] text-[10px] font-mono text-[#4A5568] break-words">
-                  QR Ref: {p.spec_ref}
-                </div>
-              )}
-              {canManage && (
-                <div className="flex justify-end">
-                  <Button size="xs" variant="ghost" leftIcon={<Pencil className="h-3 w-3" />} onClick={() => setProductForm({ open: true, editing: p })}>
-                    Edit
-                  </Button>
-                </div>
-              )}
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {/* ── TAB 4: ZONES & REGIONS ── */}
-      {activeTab === 'zones' && canManage && (
-        <div className="flex justify-end">
-          <Button size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setTerritoryForm({ open: true, kind: 'zone', editing: null })}>
-            Add zone
-          </Button>
-        </div>
-      )}
-      {activeTab === 'zones' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {zonesList.map((z) => {
-            const regs = regionsByZone(z.id);
-            const people = usersList.filter((u) => u.zone_id === z.id && u.is_active).length;
-            return (
-              <Card key={z.id} padding="md" className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="min-w-0 font-serif font-bold text-[#14213D] text-sm">{show(z.name)} Zone</span>
-                  <span className="font-mono text-xs text-[#0F5E63] uppercase font-bold">{show(z.code)}</span>
-                </div>
-                <p className="text-xs text-[#4A5568]">
-                  {regs.length} region{regs.length === 1 ? '' : 's'} · {people} active user{people === 1 ? '' : 's'}
-                </p>
-                <ul className="divide-y divide-[#ECE9E2] rounded-lg border border-[#ECE9E2]">
-                  {regs.length === 0 && <li className="px-3 py-2 text-[11px] text-[#4A5568]">No regions yet</li>}
-                  {regs.map((r) => (
-                    <li key={r.id} className="flex items-center justify-between gap-2 px-3 py-1.5 text-xs text-[#14213D]">
-                      <span className="truncate">{r.name}</span>
-                      {canManage && (
-                        <span className="flex shrink-0 items-center">
-                          <Button size="xs" variant="ghost" aria-label={`Edit region ${r.name}`} onClick={() => setTerritoryForm({ open: true, kind: 'region', editing: r })}>
-                            <Pencil className="h-3 w-3" />
-                          </Button>
-                          <Button size="xs" variant="ghost" aria-label={`Delete region ${r.name}`} onClick={() => setConfirmDelete({ kind: 'region', id: r.id, name: r.name })}>
-                            <Trash2 className="h-3 w-3 text-[#881337]" />
-                          </Button>
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                {canManage && (
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <Button size="xs" variant="ghost" leftIcon={<Trash2 className="h-3 w-3" />} onClick={() => setConfirmDelete({ kind: 'zone', id: z.id, name: z.name })}>
-                      Delete zone
-                    </Button>
-                    <Button size="xs" variant="ghost" leftIcon={<Pencil className="h-3 w-3" />} onClick={() => setTerritoryForm({ open: true, kind: 'zone', editing: z })}>
-                      Edit zone
-                    </Button>
-                    <Button size="xs" variant="secondary" leftIcon={<Plus className="h-3 w-3" />} onClick={() => setTerritoryForm({ open: true, kind: 'region', editing: null, zoneId: z.id })}>
-                      Add region
-                    </Button>
-                  </div>
-                )}
-              </Card>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── TAB 5: SECURITY AUDIT LOG ── */}
-      {activeTab === 'audit' && (
-        <Card>
-          <div className="p-4 border-b border-[#DCD8CE] bg-[#FBFAF7]">
-            <span className="text-xs font-bold text-[#14213D]">
-              Immutable PostgreSQL Security Audit Trail
-            </span>
-            <span className="ml-2 font-mono text-[11px] text-[#4A5568]">
-              {auditLogs.length.toLocaleString('en-IN')} of {auditTotal.toLocaleString('en-IN')} entries, newest first
-            </span>
-          </div>
-
-          {auditLogs.length === 0 ? (
-            <EmptyState icon={History} title="No audit entries" description="The security audit trail returned no records for your role." />
-          ) : (
-          <div className="sm:max-h-[600px] sm:overflow-y-auto">
-            <Table className="[&_td]:px-3 [&_th]:px-3">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Timestamp (IST) & Actor</TableHead>
-                  <TableHead>Action Code</TableHead>
-                  <TableHead>Entity</TableHead>
-                  <TableHead>Audit Payload Details</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {auditLogs.map((log) => (
-                  <TableRow key={log.id}>
-                    <TableCell className="whitespace-nowrap">
-                      <div className="text-[#14213D] font-sans font-semibold">{log.actor_name || 'System Engine'}</div>
-                      <div className="text-[#4A5568] font-mono text-[11px]">{fmtStamp(log.created_at)}</div>
-                    </TableCell>
-                    <TableCell className="text-[#0F5E63] font-semibold">
-                      <div className="max-w-[200px] truncate" title={log.action}>{humanAction(log.action)}</div>
-                      <div className="max-w-[200px] truncate font-mono text-[10px] font-normal text-[#4A5568]">{log.action}</div>
-                    </TableCell>
-                    <TableCell className="text-[#4A5568]">
-                      {getEntityLabel(log)}
-                    </TableCell>
-                    <TableCell className="text-[#4A5568] font-sans">
-                      {getPayloadSummary(log)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            {auditLogs.length < auditTotal && (
-              <div className="flex justify-center border-t border-[#ECE9E2] p-3">
-                <Button size="sm" variant="secondary" isLoading={auditLoading} onClick={loadOlderAudit}>
-                  Load {Math.min(AUDIT_PAGE, auditTotal - auditLogs.length)} older entries
-                </Button>
-              </div>
-            )}
-          </div>
-          )}
+            </TableBody>
+          </Table>
+          <Pagination page={usersPage.page} totalPages={usersPage.totalPages} total={usersPage.total} limit={PAGE_SIZE} onPage={usersPage.setPage} disabled={usersPage.loading} noun="people" />
         </Card>
       )}
 
-      <UserFormModal
-        isOpen={userForm.open}
-        onClose={() => setUserForm({ open: false, editing: null })}
-        editing={userForm.editing}
-        users={usersList as AdminUser[]}
-        zones={zonesList as AdminZone[]}
-        regions={regionsList}
-        departments={departmentsList}
-        currentUserId={user?.id}
-        onSaved={async (saved, temporaryPassword) => {
-          const wasEdit = !!userForm.editing;
-          setUserForm({ open: false, editing: null });
-          await reloadUsers();
-          if (temporaryPassword) setTempPassword({ email: saved.email, password: temporaryPassword });
-          setNotice(`${saved.full_name} ${wasEdit ? 'updated' : 'created'}.`);
-        }}
-      />
-      <TemporaryPasswordModal value={tempPassword} onClose={() => setTempPassword(null)} />
-      <ConfirmModal
-        isOpen={!!confirmUser}
-        onClose={() => setConfirmUser(null)}
-        danger={!!confirmUser?.is_active}
-        title={confirmUser?.is_active ? `Deactivate ${confirmUser?.full_name}?` : `Re-activate ${confirmUser?.full_name}?`}
-        confirmLabel={confirmUser?.is_active ? 'Deactivate account' : 'Re-activate account'}
-        message={
-          confirmUser?.is_active ? (
-            <>
-              <p>They will be signed out and can no longer sign in. Their records, approvals and audit history stay intact.</p>
-              <p>Anyone who reports to them must be moved to another manager first.</p>
-            </>
-          ) : (
-            <p>They will be able to sign in again with their existing credentials.</p>
-          )
-        }
-        onConfirm={async () => {
-          if (confirmUser) await setUserActive(confirmUser, !confirmUser.is_active);
-        }}
-      />
-      <ProductFormModal
-        isOpen={productForm.open}
-        onClose={() => setProductForm({ open: false, editing: null })}
-        editing={productForm.editing}
-        onSaved={async (p) => {
-          setProductForm({ open: false, editing: null });
-          await reloadMasters();
-          setNotice(`${p.name} saved.`);
-        }}
-      />
-      <TerritoryFormModal
-        isOpen={territoryForm.open}
-        onClose={() => setTerritoryForm((f) => ({ ...f, open: false, editing: null }))}
-        kind={territoryForm.kind}
-        editing={territoryForm.editing}
-        zones={zonesList as AdminZone[]}
-        defaultZoneId={territoryForm.zoneId}
-        onSaved={async () => {
-          const kind = territoryForm.kind;
-          setTerritoryForm((f) => ({ ...f, open: false, editing: null }));
-          await Promise.all([reloadMasters(), reloadUsers()]);
-          setNotice(`${kind === 'zone' ? 'Zone' : 'Region'} saved.`);
-        }}
-      />
-      <DepartmentFormModal
-        isOpen={deptForm.open}
-        onClose={() => setDeptForm({ open: false, editing: null })}
-        editing={deptForm.editing}
-        users={usersList as AdminUser[]}
-        onSaved={async () => {
-          const wasEdit = !!deptForm.editing;
-          setDeptForm({ open: false, editing: null });
-          await reloadDepartments();
-          setNotice(`Department ${wasEdit ? 'updated' : 'added'}.`);
-        }}
-      />
-      <BulkInviteModal
-        isOpen={inviteOpen}
-        onClose={() => setInviteOpen(false)}
-        users={usersList as AdminUser[]}
-        regions={regionsList}
-        onInvited={reloadUsers}
-      />
-      <ModuleSwitchOffModal
-        target={switchOff}
-        onClose={() => setSwitchOff(null)}
-        onDone={async () => {
-          const t = switchOff;
-          setSwitchOff(null);
-          await reloadAccess();
-          if (t) setNotice(`${t.label} switched off for ${ROLE_PROFILES[t.role].title}.`);
-        }}
-      />
-      <ConfirmModal
-        isOpen={!!confirmDelete}
-        onClose={() => setConfirmDelete(null)}
-        danger
-        title={`Delete ${confirmDelete?.kind} ${confirmDelete?.name}?`}
-        confirmLabel={`Delete ${confirmDelete?.kind}`}
-        message={<p>This cannot be undone. While people or records still belong to it, the system refuses and says so.</p>}
-        onConfirm={async () => {
-          if (!confirmDelete) return;
-          const path = { department: '/masters/departments', zone: '/masters/zones', region: '/masters/regions' }[confirmDelete.kind];
-          await api.delete(`${path}/${confirmDelete.id}`);
-          await Promise.all([reloadDepartments(), reloadMasters()]);
-          setNotice(`${confirmDelete.name} deleted.`);
-        }}
-      />
+      {/* ── DEPARTMENTS ── */}
+      {section === 'departments' && (
+        <Card padding="none" className={LIST_CARD}>
+          <Table className="[&_td]:px-3 [&_th]:px-3">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Department</TableHead>
+                <TableHead>Head</TableHead>
+                <TableHead className="text-center">Active people</TableHead>
+                <TableHead>Description</TableHead>
+                {actionsHead}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <ListState
+                loading={deptPage.loading}
+                error={deptPage.error}
+                empty={deptPage.rows.length === 0}
+                colSpan={cols(4)}
+                onRetry={deptPage.refresh}
+                emptyText={dDeptSearch ? `No departments match “${dDeptSearch}”.` : 'No departments yet. Add one to group people and route escalations.'}
+              />
+              {!deptPage.loading &&
+                deptPage.rows.map((d) => (
+                  <TableRow key={d.id}>
+                    <TableCell className="font-bold text-[#14213D]">
+                      <div className="max-w-[240px] truncate">{d.name}</div>
+                      <div className="font-mono text-[11px] font-normal text-[#4A5568]">{d.code}</div>
+                    </TableCell>
+                    <TableCell className="text-[#14213D]">{d.head_name || <span className="text-[#9A3412]">No head set</span>}</TableCell>
+                    <TableCell className="text-center font-mono">{d.member_count ?? 0}</TableCell>
+                    <TableCell className="text-[#4A5568]">
+                      <div className="max-w-[320px] truncate" title={d.description || ''}>{d.description || '—'}</div>
+                    </TableCell>
+                    {isAdmin && (
+                      <TableCell className="whitespace-nowrap text-right">
+                        <RowMenu
+                          label={`Actions for ${d.name}`}
+                          items={[
+                            { key: 'edit', label: 'Edit department', icon: <Pencil />, onSelect: () => setDeptForm({ open: true, editing: d }) },
+                            { key: 'delete', label: 'Delete department…', icon: <Trash2 />, danger: true, onSelect: () => setConfirmDelete({ kind: 'department', id: d.id, name: d.name }) },
+                          ]}
+                        />
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
+          <Pagination page={deptPage.page} totalPages={deptPage.totalPages} total={deptPage.total} limit={PAGE_SIZE} onPage={deptPage.setPage} disabled={deptPage.loading} noun="departments" />
+        </Card>
+      )}
 
+      {/* ── EQUIPMENT ── */}
+      {section === 'products' && (
+        <Card padding="none" className={LIST_CARD}>
+          <Table className="[&_td]:px-3 [&_th]:px-3">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Equipment</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Make</TableHead>
+                <TableHead>MHA QR / spec reference</TableHead>
+                {actionsHead}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <ListState
+                loading={productPage.loading}
+                error={productPage.error}
+                empty={productPage.rows.length === 0}
+                colSpan={cols(4)}
+                onRetry={productPage.refresh}
+                emptyText={dProductSearch ? `No equipment matches “${dProductSearch}”.` : 'No equipment yet. Add the first item so tenders and demos can use it.'}
+              />
+              {!productPage.loading &&
+                productPage.rows.map((p) => (
+                  <TableRow key={p.id}>
+                    <TableCell className="font-bold text-[#14213D]">
+                      <div className="flex items-center gap-2">
+                        <span className="max-w-[280px] truncate" title={show(p.name)}>{show(p.name)}</span>
+                        {p.is_mha_qr && (
+                          <Badge variant="urgent" size="sm" className="shrink-0">
+                            MHA QR
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-[#14213D]">{show(p.category)}</TableCell>
+                    <TableCell className="text-[#14213D]">{show(p.make)}</TableCell>
+                    <TableCell>
+                      <div className="max-w-[220px] truncate font-mono text-[11px] text-[#4A5568]" title={p.spec_ref || ''}>{show(p.spec_ref)}</div>
+                    </TableCell>
+                    {isAdmin && (
+                      <TableCell className="whitespace-nowrap text-right">
+                        <RowMenu label={`Actions for ${p.name}`} items={[{ key: 'edit', label: 'Edit equipment', icon: <Pencil />, onSelect: () => setProductForm({ open: true, editing: p }) }]} />
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
+          <Pagination page={productPage.page} totalPages={productPage.totalPages} total={productPage.total} limit={PAGE_SIZE} onPage={productPage.setPage} disabled={productPage.loading} noun="items" />
+        </Card>
+      )}
+
+      {/* ── ZONES ── */}
+      {section === 'zones' && (
+        <Card padding="none" className={LIST_CARD}>
+          <Table className="[&_td]:px-3 [&_th]:px-3">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Zone</TableHead>
+                <TableHead>Code</TableHead>
+                <TableHead className="text-center">Regions</TableHead>
+                {actionsHead}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <ListState
+                loading={zonePage.loading}
+                error={zonePage.error}
+                empty={zonePage.rows.length === 0}
+                colSpan={cols(3)}
+                onRetry={zonePage.refresh}
+                emptyText={dZoneSearch ? `No zones match “${dZoneSearch}”.` : 'No zones yet. Add a zone before adding its regions.'}
+              />
+              {!zonePage.loading &&
+                zonePage.rows.map((z) => (
+                  <TableRow key={z.id}>
+                    <TableCell className="font-bold text-[#14213D]">{show(z.name)} Zone</TableCell>
+                    <TableCell className="font-mono font-bold uppercase text-[#0F5E63]">{show(z.code)}</TableCell>
+                    <TableCell className="text-center font-mono">
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="font-mono"
+                        onClick={() => {
+                          setRegionZone(z.id);
+                          setSection('regions');
+                        }}
+                      >
+                        {regionCountByZone.get(z.id) ?? 0}
+                      </Button>
+                    </TableCell>
+                    {isAdmin && (
+                      <TableCell className="whitespace-nowrap text-right">
+                        <RowMenu
+                          label={`Actions for ${z.name} zone`}
+                          items={[
+                            { key: 'region', label: 'Add a region here', icon: <Plus />, onSelect: () => setTerritoryForm({ open: true, kind: 'region', editing: null, zoneId: z.id }) },
+                            { key: 'edit', label: 'Edit zone', icon: <Pencil />, onSelect: () => setTerritoryForm({ open: true, kind: 'zone', editing: z }) },
+                            { key: 'delete', label: 'Delete zone…', icon: <Trash2 />, danger: true, onSelect: () => setConfirmDelete({ kind: 'zone', id: z.id, name: z.name }) },
+                          ]}
+                        />
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
+          <Pagination page={zonePage.page} totalPages={zonePage.totalPages} total={zonePage.total} limit={PAGE_SIZE} onPage={zonePage.setPage} disabled={zonePage.loading} noun="zones" />
+        </Card>
+      )}
+
+      {/* ── REGIONS ── */}
+      {section === 'regions' && (
+        <Card padding="none" className={LIST_CARD}>
+          <Table className="[&_td]:px-3 [&_th]:px-3">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Region</TableHead>
+                <TableHead>Zone</TableHead>
+                {actionsHead}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <ListState
+                loading={regionPage.loading}
+                error={regionPage.error}
+                empty={regionPage.rows.length === 0}
+                colSpan={cols(2)}
+                onRetry={regionPage.refresh}
+                emptyText={dRegionSearch || regionZone ? 'No regions match these filters.' : 'No regions yet. Add one inside a zone.'}
+              />
+              {!regionPage.loading &&
+                regionPage.rows.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell className="font-bold text-[#14213D]">{r.name}</TableCell>
+                    <TableCell className="text-[#14213D]">{r.zone_name ? `${r.zone_name} Zone` : <span className="text-[#6B7280]">No zone</span>}</TableCell>
+                    {isAdmin && (
+                      <TableCell className="whitespace-nowrap text-right">
+                        <RowMenu
+                          label={`Actions for region ${r.name}`}
+                          items={[
+                            { key: 'edit', label: 'Edit region', icon: <Pencil />, onSelect: () => setTerritoryForm({ open: true, kind: 'region', editing: r }) },
+                            { key: 'delete', label: 'Delete region…', icon: <Trash2 />, danger: true, onSelect: () => setConfirmDelete({ kind: 'region', id: r.id, name: r.name }) },
+                          ]}
+                        />
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
+          <Pagination page={regionPage.page} totalPages={regionPage.totalPages} total={regionPage.total} limit={PAGE_SIZE} onPage={regionPage.setPage} disabled={regionPage.loading} noun="regions" />
+        </Card>
+      )}
+
+      {/* ── CLIENT CATEGORIES ── */}
+      {section === 'categories' && (
+        <Card padding="none" className={LIST_CARD}>
+          <Table className="[&_td]:px-3 [&_th]:px-3">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Category</TableHead>
+                <TableHead>Shown in pickers as</TableHead>
+                <TableHead className="text-center">Customers</TableHead>
+                <TableHead className="text-center">Status</TableHead>
+                {actionsHead}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <ListState
+                loading={catPage.loading}
+                error={catPage.error}
+                empty={catPage.rows.length === 0}
+                colSpan={cols(4)}
+                onRetry={catPage.refresh}
+                emptyText={dCatSearch ? `No client categories match “${dCatSearch}”.` : 'No client categories yet. Add one so new customers can be filed under it.'}
+              />
+              {!catPage.loading &&
+                catPage.rows.map((c) => (
+                  <TableRow key={c.id}>
+                    <TableCell className="font-bold text-[#14213D]">{c.name}</TableCell>
+                    <TableCell className="text-[#4A5568]">
+                      <div className="max-w-[320px] truncate" title={c.label || ''}>{c.label || '—'}</div>
+                    </TableCell>
+                    <TableCell className="text-center font-mono">{c.customer_count ?? 0}</TableCell>
+                    <TableCell className="whitespace-nowrap text-center">
+                      <Badge variant={c.is_active ? 'success' : 'outline'} size="sm">
+                        {c.is_active ? 'Active' : 'Hidden'}
+                      </Badge>
+                    </TableCell>
+                    {isAdmin && (
+                      <TableCell className="whitespace-nowrap text-right">
+                        <RowMenu
+                          label={`Actions for ${c.name}`}
+                          items={[
+                            { key: 'edit', label: 'Edit category', icon: <Pencil />, onSelect: () => setCatForm({ open: true, editing: c }) },
+                            {
+                              key: 'active',
+                              label: c.is_active ? 'Hide from pickers' : 'Show in pickers again',
+                              icon: c.is_active ? <Eye /> : <Check />,
+                              onSelect: () => setCategoryActive(c, !c.is_active),
+                            },
+                            {
+                              key: 'delete',
+                              label: c.customer_count ? 'Delete (in use — hide it instead)' : 'Delete category…',
+                              icon: <Trash2 />,
+                              danger: true,
+                              disabled: !!c.customer_count,
+                              onSelect: () => setConfirmDelete({ kind: 'client category', id: c.id, name: c.name }),
+                            },
+                          ]}
+                        />
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
+          <Pagination page={catPage.page} totalPages={catPage.totalPages} total={catPage.total} limit={PAGE_SIZE} onPage={catPage.setPage} disabled={catPage.loading} noun="categories" />
+        </Card>
+      )}
+
+      {/* ── ROLES & ACCESS ── */}
+      {section === 'permissions' && (
+        <div className="space-y-6">
+          <Card padding="md">
+            <SectionHeader
+              title={profile.title}
+              icon={<KeyRound className="h-4 w-4" />}
+              badge={
+                <Badge variant={SCOPE[profile.territorialScope].variant} size="sm">
+                  {SCOPE[profile.territorialScope].label}
+                </Badge>
+              }
+              description={profile.department}
+              className="border-b-0 pb-0"
+            />
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[#4A5568]">{profile.scopeSummary}</p>
+          </Card>
+
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <Card padding="none" className="overflow-hidden">
+              <CardHeader>
+                <div className="min-w-0">
+                  <CardTitle>
+                    <Power className="h-4 w-4 text-[#0F5E63]" /> Modules
+                  </CardTitle>
+                  <CardDescription>Switch a module off to hide it from everyone in this role. It stops working for them at once.</CardDescription>
+                </div>
+                {!canSwitchModules && (
+                  <Badge variant="outline" size="sm" className="shrink-0 gap-1">
+                    <Eye className="h-3 w-3" /> View only
+                  </Badge>
+                )}
+              </CardHeader>
+              <div className="divide-y divide-[#ECE9E2]">
+                {!access && <div className="p-4 text-xs text-[#881337]">Module access didn’t load. Reload the page to try again.</div>}
+                {(access?.modules || []).map((m) => {
+                  const reach = roleCanReach(selectedRole, m.paths[0]);
+                  const locked = isLockedModule(selectedRole, m.key);
+                  const block = access?.blocks.find((b) => b.role === selectedRole && b.module === m.key);
+                  const on = reach && !block;
+                  const busy = switching === `${selectedRole}:${m.key}`;
+                  return (
+                    <div key={m.key} className={`flex items-start justify-between gap-4 px-5 py-3 ${reach ? '' : 'bg-[#FBFAF7]'}`}>
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="text-xs font-bold text-[#14213D]">{m.label}</span>
+                          {!reach ? (
+                            <Badge variant="outline" size="sm">Not in this role</Badge>
+                          ) : locked ? (
+                            <Badge variant="info" size="sm">Always on</Badge>
+                          ) : block ? (
+                            <Badge variant="danger" size="sm">Off</Badge>
+                          ) : (
+                            <Badge variant="success" size="sm">On</Badge>
+                          )}
+                        </div>
+                        {block && (
+                          <p className="text-xs text-[#4A5568]">
+                            Off since {fmtStamp(block.blocked_at)}
+                            {block.blocked_by_name ? `, by ${block.blocked_by_name}` : ''}. Reason: {block.reason}
+                          </p>
+                        )}
+                        {locked && <p className="text-xs text-[#4A5568]">The administrator always keeps this panel, so no one gets locked out.</p>}
+                      </div>
+                      {reach && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={on}
+                          disabled={!canSwitchModules || locked || busy}
+                          title={!canSwitchModules ? 'Only management and the System Administrator can switch modules' : undefined}
+                          aria-label={`${m.label} for ${profile.title}: ${on ? 'on' : 'off'}`}
+                          onClick={() => switchModule(selectedRole, m.key, m.label, !on)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30 max-sm:before:absolute max-sm:before:-inset-2.5 ${on ? 'bg-[#0F5E63]' : 'bg-[#C9C4B8]'} ${!canSwitchModules || locked ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${on ? 'translate-x-5' : 'translate-x-0'}`}
+                          />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            <Card padding="none" className="overflow-hidden">
+              <CardHeader>
+                <div className="min-w-0">
+                  <CardTitle>
+                    <ListChecks className="h-4 w-4 text-[#0F5E63]" /> Approvals & sign-offs
+                  </CardTitle>
+                  <CardDescription>Set by the access policy in code, so they can’t be changed here.</CardDescription>
+                </div>
+                <Badge variant="outline" size="sm" className="shrink-0 gap-1">
+                  <Lock className="h-3 w-3" /> Fixed
+                </Badge>
+              </CardHeader>
+              <div className="divide-y divide-[#ECE9E2]">
+                {(Object.keys(CAPABILITY_LABELS) as Array<keyof RolePermissionProfile['capabilities']>).map((capKey) => {
+                  const allowed = profile.capabilities[capKey];
+                  const info = CAPABILITY_LABELS[capKey];
+                  return (
+                    <div key={capKey} className={`flex items-start justify-between gap-4 px-5 py-3 ${allowed ? '' : 'bg-[#FBFAF7]'}`}>
+                      <div className="min-w-0 space-y-0.5">
+                        <span className={`text-xs font-bold ${allowed ? 'text-[#14213D]' : 'text-[#4A5568]'}`}>{info.label}</span>
+                        <p className="text-xs text-[#4A5568]">{info.desc}</p>
+                      </div>
+                      <Badge variant={allowed ? 'success' : 'outline'} size="sm" className="shrink-0">
+                        {allowed ? 'Yes' : 'No'}
+                      </Badge>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          </div>
+
+          <div>
+            <Button variant="ghost" size="sm" aria-expanded={compareOpen} onClick={() => setCompareOpen((v) => !v)}>
+              {compareOpen ? 'Hide the role comparison' : 'Compare all roles side by side'}
+            </Button>
+          </div>
+          {compareOpen && (
+            <Card padding="none" className={LIST_CARD}>
+              <Table className="table-fixed !min-w-0 max-sm:[&_tbody_tr]:!grid-cols-2 [&_td]:px-2.5 [&_th]:h-auto [&_th]:px-2.5 [&_th]:py-2.5 [&_th]:text-[10px] [&_th]:leading-tight">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[200px]">Role</TableHead>
+                    {MATRIX_COLUMNS.map((c) => (
+                      <TableHead key={c.key} className="text-center">
+                        {c.label}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {USER_ROLES.map((r) => {
+                    const prof = ROLE_PROFILES[r];
+                    return (
+                      <TableRow key={r} className={r === selectedRole ? 'bg-[#E3EFEE]/40' : undefined}>
+                        <TableCell className="font-bold text-[#14213D]">
+                          <div className="truncate" title={prof.title}>{prof.title}</div>
+                          <div className="text-[11px] font-normal text-[#4A5568]">{SCOPE[prof.territorialScope].label}</div>
+                        </TableCell>
+                        {MATRIX_COLUMNS.map((c) => (
+                          <TableCell key={c.key} className="text-center">
+                            {prof.capabilities[c.key] ? <Check className="inline h-4 w-4 text-[#0F5E63]" aria-label="Yes" /> : <span className="text-[#C9C4B8]" aria-label="No">–</span>}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {isAdmin && (
+        <>
+          <UserFormModal
+            isOpen={userForm.open}
+            onClose={() => setUserForm({ open: false, editing: null })}
+            editing={userForm.editing}
+            users={usersList}
+            zones={zonesList}
+            regions={regionsList}
+            departments={departmentsList}
+            currentUserId={user?.id}
+            onSaved={async (saved, temporaryPassword) => {
+              const wasEdit = !!userForm.editing;
+              setUserForm({ open: false, editing: null });
+              await reloadUsers();
+              if (temporaryPassword) setTempPassword({ email: saved.email, password: temporaryPassword });
+              setNotice(`${saved.full_name} ${wasEdit ? 'updated' : 'added'}.`);
+            }}
+          />
+          <TemporaryPasswordModal value={tempPassword} onClose={() => setTempPassword(null)} />
+          <ConfirmModal
+            isOpen={!!confirmUser}
+            onClose={() => setConfirmUser(null)}
+            danger={!!confirmUser?.is_active}
+            title={confirmUser?.is_active ? `Deactivate ${confirmUser?.full_name}?` : `Re-activate ${confirmUser?.full_name}?`}
+            confirmLabel={confirmUser?.is_active ? 'Deactivate account' : 'Re-activate account'}
+            message={
+              confirmUser?.is_active ? (
+                <>
+                  <p>They’ll be signed out and can’t sign in until you re-activate them. Their records, approvals and history stay as they are.</p>
+                  <p>Move anyone who reports to them to another manager first.</p>
+                </>
+              ) : (
+                <p>They’ll be able to sign in again with their existing password.</p>
+              )
+            }
+            onConfirm={async () => {
+              if (confirmUser) await setUserActive(confirmUser, !confirmUser.is_active);
+            }}
+          />
+          <ConfirmModal
+            isOpen={!!confirmReset}
+            onClose={() => setConfirmReset(null)}
+            title={`Reset ${confirmReset?.full_name}’s password?`}
+            confirmLabel="Reset password"
+            message={
+              <>
+                <p>Their current password stops working straight away. You’ll get a one-time password to hand over.</p>
+                <p>Anyone already signed in as them stays signed in until that session ends.</p>
+              </>
+            }
+            onConfirm={async () => {
+              if (!confirmReset) return;
+              const res = await api.post<{ email: string; temporary_password: string }>(`/users/${confirmReset.id}/reset-password`);
+              setTempPassword({ email: res.email, password: res.temporary_password, title: 'Password reset' });
+              setNotice(`${confirmReset.full_name}’s password was reset.`);
+            }}
+          />
+          <ProductFormModal
+            isOpen={productForm.open}
+            onClose={() => setProductForm({ open: false, editing: null })}
+            editing={productForm.editing}
+            onSaved={async (p) => {
+              setProductForm({ open: false, editing: null });
+              await reloadMasters();
+              setNotice(`${p.name} saved.`);
+            }}
+          />
+          <TerritoryFormModal
+            isOpen={territoryForm.open}
+            onClose={() => setTerritoryForm((f) => ({ ...f, open: false, editing: null }))}
+            kind={territoryForm.kind}
+            editing={territoryForm.editing}
+            zones={zonesList}
+            defaultZoneId={territoryForm.zoneId}
+            onSaved={async () => {
+              const kind = territoryForm.kind;
+              setTerritoryForm((f) => ({ ...f, open: false, editing: null }));
+              await Promise.all([reloadMasters(), usersPage.refresh()]);
+              setNotice(`${kind === 'zone' ? 'Zone' : 'Region'} saved.`);
+            }}
+          />
+          <DepartmentFormModal
+            isOpen={deptForm.open}
+            onClose={() => setDeptForm({ open: false, editing: null })}
+            editing={deptForm.editing}
+            users={usersList}
+            onSaved={async () => {
+              const wasEdit = !!deptForm.editing;
+              setDeptForm({ open: false, editing: null });
+              await reloadMasters();
+              setNotice(`Department ${wasEdit ? 'updated' : 'added'}.`);
+            }}
+          />
+          <ClientCategoryFormModal
+            isOpen={catForm.open}
+            onClose={() => setCatForm({ open: false, editing: null })}
+            editing={catForm.editing}
+            onSaved={async (saved) => {
+              const wasEdit = !!catForm.editing;
+              setCatForm({ open: false, editing: null });
+              await reloadMasters();
+              setNotice(`${saved.name} ${wasEdit ? 'updated' : 'added'}.`);
+            }}
+          />
+          <BulkInviteModal isOpen={inviteOpen} onClose={() => setInviteOpen(false)} users={usersList} regions={regionsList} onInvited={reloadUsers} />
+          <ConfirmModal
+            isOpen={!!confirmDelete}
+            onClose={() => setConfirmDelete(null)}
+            danger
+            title={`Delete the ${confirmDelete?.name} ${confirmDelete?.kind}?`}
+            confirmLabel={`Delete ${confirmDelete?.kind}`}
+            message={<p>This can’t be undone. If people or records still use this {confirmDelete?.kind}, it won’t be deleted and you’ll see why.</p>}
+            onConfirm={async () => {
+              if (!confirmDelete) return;
+              const path = {
+                department: '/masters/departments',
+                zone: '/masters/zones',
+                region: '/masters/regions',
+                'client category': '/masters/client-categories',
+              }[confirmDelete.kind];
+              await api.delete(`${path}/${confirmDelete.id}`);
+              await reloadMasters();
+              setNotice(`${confirmDelete.name} deleted.`);
+            }}
+          />
+        </>
+      )}
+      {canSwitchModules && (
+        <ModuleSwitchOffModal
+          target={switchOff}
+          onClose={() => setSwitchOff(null)}
+          onDone={async () => {
+            const t = switchOff;
+            setSwitchOff(null);
+            await reloadAccess();
+            if (t) setNotice(`${t.label} is off for ${ROLE_PROFILES[t.role].title}.`);
+          }}
+        />
+      )}
     </PageContainer>
   );
 }

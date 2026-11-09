@@ -6,7 +6,7 @@
  * trend and an engineer / region / zone / priority breakdown. Filters live in the URL.
  */
 import React, { Suspense } from 'react';
-import { AlertTriangle, Clock, Download, Map as MapIcon, MapPin, Repeat, RefreshCw, ShieldCheck, Signal, Wrench, Users } from 'lucide-react';
+import { AlertTriangle, Clock, Download, Map as MapIcon, MapPin, RefreshCw, Repeat, ShieldCheck, Users, Wrench } from 'lucide-react';
 import type { ServiceBreakdownRow, ServiceReportDto, ServiceReportGroupBy } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -22,6 +22,7 @@ import {
   PageHeader,
   PageLoader,
   StatCard,
+  StatGrid,
   Table,
   TableBody,
   TableCell,
@@ -30,7 +31,7 @@ import {
   TableRow,
   Tabs,
 } from '@/components/ui';
-import { ReportFilterBar, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, pctText, rateSub, useReport, useReportFilters } from '../_lib/report-ui';
+import { FactList, ReportFilterBar, ReportNotes, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, pctText, rateSub, useReport, useReportFilters } from '../_lib/report-ui';
 
 const GROUP_LABEL: Record<ServiceReportGroupBy, string> = { engineer: 'Engineer', region: 'Region', zone: 'Zone', priority: 'Priority' };
 const dayText = (d: number | null) => (d === null ? '—' : `${d} d`);
@@ -105,44 +106,50 @@ function ServiceReport() {
         loading ? <PageLoader rows={5} label="Building the service report" /> : null
       ) : (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          {/* Live position of the desk — same definitions as the Service Desk tiles. */}
-          <section aria-label="Service desk right now" className="space-y-2">
-            <h2 className="font-serif text-base text-[#14213D]">Right now</h2>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
-              {(
-                [
-                  ['New', s.new, 'Not yet triaged', 'default'],
-                  ['Pending', s.pending, 'Not yet resolved', 'default'],
-                  ['Assigned', s.assigned, 'With an engineer', 'primary'],
-                  ['Overdue', s.overdue, 'Visit day / deadline passed', 'rose'],
-                  ['Awaiting parts', s.awaiting_parts, 'SLA clock paused', 'amber'],
-                  ['Escalated / revisit', s.escalated, 'Needs a second look', 'amber'],
-                  ['SLA breached', s.sla_breached, 'Resolution deadline passed', 'rose'],
-                ] as const
-              ).map(([title, value, sub, variant]) => (
-                <StatCard key={title} title={title} value={value} subtext={sub} variant={value > 0 ? variant : 'default'} />
-              ))}
-            </div>
-          </section>
-
-          {/* Period figures */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <StatCard title="Received" value={c.received} subtext={`${c.completed} completed · ${c.closed} closed in the period`} icon={<Wrench className="h-4 w-4" />} variant="primary" />
-            <StatCard title="Average closure" value={dayText(c.avg_closure_days)} subtext={c.closed ? `Over ${c.closed} closed ticket${c.closed === 1 ? '' : 's'}` : 'No tickets closed in this period'} icon={<Clock className="h-4 w-4" />} variant="primary" />
-            <StatCard title="Median · slowest 10 %" value={`${dayText(c.median_closure_days)} · ${dayText(c.p90_closure_days)}`} subtext="Typical closure vs the slow tail" icon={<Signal className="h-4 w-4" />} />
+          <StatGrid cols={4} className="gap-3">
+            <StatCard title="Complaints received" value={c.received} subtext={`${c.completed} completed · ${c.closed} closed in the period`} icon={<Wrench className="h-4 w-4" />} variant="primary" />
+            <StatCard
+              title="Average closure"
+              value={dayText(c.avg_closure_days)}
+              subtext={c.closed ? `Median ${dayText(c.median_closure_days)} · slowest 10 % ${dayText(c.p90_closure_days)}` : 'No tickets closed in this period'}
+              icon={<Clock className="h-4 w-4" />}
+              variant="primary"
+            />
             <StatCard title="Closed within SLA" value={pctText(c.within_sla.rate)} subtext={rateSub(c.within_sla, 'closed with a deadline')} icon={<ShieldCheck className="h-4 w-4" />} variant="emerald" />
             <StatCard
               title="Repeat complaints"
               value={c.repeats}
-              subtext={c.received ? `${pctText(c.repeat_rate)} of complaints received · ${data.repeat_window_days}-day window` : 'No complaints received'}
+              subtext={c.received ? `${pctText(c.repeat_rate)} of complaints · ${data.repeat_window_days}-day window` : 'No complaints received'}
               icon={<Repeat className="h-4 w-4" />}
               variant={c.repeats > 0 ? 'rose' : 'default'}
             />
-          </div>
+          </StatGrid>
+
+          {/* Live position of the desk — same definitions as the Service Desk tiles. */}
+          <Card>
+            <CardHeader className="flex-col items-start gap-0">
+              <CardTitle>Service desk right now</CardTitle>
+              <CardDescription>Open tickets as of now, whatever the period.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FactList
+                className="xl:grid-cols-4"
+                items={[
+                  ['New, not triaged', s.new],
+                  ['Pending', s.pending],
+                  ['With an engineer', s.assigned],
+                  ['Overdue', s.overdue, s.overdue > 0 ? 'bad' : 'default'],
+                  ['Awaiting parts', s.awaiting_parts, s.awaiting_parts > 0 ? 'warn' : 'default'],
+                  ['Escalated / revisit', s.escalated, s.escalated > 0 ? 'warn' : 'default'],
+                  ['SLA breached', s.sla_breached, s.sla_breached > 0 ? 'bad' : 'default'],
+                ]}
+              />
+            </CardContent>
+          </Card>
 
           <div className="grid gap-4 lg:grid-cols-5">
             <Card className="lg:col-span-3">
-              <CardHeader>
+              <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Monthly trend</CardTitle>
                 <CardDescription>Complaints received and tickets closed per month, with that month’s average closure time.</CardDescription>
               </CardHeader>
@@ -191,7 +198,7 @@ function ServiceReport() {
 
             <div className="space-y-4 lg:col-span-2">
               <Card>
-                <CardHeader>
+                <CardHeader className="flex-col items-start gap-0">
                   <CardTitle>Closure time by priority</CardTitle>
                   <CardDescription>Average hours to close, tickets closed in the period.</CardDescription>
                 </CardHeader>
@@ -210,7 +217,7 @@ function ServiceReport() {
                 </CardContent>
               </Card>
               <Card>
-                <CardHeader>
+                <CardHeader className="flex-col items-start gap-0">
                   <CardTitle>Complaints by problem category</CardTitle>
                   <CardDescription>Received in the period; repeats in brackets.</CardDescription>
                 </CardHeader>
@@ -227,7 +234,7 @@ function ServiceReport() {
 
           {/* Where complaints keep coming back */}
           <Card>
-            <CardHeader>
+            <CardHeader className="flex-col items-start gap-0">
               <CardTitle>Repeat complaint hotspots</CardTitle>
               <CardDescription>
                 Customer equipment with a repeat complaint, or two or more complaints in the period. A repeat is the same customer and serial (else
@@ -328,11 +335,11 @@ function ServiceReport() {
             </CardContent>
           </Card>
 
-          <p className="text-[11px] text-[#6B7280]">
+          <ReportNotes>
             Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST). Intake counts by the day the complaint was received; closures by the day the
             ticket was closed. Closure time runs from the complaint received (a back-dated complaint from 09:00 IST that day) to closure — the same rule as
             the Service Desk’s average closure time. “Right now”, open and overdue figures match the Service Desk tiles for the same territory.
-          </p>
+          </ReportNotes>
         </div>
       )}
     </>

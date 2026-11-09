@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_db_migrations_down_030_proposals_tasks_qa_fixes_down_sql", "label": "030_proposals_tasks_qa_fixes.down.sql", "file_type": "code", "source_file": "db/migrations/down/030_proposals_tasks_qa_fixes.down.sql", "source_location": null}], "edges": []}

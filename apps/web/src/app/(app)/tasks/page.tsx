@@ -10,7 +10,7 @@ import { useAuth } from '@/lib/auth-context';
 import { addDays, istToday, useTaskSummary } from './_lib/task-lib';
 import { TASK_BOARD_SCOPES, useTaskViews, useToaster, useUrlFilters, type TaskBoardScope } from './_lib/task-ui';
 import { ApprovalBoard, BlockerReviewBoard } from './_lib/QueueBoards';
-import { BoardFilterMenu, BoardSortMenu, QUICK_FILTERS, TaskBoard, taskMoveMenu, useBoardSort, useTaskMover, type QuickFilter } from './_lib/TaskBoard';
+import { BoardFilterMenu, BoardSortMenu, QUICK_FILTERS, TaskBoard, taskMoveMenu, useBoardLanes, useBoardSort, useTaskMover, type QuickFilter } from './_lib/TaskBoard';
 import { TASK_GROUP_BY_LABELS, TaskCards, TaskPagination, TaskSearchInput, TaskTable, useTaskList, type TaskGroupBy } from './_lib/TaskList';
 import type { TaskRow } from './_lib/task-lib';
 import { NewTaskButton } from './_lib/NewTaskModal';
@@ -118,12 +118,11 @@ function Tasks() {
     () => (board || !onTasks ? null : { view: 'mine', ...tabQuery(tab, today), ...(dueSort ? { sort_by: 'deadline', sort_dir: dueSort } : {}), search, page, page_size: pageSize }),
     [board, onTasks, tab, today, dueSort, search, page, pageSize],
   );
-  const openQuery = useMemo(() => (statusBoard ? { view, statuses: BOARD_OPEN, sort_by: 'deadline', search, page_size: 100 } : null), [statusBoard, view, search]);
-  const doneQuery = useMemo(() => (statusBoard ? { view, statuses: 'completed', sort_by: 'updated_at', sort_dir: 'desc', search, page_size: 25 } : null), [statusBoard, view, search]);
+  // The status board: each lane pages GET /tasks itself with these params plus its status and the board sort.
+  const boardQuery = useMemo(() => (statusBoard ? { view, search, ...QUICK_FILTERS.find((f) => f.id === filter)?.params } : null), [statusBoard, view, search, filter]);
 
   const list = useTaskList(listQuery);
-  const open = useTaskList(openQuery);
-  const done = useTaskList(doneQuery);
+  const statusLanes = useBoardLanes(boardQuery, sort);
 
   // List rows get the board's moves behind a pencil menu (same rules, same dialogs).
   const mover = useTaskMover({
@@ -148,13 +147,11 @@ function Tasks() {
     );
 
   const refreshBoard = () => {
-    open.reload();
-    done.reload();
     reloadSummary();
+    return statusLanes.refresh();
   };
 
-  const boardRows = useMemo(() => [...(open.data?.data || []), ...(done.data?.data || [])], [open.data, done.data]);
-  const loadError = queue || !onTasks ? null : board ? open.error || done.error : list.error;
+  const loadError = queue || !onTasks ? null : board ? statusLanes.error : list.error;
 
   const onScope = useCallback((next: TaskBoardScope) => set({ scope: next === 'mine' ? null : next, mode: null, queue: null, filter: null, section: null }), [set]);
   // A tab starts clean: every section keeps its own filters in the query string, so only the board scope carries over.
@@ -233,7 +230,7 @@ function Tasks() {
                   )
                 ) : board ? (
                   <>
-                    <BoardFilterMenu rows={boardRows} value={filter} onChange={onFilter} />
+                    <BoardFilterMenu value={filter} onChange={onFilter} total={statusLanes.ready ? statusLanes.total : undefined} />
                     <BoardSortMenu value={sort} onChange={setSort} />
                   </>
                 ) : (
@@ -283,18 +280,13 @@ function Tasks() {
             ) : scope === 'approvals' ? (
               <ApprovalBoard search={values.search} scope={queueScope} teamView={teamView} notify={push} onChanged={reloadSummary} />
             ) : board ? (
-              !open.data || !done.data ? (
+              !statusLanes.ready || loadError ? (
                 !loadError && <PageLoader rows={4} label="Loading board" />
               ) : (
                 <>
-                  {/* Where the open work stands, from the rows on this board */}
-                  {!search && <TaskCharts rows={boardRows} />}
-                  {open.data.total > open.data.data.length && (
-                    <InfoCallout variant="neutral">
-                      Showing the first {open.data.data.length} of {open.data.total} open tasks. Search to narrow the board{scope === 'team' ? ', or use the List view for every task.' : '.'}
-                    </InfoCallout>
-                  )}
-                  {boardRows.length === 0 && search ? (
+                  {/* Where the open work stands: lane totals from the API, due dates and priority from the cards loaded so far */}
+                  {!search && filter === 'all' && <TaskCharts rows={statusLanes.rows} totals={statusLanes.totals} partial={statusLanes.partial} />}
+                  {statusLanes.total === 0 && search ? (
                     <EmptyState
                       icon={CheckSquare}
                       title="No tasks match your search"
@@ -306,20 +298,7 @@ function Tasks() {
                       }
                     />
                   ) : (
-                    <TaskBoard
-                      rows={boardRows}
-                      isManager={isManager}
-                      showAssignee={scope === 'team'}
-                      filter={filter}
-                      sort={sort}
-                      notes={
-                        done.data.total > done.data.data.length
-                          ? { completed: `Latest ${done.data.data.length} of ${done.data.total} shown${scope === 'mine' ? ' — older work is in List → Completed.' : '.'}` }
-                          : undefined
-                      }
-                      onChanged={refreshBoard}
-                      notify={push}
-                    />
+                    <TaskBoard lanes={statusLanes.lanes} isManager={isManager} showAssignee={scope === 'team'} filtered={filter !== 'all'} onChanged={refreshBoard} notify={push} />
                   )}
                 </>
               )

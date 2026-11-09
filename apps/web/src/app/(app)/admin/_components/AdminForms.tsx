@@ -2,7 +2,7 @@
 
 /**
  * Administration dialogs: user create / edit (role, department, reporting manager, territory), inviting many people
- * at once, master records (equipment, zones, regions, departments), switching a module off for a role, and a
+ * at once, master records (equipment, zones, regions, departments, client categories), switching a module off for a role, and a
  * confirmation step for destructive account changes.
  * Every save goes to the API, which re-validates and writes the audit trail.
  */
@@ -44,6 +44,14 @@ export interface AdminRegion {
   name: string;
   zone_id: string | null;
   zone_name?: string | null;
+}
+export interface AdminClientCategory {
+  id: string;
+  name: string;
+  label: string | null;
+  sort_order: number;
+  is_active: boolean;
+  customer_count?: number;
 }
 export interface AdminProduct {
   id: string;
@@ -238,11 +246,17 @@ export const UserFormModal: React.FC<{
 };
 
 /* -------------------------------------------------------- one-time password -- */
-export const TemporaryPasswordModal: React.FC<{ value: { email: string; password: string } | null; onClose: () => void }> = ({ value, onClose }) => {
+export const TemporaryPasswordModal: React.FC<{ value: { email: string; password: string; title?: string } | null; onClose: () => void }> = ({ value, onClose }) => {
   const [copied, setCopied] = useState(false);
   useEffect(() => setCopied(false), [value]);
   return (
-    <Modal isOpen={!!value} onClose={onClose} title="Account created" description="Hand this one-time password to the user over a secure channel. It is not shown again." maxWidth="md">
+    <Modal
+      isOpen={!!value}
+      onClose={onClose}
+      title={value?.title ?? 'Account created'}
+      description="Hand this one-time password to the user over a secure channel. It is not shown again."
+      maxWidth="md"
+    >
       {value && (
         <div className="space-y-4">
           <div className="rounded-[14px] border border-[#DCD8CE] bg-[#FBFAF7] p-4">
@@ -855,6 +869,90 @@ export const ModuleSwitchOffModal: React.FC<{
           </Button>
           <Button type="submit" variant="danger" isLoading={saving}>
             Switch off
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+/* ------------------------------------------------------------ client category -- */
+export const ClientCategoryFormModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  editing: AdminClientCategory | null;
+  onSaved: (saved: AdminClientCategory) => void;
+}> = ({ isOpen, onClose, editing, onSaved }) => {
+  const [form, setForm] = useState({ name: '', label: '', sort_order: '' });
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!isOpen) return;
+    setError(null);
+    setForm({ name: editing?.name || '', label: editing?.label || '', sort_order: editing ? String(editing.sort_order) : '' });
+  }, [isOpen, editing]);
+  const renamed = !!editing && form.name.trim() !== editing.name;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (form.name.trim().length < 2) return setError('Enter the category name.');
+    if (form.sort_order && !/^\d{1,5}$/.test(form.sort_order)) return setError('Order must be a whole number (lower comes first).');
+    setSaving(true);
+    setError(null);
+    try {
+      const body = { name: form.name.trim(), label: form.label.trim() || null, sort_order: form.sort_order ? Number(form.sort_order) : 0 };
+      const saved = editing ? await api.patch(`/masters/client-categories/${editing.id}`, body) : await api.post('/masters/client-categories', body);
+      onSaved(saved);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={editing ? `Edit ${editing.name}` : 'Add client category'} maxWidth="lg">
+      <form onSubmit={submit} className="space-y-4">
+        {error && (
+          <InfoCallout variant="danger" title="Not saved">
+            {error}
+          </InfoCallout>
+        )}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="sm:col-span-2">
+            <Input
+              label="Name"
+              required
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              maxLength={80}
+              placeholder="Railways"
+              helperText="Saved on each customer, and used in filters and reports."
+            />
+          </div>
+          <Input label="Order" inputMode="numeric" value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: e.target.value })} placeholder="0" helperText="Lower comes first." />
+          <div className="sm:col-span-3">
+            <Input
+              label="Shown in pickers as"
+              value={form.label}
+              onChange={(e) => setForm({ ...form, label: e.target.value })}
+              maxLength={160}
+              placeholder="Railways & Metro Transit"
+              helperText="Optional. Leave empty to show the name."
+            />
+          </div>
+        </div>
+        {renamed && (editing?.customer_count ?? 0) > 0 && (
+          <InfoCallout variant="warning" title="Renaming updates customers">
+            {editing!.customer_count} {editing!.customer_count === 1 ? 'customer is' : 'customers are'} in {editing!.name}. They’ll move to “{form.name.trim()}” too.
+          </InfoCallout>
+        )}
+        <div className="flex flex-col-reverse gap-2 border-t border-[#ECE9E2] pt-4 sm:flex-row sm:justify-end">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" isLoading={saving}>
+            {editing ? 'Save changes' : 'Add category'}
           </Button>
         </div>
       </form>

@@ -12,7 +12,7 @@ import { UsersService } from './users.service.js';
 import { CreateUserDto, UpdateUserDto, BulkInviteUsersDto } from './users.dto.js';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { AdminOnly, Roles } from '../../common/auth/roles.decorator.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import type { AuthUser } from '@arihant/shared';
 
@@ -41,13 +41,13 @@ export class UsersController {
   }
 
   @Post()
-  @Roles('admin')
+  @AdminOnly()
   async create(@Body() dto: CreateUserDto, @CurrentUser() user: AuthUser) {
     return this.usersService.create(dto, user.id);
   }
 
   @Patch(':id')
-  @Roles('admin')
+  @AdminOnly()
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateUserDto,
@@ -56,8 +56,14 @@ export class UsersController {
     return this.usersService.update(id, dto, user.id);
   }
 
+  @Post(':id/reset-password')
+  @AdminOnly()
+  async resetPassword(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.usersService.resetPassword(id, user.id);
+  }
+
   @Post('bulk-invite')
-  @Roles('admin')
+  @AdminOnly()
   async bulkInvite(
     @Body() dto: BulkInviteUsersDto,
     @CurrentUser() user: AuthUser,

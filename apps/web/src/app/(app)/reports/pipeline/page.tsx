@@ -6,7 +6,7 @@
  * region / salesperson breakdown and loss reasons. Filters live in the URL.
  */
 import React, { Suspense, useState } from 'react';
-import { Award, Download, Map as MapIcon, MapPin, Presentation, RefreshCw, Target, Users, Calendar, FileSpreadsheet } from 'lucide-react';
+import { Award, Download, Map as MapIcon, MapPin, RefreshCw, Target, TrendingUp, Users, Wallet } from 'lucide-react';
 import type { PipelineBreakdownRow, PipelineGroupBy, PipelineModuleKey, ReportCount, SalesPipelineReportDto } from '@arihant/shared';
 import { useAuth } from '@/lib/auth-context';
 import {
@@ -31,7 +31,21 @@ import {
   TableRow,
   Tabs,
 } from '@/components/ui';
-import { ReportFilterBar, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, money, pctText, rateSub, useReport, useReportFilters } from '../_lib/report-ui';
+import {
+  FactList,
+  ReportFilterBar,
+  ReportNotes,
+  ReportsDenied,
+  ReportsNav,
+  canOpen,
+  downloadCsv,
+  fmtDay,
+  money,
+  pctText,
+  rateSub,
+  useReport,
+  useReportFilters,
+} from '../_lib/report-ui';
 
 const GROUP_LABEL: Record<PipelineGroupBy, string> = { zone: 'Zone', region: 'Region', salesperson: 'Salesperson' };
 
@@ -77,11 +91,12 @@ const COLUMNS: { name: string; cols: Col[] }[] = [
 ];
 const EDGE = 'border-l border-[#ECE9E2]';
 
-const LOSS_CARDS: { key: keyof SalesPipelineReportDto['loss_reasons']; title: string; empty: string }[] = [
-  { key: 'tenders', title: 'Tenders lost', empty: 'No tenders lost in this period.' },
-  { key: 'proposals', title: 'Proposals lost', empty: 'No proposals lost in this period.' },
-  { key: 'demos', title: 'Demo failures', empty: 'No failed or partial demos in this period.' },
-  { key: 'leads', title: 'Leads lost', empty: 'No leads lost from this period.' },
+type LossKey = keyof SalesPipelineReportDto['loss_reasons'];
+const LOSS_CARDS: { key: LossKey; title: string; empty: string }[] = [
+  { key: 'tenders', title: 'Tenders', empty: 'No tenders lost in this period.' },
+  { key: 'proposals', title: 'Proposals', empty: 'No proposals lost in this period.' },
+  { key: 'demos', title: 'Demos', empty: 'No failed or partial demos in this period.' },
+  { key: 'leads', title: 'Leads', empty: 'No leads lost from this period.' },
 ];
 
 function PipelineReport() {
@@ -91,6 +106,7 @@ function PipelineReport() {
   const groupBy = (['zone', 'region', 'salesperson'].includes(filters.values.group_by) ? filters.values.group_by : 'zone') as PipelineGroupBy;
   const { data, loading, error, reload } = useReport<SalesPipelineReportDto>('/reports/sales-pipeline', { ...filters.query, from: filters.from, to: filters.to }, allowed && !filters.invalid);
   const [moduleTab, setModuleTab] = useState<PipelineModuleKey>('leads');
+  const [lossTab, setLossTab] = useState<LossKey>('tenders');
 
   if (!user) return <PageLoader rows={4} label="Loading report" />;
   if (!allowed) {
@@ -114,6 +130,7 @@ function PipelineReport() {
   };
 
   const mod = data?.modules.find((m) => m.key === moduleTab);
+  const loss = LOSS_CARDS.find((c) => c.key === lossTab) ?? LOSS_CARDS[0];
   const r = data?.rates;
   const t = data?.tender;
 
@@ -143,26 +160,44 @@ function PipelineReport() {
         loading ? <PageLoader rows={5} label="Building the pipeline report" /> : null
       ) : (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          {/* Conversion & win rates */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <StatCard title="Lead conversion" value={pctText(r.lead_conversion.rate)} subtext={rateSub(r.lead_conversion, 'leads created')} icon={<Target className="h-4 w-4" />} variant="primary" />
-            <StatCard title="Visit completion" value={pctText(r.visit_completion.rate)} subtext={rateSub(r.visit_completion, 'visits not cancelled')} icon={<Calendar className="h-4 w-4" />} variant="primary" />
-            <StatCard title="Demo success" value={pctText(r.demo_success.rate)} subtext={rateSub(r.demo_success, 'demos completed')} icon={<Presentation className="h-4 w-4" />} variant="emerald" />
-            <StatCard title="Proposal win rate" value={pctText(r.proposal_win.rate)} subtext={rateSub(r.proposal_win, 'proposals decided')} icon={<FileSpreadsheet className="h-4 w-4" />} variant="amber" />
-            <StatCard title="Tender win rate" value={pctText(r.tender_win.rate)} subtext={rateSub(r.tender_win, 'tenders decided')} icon={<Award className="h-4 w-4" />} variant="rose" />
-          </div>
-
-          {/* Value in play */}
           <StatGrid cols={4} className="gap-3">
-            <StatCard title="Open lead pipeline" value={money(data.values.open_leads)} subtext="All open leads, as of now" />
-            <StatCard title="Proposals in play" value={money(data.values.open_proposals)} subtext="Quoted value not yet won / lost / closed" />
-            <StatCard title="Live tender value" value={money(data.values.live_tenders)} subtext="Bids not yet decided, as of now" />
-            <StatCard title="Won in period" value={money(data.values.tenders_won)} subtext={`Tenders won · proposals converted ${money(data.values.proposals_converted)}`} variant="emerald" />
+            <StatCard title="Lead conversion" value={pctText(r.lead_conversion.rate)} subtext={rateSub(r.lead_conversion, 'leads created')} icon={<Target className="h-4 w-4" />} variant="primary" />
+            <StatCard title="Tender win rate" value={pctText(r.tender_win.rate)} subtext={rateSub(r.tender_win, 'tenders decided')} icon={<Award className="h-4 w-4" />} variant="primary" />
+            <StatCard
+              title="Open pipeline"
+              value={money(data.values.open_leads)}
+              subtext={`Open leads now · proposals ${money(data.values.open_proposals)} · live bids ${money(data.values.live_tenders)}`}
+              icon={<Wallet className="h-4 w-4" />}
+            />
+            <StatCard title="Won in period" value={money(data.values.tenders_won)} subtext={`Tenders won · proposals converted ${money(data.values.proposals_converted)}`} icon={<TrendingUp className="h-4 w-4" />} variant="emerald" />
           </StatGrid>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
-              <CardHeader>
+              <CardHeader className="flex-col items-start gap-0">
+                <CardTitle>Conversion at each step</CardTitle>
+                <CardDescription>Share of each step that moved on in the period.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <BarList
+                  label="Conversion rate by step"
+                  labelWidth="38%"
+                  max={100}
+                  items={(
+                    [
+                      ['lead', 'Lead conversion', r.lead_conversion, 'leads created'],
+                      ['visit', 'Visit completion', r.visit_completion, 'visits not cancelled'],
+                      ['demo', 'Demo success', r.demo_success, 'demos completed'],
+                      ['proposal', 'Proposal win rate', r.proposal_win, 'proposals decided'],
+                      ['tender', 'Tender win rate', r.tender_win, 'tenders decided'],
+                    ] as const
+                  ).map(([key, label, rate, of]) => ({ key, label, value: rate.rate ?? 0, display: pctText(rate.rate), detail: rateSub(rate, of) }))}
+                />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Lead journey</CardTitle>
                 <CardDescription>Of the leads created in the period, how many reached each step (a lead can skip one).</CardDescription>
               </CardHeader>
@@ -180,80 +215,71 @@ function PipelineReport() {
                 />
               </CardContent>
             </Card>
+          </div>
 
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Stages per module */}
             <Card>
-              <CardHeader>
+              <CardHeader className="flex-col items-start gap-0">
+                <CardTitle>Pipeline by stage</CardTitle>
+                <CardDescription>{mod ? `${mod.period_basis}, by current stage. Closing stages are marked ●.` : ''}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="overflow-x-auto custom-scrollbar">
+                  <Tabs
+                    variant="segmented"
+                    size="sm"
+                    className="min-w-max"
+                    activeTab={moduleTab}
+                    onChange={(id) => setModuleTab(id as PipelineModuleKey)}
+                    tabs={data.modules.map((m) => ({ id: m.key, label: m.label, count: m.total }))}
+                  />
+                </div>
+                {mod && (
+                  <>
+                    <BarList
+                      label={`${mod.label} by stage`}
+                      labelWidth="42%"
+                      items={mod.stages.map((s) => ({
+                        key: s.key,
+                        label: `${s.terminal ? '● ' : ''}${s.label}`,
+                        value: s.count,
+                        display: s.value !== null && s.value > 0 ? `${s.count} · ${money(s.value)}` : String(s.count),
+                      }))}
+                      emptyText={`No ${mod.label.toLowerCase()} in this period.`}
+                    />
+                    {mod.value !== null && (
+                      <p className="text-xs text-[#4A5568]">
+                        {mod.total} {mod.label.toLowerCase()} worth <span className="font-mono font-semibold text-[#14213D]">{money(mod.value)}</span>
+                      </p>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Tender reporting</CardTitle>
                 <CardDescription>Identified in the period, by category; submitted and decided on their own dates.</CardDescription>
               </CardHeader>
               <CardContent>
-                <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs 2xl:grid-cols-3">
-                  {(
-                    [
-                      ['Identified', t.identified],
-                      ['PQ', t.pq],
-                      ['General / MHA', t.general_mha],
-                      ['Other', t.other],
-                      ['Worked upon', t.worked_upon],
-                      ['Pending', t.pending],
-                      ['Submitted', t.submitted],
-                      ['Won', t.won],
-                      ['Lost', t.lost],
-                    ] as const
-                  ).map(([label, value]) => (
-                    <div key={label} className="flex items-baseline justify-between border-b border-[#ECE9E2] py-1.5">
-                      <dt className="text-[#4A5568]">{label}</dt>
-                      <dd className="font-mono font-semibold text-[#14213D]">{value}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <p className="mt-3 text-xs text-[#4A5568]">
-                  Win rate <span className="font-mono font-bold text-[#0F5E63]">{pctText(t.win_rate)}</span> · won value{' '}
-                  <span className="font-mono font-semibold text-[#14213D]">{money(data.values.tenders_won)}</span>
-                </p>
+                <FactList
+                  items={[
+                    ['Identified', t.identified],
+                    ['PQ', t.pq],
+                    ['General / MHA', t.general_mha],
+                    ['Other', t.other],
+                    ['Worked upon', t.worked_upon],
+                    ['Pending', t.pending],
+                    ['Submitted', t.submitted],
+                    ['Won', t.won, 'good'],
+                    ['Lost', t.lost],
+                    ['Win rate', pctText(t.win_rate), 'good'],
+                  ]}
+                />
               </CardContent>
             </Card>
           </div>
-
-          {/* Stages per module */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Pipeline by stage</CardTitle>
-              <CardDescription>{mod ? `${mod.period_basis}, by current stage. Closing stages are marked ●.` : ''}</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="overflow-x-auto custom-scrollbar">
-                <Tabs
-                  variant="segmented"
-                  size="sm"
-                  className="min-w-max"
-                  activeTab={moduleTab}
-                  onChange={(id) => setModuleTab(id as PipelineModuleKey)}
-                  tabs={data.modules.map((m) => ({ id: m.key, label: m.label, count: m.total }))}
-                />
-              </div>
-              {mod && (
-                <>
-                  <BarList
-                    label={`${mod.label} by stage`}
-                    labelWidth="42%"
-                    items={mod.stages.map((s) => ({
-                      key: s.key,
-                      label: `${s.terminal ? '● ' : ''}${s.label}`,
-                      value: s.count,
-                      display: s.value !== null && s.value > 0 ? `${s.count} · ${money(s.value)}` : String(s.count),
-                    }))}
-                    emptyText={`No ${mod.label.toLowerCase()} in this period.`}
-                  />
-                  {mod.value !== null && (
-                    <p className="text-xs text-[#4A5568]">
-                      {mod.total} {mod.label.toLowerCase()} worth <span className="font-mono font-semibold text-[#14213D]">{money(mod.value)}</span>
-                    </p>
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
 
           {/* Zone / region / salesperson breakdown */}
           <Card>
@@ -330,30 +356,36 @@ function PipelineReport() {
             </CardContent>
           </Card>
 
-          {/* Loss reasons */}
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {LOSS_CARDS.map((c) => {
-              const list: ReportCount[] = data.loss_reasons[c.key];
-              return (
-                <Card key={c.key}>
-                  <CardHeader>
-                    <CardTitle className="text-base">{c.title}</CardTitle>
-                    <CardDescription>Top reasons recorded</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <BarList label={`${c.title} by reason`} labelWidth="55%" items={list.map((x) => ({ key: x.key, label: x.label, value: x.count }))} emptyText={c.empty} />
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+          <Card>
+            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Why we lost</CardTitle>
+                <CardDescription>Top reasons recorded in the period.</CardDescription>
+              </div>
+              <Tabs
+                variant="segmented"
+                size="sm"
+                activeTab={lossTab}
+                onChange={(id) => setLossTab(id as LossKey)}
+                tabs={LOSS_CARDS.map((c) => ({ id: c.key, label: c.title, count: data.loss_reasons[c.key].reduce((n, x) => n + x.count, 0) }))}
+              />
+            </CardHeader>
+            <CardContent>
+              <BarList
+                label={`${loss.title} by reason`}
+                labelWidth="45%"
+                items={data.loss_reasons[loss.key].map((x: ReportCount) => ({ key: x.key, label: x.label, value: x.count }))}
+                emptyText={loss.empty}
+              />
+            </CardContent>
+          </Card>
 
-          <p className="text-[11px] text-[#6B7280]">
+          <ReportNotes>
             Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST). Leads count by created date, visits by planned date, demos by the date
             held, proposals by request / sent / outcome date and tenders by identified / submitted / result date — the same rules as Salesperson &amp;
             Regional Performance, so a rate here matches that page. Open lead, proposal and live tender values are as of now. Rates show “—” when there is
             nothing to divide by.
-          </p>
+          </ReportNotes>
         </div>
       )}
     </>

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Card,
   Button,
@@ -56,23 +56,34 @@ export function TenderCalendarView({
   const [selectedType, setSelectedType] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'agenda'>('grid');
 
-  const loadEvents = async () => {
+  // GET /tenders/calendar is windowed: it returns only the milestones on the IST days `from`..`to`, so each month is
+  // fetched when it is shown. The previous month's events are cleared first (an empty grid would read as "nothing
+  // scheduled"), and an answer for a month the reader has already left is dropped.
+  const monthKey = `${shownMonth.year}-${String(shownMonth.month + 1).padStart(2, '0')}`;
+  const loadRequest = useRef(0);
+  const loadEvents = useCallback(async () => {
+    const request = ++loadRequest.current;
+    const [y, m] = monthKey.split('-').map(Number);
+    const lastDay = String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0');
     try {
       setLoading(true);
       setLoadError(null);
-      const res = await api.get('/tenders/calendar');
+      setEvents([]);
+      const res = await api.get('/tenders/calendar', { from: `${monthKey}-01`, to: `${monthKey}-${lastDay}` });
+      if (request !== loadRequest.current) return;
       setEvents(Array.isArray(res) ? res : Array.isArray(res?.data) ? res.data : []);
     } catch (err: any) {
+      if (request !== loadRequest.current) return;
       console.error('Failed to load tender calendar events:', err);
       setLoadError(err?.message || 'Could not load the tender calendar.');
     } finally {
-      setLoading(false);
+      if (request === loadRequest.current) setLoading(false);
     }
-  };
+  }, [monthKey]);
 
   useEffect(() => {
     loadEvents();
-  }, []);
+  }, [loadEvents]);
 
   // Compute Month Boundaries
   const { year, month } = shownMonth;

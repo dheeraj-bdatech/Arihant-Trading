@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
+import { useInfiniteList } from '@/lib/use-infinite-list';
 import {
   Button,
   Badge,
@@ -192,6 +193,29 @@ export default function RegionalPage() {
       fetchRegionalData(selectedZoneId || undefined, selectedRegionId || undefined);
     }
   }, [selectedZoneId, selectedRegionId]);
+
+  // Territory bids, paged in SQL (GET /tenders) wherever its filters give exactly the aggregate's set
+  // (territoryTenders in dashboard-metrics):
+  //  - a regional manager: /tenders already scopes them to their zone's bids plus their field team's bids
+  //    (rmTenderScope uses the same teamIds), so no zone filter is sent (one would drop the team's bids elsewhere);
+  //  - a picked region: zone and region, for every role.
+  // Management / admin looking at a whole zone also see bids the zone's field team owns in other zones, which no
+  // /tenders filter expresses, so that view keeps the aggregate's list (grown 15 at a time in the browser).
+  const zoneInView: string | undefined = data?.zone?.id;
+  const regionInView = selectedRegionId && (data?.regionsInZone ?? []).some((r: any) => r.id === selectedRegionId) ? selectedRegionId : '';
+  const tendersInSql = user?.role === 'regional_manager' || (!!zoneInView && !!regionInView);
+  // Only the open Tenders tab reads; until then the first page is held (never answered), so opening it shows the loader.
+  const fetchTendersPage = useCallback(
+    (page: number) =>
+      tendersInSql && activeTab === 'tenders'
+        ? api
+            .get('/tenders', { page, limit: TENDER_PAGE_SIZE, ...(regionInView ? { zone_id: zoneInView, region_id: regionInView } : {}) })
+            // the aggregate's closing date is the submission deadline, else the bid closing date
+            .then((res: any) => ({ ...res, data: (res?.data ?? []).map((t: any) => ({ ...t, bid_closing_date: t.submission_deadline || t.bid_closing_date })) }))
+        : new Promise<never>(() => {}),
+    [tendersInSql, activeTab, zoneInView, regionInView],
+  );
+  const tendersList = useInfiniteList<any>(fetchTendersPage);
 
   const handleOpenIntervention = (visit: any) => {
     setSelectedVisit(visit);
@@ -493,8 +517,9 @@ export default function RegionalPage() {
     </RecordTable>
   ) : undefined;
 
-  // grows by TENDER_PAGE_SIZE as the register scrolls (infinite scroll over the loaded list)
-  const tenders: any[] = (data?.tenders?.regionalTendersList ?? []).slice(0, tenderPage * TENDER_PAGE_SIZE);
+  // one page per request from GET /tenders; else (management's whole-zone view) the aggregate's list grown by
+  // TENDER_PAGE_SIZE as the register scrolls
+  const tenders: any[] = tendersInSql ? tendersList.rows : (data?.tenders?.regionalTendersList ?? []).slice(0, tenderPage * TENDER_PAGE_SIZE);
   const tenderRegister = register(
     tenders,
     (t: any): RecordItem => ({
@@ -876,9 +901,10 @@ export default function RegionalPage() {
             </div>
           </Card>
 
-          {(() => {
-            const list = data?.tenders?.regionalTendersList ?? [];
-            return (
+          {tendersInSql ? (
+            tendersList.loading ? (
+              <PageLoader label="Loading territory bids" />
+            ) : (
               <RecordViews
                 storageKey="regional-tenders"
                 defaultView="list"
@@ -888,17 +914,41 @@ export default function RegionalPage() {
                 laneOf={tenderRegister.laneOf}
                 hideEmptyLanes
                 summary={
-                  <span>
-                    {tenderRegister.items.length} of {data?.tenders?.total ?? list.length}
-                    {(data?.tenders?.total ?? 0) > list.length ? ` (first ${list.length} loaded)` : ''}
+                  <span className="font-mono text-xs">
+                    {tenders.length} of {tendersList.total} {tendersList.total === 1 ? 'bid' : 'bids'}
                   </span>
                 }
                 empty="No GeM bids tagged to this territory."
-                onLoadMore={() => setTenderPage((p) => p + 1)}
-                hasMore={tenderRegister.items.length < list.length}
+                onLoadMore={tendersList.loadMore}
+                hasMore={tendersList.hasMore}
+                loadingMore={tendersList.loadingMore}
               />
-            );
-          })()}
+            )
+          ) : (
+            (() => {
+              const list = data?.tenders?.regionalTendersList ?? [];
+              return (
+                <RecordViews
+                  storageKey="regional-tenders"
+                  defaultView="list"
+                  list={tenderList}
+                  items={tenderRegister.items}
+                  lanes={TENDER_LANES}
+                  laneOf={tenderRegister.laneOf}
+                  hideEmptyLanes
+                  summary={
+                    <span>
+                      {tenderRegister.items.length} of {data?.tenders?.total ?? list.length}
+                      {(data?.tenders?.total ?? 0) > list.length ? ` (first ${list.length} loaded)` : ''}
+                    </span>
+                  }
+                  empty="No GeM bids tagged to this territory."
+                  onLoadMore={() => setTenderPage((p) => p + 1)}
+                  hasMore={tenderRegister.items.length < list.length}
+                />
+              );
+            })()
+          )}
         </div>
       )}
 

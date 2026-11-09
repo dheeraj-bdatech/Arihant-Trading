@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 320 240" role="img" aria-label="Product image pending">
+  <rect x="1" y="1" width="318" height="238" rx="14" fill="#FBFAF7" stroke="#DCD8CE" stroke-width="2" stroke-dasharray="6 6"/>
+  <g fill="none" stroke="#0F5E63" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" transform="translate(130 62)">
+    <rect x="4" y="8" width="52" height="40" rx="8"/>
+    <circle cx="30" cy="28" r="10"/>
+    <path d="M18 8l4-8h16l4 8"/>
+  </g>
+  <text x="160" y="152" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif" font-size="16" font-weight="600" fill="#14213D">Product image pending</text>
+  <text x="160" y="176" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif" font-size="12" fill="#4A5568">Photo to be supplied</text>
+</svg>

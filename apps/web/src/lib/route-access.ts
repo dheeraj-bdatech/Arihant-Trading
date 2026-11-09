@@ -28,7 +28,7 @@ export const ROUTE_PERMISSIONS: { path: string; name: string; roles: UserRole[] 
   { path: '/reports/expenses', name: 'Expense Breakdown Report', roles: [...REPORT_ROLES.expenses] },
   { path: '/reports/productivity', name: 'Employee Productivity Report', roles: [...REPORT_ROLES.productivity] },
   { path: '/reports', name: 'Consolidated Reporting & Exports', roles: ['management', 'regional_manager', 'tender_team', 'accounts', 'admin'] },
-  { path: '/admin', name: 'Administration & System Audit', roles: ['management', 'admin'] },
+  { path: '/admin', name: 'Administration', roles: ['management', 'admin'] },
   { path: '/audit', name: 'Audit Logs', roles: ['management', 'admin'] },
 ];
 

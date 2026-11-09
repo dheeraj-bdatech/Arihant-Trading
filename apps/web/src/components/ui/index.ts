@@ -28,3 +28,4 @@ export * from './FilterMenu';
 export * from './RowMenu';
 export * from './StepTrack';
 export * from './BarList';
+export * from './Pagination';

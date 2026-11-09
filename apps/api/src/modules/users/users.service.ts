@@ -205,6 +205,30 @@ export class UsersService {
     return temporaryPassword ? { ...user, temporary_password: temporaryPassword } : user;
   }
 
+  /**
+   * A forgotten password: the old one stops working and a one-time password is returned once, for the admin to
+   * hand over (the same rule as a new account). The audit entry never carries the password.
+   */
+  async resetPassword(id: string, actorId?: string) {
+    const existing = await this.findOne(id);
+    const temporaryPassword = generateTemporaryPassword();
+    await this.db
+      .updateTable('users')
+      .set({ password_hash: await bcrypt.hash(temporaryPassword, 10), updated_at: new Date() })
+      .where('id', '=', id)
+      .execute();
+
+    this.eventEmitter.emit('audit.log', {
+      actorId: actorId || null,
+      entityType: 'user',
+      entityId: id,
+      action: 'password_reset',
+      newValue: { name: existing.full_name, email: existing.email },
+    });
+
+    return { id, email: existing.email, temporary_password: temporaryPassword };
+  }
+
   async update(id: string, dto: UpdateUserDto, actorId?: string) {
     const existing = await this.findOne(id);
 

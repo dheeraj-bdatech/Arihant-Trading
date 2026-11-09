@@ -36,8 +36,6 @@ import {
   Badge,
   PageContainer,
   PageHeader,
-  StatGrid,
-  StatCard,
   PageLoader,
   InfoCallout,
   FilterMenu,
@@ -246,13 +244,13 @@ function useRegister(ds: Dataset, active: boolean, search: string, status: strin
   return { ...useInfiniteList<any>(fetchPage), totals };
 }
 
-const KPI_CARDS: { key: string; title: string; icon: React.ReactNode; variant: 'primary' | 'amber' | 'emerald' }[] = [
-  { key: 'tenders', title: 'Live GeM Bids', icon: <FileText className="h-4 w-4" />, variant: 'primary' },
-  { key: 'leads', title: 'Active Leads', icon: <Target className="h-4 w-4" />, variant: 'primary' },
-  { key: 'visits', title: 'Field Visits', icon: <Calendar className="h-4 w-4" />, variant: 'primary' },
-  { key: 'expenses', title: 'Expense Claims', icon: <Receipt className="h-4 w-4" />, variant: 'amber' },
-  { key: 'settlements', title: 'Settled Claims', icon: <CheckCircle2 className="h-4 w-4" />, variant: 'emerald' },
-  { key: 'service', title: 'Service Tickets', icon: <Wrench className="h-4 w-4" />, variant: 'emerald' },
+const REGISTER_ICONS: { key: string; icon: React.ReactNode }[] = [
+  { key: 'tenders', icon: <FileText className="h-4 w-4" /> },
+  { key: 'leads', icon: <Target className="h-4 w-4" /> },
+  { key: 'visits', icon: <Calendar className="h-4 w-4" /> },
+  { key: 'expenses', icon: <Receipt className="h-4 w-4" /> },
+  { key: 'settlements', icon: <CheckCircle2 className="h-4 w-4" /> },
+  { key: 'service', icon: <Wrench className="h-4 w-4" /> },
 ];
 
 export default function ConsolidatedReportsPage() {
@@ -979,21 +977,6 @@ export default function ConsolidatedReportsPage() {
       />
       <ReportsNav role={user?.role} />
 
-      {/* KPI Highlights — one row; each card opens its report (click again keeps it). */}
-      <StatGrid cols={(visible.size > 5 ? 3 : Math.min(5, Math.max(2, visible.size))) as 2 | 3 | 4 | 5} className="gap-3">
-        {KPI_CARDS.filter((c) => visible.has(c.key)).map((c) => (
-          <StatCard
-            key={c.key}
-            title={c.title}
-            value={counts[c.key] ?? '—'}
-            icon={c.icon}
-            variant={c.variant}
-            className={activeTab === c.key ? 'ring-2 ring-[#0F5E63] border-[#0F5E63]' : 'cursor-pointer'}
-            onClick={() => switchTab(c.key)}
-          />
-        ))}
-      </StatGrid>
-
       {/* One filter row: report View first, then search + status dropdown */}
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
@@ -1005,7 +988,7 @@ export default function ConsolidatedReportsPage() {
             options={DATASETS.filter((ds) => visible.has(ds.key)).map((ds) => ({
               key: ds.key,
               label: ds.label,
-              icon: KPI_CARDS.find((c) => c.key === ds.key)?.icon,
+              icon: REGISTER_ICONS.find((c) => c.key === ds.key)?.icon,
               count: counts[ds.key],
               active: activeTab === ds.key,
               onSelect: () => switchTab(ds.key),

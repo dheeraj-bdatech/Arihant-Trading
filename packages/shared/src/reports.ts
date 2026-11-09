@@ -7,7 +7,7 @@
  */
 import type { UserRole } from './enums.js';
 
-export type ReportKey = 'pipeline' | 'service' | 'expenses' | 'productivity';
+export type ReportKey = 'pipeline' | 'service' | 'expenses' | 'productivity' | 'mis' | 'securities';
 
 /**
  * Who may open each report (the API's @Roles guard and the web tabs both read this). Territory scoping is applied
@@ -18,6 +18,9 @@ export const REPORT_ROLES: Record<ReportKey, readonly UserRole[]> = {
   service: ['management', 'admin', 'regional_manager'],
   expenses: ['management', 'admin', 'accounts', 'regional_manager'],
   productivity: ['management', 'admin', 'accounts', 'regional_manager'],
+  // Tender team processes EMDs, Accounts accounts for EMD / PBG, the regional manager tracks their zone's (RBAC spec §2).
+  mis: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+  securities: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
 };
 
 export function canViewReport(role: UserRole | string | null | undefined, report: ReportKey): boolean {
@@ -419,5 +422,146 @@ export interface ProductivityReportDto {
   totals: { employees: number; needing_attention: number; tasks: ProductivityTaskFigures; activity: ProductivityActivity };
   rows: ProductivityRow[];
   settings: { repeated_delay_threshold: number; repeated_delay_window_days: number };
+  generated_at: string;
+}
+
+/* ------------------------------------------------------------------------------------------------------------------ */
+/* Report 5 — Business MIS (zone / person / state / product)                                                          */
+/* ------------------------------------------------------------------------------------------------------------------ */
+
+export type MisGroupBy = 'zone' | 'person' | 'state' | 'product';
+
+/**
+ * One MIS line. Flows count in the period (tenders by identified / submitted / result date, orders by result or
+ * conversion date, service cases by closed date); snapshots (evaluation, deliveries, open cases, follow-ups, money
+ * held) are as of now.
+ */
+export interface MisFigures {
+  /** Tenders identified (logged) in the period. */
+  tenders_total: number;
+  tenders_submitted: number;
+  /** Now in technical or commercial evaluation. */
+  tenders_under_evaluation: number;
+  /** Now submitted (or PQ submitted) with evaluation not yet started. */
+  tenders_result_awaited: number;
+  tenders_won: number;
+  tenders_lost: number;
+  /** won ÷ (won + lost); null when nothing was decided. */
+  win_rate: number | null;
+  /** Value of the tenders identified in the period. */
+  tender_value: number;
+  /** Units asked for across the tenders identified in the period. */
+  tender_quantity: number;
+  /** Tenders won plus proposals converted to a purchase order in the period. */
+  orders: number;
+  /** Awarded value of the tenders won (else the tender value) plus the quoted value of converted proposals. */
+  order_value: number;
+  /** Deliveries scheduled, dispatched or in transit. */
+  pending_deliveries: number;
+  open_service_cases: number;
+  /** Closed in the period (same rule as the Service report). */
+  closed_service_cases: number;
+  pending_follow_ups: number;
+  /** EMD paid out and not back yet (issued, submitted or refund due). */
+  emd_blocked: number;
+  /** Of that, EMD the customer now owes back (bid lost or cancelled). */
+  emd_refund_due: number;
+  /** Performance bank guarantees and security deposits issued, submitted or due back. */
+  security_held: number;
+}
+
+export interface MisRow extends MisFigures {
+  key: string;
+  label: string;
+  /** Person: region · zone. Product: its category. Otherwise null. */
+  sub: string | null;
+}
+
+export interface MisReportDto {
+  period: ReportPeriod;
+  group_by: MisGroupBy;
+  filters: ReportTerritoryFilters;
+  rows: MisRow[];
+  totals: MisRow;
+  generated_at: string;
+}
+
+/* ------------------------------------------------------------------------------------------------------------------ */
+/* Report 6 — EMD & performance security register                                                                     */
+/* ------------------------------------------------------------------------------------------------------------------ */
+
+/** EMD, or performance security (PBG and security deposits). */
+export type SecurityKind = 'emd' | 'performance';
+/** Where the money is: not paid yet, with the customer, owed back, back with us, or gone (forfeited / expired). */
+export type SecurityState = 'pending' | 'held' | 'refund_due' | 'returned' | 'closed';
+
+export const SECURITY_STATE_STATUSES: Record<SecurityState, readonly string[]> = {
+  pending: ['Requested', 'Approved'],
+  held: ['Issued', 'Submitted'],
+  refund_due: ['Refund Due'],
+  returned: ['Refunded', 'Released'],
+  closed: ['Forfeited', 'Expired'],
+};
+
+export const SECURITY_STATE_LABELS: Record<SecurityState, string> = {
+  pending: 'Not paid yet',
+  held: 'With customer',
+  refund_due: 'Refund due',
+  returned: 'Returned',
+  closed: 'Forfeited / expired',
+};
+
+export interface SecurityRegisterRow {
+  id: string;
+  tender_id: string;
+  instrument_type: string;
+  status: string;
+  state: SecurityState;
+  amount: number | null;
+  /** How it was paid: Online, DD, BG, FDR … */
+  mode: string | null;
+  bank: string | null;
+  reference_number: string | null;
+  issue_date: string | null;
+  expiry_date: string | null;
+  /** Days from today to expiry; negative once expired; null without an expiry date. */
+  days_to_expiry: number | null;
+  remarks: string | null;
+  tender_no: string | null;
+  tender_title: string | null;
+  tender_status: string | null;
+  bid_date: string | null;
+  /** PO / LoA / order number from the tender result. */
+  contract_no: string | null;
+  contract_date: string | null;
+  customer: string | null;
+  department: string | null;
+  state_name: string | null;
+  zone_name: string | null;
+  item: string | null;
+  quantity: number | null;
+  owner_name: string | null;
+  finance_owner_name: string | null;
+}
+
+export interface SecurityStateTotal {
+  count: number;
+  amount: number;
+}
+
+export interface SecurityRegisterDto {
+  kind: SecurityKind;
+  /** null = every state. */
+  state: SecurityState | null;
+  filters: ReportTerritoryFilters;
+  /** Per state for this kind, territory and search (ignores the state filter). */
+  by_state: Record<SecurityState, SecurityStateTotal>;
+  /** Held or refund due, expiring within 30 days (or already expired). */
+  expiring: SecurityStateTotal;
+  data: SecurityRegisterRow[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
   generated_at: string;
 }
